@@ -1,0 +1,407 @@
+.app {
+  max-width: 1500px;
+  margin: 0 auto;
+  padding: 24px 20px 60px;
+}
+
+h1 {
+  font-size: 1.3rem;
+  margin: 0 0 4px;
+}
+
+.hint {
+  color: var(--muted);
+  font-size: 0.85rem;
+  margin-bottom: 16px;
+}
+
+.reload-link {
+  color: var(--accent);
+  cursor: pointer;
+  text-decoration: underline;
+}
+
+/* -- Drop zone -- */
+.drop-zone {
+  border: 2px dashed var(--border);
+  border-radius: 10px;
+  padding: 48px 20px;
+  text-align: center;
+}
+.drop-zone.drag-over {
+  border-color: var(--accent);
+  background: var(--panel);
+}
+.drop-zone-headline {
+  font-size: 1.1rem;
+  font-weight: 600;
+  margin: 0 0 6px;
+}
+.drop-zone-sub {
+  color: var(--muted);
+  font-size: 0.85rem;
+  margin: 0 0 16px;
+}
+.drop-zone-sub code {
+  background: var(--panel);
+  padding: 1px 5px;
+  border-radius: 4px;
+}
+.browse-button {
+  display: inline-block;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 8px 16px;
+  cursor: pointer;
+  background: var(--panel);
+}
+.browse-button:hover {
+  border-color: var(--accent);
+}
+.drop-zone-error {
+  color: var(--fail);
+  font-size: 0.85rem;
+  margin-top: 14px;
+}
+
+/* -- Search filters -- */
+.search-filters {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 20px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 12px 16px;
+  margin-bottom: 16px;
+}
+.filter-group {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.filter-group label {
+  font-size: 0.78rem;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+.filter-group input,
+.filter-group select {
+  font-family: inherit;
+  font-size: 0.9rem;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  padding: 5px 8px;
+  background: var(--bg);
+  color: var(--fg);
+}
+.range-inputs {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.range-inputs input {
+  width: 64px;
+}
+.clear-filters {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 6px 12px;
+  background: var(--panel);
+  color: var(--fg);
+  font-size: 0.85rem;
+  height: fit-content;
+}
+
+/* -- Batch list -- */
+.batch-list-wrap {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+}
+.batch-header,
+.batch-row {
+  display: grid;
+  grid-template-columns: 4rem 1fr 6rem 6rem;
+  gap: 12px;
+  padding: 10px 14px;
+  align-items: center;
+}
+.batch-header {
+  font-size: 0.78rem;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+.batch-row {
+  border-top: 1px solid var(--border);
+  cursor: pointer;
+}
+.batch-row:hover {
+  background: var(--panel);
+}
+.batch-row .label {
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+.batch-row .turns {
+  text-align: right;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+.batch-row .score {
+  text-align: right;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+.batch-empty {
+  padding: 24px;
+  text-align: center;
+  color: var(--muted);
+  border-top: 1px solid var(--border);
+}
+
+/* -- Pagination -- */
+.pagination {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 14px;
+  align-items: center;
+}
+.pagination button {
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: var(--bg);
+  color: var(--fg);
+  padding: 4px 10px;
+  font-size: 0.85rem;
+}
+.pagination button.active {
+  background: var(--accent);
+  color: var(--bg);
+  border-color: var(--accent);
+}
+.pagination button:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+.pagination-ellipsis {
+  color: var(--muted);
+  padding: 0 4px;
+}
+
+/* -- Game view -- */
+.game-view {
+  /* Scale the whole board view (battlefield, hand, action panel, etc) up
+     1.25x. `zoom` (not `transform: scale`) so layout actually grows instead
+     of clipping/overlapping neighbors. */
+  zoom: 1.25;
+  display: flex;
+  align-items: flex-start;
+  gap: 20px;
+}
+.game-view-main {
+  flex: 1;
+  min-width: 0;
+}
+/* Fixed-width column, always reserved (empty when nothing's hovered) so
+   hovering a card never shifts the rest of the layout. */
+.card-preview-panel {
+  position: sticky;
+  top: 20px;
+  width: 260px;
+  flex-shrink: 0;
+  display: flex;
+  justify-content: center;
+}
+.card-preview-panel .card {
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.4);
+}
+
+.back-link {
+  display: inline-block;
+  margin-bottom: 12px;
+  color: var(--accent);
+  cursor: pointer;
+  font-size: 0.9rem;
+}
+.step-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 14px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  margin-bottom: 16px;
+}
+.step-bar .turn {
+  font-weight: 600;
+}
+.step-bar .nav {
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+
+.outcome {
+  border-radius: 8px;
+  padding: 16px;
+  margin-bottom: 16px;
+  text-align: center;
+  border: 1px solid;
+}
+.outcome.success {
+  background: color-mix(in srgb, var(--success) 15%, var(--bg));
+  border-color: var(--success);
+}
+.outcome.fail {
+  background: color-mix(in srgb, var(--fail) 15%, var(--bg));
+  border-color: var(--fail);
+}
+.outcome .headline {
+  font-size: 1.1rem;
+  font-weight: 700;
+  margin-bottom: 4px;
+}
+.outcome.success .headline {
+  color: var(--success);
+}
+.outcome.fail .headline {
+  color: var(--fail);
+}
+.outcome .sub {
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+
+.action-panel {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 14px 16px;
+  margin-bottom: 16px;
+}
+.action-panel .action-name {
+  font-weight: 600;
+  margin-bottom: 6px;
+}
+.detail-line {
+  font-size: 0.88rem;
+  color: var(--muted);
+  margin-top: 2px;
+}
+.detail-line b {
+  color: var(--fg);
+  font-weight: 600;
+}
+
+/* Table: battlefield (+ graveyard alongside it, smaller) above, hand
+   pinned at the bottom in the largest cards -- mirrors how a real game
+   board reads, board state above, current hand closest to the viewer. */
+.table {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  margin-bottom: 16px;
+}
+.table-upper {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 16px;
+  align-items: start;
+}
+.zone {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 12px 14px;
+}
+.zone-battlefield {
+  flex-shrink: 0;
+}
+/* Fixed 5-wide x 2-row box (lands bottom row, everything else above) that
+   never resizes -- rows that would exceed 5 cards shrink card width to
+   still fit instead of wrapping or growing the box. */
+.battlefield-box {
+  width: 490px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.battlefield-row {
+  height: 126px;
+  display: flex;
+  align-items: flex-end;
+  gap: 10px;
+}
+.zone-hand {
+  border-color: var(--accent);
+  border-width: 2px;
+  padding: 16px;
+}
+.zone h3 {
+  margin: 0 0 10px;
+  font-size: 0.85rem;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: var(--muted);
+}
+.zone-cards {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px 10px;
+}
+.empty {
+  color: var(--muted);
+  font-size: 0.85rem;
+  font-style: italic;
+}
+
+.resource-quality {
+  display: flex;
+  gap: 18px;
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+.resource-quality b {
+  color: var(--fg);
+}
+
+/* -- Card -- */
+.card {
+  width: 90px;
+  aspect-ratio: 5 / 7;
+  border-radius: 6px;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  flex-shrink: 0;
+  transition: transform 0.15s ease;
+}
+.card-tapped {
+  transform: rotate(90deg);
+  margin: 0 14px;
+}
+.card-small {
+  width: 60px;
+}
+.card-large {
+  width: 120px;
+}
+.card-art {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+.card-fallback {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 6px;
+  text-align: center;
+  font-size: 0.7rem;
+  background: var(--panel);
+  color: var(--fg);
+}

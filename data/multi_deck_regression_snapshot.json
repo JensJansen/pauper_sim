@@ -1,0 +1,2748 @@
+[
+  {
+    "seed": 0,
+    "actions": [
+      "Pass",
+      "Play land: Forest",
+      "Cast Candy Trail",
+      "Pass",
+      "Pass",
+      "Cast Barrels of Blasting Jelly",
+      "Pass",
+      "Pass",
+      "Cast Crop Rotation",
+      "Pass"
+    ],
+    "turn_assembled": null,
+    "turn_online": null,
+    "final_turn_number": 6,
+    "final_zones": {
+      "hand": [
+        "Bonder's Ornament",
+        "Boulderbranch Golem",
+        "Breath Weapon",
+        "Maelstrom Colossus",
+        "Pinnacle Kill-Ship",
+        "Rooftop Percher",
+        "Urza's Power Plant",
+        "Urza's Power Plant"
+      ],
+      "battlefield": [
+        [
+          "Barrels of Blasting Jelly",
+          false
+        ],
+        [
+          "Candy Trail",
+          false
+        ],
+        [
+          "Urza's Mine",
+          false
+        ]
+      ],
+      "graveyard": [
+        "Crop Rotation",
+        "Forest"
+      ]
+    }
+  },
+  {
+    "seed": 1,
+    "actions": [
+      "Play land: Urza's Power Plant",
+      "Cast Expedition Map",
+      "Pass",
+      "Play land: Urza's Mine",
+      "Pass",
+      "Activate Expedition Map",
+      "Pass",
+      "Pass",
+      "Play land: Urza's Tower"
+    ],
+    "turn_assembled": 5,
+    "turn_online": 5,
+    "final_turn_number": 5,
+    "final_zones": {
+      "hand": [
+        "Ancient Stirrings",
+        "Bonder's Ornament",
+        "Boulderbranch Golem",
+        "Breath Weapon",
+        "Crop Rotation",
+        "Maelstrom Colossus",
+        "Rooftop Percher",
+        "Urza's Tower"
+      ],
+      "battlefield": [
+        [
+          "Urza's Mine",
+          false
+        ],
+        [
+          "Urza's Power Plant",
+          false
+        ],
+        [
+          "Urza's Tower",
+          false
+        ]
+      ],
+      "graveyard": [
+        "Expedition Map"
+      ]
+    }
+  },
+  {
+    "seed": 2,
+    "actions": [
+      "Play land: Urza's Power Plant",
+      "Forestcycle Generous Ent",
+      "Pass",
+      "Play land: Forest",
+      "Pass",
+      "Play land: Bojuka Bog",
+      "Pass",
+      "Pass",
+      "Play land: Urza's Power Plant",
+      "Cast Bonder's Ornament",
+      "Pass",
+      "Activate Bonder's Ornament (draw)",
+      "Pass"
+    ],
+    "turn_assembled": null,
+    "turn_online": null,
+    "final_turn_number": 6,
+    "final_zones": {
+      "hand": [
+        "Bonder's Ornament",
+        "Bonder's Ornament",
+        "Expedition Map",
+        "Maelstrom Colossus",
+        "Pinnacle Kill-Ship",
+        "Pinnacle Kill-Ship",
+        "Urza's Mine",
+        "Urza's Tower"
+      ],
+      "battlefield": [
+        [
+          "Bojuka Bog",
+          true
+        ],
+        [
+          "Bonder's Ornament",
+          true
+        ],
+        [
+          "Forest",
+          true
+        ],
+        [
+          "Urza's Power Plant",
+          false
+        ],
+        [
+          "Urza's Power Plant",
+          true
+        ]
+      ],
+      "graveyard": [
+        "Generous Ent"
+      ]
+    }
+  },
+  {
+    "seed": 3,
+    "actions": [
+      "Play land: Urza's Tower",
+      "Pass",
+      "Cast Expedition Map",
+      "Pass",
+      "Pass",
+      "Activate Expedition Map",
+      "Play land: Urza's Mine",
+      "Cast Relic of Progenitus",
+      "Pass",
+      "Activate Relic of Progenitus",
+      "Play land: Wooded Ridgeline",
+      "Pass",
+      "Cast Bonder's Ornament",
+      "Cast Crop Rotation"
+    ],
+    "turn_assembled": 6,
+    "turn_online": 7,
+    "final_turn_number": 6,
+    "final_zones": {
+      "hand": [
+        "Ancient Stirrings",
+        "Boulderbranch Golem",
+        "Conduit Pylons",
+        "Forest",
+        "Maelstrom Colossus",
+        "Pinnacle Kill-Ship",
+        "Urza's Power Plant"
+      ],
+      "battlefield": [
+        [
+          "Bonder's Ornament",
+          true
+        ],
+        [
+          "Urza's Mine",
+          true
+        ],
+        [
+          "Urza's Power Plant",
+          false
+        ],
+        [
+          "Urza's Tower",
+          true
+        ]
+      ],
+      "graveyard": [
+        "Crop Rotation",
+        "Expedition Map",
+        "Wooded Ridgeline"
+      ]
+    }
+  },
+  {
+    "seed": 4,
+    "actions": [
+      "Pass",
+      "Pass",
+      "Pass",
+      "Pass",
+      "Pass",
+      "Play land: Urza's Mine",
+      "Cast Relic of Progenitus",
+      "Pass"
+    ],
+    "turn_assembled": null,
+    "turn_online": null,
+    "final_turn_number": 6,
+    "final_zones": {
+      "hand": [
+        "Ancient Stirrings",
+        "Bonder's Ornament",
+        "Boulderbranch Golem",
+        "Bramble Wurm",
+        "Crop Rotation",
+        "Maelstrom Colossus",
+        "Maelstrom Colossus",
+        "Pinnacle Kill-Ship",
+        "Pinnacle Kill-Ship",
+        "Rooftop Percher"
+      ],
+      "battlefield": [
+        [
+          "Relic of Progenitus",
+          false
+        ],
+        [
+          "Urza's Mine",
+          true
+        ]
+      ],
+      "graveyard": []
+    }
+  },
+  {
+    "seed": 5,
+    "actions": [
+      "Pass",
+      "Pass",
+      "Play land: Urza's Tower",
+      "Cast Barrels of Blasting Jelly",
+      "Pass",
+      "Play land: Urza's Tower",
+      "Cast Ancient Stirrings",
+      "Cast Candy Trail",
+      "Pass",
+      "Pass",
+      "Cast Expedition Map",
+      "Activate Expedition Map",
+      "Pass"
+    ],
+    "turn_assembled": null,
+    "turn_online": null,
+    "final_turn_number": 6,
+    "final_zones": {
+      "hand": [
+        "Bonder's Ornament",
+        "Maelstrom Colossus",
+        "Pinnacle Kill-Ship",
+        "Pinnacle Kill-Ship",
+        "Pinnacle Kill-Ship",
+        "Rooftop Percher",
+        "Urza's Mine",
+        "Urza's Tower"
+      ],
+      "battlefield": [
+        [
+          "Barrels of Blasting Jelly",
+          false
+        ],
+        [
+          "Candy Trail",
+          false
+        ],
+        [
+          "Urza's Tower",
+          true
+        ],
+        [
+          "Urza's Tower",
+          true
+        ]
+      ],
+      "graveyard": [
+        "Ancient Stirrings",
+        "Expedition Map"
+      ]
+    }
+  },
+  {
+    "seed": 6,
+    "actions": [
+      "Pass",
+      "Play land: Urza's Power Plant",
+      "Cast Relic of Progenitus",
+      "Pass",
+      "Play land: Urza's Tower",
+      "Cast Candy Trail",
+      "Activate Relic of Progenitus",
+      "Pass",
+      "Activate Candy Trail (sac)",
+      "Pass",
+      "Play land: Urza's Power Plant",
+      "Forestcycle Generous Ent",
+      "Cast Candy Trail",
+      "Cast Expedition Map",
+      "Pass",
+      "Pass"
+    ],
+    "turn_assembled": null,
+    "turn_online": null,
+    "final_turn_number": 6,
+    "final_zones": {
+      "hand": [
+        "Ancient Stirrings",
+        "Bramble Wurm",
+        "Breath Weapon",
+        "Forest",
+        "Maelstrom Colossus",
+        "Rooftop Percher",
+        "Urza's Mine"
+      ],
+      "battlefield": [
+        [
+          "Candy Trail",
+          false
+        ],
+        [
+          "Expedition Map",
+          false
+        ],
+        [
+          "Urza's Power Plant",
+          false
+        ],
+        [
+          "Urza's Power Plant",
+          false
+        ],
+        [
+          "Urza's Tower",
+          false
+        ]
+      ],
+      "graveyard": [
+        "Candy Trail",
+        "Generous Ent"
+      ]
+    }
+  },
+  {
+    "seed": 7,
+    "actions": [
+      "Play land: Forest",
+      "Forestcycle Generous Ent",
+      "Pass",
+      "Pass",
+      "Play land: Urza's Tower",
+      "Cast Expedition Map",
+      "Activate Expedition Map",
+      "Pass",
+      "Play land: Urza's Mine",
+      "Cast Bonder's Ornament",
+      "Pass",
+      "Play land: Forest",
+      "Activate Bonder's Ornament (draw)",
+      "Pass",
+      "Play land: Conduit Pylons",
+      "Cast Expedition Map",
+      "Cast Expedition Map",
+      "Pass"
+    ],
+    "turn_assembled": null,
+    "turn_online": null,
+    "final_turn_number": 6,
+    "final_zones": {
+      "hand": [
+        "Boulderbranch Golem",
+        "Bramble Wurm",
+        "Bramble Wurm",
+        "Bramble Wurm",
+        "Rooftop Percher"
+      ],
+      "battlefield": [
+        [
+          "Bonder's Ornament",
+          true
+        ],
+        [
+          "Conduit Pylons",
+          false
+        ],
+        [
+          "Expedition Map",
+          false
+        ],
+        [
+          "Expedition Map",
+          false
+        ],
+        [
+          "Forest",
+          false
+        ],
+        [
+          "Forest",
+          true
+        ],
+        [
+          "Urza's Mine",
+          false
+        ],
+        [
+          "Urza's Tower",
+          false
+        ]
+      ],
+      "graveyard": [
+        "Expedition Map",
+        "Generous Ent",
+        "Relic of Progenitus"
+      ]
+    }
+  },
+  {
+    "seed": 8,
+    "actions": [
+      "Play land: Urza's Power Plant",
+      "Cast Relic of Progenitus",
+      "Pass",
+      "Play land: Urza's Power Plant",
+      "Cast Candy Trail",
+      "Pass",
+      "Play land: Urza's Mine",
+      "Cast Expedition Map",
+      "Activate Candy Trail (sac)",
+      "Pass",
+      "Activate Relic of Progenitus",
+      "Play land: Tocasia's Dig Site",
+      "Pass",
+      "Play land: Urza's Tower"
+    ],
+    "turn_assembled": 5,
+    "turn_online": 5,
+    "final_turn_number": 5,
+    "final_zones": {
+      "hand": [
+        "Bonder's Ornament",
+        "Maelstrom Colossus",
+        "Maelstrom Colossus",
+        "Maelstrom Colossus",
+        "Urza's Tower"
+      ],
+      "battlefield": [
+        [
+          "Expedition Map",
+          false
+        ],
+        [
+          "Tocasia's Dig Site",
+          false
+        ],
+        [
+          "Urza's Mine",
+          false
+        ],
+        [
+          "Urza's Power Plant",
+          false
+        ],
+        [
+          "Urza's Power Plant",
+          false
+        ],
+        [
+          "Urza's Tower",
+          false
+        ]
+      ],
+      "graveyard": [
+        "Candy Trail"
+      ]
+    }
+  },
+  {
+    "seed": 9,
+    "actions": [
+      "Play land: Wooded Ridgeline",
+      "Pass",
+      "Cast Barrels of Blasting Jelly",
+      "Play land: Urza's Mine",
+      "Cast Expedition Map",
+      "Pass",
+      "Activate Expedition Map",
+      "Pass",
+      "Cast Barrels of Blasting Jelly",
+      "Play land: Urza's Power Plant",
+      "Pass",
+      "Cast Bonder's Ornament",
+      "Pass",
+      "Cast Bonder's Ornament",
+      "Pass"
+    ],
+    "turn_assembled": null,
+    "turn_online": null,
+    "final_turn_number": 6,
+    "final_zones": {
+      "hand": [
+        "Bramble Wurm",
+        "Maelstrom Colossus",
+        "Maelstrom Colossus",
+        "Pinnacle Kill-Ship",
+        "Urza's Tower"
+      ],
+      "battlefield": [
+        [
+          "Barrels of Blasting Jelly",
+          false
+        ],
+        [
+          "Barrels of Blasting Jelly",
+          false
+        ],
+        [
+          "Bonder's Ornament",
+          false
+        ],
+        [
+          "Bonder's Ornament",
+          true
+        ],
+        [
+          "Urza's Mine",
+          true
+        ],
+        [
+          "Urza's Power Plant",
+          false
+        ],
+        [
+          "Wooded Ridgeline",
+          true
+        ]
+      ],
+      "graveyard": [
+        "Expedition Map"
+      ]
+    }
+  },
+  {
+    "seed": 10,
+    "actions": [
+      "Play land: Urza's Power Plant",
+      "Forestcycle Generous Ent",
+      "Pass",
+      "Pass",
+      "Play land: Forest",
+      "Cast Ancient Stirrings",
+      "Pass",
+      "Cast Candy Trail",
+      "Pass",
+      "Play land: Wooded Ridgeline",
+      "Activate Candy Trail (sac)",
+      "Pass",
+      "Cast Bonder's Ornament",
+      "Play land: Urza's Mine",
+      "Pass"
+    ],
+    "turn_assembled": null,
+    "turn_online": null,
+    "final_turn_number": 6,
+    "final_zones": {
+      "hand": [
+        "Bramble Wurm",
+        "Bramble Wurm",
+        "Maelstrom Colossus",
+        "Pinnacle Kill-Ship",
+        "Rooftop Percher",
+        "Urza's Mine",
+        "Urza's Mine"
+      ],
+      "battlefield": [
+        [
+          "Bonder's Ornament",
+          false
+        ],
+        [
+          "Forest",
+          true
+        ],
+        [
+          "Urza's Mine",
+          false
+        ],
+        [
+          "Urza's Power Plant",
+          true
+        ],
+        [
+          "Wooded Ridgeline",
+          true
+        ]
+      ],
+      "graveyard": [
+        "Ancient Stirrings",
+        "Candy Trail",
+        "Generous Ent"
+      ]
+    }
+  },
+  {
+    "seed": 11,
+    "actions": [
+      "Pass",
+      "Pass",
+      "Pass",
+      "Play land: Urza's Tower",
+      "Cast Expedition Map",
+      "Pass",
+      "Cast Expedition Map",
+      "Play land: Forest",
+      "Activate Expedition Map",
+      "Pass",
+      "Cast Ancient Stirrings",
+      "Play land: Urza's Mine",
+      "Pass"
+    ],
+    "turn_assembled": null,
+    "turn_online": null,
+    "final_turn_number": 6,
+    "final_zones": {
+      "hand": [
+        "Bonder's Ornament",
+        "Boulderbranch Golem",
+        "Boulderbranch Golem",
+        "Bramble Wurm",
+        "Bramble Wurm",
+        "Candy Trail",
+        "Maelstrom Colossus",
+        "Urza's Mine"
+      ],
+      "battlefield": [
+        [
+          "Expedition Map",
+          false
+        ],
+        [
+          "Forest",
+          true
+        ],
+        [
+          "Urza's Mine",
+          false
+        ],
+        [
+          "Urza's Tower",
+          false
+        ]
+      ],
+      "graveyard": [
+        "Ancient Stirrings",
+        "Expedition Map"
+      ]
+    }
+  },
+  {
+    "seed": 12,
+    "actions": [
+      "Pass",
+      "Pass",
+      "Pass",
+      "Pass",
+      "Play land: Bojuka Bog",
+      "Pass",
+      "Cast Barrels of Blasting Jelly",
+      "Play land: Urza's Power Plant",
+      "Forestcycle Generous Ent",
+      "Pass"
+    ],
+    "turn_assembled": null,
+    "turn_online": null,
+    "final_turn_number": 6,
+    "final_zones": {
+      "hand": [
+        "Ancient Stirrings",
+        "Bonder's Ornament",
+        "Expedition Map",
+        "Expedition Map",
+        "Forest",
+        "Maelstrom Colossus",
+        "Pinnacle Kill-Ship",
+        "Urza's Tower",
+        "Urza's Tower"
+      ],
+      "battlefield": [
+        [
+          "Barrels of Blasting Jelly",
+          false
+        ],
+        [
+          "Bojuka Bog",
+          true
+        ],
+        [
+          "Urza's Power Plant",
+          true
+        ]
+      ],
+      "graveyard": [
+        "Generous Ent"
+      ]
+    }
+  },
+  {
+    "seed": 13,
+    "actions": [
+      "Pass",
+      "Play land: Urza's Power Plant",
+      "Cast Barrels of Blasting Jelly",
+      "Pass",
+      "Cast Ancient Stirrings",
+      "Play land: Urza's Mine",
+      "Pass",
+      "Cast Candy Trail",
+      "Cast Candy Trail",
+      "Pass",
+      "Pass",
+      "Cast Expedition Map",
+      "Activate Expedition Map",
+      "Play land: Urza's Tower"
+    ],
+    "turn_assembled": 6,
+    "turn_online": 7,
+    "final_turn_number": 6,
+    "final_zones": {
+      "hand": [
+        "Bonder's Ornament",
+        "Bonder's Ornament",
+        "Maelstrom Colossus",
+        "Relic of Progenitus",
+        "Relic of Progenitus",
+        "Urza's Tower"
+      ],
+      "battlefield": [
+        [
+          "Barrels of Blasting Jelly",
+          false
+        ],
+        [
+          "Candy Trail",
+          false
+        ],
+        [
+          "Candy Trail",
+          false
+        ],
+        [
+          "Urza's Mine",
+          true
+        ],
+        [
+          "Urza's Power Plant",
+          true
+        ],
+        [
+          "Urza's Tower",
+          false
+        ]
+      ],
+      "graveyard": [
+        "Ancient Stirrings",
+        "Expedition Map"
+      ]
+    }
+  },
+  {
+    "seed": 14,
+    "actions": [
+      "Play land: Urza's Tower",
+      "Pass",
+      "Pass",
+      "Pass",
+      "Pass",
+      "Cast Barrels of Blasting Jelly",
+      "Pass",
+      "Cast Ancient Stirrings",
+      "Play land: Forest",
+      "Cast Ancient Stirrings",
+      "Pass"
+    ],
+    "turn_assembled": null,
+    "turn_online": null,
+    "final_turn_number": 6,
+    "final_zones": {
+      "hand": [
+        "Bonder's Ornament",
+        "Boulderbranch Golem",
+        "Bramble Wurm",
+        "Bramble Wurm",
+        "Candy Trail",
+        "Candy Trail",
+        "Maelstrom Colossus",
+        "Relic of Progenitus",
+        "Urza's Mine"
+      ],
+      "battlefield": [
+        [
+          "Barrels of Blasting Jelly",
+          false
+        ],
+        [
+          "Forest",
+          true
+        ],
+        [
+          "Urza's Tower",
+          true
+        ]
+      ],
+      "graveyard": [
+        "Ancient Stirrings",
+        "Ancient Stirrings"
+      ]
+    }
+  },
+  {
+    "seed": 15,
+    "actions": [
+      "Play land: Urza's Power Plant",
+      "Forestcycle Generous Ent",
+      "Pass",
+      "Play land: Urza's Power Plant",
+      "Pass",
+      "Play land: Urza's Power Plant",
+      "Pass",
+      "Pass",
+      "Play land: Urza's Tower",
+      "Pass",
+      "Play land: Urza's Power Plant",
+      "Pass"
+    ],
+    "turn_assembled": null,
+    "turn_online": null,
+    "final_turn_number": 6,
+    "final_zones": {
+      "hand": [
+        "Ancient Stirrings",
+        "Boulderbranch Golem",
+        "Bramble Wurm",
+        "Crop Rotation",
+        "Forest",
+        "Maelstrom Colossus",
+        "Maelstrom Colossus"
+      ],
+      "battlefield": [
+        [
+          "Urza's Power Plant",
+          false
+        ],
+        [
+          "Urza's Power Plant",
+          false
+        ],
+        [
+          "Urza's Power Plant",
+          false
+        ],
+        [
+          "Urza's Power Plant",
+          false
+        ],
+        [
+          "Urza's Tower",
+          false
+        ]
+      ],
+      "graveyard": [
+        "Generous Ent"
+      ]
+    }
+  },
+  {
+    "seed": 16,
+    "actions": [
+      "Play land: Urza's Tower",
+      "Pass",
+      "Pass",
+      "Play land: Forest",
+      "Pass",
+      "Play land: Urza's Power Plant",
+      "Pass",
+      "Play land: Urza's Mine"
+    ],
+    "turn_assembled": 5,
+    "turn_online": 5,
+    "final_turn_number": 5,
+    "final_zones": {
+      "hand": [
+        "Ancient Stirrings",
+        "Ancient Stirrings",
+        "Bonder's Ornament",
+        "Bramble Wurm",
+        "Candy Trail",
+        "Conduit Pylons",
+        "Rooftop Percher"
+      ],
+      "battlefield": [
+        [
+          "Forest",
+          false
+        ],
+        [
+          "Urza's Mine",
+          false
+        ],
+        [
+          "Urza's Power Plant",
+          false
+        ],
+        [
+          "Urza's Tower",
+          false
+        ]
+      ],
+      "graveyard": []
+    }
+  },
+  {
+    "seed": 17,
+    "actions": [
+      "Pass",
+      "Pass",
+      "Pass",
+      "Pass",
+      "Play land: Wooded Ridgeline",
+      "Pass",
+      "Cast Ancient Stirrings",
+      "Play land: Urza's Mine",
+      "Pass"
+    ],
+    "turn_assembled": null,
+    "turn_online": null,
+    "final_turn_number": 6,
+    "final_zones": {
+      "hand": [
+        "Bonder's Ornament",
+        "Bonder's Ornament",
+        "Bramble Wurm",
+        "Bramble Wurm",
+        "Bramble Wurm",
+        "Breath Weapon",
+        "Maelstrom Colossus",
+        "Maelstrom Colossus",
+        "Pinnacle Kill-Ship",
+        "Rooftop Percher"
+      ],
+      "battlefield": [
+        [
+          "Urza's Mine",
+          false
+        ],
+        [
+          "Wooded Ridgeline",
+          true
+        ]
+      ],
+      "graveyard": [
+        "Ancient Stirrings"
+      ]
+    }
+  },
+  {
+    "seed": 18,
+    "actions": [
+      "Play land: Urza's Power Plant",
+      "Pass",
+      "Pass",
+      "Play land: Wooded Ridgeline",
+      "Cast Candy Trail",
+      "Pass",
+      "Activate Candy Trail (sac)",
+      "Pass",
+      "Cast Ancient Stirrings",
+      "Play land: Urza's Power Plant",
+      "Pass",
+      "Cast Expedition Map",
+      "Activate Expedition Map",
+      "Cast Barrels of Blasting Jelly",
+      "Play land: Urza's Mine",
+      "Pass"
+    ],
+    "turn_assembled": null,
+    "turn_online": null,
+    "final_turn_number": 6,
+    "final_zones": {
+      "hand": [
+        "Ancient Stirrings",
+        "Forest",
+        "Maelstrom Colossus",
+        "Urza's Mine",
+        "Urza's Mine",
+        "Urza's Mine"
+      ],
+      "battlefield": [
+        [
+          "Barrels of Blasting Jelly",
+          false
+        ],
+        [
+          "Urza's Mine",
+          false
+        ],
+        [
+          "Urza's Power Plant",
+          true
+        ],
+        [
+          "Urza's Power Plant",
+          true
+        ],
+        [
+          "Wooded Ridgeline",
+          true
+        ]
+      ],
+      "graveyard": [
+        "Ancient Stirrings",
+        "Candy Trail",
+        "Expedition Map"
+      ]
+    }
+  },
+  {
+    "seed": 19,
+    "actions": [
+      "Play land: Bojuka Bog",
+      "Pass",
+      "Cast Expedition Map",
+      "Pass",
+      "Cast Barrels of Blasting Jelly",
+      "Pass",
+      "Pass",
+      "Cast Candy Trail",
+      "Pass",
+      "Play land: Urza's Tower",
+      "Activate Candy Trail (sac)",
+      "Pass"
+    ],
+    "turn_assembled": null,
+    "turn_online": null,
+    "final_turn_number": 6,
+    "final_zones": {
+      "hand": [
+        "Bonder's Ornament",
+        "Bonder's Ornament",
+        "Generous Ent",
+        "Maelstrom Colossus",
+        "Maelstrom Colossus",
+        "Pinnacle Kill-Ship",
+        "Urza's Tower",
+        "Urza's Tower"
+      ],
+      "battlefield": [
+        [
+          "Barrels of Blasting Jelly",
+          false
+        ],
+        [
+          "Bojuka Bog",
+          true
+        ],
+        [
+          "Expedition Map",
+          false
+        ],
+        [
+          "Urza's Tower",
+          true
+        ]
+      ],
+      "graveyard": [
+        "Candy Trail"
+      ]
+    }
+  },
+  {
+    "seed": 20,
+    "actions": [
+      "Play land: Urza's Power Plant",
+      "Forestcycle Generous Ent",
+      "Pass",
+      "Play land: Conduit Pylons",
+      "Cast Relic of Progenitus",
+      "Activate Relic of Progenitus",
+      "Pass",
+      "Pass",
+      "Play land: Urza's Mine",
+      "Cast Candy Trail",
+      "Activate Candy Trail (sac)",
+      "Pass",
+      "Cast Expedition Map",
+      "Pass",
+      "Play land: Wooded Ridgeline",
+      "Activate Expedition Map",
+      "Pass"
+    ],
+    "turn_assembled": null,
+    "turn_online": null,
+    "final_turn_number": 6,
+    "final_zones": {
+      "hand": [
+        "Bonder's Ornament",
+        "Bramble Wurm",
+        "Forest",
+        "Maelstrom Colossus",
+        "Pinnacle Kill-Ship",
+        "Urza's Mine",
+        "Urza's Power Plant",
+        "Urza's Tower"
+      ],
+      "battlefield": [
+        [
+          "Conduit Pylons",
+          true
+        ],
+        [
+          "Urza's Mine",
+          false
+        ],
+        [
+          "Urza's Power Plant",
+          false
+        ],
+        [
+          "Wooded Ridgeline",
+          true
+        ]
+      ],
+      "graveyard": [
+        "Candy Trail",
+        "Expedition Map",
+        "Generous Ent",
+        "Generous Ent"
+      ]
+    }
+  },
+  {
+    "seed": 21,
+    "actions": [
+      "Play land: Urza's Tower",
+      "Cast Relic of Progenitus",
+      "Pass",
+      "Cast Expedition Map",
+      "Play land: Tocasia's Dig Site",
+      "Activate Expedition Map",
+      "Pass",
+      "Cast Expedition Map",
+      "Activate Expedition Map",
+      "Play land: Urza's Mine",
+      "Activate Relic of Progenitus",
+      "Pass",
+      "Pass",
+      "Activate Tocasia's Dig Site (surveil)",
+      "Play land: Urza's Mine",
+      "Pass",
+      "Play land: Wooded Ridgeline",
+      "Activate Tocasia's Dig Site (surveil)",
+      "Pass"
+    ],
+    "turn_assembled": null,
+    "turn_online": null,
+    "final_turn_number": 6,
+    "final_zones": {
+      "hand": [
+        "Boulderbranch Golem",
+        "Bramble Wurm",
+        "Bramble Wurm",
+        "Crop Rotation",
+        "Maelstrom Colossus",
+        "Rooftop Percher",
+        "Urza's Mine"
+      ],
+      "battlefield": [
+        [
+          "Tocasia's Dig Site",
+          true
+        ],
+        [
+          "Urza's Mine",
+          false
+        ],
+        [
+          "Urza's Mine",
+          true
+        ],
+        [
+          "Urza's Tower",
+          true
+        ],
+        [
+          "Wooded Ridgeline",
+          true
+        ]
+      ],
+      "graveyard": [
+        "Ancient Stirrings",
+        "Expedition Map",
+        "Expedition Map",
+        "Urza's Tower"
+      ]
+    }
+  },
+  {
+    "seed": 22,
+    "actions": [
+      "Play land: Urza's Mine",
+      "Cast Candy Trail",
+      "Pass",
+      "Pass",
+      "Play land: Urza's Mine",
+      "Activate Candy Trail (sac)",
+      "Pass",
+      "Play land: Urza's Power Plant",
+      "Cast Bonder's Ornament",
+      "Pass",
+      "Play land: Urza's Power Plant",
+      "Activate Bonder's Ornament (draw)",
+      "Pass",
+      "Pass"
+    ],
+    "turn_assembled": null,
+    "turn_online": null,
+    "final_turn_number": 6,
+    "final_zones": {
+      "hand": [
+        "Ancient Stirrings",
+        "Bonder's Ornament",
+        "Bonder's Ornament",
+        "Boulderbranch Golem",
+        "Bramble Wurm",
+        "Maelstrom Colossus",
+        "Rooftop Percher",
+        "Urza's Tower"
+      ],
+      "battlefield": [
+        [
+          "Bonder's Ornament",
+          false
+        ],
+        [
+          "Urza's Mine",
+          false
+        ],
+        [
+          "Urza's Mine",
+          false
+        ],
+        [
+          "Urza's Power Plant",
+          false
+        ],
+        [
+          "Urza's Power Plant",
+          false
+        ]
+      ],
+      "graveyard": [
+        "Candy Trail"
+      ]
+    }
+  },
+  {
+    "seed": 23,
+    "actions": [
+      "Play land: Forest",
+      "Cast Expedition Map",
+      "Pass",
+      "Activate Expedition Map",
+      "Play land: Urza's Power Plant",
+      "Pass",
+      "Pass",
+      "Cast Candy Trail",
+      "Play land: Urza's Mine",
+      "Activate Candy Trail (sac)",
+      "Pass",
+      "Pass",
+      "Play land: Urza's Mine",
+      "Cast Relic of Progenitus",
+      "Pass"
+    ],
+    "turn_assembled": null,
+    "turn_online": null,
+    "final_turn_number": 6,
+    "final_zones": {
+      "hand": [
+        "Boulderbranch Golem",
+        "Bramble Wurm",
+        "Crop Rotation",
+        "Generous Ent",
+        "Maelstrom Colossus",
+        "Maelstrom Colossus",
+        "Rooftop Percher"
+      ],
+      "battlefield": [
+        [
+          "Forest",
+          true
+        ],
+        [
+          "Relic of Progenitus",
+          false
+        ],
+        [
+          "Urza's Mine",
+          false
+        ],
+        [
+          "Urza's Mine",
+          false
+        ],
+        [
+          "Urza's Power Plant",
+          false
+        ]
+      ],
+      "graveyard": [
+        "Candy Trail",
+        "Expedition Map"
+      ]
+    }
+  },
+  {
+    "seed": 24,
+    "actions": [
+      "Pass",
+      "Play land: Bojuka Bog",
+      "Pass",
+      "Cast Candy Trail",
+      "Pass",
+      "Cast Expedition Map",
+      "Play land: Urza's Mine",
+      "Forestcycle Generous Ent",
+      "Pass",
+      "Pass",
+      "Play land: Forest",
+      "Activate Expedition Map",
+      "Activate Candy Trail (sac)",
+      "Pass"
+    ],
+    "turn_assembled": null,
+    "turn_online": null,
+    "final_turn_number": 6,
+    "final_zones": {
+      "hand": [
+        "Ancient Stirrings",
+        "Bonder's Ornament",
+        "Bramble Wurm",
+        "Crop Rotation",
+        "Maelstrom Colossus",
+        "Pinnacle Kill-Ship",
+        "Relic of Progenitus",
+        "Tocasia's Dig Site",
+        "Urza's Power Plant"
+      ],
+      "battlefield": [
+        [
+          "Bojuka Bog",
+          true
+        ],
+        [
+          "Forest",
+          true
+        ],
+        [
+          "Urza's Mine",
+          true
+        ]
+      ],
+      "graveyard": [
+        "Candy Trail",
+        "Expedition Map",
+        "Generous Ent"
+      ]
+    }
+  },
+  {
+    "seed": 25,
+    "actions": [
+      "Pass",
+      "Play land: Urza's Power Plant",
+      "Cast Candy Trail",
+      "Pass",
+      "Pass",
+      "Pass",
+      "Play land: Urza's Tower",
+      "Activate Candy Trail (sac)",
+      "Pass",
+      "Cast Candy Trail",
+      "Pass"
+    ],
+    "turn_assembled": null,
+    "turn_online": null,
+    "final_turn_number": 6,
+    "final_zones": {
+      "hand": [
+        "Ancient Stirrings",
+        "Bonder's Ornament",
+        "Boulderbranch Golem",
+        "Breath Weapon",
+        "Breath Weapon",
+        "Generous Ent",
+        "Urza's Mine",
+        "Urza's Tower",
+        "Urza's Tower"
+      ],
+      "battlefield": [
+        [
+          "Candy Trail",
+          false
+        ],
+        [
+          "Urza's Power Plant",
+          true
+        ],
+        [
+          "Urza's Tower",
+          false
+        ]
+      ],
+      "graveyard": [
+        "Candy Trail"
+      ]
+    }
+  },
+  {
+    "seed": 26,
+    "actions": [
+      "Play land: Urza's Power Plant",
+      "Cast Expedition Map",
+      "Pass",
+      "Pass",
+      "Pass",
+      "Play land: Urza's Power Plant",
+      "Cast Expedition Map",
+      "Pass",
+      "Forestcycle Generous Ent",
+      "Pass",
+      "Play land: Bojuka Bog",
+      "Pass"
+    ],
+    "turn_assembled": null,
+    "turn_online": null,
+    "final_turn_number": 6,
+    "final_zones": {
+      "hand": [
+        "Ancient Stirrings",
+        "Bonder's Ornament",
+        "Bonder's Ornament",
+        "Boulderbranch Golem",
+        "Boulderbranch Golem",
+        "Forest",
+        "Maelstrom Colossus"
+      ],
+      "battlefield": [
+        [
+          "Bojuka Bog",
+          true
+        ],
+        [
+          "Expedition Map",
+          false
+        ],
+        [
+          "Expedition Map",
+          false
+        ],
+        [
+          "Urza's Power Plant",
+          false
+        ],
+        [
+          "Urza's Power Plant",
+          false
+        ]
+      ],
+      "graveyard": [
+        "Generous Ent"
+      ]
+    }
+  },
+  {
+    "seed": 27,
+    "actions": [
+      "Pass",
+      "Play land: Forest",
+      "Pass",
+      "Cast Barrels of Blasting Jelly",
+      "Pass",
+      "Cast Candy Trail",
+      "Play land: Urza's Power Plant",
+      "Cast Relic of Progenitus",
+      "Pass",
+      "Activate Relic of Progenitus",
+      "Cast Relic of Progenitus",
+      "Pass",
+      "Pass"
+    ],
+    "turn_assembled": null,
+    "turn_online": null,
+    "final_turn_number": 6,
+    "final_zones": {
+      "hand": [
+        "Ancient Stirrings",
+        "Boulderbranch Golem",
+        "Maelstrom Colossus",
+        "Pinnacle Kill-Ship",
+        "Pinnacle Kill-Ship",
+        "Rooftop Percher",
+        "Rooftop Percher"
+      ],
+      "battlefield": [
+        [
+          "Barrels of Blasting Jelly",
+          false
+        ],
+        [
+          "Candy Trail",
+          false
+        ],
+        [
+          "Forest",
+          false
+        ],
+        [
+          "Relic of Progenitus",
+          false
+        ],
+        [
+          "Urza's Power Plant",
+          false
+        ]
+      ],
+      "graveyard": []
+    }
+  },
+  {
+    "seed": 28,
+    "actions": [
+      "Play land: Urza's Mine",
+      "Cast Candy Trail",
+      "Pass",
+      "Play land: Urza's Mine",
+      "Activate Candy Trail (sac)",
+      "Pass",
+      "Pass",
+      "Play land: Conduit Pylons",
+      "Cast Bonder's Ornament",
+      "Cast Ancient Stirrings",
+      "Pass",
+      "Cast Ancient Stirrings",
+      "Cast Expedition Map",
+      "Pass",
+      "Activate Expedition Map",
+      "Play land: Urza's Power Plant",
+      "Cast Expedition Map",
+      "Pass"
+    ],
+    "turn_assembled": null,
+    "turn_online": null,
+    "final_turn_number": 6,
+    "final_zones": {
+      "hand": [
+        "Bramble Wurm",
+        "Breath Weapon",
+        "Maelstrom Colossus",
+        "Pinnacle Kill-Ship",
+        "Rooftop Percher",
+        "Rooftop Percher"
+      ],
+      "battlefield": [
+        [
+          "Bonder's Ornament",
+          true
+        ],
+        [
+          "Conduit Pylons",
+          true
+        ],
+        [
+          "Expedition Map",
+          false
+        ],
+        [
+          "Urza's Mine",
+          false
+        ],
+        [
+          "Urza's Mine",
+          false
+        ],
+        [
+          "Urza's Power Plant",
+          false
+        ]
+      ],
+      "graveyard": [
+        "Ancient Stirrings",
+        "Ancient Stirrings",
+        "Bramble Wurm",
+        "Candy Trail",
+        "Expedition Map"
+      ]
+    }
+  },
+  {
+    "seed": 29,
+    "actions": [
+      "Pass",
+      "Play land: Urza's Mine",
+      "Forestcycle Generous Ent",
+      "Pass",
+      "Play land: Urza's Mine",
+      "Pass",
+      "Pass",
+      "Cast Expedition Map",
+      "Play land: Urza's Mine",
+      "Activate Expedition Map",
+      "Pass",
+      "Cast Expedition Map",
+      "Play land: Urza's Tower",
+      "Activate Expedition Map",
+      "Pass"
+    ],
+    "turn_assembled": null,
+    "turn_online": null,
+    "final_turn_number": 6,
+    "final_zones": {
+      "hand": [
+        "Bonder's Ornament",
+        "Bramble Wurm",
+        "Bramble Wurm",
+        "Crop Rotation",
+        "Forest",
+        "Maelstrom Colossus",
+        "Urza's Power Plant",
+        "Urza's Power Plant"
+      ],
+      "battlefield": [
+        [
+          "Urza's Mine",
+          false
+        ],
+        [
+          "Urza's Mine",
+          true
+        ],
+        [
+          "Urza's Mine",
+          true
+        ],
+        [
+          "Urza's Tower",
+          false
+        ]
+      ],
+      "graveyard": [
+        "Expedition Map",
+        "Expedition Map",
+        "Generous Ent"
+      ]
+    }
+  },
+  {
+    "seed": 30,
+    "actions": [
+      "Pass",
+      "Play land: Urza's Tower",
+      "Cast Barrels of Blasting Jelly",
+      "Pass",
+      "Play land: Urza's Power Plant",
+      "Pass",
+      "Pass",
+      "Cast Expedition Map",
+      "Pass",
+      "Play land: Forest",
+      "Cast Crop Rotation"
+    ],
+    "turn_assembled": 6,
+    "turn_online": 6,
+    "final_turn_number": 6,
+    "final_zones": {
+      "hand": [
+        "Bonder's Ornament",
+        "Bonder's Ornament",
+        "Boulderbranch Golem",
+        "Bramble Wurm",
+        "Rooftop Percher",
+        "Urza's Mine"
+      ],
+      "battlefield": [
+        [
+          "Barrels of Blasting Jelly",
+          false
+        ],
+        [
+          "Expedition Map",
+          false
+        ],
+        [
+          "Urza's Mine",
+          false
+        ],
+        [
+          "Urza's Power Plant",
+          false
+        ],
+        [
+          "Urza's Tower",
+          false
+        ]
+      ],
+      "graveyard": [
+        "Crop Rotation",
+        "Forest"
+      ]
+    }
+  },
+  {
+    "seed": 31,
+    "actions": [
+      "Play land: Urza's Power Plant",
+      "Forestcycle Generous Ent",
+      "Pass",
+      "Forestcycle Generous Ent",
+      "Play land: Urza's Tower",
+      "Cast Barrels of Blasting Jelly",
+      "Pass",
+      "Play land: Forest",
+      "Cast Ancient Stirrings",
+      "Cast Crop Rotation"
+    ],
+    "turn_assembled": 3,
+    "turn_online": 4,
+    "final_turn_number": 3,
+    "final_zones": {
+      "hand": [
+        "Bonder's Ornament",
+        "Forest",
+        "Maelstrom Colossus",
+        "Urza's Mine"
+      ],
+      "battlefield": [
+        [
+          "Barrels of Blasting Jelly",
+          false
+        ],
+        [
+          "Urza's Mine",
+          false
+        ],
+        [
+          "Urza's Power Plant",
+          true
+        ],
+        [
+          "Urza's Tower",
+          false
+        ]
+      ],
+      "graveyard": [
+        "Ancient Stirrings",
+        "Crop Rotation",
+        "Forest",
+        "Generous Ent",
+        "Generous Ent"
+      ]
+    }
+  },
+  {
+    "seed": 32,
+    "actions": [
+      "Pass",
+      "Pass",
+      "Pass",
+      "Pass",
+      "Pass",
+      "Pass"
+    ],
+    "turn_assembled": null,
+    "turn_online": null,
+    "final_turn_number": 6,
+    "final_zones": {
+      "hand": [
+        "Ancient Stirrings",
+        "Ancient Stirrings",
+        "Ancient Stirrings",
+        "Barrels of Blasting Jelly",
+        "Bonder's Ornament",
+        "Bramble Wurm",
+        "Crop Rotation",
+        "Generous Ent",
+        "Maelstrom Colossus",
+        "Maelstrom Colossus",
+        "Maelstrom Colossus",
+        "Pinnacle Kill-Ship"
+      ],
+      "battlefield": [],
+      "graveyard": []
+    }
+  },
+  {
+    "seed": 33,
+    "actions": [
+      "Play land: Tocasia's Dig Site",
+      "Cast Candy Trail",
+      "Pass",
+      "Pass",
+      "Pass",
+      "Pass",
+      "Play land: Bojuka Bog",
+      "Pass",
+      "Pass"
+    ],
+    "turn_assembled": null,
+    "turn_online": null,
+    "final_turn_number": 6,
+    "final_zones": {
+      "hand": [
+        "Ancient Stirrings",
+        "Crop Rotation",
+        "Forest",
+        "Maelstrom Colossus",
+        "Maelstrom Colossus",
+        "Pinnacle Kill-Ship",
+        "Pinnacle Kill-Ship",
+        "Relic of Progenitus",
+        "Urza's Mine"
+      ],
+      "battlefield": [
+        [
+          "Bojuka Bog",
+          false
+        ],
+        [
+          "Candy Trail",
+          false
+        ],
+        [
+          "Tocasia's Dig Site",
+          false
+        ]
+      ],
+      "graveyard": []
+    }
+  },
+  {
+    "seed": 34,
+    "actions": [
+      "Play land: Forest",
+      "Cast Relic of Progenitus",
+      "Pass",
+      "Play land: Urza's Mine",
+      "Pass",
+      "Activate Relic of Progenitus",
+      "Play land: Urza's Power Plant",
+      "Pass",
+      "Forestcycle Generous Ent",
+      "Play land: Forest",
+      "Pass",
+      "Pass",
+      "Cast Bonder's Ornament",
+      "Play land: Urza's Tower"
+    ],
+    "turn_assembled": 6,
+    "turn_online": 7,
+    "final_turn_number": 6,
+    "final_zones": {
+      "hand": [
+        "Barrels of Blasting Jelly",
+        "Boulderbranch Golem",
+        "Bramble Wurm",
+        "Maelstrom Colossus",
+        "Maelstrom Colossus",
+        "Pinnacle Kill-Ship"
+      ],
+      "battlefield": [
+        [
+          "Bonder's Ornament",
+          false
+        ],
+        [
+          "Forest",
+          true
+        ],
+        [
+          "Forest",
+          true
+        ],
+        [
+          "Urza's Mine",
+          true
+        ],
+        [
+          "Urza's Power Plant",
+          false
+        ],
+        [
+          "Urza's Tower",
+          false
+        ]
+      ],
+      "graveyard": [
+        "Generous Ent"
+      ]
+    }
+  },
+  {
+    "seed": 35,
+    "actions": [
+      "Pass",
+      "Play land: Forest",
+      "Pass",
+      "Pass",
+      "Play land: Wooded Ridgeline",
+      "Pass",
+      "Play land: Forest",
+      "Pass",
+      "Cast Bonder's Ornament",
+      "Pass"
+    ],
+    "turn_assembled": null,
+    "turn_online": null,
+    "final_turn_number": 6,
+    "final_zones": {
+      "hand": [
+        "Bonder's Ornament",
+        "Bonder's Ornament",
+        "Boulderbranch Golem",
+        "Bramble Wurm",
+        "Expedition Map",
+        "Maelstrom Colossus",
+        "Pinnacle Kill-Ship",
+        "Urza's Power Plant"
+      ],
+      "battlefield": [
+        [
+          "Bonder's Ornament",
+          false
+        ],
+        [
+          "Forest",
+          true
+        ],
+        [
+          "Forest",
+          true
+        ],
+        [
+          "Wooded Ridgeline",
+          true
+        ]
+      ],
+      "graveyard": []
+    }
+  },
+  {
+    "seed": 36,
+    "actions": [
+      "Play land: Wooded Ridgeline",
+      "Pass",
+      "Play land: Urza's Tower",
+      "Cast Relic of Progenitus",
+      "Cast Expedition Map",
+      "Pass",
+      "Pass",
+      "Cast Expedition Map",
+      "Activate Expedition Map",
+      "Play land: Forest",
+      "Pass",
+      "Activate Relic of Progenitus",
+      "Cast Ancient Stirrings",
+      "Activate Expedition Map",
+      "Pass",
+      "Play land: Urza's Mine",
+      "Pass"
+    ],
+    "turn_assembled": null,
+    "turn_online": null,
+    "final_turn_number": 6,
+    "final_zones": {
+      "hand": [
+        "Boulderbranch Golem",
+        "Forest",
+        "Maelstrom Colossus",
+        "Maelstrom Colossus",
+        "Pinnacle Kill-Ship",
+        "Rooftop Percher",
+        "Urza's Mine",
+        "Urza's Mine"
+      ],
+      "battlefield": [
+        [
+          "Forest",
+          false
+        ],
+        [
+          "Urza's Mine",
+          false
+        ],
+        [
+          "Urza's Tower",
+          false
+        ],
+        [
+          "Wooded Ridgeline",
+          false
+        ]
+      ],
+      "graveyard": [
+        "Ancient Stirrings",
+        "Expedition Map",
+        "Expedition Map"
+      ]
+    }
+  },
+  {
+    "seed": 37,
+    "actions": [
+      "Play land: Urza's Power Plant",
+      "Pass",
+      "Pass",
+      "Pass",
+      "Pass",
+      "Cast Candy Trail",
+      "Play land: Forest",
+      "Pass",
+      "Play land: Conduit Pylons",
+      "Activate Candy Trail (sac)",
+      "Pass"
+    ],
+    "turn_assembled": null,
+    "turn_online": null,
+    "final_turn_number": 6,
+    "final_zones": {
+      "hand": [
+        "Barrels of Blasting Jelly",
+        "Barrels of Blasting Jelly",
+        "Bojuka Bog",
+        "Bonder's Ornament",
+        "Expedition Map",
+        "Maelstrom Colossus",
+        "Maelstrom Colossus",
+        "Urza's Tower",
+        "Urza's Tower"
+      ],
+      "battlefield": [
+        [
+          "Conduit Pylons",
+          true
+        ],
+        [
+          "Forest",
+          true
+        ],
+        [
+          "Urza's Power Plant",
+          false
+        ]
+      ],
+      "graveyard": [
+        "Candy Trail"
+      ]
+    }
+  },
+  {
+    "seed": 38,
+    "actions": [
+      "Pass",
+      "Pass",
+      "Pass",
+      "Pass",
+      "Pass",
+      "Pass"
+    ],
+    "turn_assembled": null,
+    "turn_online": null,
+    "final_turn_number": 6,
+    "final_zones": {
+      "hand": [
+        "Ancient Stirrings",
+        "Bonder's Ornament",
+        "Boulderbranch Golem",
+        "Bramble Wurm",
+        "Breath Weapon",
+        "Candy Trail",
+        "Candy Trail",
+        "Candy Trail",
+        "Expedition Map",
+        "Pinnacle Kill-Ship",
+        "Pinnacle Kill-Ship",
+        "Rooftop Percher"
+      ],
+      "battlefield": [],
+      "graveyard": []
+    }
+  },
+  {
+    "seed": 39,
+    "actions": [
+      "Play land: Urza's Mine",
+      "Pass",
+      "Cast Expedition Map",
+      "Play land: Conduit Pylons",
+      "Cast Expedition Map",
+      "Pass",
+      "Activate Expedition Map",
+      "Play land: Urza's Power Plant",
+      "Pass",
+      "Cast Relic of Progenitus",
+      "Activate Relic of Progenitus",
+      "Pass",
+      "Cast Candy Trail",
+      "Cast Expedition Map",
+      "Pass",
+      "Cast Expedition Map",
+      "Activate Candy Trail (sac)",
+      "Pass"
+    ],
+    "turn_assembled": null,
+    "turn_online": null,
+    "final_turn_number": 6,
+    "final_zones": {
+      "hand": [
+        "Ancient Stirrings",
+        "Bonder's Ornament",
+        "Boulderbranch Golem",
+        "Boulderbranch Golem",
+        "Breath Weapon",
+        "Maelstrom Colossus"
+      ],
+      "battlefield": [
+        [
+          "Conduit Pylons",
+          true
+        ],
+        [
+          "Expedition Map",
+          false
+        ],
+        [
+          "Expedition Map",
+          false
+        ],
+        [
+          "Expedition Map",
+          false
+        ],
+        [
+          "Urza's Mine",
+          true
+        ],
+        [
+          "Urza's Power Plant",
+          true
+        ]
+      ],
+      "graveyard": [
+        "Candy Trail",
+        "Candy Trail",
+        "Expedition Map"
+      ]
+    }
+  },
+  {
+    "seed": 40,
+    "actions": [
+      "Play land: Urza's Power Plant",
+      "Pass",
+      "Play land: Urza's Mine",
+      "Pass",
+      "Play land: Wooded Ridgeline",
+      "Pass",
+      "Cast Bonder's Ornament",
+      "Pass",
+      "Pass",
+      "Pass"
+    ],
+    "turn_assembled": null,
+    "turn_online": null,
+    "final_turn_number": 6,
+    "final_zones": {
+      "hand": [
+        "Boulderbranch Golem",
+        "Bramble Wurm",
+        "Bramble Wurm",
+        "Candy Trail",
+        "Crop Rotation",
+        "Maelstrom Colossus",
+        "Pinnacle Kill-Ship",
+        "Pinnacle Kill-Ship"
+      ],
+      "battlefield": [
+        [
+          "Bonder's Ornament",
+          false
+        ],
+        [
+          "Urza's Mine",
+          false
+        ],
+        [
+          "Urza's Power Plant",
+          false
+        ],
+        [
+          "Wooded Ridgeline",
+          false
+        ]
+      ],
+      "graveyard": []
+    }
+  },
+  {
+    "seed": 41,
+    "actions": [
+      "Pass",
+      "Pass",
+      "Play land: Urza's Power Plant",
+      "Cast Candy Trail",
+      "Pass",
+      "Cast Barrels of Blasting Jelly",
+      "Pass",
+      "Pass",
+      "Pass"
+    ],
+    "turn_assembled": null,
+    "turn_online": null,
+    "final_turn_number": 6,
+    "final_zones": {
+      "hand": [
+        "Ancient Stirrings",
+        "Bonder's Ornament",
+        "Bramble Wurm",
+        "Crop Rotation",
+        "Expedition Map",
+        "Forest",
+        "Generous Ent",
+        "Maelstrom Colossus",
+        "Pinnacle Kill-Ship"
+      ],
+      "battlefield": [
+        [
+          "Barrels of Blasting Jelly",
+          false
+        ],
+        [
+          "Candy Trail",
+          false
+        ],
+        [
+          "Urza's Power Plant",
+          false
+        ]
+      ],
+      "graveyard": []
+    }
+  },
+  {
+    "seed": 42,
+    "actions": [
+      "Pass",
+      "Play land: Urza's Tower",
+      "Cast Expedition Map",
+      "Pass",
+      "Cast Candy Trail",
+      "Play land: Tocasia's Dig Site",
+      "Cast Relic of Progenitus",
+      "Pass",
+      "Pass",
+      "Cast Barrels of Blasting Jelly",
+      "Pass",
+      "Cast Crop Rotation",
+      "Activate Expedition Map",
+      "Play land: Urza's Power Plant"
+    ],
+    "turn_assembled": 6,
+    "turn_online": 7,
+    "final_turn_number": 6,
+    "final_zones": {
+      "hand": [
+        "Bonder's Ornament",
+        "Boulderbranch Golem",
+        "Breath Weapon",
+        "Pinnacle Kill-Ship",
+        "Pinnacle Kill-Ship"
+      ],
+      "battlefield": [
+        [
+          "Barrels of Blasting Jelly",
+          false
+        ],
+        [
+          "Candy Trail",
+          false
+        ],
+        [
+          "Relic of Progenitus",
+          false
+        ],
+        [
+          "Urza's Mine",
+          false
+        ],
+        [
+          "Urza's Power Plant",
+          false
+        ],
+        [
+          "Urza's Tower",
+          true
+        ]
+      ],
+      "graveyard": [
+        "Crop Rotation",
+        "Expedition Map",
+        "Tocasia's Dig Site"
+      ]
+    }
+  },
+  {
+    "seed": 43,
+    "actions": [
+      "Play land: Urza's Tower",
+      "Cast Candy Trail",
+      "Pass",
+      "Pass",
+      "Cast Expedition Map",
+      "Play land: Conduit Pylons",
+      "Pass",
+      "Pass",
+      "Pass",
+      "Play land: Urza's Mine",
+      "Pass"
+    ],
+    "turn_assembled": null,
+    "turn_online": null,
+    "final_turn_number": 6,
+    "final_zones": {
+      "hand": [
+        "Boulderbranch Golem",
+        "Crop Rotation",
+        "Expedition Map",
+        "Maelstrom Colossus",
+        "Pinnacle Kill-Ship",
+        "Pinnacle Kill-Ship",
+        "Rooftop Percher"
+      ],
+      "battlefield": [
+        [
+          "Candy Trail",
+          false
+        ],
+        [
+          "Conduit Pylons",
+          false
+        ],
+        [
+          "Expedition Map",
+          false
+        ],
+        [
+          "Urza's Mine",
+          false
+        ],
+        [
+          "Urza's Tower",
+          false
+        ]
+      ],
+      "graveyard": [
+        "Forest"
+      ]
+    }
+  },
+  {
+    "seed": 44,
+    "actions": [
+      "Pass",
+      "Play land: Urza's Power Plant",
+      "Cast Relic of Progenitus",
+      "Pass",
+      "Cast Relic of Progenitus",
+      "Pass",
+      "Cast Candy Trail",
+      "Pass",
+      "Play land: Forest",
+      "Pass",
+      "Play land: Conduit Pylons",
+      "Cast Ancient Stirrings",
+      "Activate Candy Trail (sac)",
+      "Pass"
+    ],
+    "turn_assembled": null,
+    "turn_online": null,
+    "final_turn_number": 6,
+    "final_zones": {
+      "hand": [
+        "Bonder's Ornament",
+        "Boulderbranch Golem",
+        "Breath Weapon",
+        "Generous Ent",
+        "Maelstrom Colossus",
+        "Maelstrom Colossus",
+        "Pinnacle Kill-Ship"
+      ],
+      "battlefield": [
+        [
+          "Conduit Pylons",
+          true
+        ],
+        [
+          "Forest",
+          true
+        ],
+        [
+          "Relic of Progenitus",
+          false
+        ],
+        [
+          "Relic of Progenitus",
+          false
+        ],
+        [
+          "Urza's Power Plant",
+          true
+        ]
+      ],
+      "graveyard": [
+        "Ancient Stirrings",
+        "Candy Trail",
+        "Maelstrom Colossus"
+      ]
+    }
+  },
+  {
+    "seed": 45,
+    "actions": [
+      "Play land: Bojuka Bog",
+      "Pass",
+      "Cast Barrels of Blasting Jelly",
+      "Play land: Wooded Ridgeline",
+      "Pass",
+      "Cast Candy Trail",
+      "Cast Crop Rotation",
+      "Play land: Urza's Power Plant",
+      "Activate Candy Trail (sac)",
+      "Pass",
+      "Cast Bonder's Ornament",
+      "Pass",
+      "Activate Bonder's Ornament (draw)",
+      "Play land: Urza's Tower"
+    ],
+    "turn_assembled": 5,
+    "turn_online": 6,
+    "final_turn_number": 5,
+    "final_zones": {
+      "hand": [
+        "Bramble Wurm",
+        "Bramble Wurm",
+        "Bramble Wurm",
+        "Maelstrom Colossus",
+        "Rooftop Percher"
+      ],
+      "battlefield": [
+        [
+          "Barrels of Blasting Jelly",
+          false
+        ],
+        [
+          "Bonder's Ornament",
+          true
+        ],
+        [
+          "Urza's Mine",
+          true
+        ],
+        [
+          "Urza's Power Plant",
+          true
+        ],
+        [
+          "Urza's Tower",
+          false
+        ],
+        [
+          "Wooded Ridgeline",
+          true
+        ]
+      ],
+      "graveyard": [
+        "Bojuka Bog",
+        "Candy Trail",
+        "Crop Rotation"
+      ]
+    }
+  },
+  {
+    "seed": 46,
+    "actions": [
+      "Play land: Urza's Mine",
+      "Cast Relic of Progenitus",
+      "Pass",
+      "Cast Barrels of Blasting Jelly",
+      "Play land: Urza's Power Plant",
+      "Pass",
+      "Play land: Urza's Tower"
+    ],
+    "turn_assembled": 3,
+    "turn_online": 3,
+    "final_turn_number": 3,
+    "final_zones": {
+      "hand": [
+        "Ancient Stirrings",
+        "Boulderbranch Golem",
+        "Maelstrom Colossus",
+        "Maelstrom Colossus"
+      ],
+      "battlefield": [
+        [
+          "Barrels of Blasting Jelly",
+          false
+        ],
+        [
+          "Relic of Progenitus",
+          false
+        ],
+        [
+          "Urza's Mine",
+          false
+        ],
+        [
+          "Urza's Power Plant",
+          false
+        ],
+        [
+          "Urza's Tower",
+          false
+        ]
+      ],
+      "graveyard": []
+    }
+  },
+  {
+    "seed": 47,
+    "actions": [
+      "Play land: Forest",
+      "Cast Barrels of Blasting Jelly",
+      "Pass",
+      "Pass",
+      "Cast Candy Trail",
+      "Pass",
+      "Play land: Forest",
+      "Activate Candy Trail (sac)",
+      "Pass",
+      "Cast Relic of Progenitus",
+      "Activate Relic of Progenitus",
+      "Play land: Urza's Mine",
+      "Forestcycle Generous Ent",
+      "Pass",
+      "Play land: Urza's Tower",
+      "Cast Expedition Map",
+      "Activate Expedition Map",
+      "Forestcycle Generous Ent",
+      "Cast Crop Rotation"
+    ],
+    "turn_assembled": 6,
+    "turn_online": 7,
+    "final_turn_number": 6,
+    "final_zones": {
+      "hand": [
+        "Bramble Wurm",
+        "Maelstrom Colossus",
+        "Urza's Power Plant",
+        "Urza's Tower"
+      ],
+      "battlefield": [
+        [
+          "Barrels of Blasting Jelly",
+          false
+        ],
+        [
+          "Forest",
+          true
+        ],
+        [
+          "Urza's Mine",
+          true
+        ],
+        [
+          "Urza's Power Plant",
+          false
+        ],
+        [
+          "Urza's Tower",
+          true
+        ]
+      ],
+      "graveyard": [
+        "Candy Trail",
+        "Crop Rotation",
+        "Expedition Map",
+        "Forest",
+        "Generous Ent",
+        "Generous Ent"
+      ]
+    }
+  },
+  {
+    "seed": 48,
+    "actions": [
+      "Pass",
+      "Play land: Tocasia's Dig Site",
+      "Pass",
+      "Pass",
+      "Play land: Urza's Tower",
+      "Pass",
+      "Forestcycle Generous Ent",
+      "Play land: Forest",
+      "Pass",
+      "Play land: Urza's Tower",
+      "Activate Tocasia's Dig Site (surveil)",
+      "Pass"
+    ],
+    "turn_assembled": null,
+    "turn_online": null,
+    "final_turn_number": 6,
+    "final_zones": {
+      "hand": [
+        "Ancient Stirrings",
+        "Ancient Stirrings",
+        "Bonder's Ornament",
+        "Bramble Wurm",
+        "Crop Rotation",
+        "Maelstrom Colossus",
+        "Pinnacle Kill-Ship",
+        "Rooftop Percher"
+      ],
+      "battlefield": [
+        [
+          "Forest",
+          true
+        ],
+        [
+          "Tocasia's Dig Site",
+          true
+        ],
+        [
+          "Urza's Tower",
+          false
+        ],
+        [
+          "Urza's Tower",
+          true
+        ]
+      ],
+      "graveyard": [
+        "Generous Ent"
+      ]
+    }
+  },
+  {
+    "seed": 49,
+    "actions": [
+      "Play land: Urza's Mine",
+      "Forestcycle Generous Ent",
+      "Pass",
+      "Play land: Forest",
+      "Pass",
+      "Play land: Forest",
+      "Pass",
+      "Play land: Tocasia's Dig Site",
+      "Activate Tocasia's Dig Site (surveil)",
+      "Cast Barrels of Blasting Jelly",
+      "Pass",
+      "Cast Expedition Map",
+      "Activate Expedition Map",
+      "Pass",
+      "Pass"
+    ],
+    "turn_assembled": null,
+    "turn_online": null,
+    "final_turn_number": 6,
+    "final_zones": {
+      "hand": [
+        "Bojuka Bog",
+        "Bonder's Ornament",
+        "Bonder's Ornament",
+        "Bramble Wurm",
+        "Maelstrom Colossus",
+        "Pinnacle Kill-Ship",
+        "Urza's Power Plant"
+      ],
+      "battlefield": [
+        [
+          "Barrels of Blasting Jelly",
+          false
+        ],
+        [
+          "Forest",
+          false
+        ],
+        [
+          "Forest",
+          false
+        ],
+        [
+          "Tocasia's Dig Site",
+          false
+        ],
+        [
+          "Urza's Mine",
+          false
+        ]
+      ],
+      "graveyard": [
+        "Expedition Map",
+        "Generous Ent",
+        "Urza's Mine"
+      ]
+    }
+  }
+]

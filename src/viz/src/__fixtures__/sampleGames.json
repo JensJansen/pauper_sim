@@ -1,0 +1,620 @@
+[
+  {
+    "game_index": 16,
+    "scores": [0.642125, 1.0],
+    "turn_won": 3,
+    "opening_hand": [
+      "Urza's Mine",
+      "Candy Trail",
+      "Crop Rotation",
+      "Barrels of Blasting Jelly",
+      "Bramble Wurm",
+      "Boulderbranch Golem",
+      "Ancient Stirrings"
+    ],
+    "turns": [
+      {
+        "turn": 1,
+        "drew": null,
+        "actions": [
+          {
+            "action": "Play land: Urza's Mine",
+            "fetched": [],
+            "left_battlefield": [],
+            "tapped_for_cost": [],
+            "state_after": {
+              "turn_number": 1,
+              "hand": [
+                "Candy Trail",
+                "Crop Rotation",
+                "Barrels of Blasting Jelly",
+                "Bramble Wurm",
+                "Boulderbranch Golem",
+                "Ancient Stirrings"
+              ],
+              "battlefield": [
+                {
+                  "name": "Urza's Mine",
+                  "tapped": false
+                }
+              ],
+              "graveyard": [],
+              "resource_quality": {
+                "non_land_permanents": 0,
+                "available_mana": 1,
+                "hand_size": 6
+              }
+            }
+          },
+          {
+            "action": "Cast Barrels of Blasting Jelly",
+            "fetched": [],
+            "left_battlefield": [],
+            "tapped_for_cost": [
+              "Urza's Mine"
+            ],
+            "state_after": {
+              "turn_number": 1,
+              "hand": [
+                "Candy Trail",
+                "Crop Rotation",
+                "Bramble Wurm",
+                "Boulderbranch Golem",
+                "Ancient Stirrings"
+              ],
+              "battlefield": [
+                {
+                  "name": "Urza's Mine",
+                  "tapped": true
+                },
+                {
+                  "name": "Barrels of Blasting Jelly",
+                  "tapped": false
+                }
+              ],
+              "graveyard": [],
+              "resource_quality": {
+                "non_land_permanents": 1,
+                "available_mana": 0,
+                "hand_size": 5
+              }
+            }
+          }
+        ]
+      },
+      {
+        "turn": 2,
+        "drew": "Urza's Power Plant",
+        "actions": [
+          {
+            "action": "Draw a card",
+            "fetched": [
+              "Urza's Power Plant"
+            ],
+            "left_battlefield": [],
+            "tapped_for_cost": [],
+            "state_after": {
+              "turn_number": 2,
+              "hand": [
+                "Candy Trail",
+                "Crop Rotation",
+                "Bramble Wurm",
+                "Boulderbranch Golem",
+                "Ancient Stirrings",
+                "Urza's Power Plant"
+              ],
+              "battlefield": [
+                {
+                  "name": "Urza's Mine",
+                  "tapped": false
+                },
+                {
+                  "name": "Barrels of Blasting Jelly",
+                  "tapped": false
+                }
+              ],
+              "graveyard": [],
+              "resource_quality": {
+                "non_land_permanents": 1,
+                "available_mana": 1,
+                "hand_size": 6
+              }
+            }
+          },
+          {
+            "action": "Play land: Urza's Power Plant",
+            "fetched": [],
+            "left_battlefield": [],
+            "tapped_for_cost": [],
+            "state_after": {
+              "turn_number": 2,
+              "hand": [
+                "Candy Trail",
+                "Crop Rotation",
+                "Bramble Wurm",
+                "Boulderbranch Golem",
+                "Ancient Stirrings"
+              ],
+              "battlefield": [
+                {
+                  "name": "Urza's Mine",
+                  "tapped": false
+                },
+                {
+                  "name": "Barrels of Blasting Jelly",
+                  "tapped": false
+                },
+                {
+                  "name": "Urza's Power Plant",
+                  "tapped": false
+                }
+              ],
+              "graveyard": [],
+              "resource_quality": {
+                "non_land_permanents": 1,
+                "available_mana": 2,
+                "hand_size": 5
+              }
+            }
+          },
+          {
+            "action": "Cast Ancient Stirrings",
+            "fetched": [
+              "Urza's Tower"
+            ],
+            "left_battlefield": [],
+            "tapped_for_cost": [
+              "Urza's Mine"
+            ],
+            "state_after": {
+              "turn_number": 2,
+              "hand": [
+                "Candy Trail",
+                "Crop Rotation",
+                "Bramble Wurm",
+                "Boulderbranch Golem",
+                "Urza's Tower"
+              ],
+              "battlefield": [
+                {
+                  "name": "Urza's Mine",
+                  "tapped": true
+                },
+                {
+                  "name": "Barrels of Blasting Jelly",
+                  "tapped": false
+                },
+                {
+                  "name": "Urza's Power Plant",
+                  "tapped": false
+                }
+              ],
+              "graveyard": [
+                "Ancient Stirrings"
+              ],
+              "resource_quality": {
+                "non_land_permanents": 1,
+                "available_mana": 1,
+                "hand_size": 5
+              }
+            }
+          },
+          {
+            "action": "Cast Candy Trail",
+            "fetched": [],
+            "left_battlefield": [],
+            "tapped_for_cost": [
+              "Urza's Power Plant"
+            ],
+            "scry": {
+              "seen": [
+                "Bramble Wurm",
+                "Bonder's Ornament"
+              ],
+              "kept_on_top": [],
+              "bottomed": [
+                "Bramble Wurm",
+                "Bonder's Ornament"
+              ],
+              "binned": []
+            },
+            "state_after": {
+              "turn_number": 2,
+              "hand": [
+                "Crop Rotation",
+                "Bramble Wurm",
+                "Boulderbranch Golem",
+                "Urza's Tower"
+              ],
+              "battlefield": [
+                {
+                  "name": "Urza's Mine",
+                  "tapped": true
+                },
+                {
+                  "name": "Barrels of Blasting Jelly",
+                  "tapped": false
+                },
+                {
+                  "name": "Urza's Power Plant",
+                  "tapped": true
+                },
+                {
+                  "name": "Candy Trail",
+                  "tapped": false
+                }
+              ],
+              "graveyard": [
+                "Ancient Stirrings"
+              ],
+              "resource_quality": {
+                "non_land_permanents": 2,
+                "available_mana": 0,
+                "hand_size": 4
+              }
+            }
+          }
+        ]
+      },
+      {
+        "turn": 3,
+        "drew": "Urza's Tower",
+        "actions": [
+          {
+            "action": "Draw a card",
+            "fetched": [
+              "Urza's Tower"
+            ],
+            "left_battlefield": [],
+            "tapped_for_cost": [],
+            "state_after": {
+              "turn_number": 3,
+              "hand": [
+                "Crop Rotation",
+                "Bramble Wurm",
+                "Boulderbranch Golem",
+                "Urza's Tower",
+                "Urza's Tower"
+              ],
+              "battlefield": [
+                {
+                  "name": "Urza's Mine",
+                  "tapped": false
+                },
+                {
+                  "name": "Barrels of Blasting Jelly",
+                  "tapped": false
+                },
+                {
+                  "name": "Urza's Power Plant",
+                  "tapped": false
+                },
+                {
+                  "name": "Candy Trail",
+                  "tapped": false
+                }
+              ],
+              "graveyard": [
+                "Ancient Stirrings"
+              ],
+              "resource_quality": {
+                "non_land_permanents": 2,
+                "available_mana": 2,
+                "hand_size": 5
+              }
+            }
+          },
+          {
+            "action": "Play land: Urza's Tower",
+            "fetched": [],
+            "left_battlefield": [],
+            "tapped_for_cost": [],
+            "state_after": {
+              "turn_number": 3,
+              "hand": [
+                "Crop Rotation",
+                "Bramble Wurm",
+                "Boulderbranch Golem",
+                "Urza's Tower"
+              ],
+              "battlefield": [
+                {
+                  "name": "Urza's Mine",
+                  "tapped": false
+                },
+                {
+                  "name": "Barrels of Blasting Jelly",
+                  "tapped": false
+                },
+                {
+                  "name": "Urza's Power Plant",
+                  "tapped": false
+                },
+                {
+                  "name": "Candy Trail",
+                  "tapped": false
+                },
+                {
+                  "name": "Urza's Tower",
+                  "tapped": false
+                }
+              ],
+              "graveyard": [
+                "Ancient Stirrings"
+              ],
+              "resource_quality": {
+                "non_land_permanents": 2,
+                "available_mana": 6,
+                "hand_size": 4
+              }
+            }
+          }
+        ]
+      }
+    ],
+    "end_state": {
+      "turn_number": 3,
+      "hand": [
+        "Crop Rotation",
+        "Bramble Wurm",
+        "Boulderbranch Golem",
+        "Urza's Tower"
+      ],
+      "battlefield": [
+        {
+          "name": "Urza's Mine",
+          "tapped": false
+        },
+        {
+          "name": "Barrels of Blasting Jelly",
+          "tapped": false
+        },
+        {
+          "name": "Urza's Power Plant",
+          "tapped": false
+        },
+        {
+          "name": "Candy Trail",
+          "tapped": false
+        },
+        {
+          "name": "Urza's Tower",
+          "tapped": false
+        }
+      ],
+      "graveyard": [
+        "Ancient Stirrings"
+      ],
+      "resource_quality": {
+        "non_land_permanents": 2,
+        "available_mana": 6,
+        "hand_size": 4
+      }
+    }
+  },
+  {
+    "game_index": 1,
+    "scores": [0.0, 0.0],
+    "turn_won": null,
+    "opening_hand": [
+      "Pinnacle Kill-Ship",
+      "Bramble Wurm",
+      "Maelstrom Colossus",
+      "Pinnacle Kill-Ship",
+      "Boulderbranch Golem",
+      "Candy Trail",
+      "Ancient Stirrings"
+    ],
+    "turns": [
+      {
+        "turn": 1,
+        "drew": null,
+        "actions": []
+      },
+      {
+        "turn": 2,
+        "drew": "Expedition Map",
+        "actions": [
+          {
+            "action": "Draw a card",
+            "fetched": [
+              "Expedition Map"
+            ],
+            "left_battlefield": [],
+            "tapped_for_cost": [],
+            "state_after": {
+              "turn_number": 2,
+              "hand": [
+                "Pinnacle Kill-Ship",
+                "Bramble Wurm",
+                "Maelstrom Colossus",
+                "Pinnacle Kill-Ship",
+                "Boulderbranch Golem",
+                "Candy Trail",
+                "Ancient Stirrings",
+                "Expedition Map"
+              ],
+              "battlefield": [],
+              "graveyard": [],
+              "resource_quality": {
+                "non_land_permanents": 0,
+                "available_mana": 0,
+                "hand_size": 8
+              }
+            }
+          }
+        ]
+      },
+      {
+        "turn": 3,
+        "drew": "Bonder's Ornament",
+        "actions": [
+          {
+            "action": "Draw a card",
+            "fetched": [
+              "Bonder's Ornament"
+            ],
+            "left_battlefield": [],
+            "tapped_for_cost": [],
+            "state_after": {
+              "turn_number": 3,
+              "hand": [
+                "Pinnacle Kill-Ship",
+                "Bramble Wurm",
+                "Maelstrom Colossus",
+                "Pinnacle Kill-Ship",
+                "Boulderbranch Golem",
+                "Candy Trail",
+                "Ancient Stirrings",
+                "Expedition Map",
+                "Bonder's Ornament"
+              ],
+              "battlefield": [],
+              "graveyard": [],
+              "resource_quality": {
+                "non_land_permanents": 0,
+                "available_mana": 0,
+                "hand_size": 9
+              }
+            }
+          }
+        ]
+      },
+      {
+        "turn": 4,
+        "drew": "Expedition Map",
+        "actions": [
+          {
+            "action": "Draw a card",
+            "fetched": [
+              "Expedition Map"
+            ],
+            "left_battlefield": [],
+            "tapped_for_cost": [],
+            "state_after": {
+              "turn_number": 4,
+              "hand": [
+                "Pinnacle Kill-Ship",
+                "Bramble Wurm",
+                "Maelstrom Colossus",
+                "Pinnacle Kill-Ship",
+                "Boulderbranch Golem",
+                "Candy Trail",
+                "Ancient Stirrings",
+                "Expedition Map",
+                "Bonder's Ornament",
+                "Expedition Map"
+              ],
+              "battlefield": [],
+              "graveyard": [],
+              "resource_quality": {
+                "non_land_permanents": 0,
+                "available_mana": 0,
+                "hand_size": 10
+              }
+            }
+          }
+        ]
+      },
+      {
+        "turn": 5,
+        "drew": "Bramble Wurm",
+        "actions": [
+          {
+            "action": "Draw a card",
+            "fetched": [
+              "Bramble Wurm"
+            ],
+            "left_battlefield": [],
+            "tapped_for_cost": [],
+            "state_after": {
+              "turn_number": 5,
+              "hand": [
+                "Pinnacle Kill-Ship",
+                "Bramble Wurm",
+                "Maelstrom Colossus",
+                "Pinnacle Kill-Ship",
+                "Boulderbranch Golem",
+                "Candy Trail",
+                "Ancient Stirrings",
+                "Expedition Map",
+                "Bonder's Ornament",
+                "Expedition Map",
+                "Bramble Wurm"
+              ],
+              "battlefield": [],
+              "graveyard": [],
+              "resource_quality": {
+                "non_land_permanents": 0,
+                "available_mana": 0,
+                "hand_size": 11
+              }
+            }
+          }
+        ]
+      },
+      {
+        "turn": 6,
+        "drew": "Ancient Stirrings",
+        "actions": [
+          {
+            "action": "Draw a card",
+            "fetched": [
+              "Ancient Stirrings"
+            ],
+            "left_battlefield": [],
+            "tapped_for_cost": [],
+            "state_after": {
+              "turn_number": 6,
+              "hand": [
+                "Pinnacle Kill-Ship",
+                "Bramble Wurm",
+                "Maelstrom Colossus",
+                "Pinnacle Kill-Ship",
+                "Boulderbranch Golem",
+                "Candy Trail",
+                "Ancient Stirrings",
+                "Expedition Map",
+                "Bonder's Ornament",
+                "Expedition Map",
+                "Bramble Wurm",
+                "Ancient Stirrings"
+              ],
+              "battlefield": [],
+              "graveyard": [],
+              "resource_quality": {
+                "non_land_permanents": 0,
+                "available_mana": 0,
+                "hand_size": 12
+              }
+            }
+          }
+        ]
+      }
+    ],
+    "end_state": {
+      "turn_number": 6,
+      "hand": [
+        "Pinnacle Kill-Ship",
+        "Bramble Wurm",
+        "Maelstrom Colossus",
+        "Pinnacle Kill-Ship",
+        "Boulderbranch Golem",
+        "Candy Trail",
+        "Ancient Stirrings",
+        "Expedition Map",
+        "Bonder's Ornament",
+        "Expedition Map",
+        "Bramble Wurm",
+        "Ancient Stirrings"
+      ],
+      "battlefield": [],
+      "graveyard": [],
+      "resource_quality": {
+        "non_land_permanents": 0,
+        "available_mana": 0,
+        "hand_size": 12
+      }
+    }
+  }
+]

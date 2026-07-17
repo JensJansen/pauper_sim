@@ -1,0 +1,85 @@
+import { describe, it, expect } from "vitest";
+import { filterGames } from "./filterGames.js";
+
+function makeGame({ gameIndex, turnWon, score1, handEver, playEver = [] }) {
+  const turns = playEver.length
+    ? [
+        {
+          turn: 1,
+          actions: [
+            {
+              action: "Play land",
+              fetched: [],
+              left_battlefield: [],
+              tapped_for_cost: [],
+              state_after: {
+                turn_number: 1,
+                hand: [],
+                battlefield: playEver.map((name) => ({ name, tapped: false })),
+                graveyard: [],
+                resource_quality: { non_land_permanents: 0, available_mana: 0, hand_size: 0 },
+              },
+            },
+          ],
+        },
+      ]
+    : [];
+  return {
+    game_index: gameIndex,
+    scores: [score1],
+    turn_won: turnWon,
+    opening_hand: handEver,
+    turns,
+    end_state: { turn_number: 1, hand: [], battlefield: [], graveyard: [] },
+  };
+}
+
+const games = [
+  makeGame({ gameIndex: 0, turnWon: 3, score1: 0.6, handEver: ["Forest", "Urza's Mine"], playEver: ["Urza's Mine"] }),
+  makeGame({ gameIndex: 1, turnWon: 3, score1: 0.5, handEver: ["Bramble Wurm"] }),
+  makeGame({ gameIndex: 2, turnWon: 5, score1: 0.4, handEver: ["Forest"] }),
+  makeGame({ gameIndex: 3, turnWon: null, score1: 0.0, handEver: ["Forest"] }),
+];
+
+describe("filterGames", () => {
+  it("with no criteria, returns everything", () => {
+    expect(filterGames(games, {})).toHaveLength(4);
+  });
+
+  it("turn_won range alone", () => {
+    const result = filterGames(games, { turnWonMin: 3, turnWonMax: 3 });
+    expect(result.map((g) => g.game_index)).toEqual([0, 1]);
+  });
+
+  it("score range alone (scores[0], score 1's raw scale)", () => {
+    const result = filterGames(games, { scoreMin: 0.5 });
+    expect(result.map((g) => g.game_index)).toEqual([0, 1]);
+  });
+
+  it("card-in-hand alone matches every game that ever had it, including a failure", () => {
+    const result = filterGames(games, { cardInHand: "Forest" });
+    expect(result.map((g) => g.game_index)).toEqual([0, 2, 3]);
+  });
+
+  it("combining turn_won range + card-in-hand is an intersection (AND), not a union", () => {
+    // turn_won in [3,3] alone matches {0, 1}; cardInHand=Forest alone matches {0, 2, 3}.
+    // The AND-combination must be exactly their intersection: {0}.
+    const result = filterGames(games, { turnWonMin: 3, turnWonMax: 3, cardInHand: "Forest" });
+    expect(result.map((g) => g.game_index)).toEqual([0]);
+  });
+
+  it("card-in-play alone matches only games where the card was ever on the battlefield", () => {
+    const result = filterGames(games, { cardInPlay: "Urza's Mine" });
+    expect(result.map((g) => g.game_index)).toEqual([0]);
+  });
+
+  it("card-in-play does not match a card that was only ever in hand", () => {
+    const result = filterGames(games, { cardInPlay: "Forest" });
+    expect(result).toEqual([]);
+  });
+
+  it("a filter combination matching nothing returns an empty array, not an error", () => {
+    const result = filterGames(games, { turnWonMin: 3, turnWonMax: 3, cardInHand: "Bramble Wurm", scoreMin: 0.9 });
+    expect(result).toEqual([]);
+  });
+});

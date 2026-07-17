@@ -1,0 +1,14 @@
+# Generated artifacts -- all cheaply regenerable by rerunning training/evaluation.
+models/
+logs/
+reports/
+
+# Python
+__pycache__/
+*.pyc
+
+# Node / viz app
+src/viz/node_modules/
+src/viz/dist/
+src/viz/public/card_art/
+
