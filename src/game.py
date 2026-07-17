@@ -23,6 +23,26 @@ class EffectId(Enum):
     GENEROUS_ENT = auto()
     FILLER = auto()
 
+    # --- spy_combo deck (see MULTI_DECK_PLAN.md's original "out of scope:
+    # actually building a second deck" note -- this is that second deck) ---
+    SWAMP = auto()
+    MASKED_VANDAL = auto()
+    BALUSTRADE_SPY = auto()
+    SARULI_CARETAKER = auto()
+    OVERGROWN_BATTLEMENT = auto()
+    WALL_OF_ROOTS = auto()
+    LOTLETH_GIANT = auto()
+    ROOST_SEEK = auto()  # Sagu Wildling, implemented as its Adventure sorcery half only -- see decklist comment
+    GATECREEPER_VINE = auto()
+    NYXBORN_HYDRA = auto()
+    QUIRION_RANGER = auto()
+    MESMERIC_FIEND = auto()
+    LOTUS_PETAL = auto()
+    WINDING_WAY = auto()
+    LEAD_THE_STAMPEDE = auto()
+    LAND_GRANT = auto()
+    DREAD_RETURN = auto()
+
 
 class CardType(Enum):
     LAND = auto()
@@ -104,18 +124,63 @@ def build_card_defs(decklist):
     }
 
 
+# spy_combo deck (data/spy_combo.txt): mill yourself out via Balustrade
+# Spy, sacrifice 3 creatures to Flashback Dread Return, reanimate Lotleth
+# Giant for lethal damage. "defender": True marks the four defender
+# creatures Overgrown Battlement's own mana ability counts (itself
+# included). Sagu Wildling is implemented as its Adventure sorcery half
+# only ("Roost Seek": search a basic land to hand) -- the creature side is
+# dropped per design discussion, so this entry is CardType.SORCERY, not
+# CREATURE, even though it keeps the printed card's name (for decklist
+# readability and Scryfall art lookup).
+SPY_COMBO_DECKLIST = [
+    ("Masked Vandal", 4, CardType.CREATURE, {"generic": 1, "G": 1}, EffectId.MASKED_VANDAL, {}),
+    ("Balustrade Spy", 4, CardType.CREATURE, {"generic": 3, "B": 1}, EffectId.BALUSTRADE_SPY, {}),
+    ("Saruli Caretaker", 4, CardType.CREATURE, {"G": 1}, EffectId.SARULI_CARETAKER, {"defender": True}),
+    ("Overgrown Battlement", 4, CardType.CREATURE, {"generic": 1, "G": 1}, EffectId.OVERGROWN_BATTLEMENT,
+     {"defender": True}),
+    ("Generous Ent", 4, CardType.CREATURE, {"generic": 5, "G": 1}, EffectId.GENEROUS_ENT,
+     {"forestcycling_cost": {"generic": 1}}),
+    ("Wall of Roots", 4, CardType.CREATURE, {"generic": 1, "G": 1}, EffectId.WALL_OF_ROOTS, {"defender": True}),
+    ("Lotleth Giant", 2, CardType.CREATURE, {"generic": 6, "B": 1}, EffectId.LOTLETH_GIANT, {}),
+    ("Sagu Wildling", 4, CardType.SORCERY, {"G": 1}, EffectId.ROOST_SEEK, {}),
+    ("Gatecreeper Vine", 4, CardType.CREATURE, {"generic": 1, "G": 1}, EffectId.GATECREEPER_VINE,
+     {"defender": True}),
+    ("Nyxborn Hydra", 3, CardType.CREATURE, {"G": 1}, EffectId.NYXBORN_HYDRA, {}),
+    ("Quirion Ranger", 2, CardType.CREATURE, {"G": 1}, EffectId.QUIRION_RANGER, {}),
+    ("Mesmeric Fiend", 2, CardType.CREATURE, {"generic": 1, "B": 1}, EffectId.MESMERIC_FIEND, {}),
+    ("Lotus Petal", 1, CardType.ARTIFACT, {}, EffectId.LOTUS_PETAL, {}),
+    ("Winding Way", 4, CardType.SORCERY, {"generic": 1, "G": 1}, EffectId.WINDING_WAY, {}),
+    ("Lead the Stampede", 4, CardType.SORCERY, {"generic": 2, "G": 1}, EffectId.LEAD_THE_STAMPEDE, {}),
+    ("Land Grant", 4, CardType.SORCERY, {"generic": 1, "G": 1}, EffectId.LAND_GRANT, {}),
+    ("Dread Return", 2, CardType.SORCERY, {"generic": 2, "B": 2}, EffectId.DREAD_RETURN, {}),
+    ("Forest", 3, CardType.LAND, None, EffectId.FOREST, {}),
+    ("Swamp", 1, CardType.LAND, None, EffectId.SWAMP, {}),
+]
+
+
 # Shared across every deck, not deck-scoped (MULTI_DECK_PLAN.md Phase M2
 # decision): a card's definition is fixed metadata, identical no matter
 # which deck it's played in, so one global name->CardDef lookup can grow
 # to cover every implemented card as more decks are added, rather than
 # each deck needing its own copy.
 CARD_DEFS = build_card_defs(TRON_DECKLIST)
+CARD_DEFS.update(build_card_defs(SPY_COMBO_DECKLIST))
 
 
 def _phase0_sanity_check():
     total = sum(qty for _name, qty, *_rest in TRON_DECKLIST)
     assert total == 60, f"decklist quantities sum to {total}, expected 60"
-    assert len(TRON_DECKLIST) == len(CARD_DEFS), "duplicate card name in TRON_DECKLIST"
+    # CARD_DEFS is now the union of every deck's cards (Phase M2), so
+    # dedup against TRON_DECKLIST's own build_card_defs, not the global.
+    assert len(TRON_DECKLIST) == len(build_card_defs(TRON_DECKLIST)), "duplicate card name in TRON_DECKLIST"
+
+
+def _phase_spy_combo_decklist_sanity_check():
+    total = sum(qty for _name, qty, *_rest in SPY_COMBO_DECKLIST)
+    assert total == 60, f"spy_combo decklist quantities sum to {total}, expected 60"
+    distinct_new = {name for name, *_rest in SPY_COMBO_DECKLIST} - {name for name, *_rest in TRON_DECKLIST}
+    assert len(distinct_new) == 17, f"expected 17 new distinct card names, got {len(distinct_new)}"
 
 
 
@@ -152,12 +217,24 @@ class GameState:
         self.library = []       # ordered list[CardDef], index 0 = top of deck
         self.hand = []          # list[CardDef]
         self.battlefield = []   # list[Permanent]
-        self.graveyard = []     # list[CardDef] -- bookkeeping only, never read back
+        # list[CardDef]. Was "bookkeeping only, never read back" pre-spy_combo;
+        # Dread Return (reanimation, Flashback) now reads and removes from it.
+        self.graveyard = []
 
         self.lands_played_this_turn = 0
         self.turn_number = 0
         self.on_the_play = on_the_play
         self.rng = rng or random.Random()
+
+        # spy_combo deck: damage accumulated by non-combat damage effects
+        # (currently only Lotleth Giant's ETB) against the implicit
+        # opponent -- this simulator still has no modeled opponent state
+        # beyond this running counter. decked_out flips True the moment
+        # draw() is asked for a card with an empty library, which this
+        # deck's own combo (mill itself out via Balustrade Spy) can
+        # trigger deliberately -- see draw() below.
+        self.damage_dealt = 0
+        self.decked_out = False
 
         # MULTI_DECK_PLAN.md Phase M3: terminated_fn(state) -> bool is the
         # per-deck injected win condition, checked generically in
@@ -183,9 +260,15 @@ class GameState:
         self.pending_resolution = None
 
     def draw(self, n=1):
+        """Real Magic: attempting to draw from an empty library is a loss,
+        not a crash. Sets decked_out instead of raising so callers (run_game's
+        loop, TronEnv.step's done check) can end the episode cleanly -- with
+        turn_won left None, every existing reward/scoring function already
+        treats that as an ordinary failure, no further changes needed."""
         for _ in range(n):
             if not self.library:
-                raise RuntimeError("cannot draw from an empty library")
+                self.decked_out = True
+                return
             self.hand.append(self.library.pop(0))
 
 
@@ -252,6 +335,13 @@ def tron_terminated(state):
     return controls_all_tron_types(state)
 
 
+def spy_combo_terminated(state):
+    """spy_combo's terminated_fn, same shape as tron_terminated: win by
+    dealing 20 damage. Lotleth Giant's ETB (reanimated via Dread Return)
+    is the deck's intended source -- see state.damage_dealt."""
+    return state.damage_dealt >= 20
+
+
 def mana_output(permanent, state, color_choice=None):
     """Mana symbols this permanent would produce if tapped for its plain
     mana ability right now. Raises if effect_id isn't a simple source or if
@@ -272,6 +362,13 @@ def mana_output(permanent, state, color_choice=None):
         if color_choice not in choices:
             raise ValueError(f"{permanent.card_def.name} cannot produce {color_choice}")
         return [color_choice]
+    if kind == "count":
+        # ("count", symbol, predicate): Overgrown Battlement -- one symbol
+        # per battlefield permanent matching predicate (itself included).
+        if color_choice is not None:
+            raise ValueError(f"{permanent.card_def.name} has no color choice")
+        symbol, predicate = spec[1], spec[2]
+        return [symbol] * sum(1 for p in state.battlefield if predicate(p))
     raise ValueError(f"{permanent.card_def.name} is not a simple mana source")
 
 
@@ -452,8 +549,13 @@ def tap_cost_options(state):
         effect = p.card_def.effect_id
         spec = EFFECT_REGISTRY.get(effect, {}).get("mana")
         if spec is not None:
+            # Saruli Caretaker: not offered as a mana source unless its own
+            # extra cost (tap another untapped creature) is currently payable.
+            extra_available = EFFECT_REGISTRY.get(effect, {}).get("mana_extra_available")
+            if extra_available is not None and not extra_available(state, p):
+                continue
             kind = spec[0]
-            if kind in ("fixed", "tron"):
+            if kind in ("fixed", "tron", "count"):
                 key = (p.card_def.name, None, False)
                 if key not in seen:
                     seen.add(key)
@@ -520,6 +622,13 @@ def execute_tap_cost_option(state, name, color_choice, is_filter):
         permanent.tapped = True
         produced = mana_output(permanent, state, color_choice)
         _apply_tap_to_remaining(pending["remaining"], produced)
+        # spy_combo: Lotus Petal sacrifices itself, Saruli Caretaker also
+        # taps another creature, Wall of Roots may die on its 5th use --
+        # each an optional per-effect side effect of a normal tap, mirrored
+        # by on_tap_undo in abandon_pay_cost below.
+        on_tap = EFFECT_REGISTRY.get(permanent.card_def.effect_id, {}).get("on_tap")
+        if on_tap is not None:
+            on_tap(state, permanent)
 
     if not any(v > 0 for v in pending["remaining"].values()):
         complete_resolution(state)
@@ -545,6 +654,10 @@ def abandon_pay_cost(state):
             permanent.flags["used_this_turn"] = False
         else:
             permanent.tapped = False
+            if not is_filter:
+                on_tap_undo = EFFECT_REGISTRY.get(permanent.card_def.effect_id, {}).get("on_tap_undo")
+                if on_tap_undo is not None:
+                    on_tap_undo(state, permanent)
     state.pending_resolution = None
 
 
@@ -745,7 +858,7 @@ def find_and_remove_by_name(state, name):
     return None
 
 
-def begin_search_fetch(state, predicate, on_complete):
+def begin_search_fetch(state, predicate, on_complete, optional=False):
     """Pending resolution (MULTI_DECK_PLAN.md Phase M4): the model picks
     ONE library card by name, among distinct names currently matching
     `predicate`, to fetch -- one action per matching name (search_fetch_
@@ -757,8 +870,14 @@ def begin_search_fetch(state, predicate, on_complete):
     e.g. every land could already be drawn), fizzles immediately with
     chosen_name=None instead of leaving a resolution with zero legal
     options, matching the old find_and_remove_priority_land's graceful
-    "nothing found" behavior."""
-    begin_resolution(state, "search_fetch", on_complete, predicate=predicate)
+    "nothing found" behavior.
+
+    optional=True (Gatecreeper Vine's "may search"; Expedition Map/Crop
+    Rotation's mandatory fetches leave this False, unchanged) offers a
+    dedicated decline via tron_env.py's own action, not folded into
+    search_fetch_options' name list -- same treatment Ancient Stirrings'
+    decline already gets."""
+    begin_resolution(state, "search_fetch", on_complete, predicate=predicate, optional=optional)
     if not search_fetch_options(state):
         complete_resolution(state, None)
 
@@ -770,6 +889,10 @@ def search_fetch_options(state):
 
 def execute_search_fetch_option(state, name):
     complete_resolution(state, name)
+
+
+def execute_search_fetch_decline(state):
+    complete_resolution(state, None)
 
 
 def begin_choose_permanent(state, predicate, on_complete):
@@ -1001,6 +1124,370 @@ def activate_tocasia_dig_site_surveil(state, permanent):
 
 
 # ---------------------------------------------------------------------------
+# spy_combo deck (data/spy_combo.txt): mill yourself out via Balustrade
+# Spy, sacrifice 3 creatures to Flashback Dread Return, reanimate Lotleth
+# Giant for lethal damage. See SPY_COMBO_DECKLIST's own comment.
+# ---------------------------------------------------------------------------
+
+def _is_defender(permanent):
+    return permanent.card_def.extra.get("defender", False)
+
+
+def mill_until_land(state):
+    """Balustrade Spy's ETB: reveal from the top until a land card, milling
+    everything revealed (including the land) to the graveyard. No model
+    choice, so a plain loop, not a pending resolution. If the library
+    empties before a land turns up, everything left mills and the library
+    simply ends up empty -- this deck's own combo enabler. draw() (not
+    this function) is what detects and flags actually running out, on
+    whatever later draw attempts to pull from the now-empty library."""
+    while state.library:
+        card = state.library.pop(0)
+        state.graveyard.append(card)
+        if card.card_type == CardType.LAND:
+            break
+
+
+def lotleth_giant_etb(state):
+    """Undergrowth ETB: 1 damage to the (abstracted) opponent per creature
+    card in your graveyard. This simulator tracks no opponent state beyond
+    the running state.damage_dealt counter -- see GameState.__init__."""
+    creature_count = sum(1 for c in state.graveyard if c.card_type == CardType.CREATURE)
+    state.damage_dealt += creature_count
+
+
+def _search_to_hand(state, name):
+    """Shared on_complete callback for search-and-reshuffle-into-hand
+    effects (Roost Seek, Gatecreeper Vine) -- same find/shuffle/append
+    order Expedition Map's own inline _on_chosen already uses."""
+    found = find_and_remove_by_name(state, name) if name is not None else None
+    state.rng.shuffle(state.library)
+    if found:
+        state.hand.append(found)
+
+
+def cast_roost_seek(state, card_def):
+    """Sagu Wildling's Adventure sorcery half -- the only half this
+    simulator implements (see SPY_COMBO_DECKLIST comment). {G}: search
+    library for a basic land. Two possible names here (Forest or Swamp),
+    a real model choice, unlike Land Grant's single fixed target below."""
+    state.hand.remove(card_def)
+    state.graveyard.append(card_def)
+    begin_search_fetch(state, lambda c: c.card_type == CardType.LAND, lambda s, name: _search_to_hand(s, name))
+
+
+def gatecreeper_vine_etb(state):
+    """ETB: may search a basic land to hand -- optional even when a target
+    exists, unlike Expedition Map/Crop Rotation's mandatory fetches."""
+    begin_search_fetch(
+        state, lambda c: c.card_type == CardType.LAND, lambda s, name: _search_to_hand(s, name), optional=True,
+    )
+
+
+def cast_land_grant(state, card_def):
+    """Search library for a Forest specifically -- single target name, so
+    (like forestcycle_generous_ent) this resolves immediately, no pending
+    resolution. Serves both the normal {1}{G} cast and the free alt-cost
+    cast below -- they differ only in how the cost was paid."""
+    state.hand.remove(card_def)
+    state.graveyard.append(card_def)
+    found = find_and_remove_by_name(state, "Forest")
+    state.rng.shuffle(state.library)
+    if found:
+        state.hand.append(found)
+
+
+def land_grant_alt_cost_legal(state):
+    """Land Grant's free alt-cost ("reveal your hand" instead of paying):
+    legal only with no land cards in hand. Revealing the hand has no
+    simulator-visible effect (solitaire, no opponent to show it to) --
+    this predicate is the only real consequence of that clause."""
+    return not any(c.card_type == CardType.LAND for c in state.hand)
+
+
+def _saruli_caretaker_extra_available(state, permanent):
+    """Saruli Caretaker's mana ability costs {T}, tap an untapped creature
+    you control (not itself) -- not offered as a mana source unless
+    another untapped creature exists to pay that extra cost."""
+    return any(
+        p is not permanent and not p.tapped and p.card_def.card_type == CardType.CREATURE
+        for p in state.battlefield
+    )
+
+
+def _saruli_caretaker_on_tap(state, permanent):
+    """Which specific other creature gets tapped doesn't matter (same
+    fungible-by-name simplification used throughout this engine, since
+    nothing else here cares which particular creature ends up tapped) --
+    auto-picks the first untapped one. Recorded on Saruli's own flags so
+    on_tap_undo can reverse exactly this tap if the payment is abandoned."""
+    other = next(
+        (p for p in state.battlefield
+         if p is not permanent and not p.tapped and p.card_def.card_type == CardType.CREATURE),
+        None,
+    )
+    if other is not None:
+        other.tapped = True
+        permanent.flags["tapped_other"] = other
+
+
+def _saruli_caretaker_on_tap_undo(state, permanent):
+    other = permanent.flags.pop("tapped_other", None)
+    if other is not None:
+        other.tapped = False
+
+
+def _lotus_petal_on_tap(state, permanent):
+    """{T}, Sacrifice: add one mana of any color -- consumed, not just
+    tapped, unlike every other mana source in this engine."""
+    state.battlefield.remove(permanent)
+    state.graveyard.append(permanent.card_def)
+
+
+def _lotus_petal_on_tap_undo(state, permanent):
+    state.graveyard.remove(permanent.card_def)
+    state.battlefield.append(permanent)
+
+
+def _wall_of_roots_on_tap(state, permanent):
+    """Put a -0/-1 counter on this creature: add {G}, once each turn --
+    modeled per design discussion as a plain ("fixed", "G") source (once-
+    per-turn already falls out of tapping) plus this activation counter,
+    rather than a general counters/toughness/state-based-death system.
+    Dies on its 5th use."""
+    permanent.flags["roots_activations"] = permanent.flags.get("roots_activations", 0) + 1
+    if permanent.flags["roots_activations"] >= 5:
+        state.battlefield.remove(permanent)
+        state.graveyard.append(permanent.card_def)
+
+
+def _wall_of_roots_on_tap_undo(state, permanent):
+    permanent.flags["roots_activations"] -= 1
+    if permanent not in state.battlefield:
+        state.battlefield.append(permanent)
+        state.graveyard.remove(permanent.card_def)
+
+
+def quirion_ranger_untap_legal(state, permanent):
+    """Return a Forest you control to hand: untap target creature. Once
+    each turn (the used_this_turn flag, reset for every permanent by
+    untap_step regardless of which card set it -- same mechanism Barrels
+    of Blasting Jelly's filter ability already relies on). No {T} in this
+    ability's real cost, so -- unlike every other activated ability here
+    -- it doesn't require this permanent itself to be untapped; see
+    tron_env.py's non-mana activated-ability builder."""
+    if permanent.flags.get("used_this_turn", False):
+        return False
+    return any(p.card_def.name == "Forest" for p in state.battlefield)
+
+
+def quirion_ranger_untap_resolve(state, permanent):
+    permanent.flags["used_this_turn"] = True
+    forest = next(p for p in state.battlefield if p.card_def.name == "Forest")
+    state.battlefield.remove(forest)
+    state.hand.append(forest.card_def)
+
+    def _on_chosen(state, name):
+        if name is None:
+            return
+        target = next(p for p in state.battlefield if p.card_def.name == name)
+        target.tapped = False
+
+    begin_choose_permanent(state, lambda p: p.card_def.card_type == CardType.CREATURE, _on_chosen)
+
+
+def _cast_winding_way(state, card_def, chosen_type):
+    """Choose creature or land at cast time -- two separate action-table
+    entries (see tron_env.py's "cast_modes" note), not a pending
+    resolution. Reveal top 4; matches to hand, the rest to the graveyard.
+    Fully deterministic given the chosen type -- no further model choice."""
+    state.hand.remove(card_def)
+    state.graveyard.append(card_def)
+    revealed = state.library[:4]
+    del state.library[:4]
+    for card in revealed:
+        if card.card_type == chosen_type:
+            state.hand.append(card)
+        else:
+            state.graveyard.append(card)
+
+
+def cast_winding_way_creature(state, card_def):
+    _cast_winding_way(state, card_def, CardType.CREATURE)
+
+
+def cast_winding_way_land(state, card_def):
+    _cast_winding_way(state, card_def, CardType.LAND)
+
+
+def begin_select_to_hand(state, n, eligible_predicate, on_complete):
+    """Pending resolution (Lead the Stampede): reveal top n; the model
+    decides keep-to-hand (only if eligible_predicate matches) or bottom
+    for each in turn, then -- if 2+ went to the bottom -- the order to
+    put them there. Mirrors begin_scry_surveil's remaining/kept/disposed/
+    ordered shape exactly, except "kept" lands in hand (not library top)
+    and only eligible cards may be kept."""
+    revealed = state.library[:n]
+    del state.library[:n]
+    begin_resolution(
+        state, "select_to_hand", on_complete,
+        remaining=revealed, eligible=eligible_predicate, kept=[], disposed=[], ordered=None,
+    )
+    if not revealed:
+        # Library was already empty (this deck's own mill-out combo can get
+        # here) -- nothing to decide, so complete immediately instead of
+        # leaving a pending resolution with zero legal actions.
+        complete_resolution(state)
+
+
+def select_to_hand_options(state):
+    """While deciding (remaining non-empty): keep (only if the front card
+    is eligible) or bottom. While ordering (remaining empty, 2+ disposed,
+    not yet all placed): one option per distinct name still waiting to be
+    bottomed."""
+    pending = state.pending_resolution
+    if pending["remaining"]:
+        front = pending["remaining"][0]
+        return ["keep", "bottom"] if pending["eligible"](front) else ["bottom"]
+    if pending["ordered"] is not None:
+        return sorted({c.name for c in pending["disposed"]})
+    return []
+
+
+def _finish_select_to_hand(state):
+    pending = state.pending_resolution
+    state.hand.extend(pending["kept"])
+    disposed_final = pending["ordered"] if pending["ordered"] is not None else pending["disposed"]
+    state.library.extend(disposed_final)
+    complete_resolution(state)
+
+
+def execute_select_to_hand_option(state, option):
+    pending = state.pending_resolution
+    if pending["remaining"]:
+        card = pending["remaining"].pop(0)
+        (pending["kept"] if option == "keep" else pending["disposed"]).append(card)
+        if pending["remaining"]:
+            return  # more cards still to decide
+        if len(pending["disposed"]) <= 1:
+            _finish_select_to_hand(state)  # 0 or 1 bottomed -- no ordering choice to make
+        else:
+            pending["ordered"] = []  # 2+ bottomed -- enter the ordering phase
+        return
+
+    # Ordering phase: option is the name of the next card to bottom.
+    idx = next(i for i, c in enumerate(pending["disposed"]) if c.name == option)
+    pending["ordered"].append(pending["disposed"].pop(idx))
+    if not pending["disposed"]:
+        _finish_select_to_hand(state)
+
+
+def cast_lead_the_stampede(state, card_def):
+    """{2}{G}: look at top 5, may reveal any number of creatures to hand,
+    rest to the bottom in any order."""
+    state.hand.remove(card_def)
+    state.graveyard.append(card_def)
+    begin_select_to_hand(state, 5, lambda c: c.card_type == CardType.CREATURE, on_complete=lambda s: None)
+
+
+def begin_choose_graveyard_card(state, predicate, on_complete):
+    """Pending resolution (Dread Return): pick ONE card from the graveyard
+    by name, among those matching predicate -- the reanimation target.
+    Same fungible-by-name simplification, same empty-options safety net
+    as begin_search_fetch/begin_choose_permanent."""
+    begin_resolution(state, "choose_graveyard_card", on_complete, predicate=predicate)
+    if not choose_graveyard_card_options(state):
+        complete_resolution(state, None)
+
+
+def choose_graveyard_card_options(state):
+    predicate = state.pending_resolution["predicate"]
+    return sorted({c.name for c in state.graveyard if predicate(c)})
+
+
+def execute_choose_graveyard_card_option(state, name):
+    complete_resolution(state, name)
+
+
+def begin_sacrifice_creatures(state, n, on_complete):
+    """Pending resolution (Dread Return's Flashback cost): choose and
+    sacrifice n of your own creatures, one at a time, each pick reusing
+    choose_permanent's own by-name fungibility. tron_env.py's own
+    Flashback legality check guarantees n eligible creatures exist before
+    this is ever offered, same "guaranteed payable, not a maybe" contract
+    Flashback itself requires -- the n<=0 empty-options branch below is
+    pure belt-and-suspenders, matching every other pending kind here."""
+    begin_resolution(state, "sacrifice_creatures", on_complete, remaining=n)
+    if not sacrifice_creatures_options(state):
+        complete_resolution(state, n <= 0)
+
+
+def sacrifice_creatures_options(state):
+    pending = state.pending_resolution
+    if pending["remaining"] <= 0:
+        return []
+    return sorted({p.card_def.name for p in state.battlefield if p.card_def.card_type == CardType.CREATURE})
+
+
+def execute_sacrifice_creatures_option(state, name):
+    pending = state.pending_resolution
+    permanent = next(
+        p for p in state.battlefield if p.card_def.name == name and p.card_def.card_type == CardType.CREATURE
+    )
+    state.battlefield.remove(permanent)
+    state.graveyard.append(permanent.card_def)
+    pending["remaining"] -= 1
+    if pending["remaining"] <= 0:
+        complete_resolution(state, True)
+
+
+def cast_dread_return(state, card_def):
+    """{2}{B}{B}: return target creature card from your graveyard to the
+    battlefield. This card is already in the graveyard by the time the
+    reanimation choice begins (below), so -- being a sorcery, not a
+    creature card -- it's correctly never offered as its own target."""
+    state.hand.remove(card_def)
+    state.graveyard.append(card_def)
+
+    def _on_chosen(state, name):
+        if name is None:
+            return
+        found = next(c for c in state.graveyard if c.name == name)
+        state.graveyard.remove(found)
+        enters_battlefield(state, found)
+
+    begin_choose_graveyard_card(state, lambda c: c.card_type == CardType.CREATURE, _on_chosen)
+
+
+def flashback_dread_return(state, card_def):
+    """Flashback -- Sacrifice three creatures: cast from the graveyard
+    instead of paying {2}{B}{B}. Same reanimation effect as the hard-cast
+    above, chained after the sacrifice resolves. Newly-sacrificed
+    creatures land in the graveyard before the reanimation choice begins,
+    so they're correctly eligible targets for this same casting -- a real
+    rules interaction, not a bug. The card itself never returns to the
+    graveyard afterward (exiled, per its own text) -- reusing the existing
+    "exile is untracked" precedent (Relic of Progenitus) rather than
+    adding a real exile zone."""
+    state.graveyard.remove(card_def)  # leaves the graveyard the moment Flashback is chosen, same as any other cast
+
+    def _on_sacrificed(state, ok):
+        if not ok:
+            return  # tron_env.py's Flashback legality check guarantees this can't happen
+
+        def _on_chosen(state, name):
+            if name is None:
+                return
+            found = next(c for c in state.graveyard if c.name == name)
+            state.graveyard.remove(found)
+            enters_battlefield(state, found)
+
+        begin_choose_graveyard_card(state, lambda c: c.card_type == CardType.CREATURE, _on_chosen)
+
+    begin_sacrifice_creatures(state, 3, _on_sacrificed)
+
+
+# ---------------------------------------------------------------------------
 # Effect registry (MULTI_DECK_PLAN.md Phase M1) -- one place per EffectId
 # describing its mana output (if any), whether it enters tapped, its ETB
 # trigger (if any), and its activated abilities (cost + resolve function).
@@ -1125,6 +1612,100 @@ EFFECT_REGISTRY = {
         },
     },
     EffectId.FILLER: {},
+
+    # --- spy_combo deck ---
+    EffectId.SWAMP: {
+        "mana": ("fixed", "B"),
+    },
+    EffectId.MASKED_VANDAL: {
+        # No ability -- functionally a vanilla 1/3 for {1}{G} (P/T isn't
+        # tracked anywhere in this engine; see design discussion).
+        "cast": {"resolve": lambda state, card_def: cast_permanent_from_hand(state, card_def)},
+    },
+    EffectId.BALUSTRADE_SPY: {
+        "cast": {"resolve": lambda state, card_def: cast_permanent_from_hand(state, card_def)},
+        "etb_trigger": lambda state: mill_until_land(state),
+    },
+    EffectId.SARULI_CARETAKER: {
+        "cast": {"resolve": lambda state, card_def: cast_permanent_from_hand(state, card_def)},
+        "mana": ("flexible", set(COLORS)),
+        "mana_extra_available": lambda state, permanent: _saruli_caretaker_extra_available(state, permanent),
+        "on_tap": lambda state, permanent: _saruli_caretaker_on_tap(state, permanent),
+        "on_tap_undo": lambda state, permanent: _saruli_caretaker_on_tap_undo(state, permanent),
+    },
+    EffectId.OVERGROWN_BATTLEMENT: {
+        "cast": {"resolve": lambda state, card_def: cast_permanent_from_hand(state, card_def)},
+        "mana": ("count", "G", _is_defender),
+    },
+    EffectId.WALL_OF_ROOTS: {
+        "cast": {"resolve": lambda state, card_def: cast_permanent_from_hand(state, card_def)},
+        "mana": ("fixed", "G"),
+        "on_tap": lambda state, permanent: _wall_of_roots_on_tap(state, permanent),
+        "on_tap_undo": lambda state, permanent: _wall_of_roots_on_tap_undo(state, permanent),
+    },
+    EffectId.LOTLETH_GIANT: {
+        "cast": {"resolve": lambda state, card_def: cast_permanent_from_hand(state, card_def)},
+        "etb_trigger": lambda state: lotleth_giant_etb(state),
+    },
+    EffectId.ROOST_SEEK: {
+        "cast": {"resolve": lambda state, card_def: cast_roost_seek(state, card_def)},
+    },
+    EffectId.GATECREEPER_VINE: {
+        "cast": {"resolve": lambda state, card_def: cast_permanent_from_hand(state, card_def)},
+        "etb_trigger": lambda state: gatecreeper_vine_etb(state),
+    },
+    EffectId.NYXBORN_HYDRA: {
+        # Cast as a fixed 0/1 for {G} -- X permanently 0, no Bestow, no
+        # counters (a deliberate simplification per design discussion,
+        # same treatment as Candy Trail's omitted lifegain).
+        "cast": {"resolve": lambda state, card_def: cast_permanent_from_hand(state, card_def)},
+    },
+    EffectId.QUIRION_RANGER: {
+        "cast": {"resolve": lambda state, card_def: cast_permanent_from_hand(state, card_def)},
+        "activated_abilities": {
+            "untap": {
+                "legal": lambda state, permanent: quirion_ranger_untap_legal(state, permanent),
+                "resolve": lambda state, permanent: quirion_ranger_untap_resolve(state, permanent),
+            },
+        },
+    },
+    EffectId.MESMERIC_FIEND: {
+        # No ability -- vanilla 1/1 for {1}{B} (opponent hand-disruption
+        # isn't modeled; see design discussion).
+        "cast": {"resolve": lambda state, card_def: cast_permanent_from_hand(state, card_def)},
+    },
+    EffectId.LOTUS_PETAL: {
+        "cast": {"resolve": lambda state, card_def: cast_permanent_from_hand(state, card_def)},
+        "mana": ("flexible", set(COLORS)),
+        "on_tap": lambda state, permanent: _lotus_petal_on_tap(state, permanent),
+        "on_tap_undo": lambda state, permanent: _lotus_petal_on_tap_undo(state, permanent),
+    },
+    EffectId.WINDING_WAY: {
+        "cast_modes": {
+            "creature": {"resolve": lambda state, card_def: cast_winding_way_creature(state, card_def)},
+            "land": {"resolve": lambda state, card_def: cast_winding_way_land(state, card_def)},
+        },
+    },
+    EffectId.LEAD_THE_STAMPEDE: {
+        "cast": {"resolve": lambda state, card_def: cast_lead_the_stampede(state, card_def)},
+    },
+    EffectId.LAND_GRANT: {
+        "cast": {"resolve": lambda state, card_def: cast_land_grant(state, card_def)},
+        "alt_cast": {
+            "extra_legal": lambda state: land_grant_alt_cost_legal(state),
+            "resolve": lambda state, card_def: cast_land_grant(state, card_def),
+        },
+    },
+    EffectId.DREAD_RETURN: {
+        "cast": {
+            "resolve": lambda state, card_def: cast_dread_return(state, card_def),
+            "extra_legal": lambda state: any(c.card_type == CardType.CREATURE for c in state.graveyard),
+        },
+        "flashback": {
+            "legal": lambda state: sum(1 for p in state.battlefield if p.card_def.card_type == CardType.CREATURE) >= 3,
+            "resolve": lambda state, card_def: flashback_dread_return(state, card_def),
+        },
+    },
 }
 
 # Derived views, kept as module-level names for backward compatibility with
@@ -1137,7 +1718,14 @@ SIMPLE_MANA_SOURCE_EFFECTS = {
 _FIXED_SOURCE_COLOR = {
     effect_id: spec["mana"][1]
     for effect_id, spec in EFFECT_REGISTRY.items()
-    if spec.get("mana", (None,))[0] == "fixed"
+    # "count" (Overgrown Battlement) folded in too: choose_taps_for_cost's
+    # legality-only solver treats it as a single-symbol fixed source for
+    # matching one colored pip -- an undercount of its real (variable)
+    # output, but harmless since pay_cost's final validation is
+    # quantity-correct regardless of which source the solver picked for
+    # which pip (same "approximate, not exhaustive" tolerance plan_payment
+    # already documents elsewhere).
+    if spec.get("mana", (None,))[0] in ("fixed", "count")
 }
 _FLEXIBLE_SOURCE_CHOICES = {
     effect_id: spec["mana"][1]
@@ -1358,10 +1946,12 @@ def run_turn(state, choose_action):
     state.lands_played_this_turn = 0
     untap_step(state)
     draw_step(state)
+    if state.decked_out:
+        return  # failed to draw -- loss, same as real Magic's SBA; no main phase this turn
 
     for _ in range(MAX_MAIN_PHASE_ACTIONS):
-        if state.turn_won is not None:
-            break  # already fixed; nothing left to observe
+        if state.turn_won is not None or state.decked_out:
+            break  # already fixed, or a mid-turn draw ability just decked the player out
         action = choose_action(state)
         if action is None:
             break
@@ -1370,7 +1960,7 @@ def run_turn(state, choose_action):
 
 def run_game(decklist, terminated_fn, rng, on_the_play, horizon, choose_action):
     state = new_game_state(decklist, terminated_fn, on_the_play, rng)
-    while state.turn_number < horizon and state.turn_won is None:
+    while state.turn_number < horizon and state.turn_won is None and not state.decked_out:
         run_turn(state, choose_action)
     return state
 
@@ -1568,6 +2158,245 @@ def _phase8_sanity_check():
     _phase8_hand_fed_scenario()     # deterministic turn-3 assembly
 
 
+# ---------------------------------------------------------------------------
+# spy_combo deck sanity checks
+# ---------------------------------------------------------------------------
+
+def _phase_spy_combo_mechanics_sanity_check():
+    # Balustrade Spy's mill: stops at a land; empties the library and sets
+    # decked_out (via a subsequent draw, not the mill itself) if none turns up.
+    state = GameState(on_the_play=True, rng=random.Random(0))
+    state.library = [CARD_DEFS["Nyxborn Hydra"], CARD_DEFS["Forest"], CARD_DEFS["Masked Vandal"]]
+    mill_until_land(state)
+    assert len(state.graveyard) == 2, "stops once the land is milled"
+    assert state.library == [CARD_DEFS["Masked Vandal"]]
+
+    state2 = GameState(on_the_play=True, rng=random.Random(0))
+    state2.library = [CARD_DEFS["Nyxborn Hydra"], CARD_DEFS["Masked Vandal"]]
+    mill_until_land(state2)
+    assert state2.library == []
+    assert len(state2.graveyard) == 2
+    assert not state2.decked_out, "milling isn't itself a draw"
+    state2.draw(1)
+    assert state2.decked_out
+    assert state2.hand == []
+
+    # Lotleth Giant's damage + spy_combo_terminated.
+    state3 = GameState(on_the_play=True, rng=random.Random(0))
+    state3.graveyard = [CARD_DEFS["Masked Vandal"], CARD_DEFS["Mesmeric Fiend"], CARD_DEFS["Forest"]]
+    lotleth_giant_etb(state3)
+    assert state3.damage_dealt == 2, "2 creature cards, 1 land -- land doesn't count"
+    assert not spy_combo_terminated(state3)
+    state3.damage_dealt = 19
+    assert not spy_combo_terminated(state3)
+    state3.damage_dealt = 20
+    assert spy_combo_terminated(state3)
+
+    # Land Grant: free alt-cost legal only with 0 lands in hand; search
+    # always resolves to "Forest" with no pending choice.
+    state4 = GameState(on_the_play=True, rng=random.Random(0))
+    state4.hand = [CARD_DEFS["Land Grant"], CARD_DEFS["Masked Vandal"]]
+    assert land_grant_alt_cost_legal(state4)
+    state4.hand.append(CARD_DEFS["Forest"])
+    assert not land_grant_alt_cost_legal(state4)
+
+    state5 = GameState(on_the_play=True, rng=random.Random(0))
+    state5.hand = [CARD_DEFS["Land Grant"]]
+    state5.library = [CARD_DEFS["Masked Vandal"], CARD_DEFS["Forest"]]
+    cast_land_grant(state5, CARD_DEFS["Land Grant"])
+    assert CARD_DEFS["Forest"] in state5.hand
+    assert CARD_DEFS["Land Grant"] in state5.graveyard
+    assert state5.pending_resolution is None
+
+    # Winding Way: modal cast, no pending resolution, deterministic split.
+    state6 = GameState(on_the_play=True, rng=random.Random(0))
+    state6.hand = [CARD_DEFS["Winding Way"]]
+    state6.library = [
+        CARD_DEFS["Masked Vandal"], CARD_DEFS["Forest"], CARD_DEFS["Mesmeric Fiend"], CARD_DEFS["Swamp"],
+    ] + [CARD_DEFS["Forest"]] * 10
+    cast_winding_way_creature(state6, CARD_DEFS["Winding Way"])
+    assert CARD_DEFS["Masked Vandal"] in state6.hand and CARD_DEFS["Mesmeric Fiend"] in state6.hand
+    assert len(state6.hand) == 2
+    assert len(state6.graveyard) == 3  # Winding Way itself + Forest + Swamp
+
+    # Gatecreeper Vine: optional search, declinable even with a target available.
+    state7 = GameState(on_the_play=True, rng=random.Random(0))
+    state7.library = [CARD_DEFS["Forest"], CARD_DEFS["Masked Vandal"]]
+    gatecreeper_vine_etb(state7)
+    assert state7.pending_resolution["kind"] == "search_fetch"
+    assert search_fetch_options(state7) == ["Forest"]
+    execute_search_fetch_decline(state7)
+    assert state7.pending_resolution is None
+    assert CARD_DEFS["Forest"] not in state7.hand
+
+
+def _phase_spy_combo_mana_sanity_check():
+    # Saruli Caretaker: not offered without another untapped creature;
+    # auto-taps one when used; abandon reverses both taps together.
+    state = GameState(on_the_play=True, rng=random.Random(0))
+    saruli = Permanent(CARD_DEFS["Saruli Caretaker"])
+    other = Permanent(CARD_DEFS["Masked Vandal"])
+    state.battlefield = [saruli, other]
+    begin_pay_cost(state, {"G": 1}, on_complete=lambda s: None)
+    assert any(n == "Saruli Caretaker" and c == "G" for n, c, _f in tap_cost_options(state))
+    execute_tap_cost_option(state, "Saruli Caretaker", "G", False)
+    assert saruli.tapped and other.tapped
+    assert state.pending_resolution is None
+
+    state2 = GameState(on_the_play=True, rng=random.Random(0))
+    saruli2 = Permanent(CARD_DEFS["Saruli Caretaker"])
+    state2.battlefield = [saruli2]
+    begin_pay_cost(state2, {"G": 1}, on_complete=lambda s: None)
+    assert not any(n == "Saruli Caretaker" for n, _c, _f in tap_cost_options(state2)), "no other creature to tap"
+
+    state3 = GameState(on_the_play=True, rng=random.Random(0))
+    saruli3 = Permanent(CARD_DEFS["Saruli Caretaker"])
+    other3 = Permanent(CARD_DEFS["Masked Vandal"])
+    state3.battlefield = [saruli3, other3]
+    begin_pay_cost(state3, {"G": 2}, on_complete=lambda s: None)  # 1 tap won't cover it
+    execute_tap_cost_option(state3, "Saruli Caretaker", "G", False)
+    abandon_pay_cost(state3)
+    assert not saruli3.tapped and not other3.tapped
+
+    # Overgrown Battlement: G per defender you control, itself included.
+    state4 = GameState(on_the_play=True, rng=random.Random(0))
+    battlement = Permanent(CARD_DEFS["Overgrown Battlement"])
+    wall = Permanent(CARD_DEFS["Wall of Roots"])
+    caretaker = Permanent(CARD_DEFS["Saruli Caretaker"])
+    non_defender = Permanent(CARD_DEFS["Masked Vandal"])
+    state4.battlefield = [battlement, wall, caretaker, non_defender]
+    assert mana_output(battlement, state4, None) == ["G", "G", "G"]
+
+    # Lotus Petal: consumed (not just tapped) on use; abandon undoes the sacrifice too.
+    state5 = GameState(on_the_play=True, rng=random.Random(0))
+    petal = Permanent(CARD_DEFS["Lotus Petal"])
+    state5.battlefield = [petal]
+    begin_pay_cost(state5, {"generic": 1}, on_complete=lambda s: None)
+    execute_tap_cost_option(state5, "Lotus Petal", "G", False)
+    assert petal not in state5.battlefield
+    assert CARD_DEFS["Lotus Petal"] in state5.graveyard
+    assert state5.pending_resolution is None
+
+    state6 = GameState(on_the_play=True, rng=random.Random(0))
+    petal2 = Permanent(CARD_DEFS["Lotus Petal"])
+    state6.battlefield = [petal2]
+    begin_pay_cost(state6, {"generic": 2}, on_complete=lambda s: None)
+    execute_tap_cost_option(state6, "Lotus Petal", "G", False)
+    abandon_pay_cost(state6)
+    assert petal2 in state6.battlefield
+    assert CARD_DEFS["Lotus Petal"] not in state6.graveyard
+
+    # Wall of Roots: dies on its 5th tap; abandon undoes both the counter
+    # and the death if the fatal tap was part of an abandoned payment.
+    state7 = GameState(on_the_play=True, rng=random.Random(0))
+    roots = Permanent(CARD_DEFS["Wall of Roots"])
+    state7.battlefield = [roots]
+    for i in range(4):
+        begin_pay_cost(state7, {"G": 1}, on_complete=lambda s: None)
+        execute_tap_cost_option(state7, "Wall of Roots", None, False)
+        assert roots in state7.battlefield, f"should survive tap #{i + 1}"
+        roots.tapped = False  # simulate untap_step between turns
+    begin_pay_cost(state7, {"G": 1}, on_complete=lambda s: None)
+    execute_tap_cost_option(state7, "Wall of Roots", None, False)
+    assert roots not in state7.battlefield, "5th tap kills it"
+    assert roots.card_def in state7.graveyard
+
+    state8 = GameState(on_the_play=True, rng=random.Random(0))
+    roots2 = Permanent(CARD_DEFS["Wall of Roots"])
+    roots2.flags["roots_activations"] = 4
+    state8.battlefield = [roots2]
+    begin_pay_cost(state8, {"G": 2}, on_complete=lambda s: None)  # 1 tap (the fatal 5th) won't cover it
+    execute_tap_cost_option(state8, "Wall of Roots", None, False)
+    assert roots2 not in state8.battlefield
+    abandon_pay_cost(state8)
+    assert roots2 in state8.battlefield, "abandon undoes the death"
+    assert roots2.tapped is False
+    assert roots2.flags["roots_activations"] == 4
+
+
+def _phase_spy_combo_combo_sanity_check():
+    # Lead the Stampede: per-card keep(creature-only)/bottom, then order
+    # the bottomed cards.
+    state = GameState(on_the_play=True, rng=random.Random(0))
+    state.hand = [CARD_DEFS["Lead the Stampede"]]
+    state.library = [
+        CARD_DEFS["Masked Vandal"], CARD_DEFS["Forest"], CARD_DEFS["Mesmeric Fiend"],
+        CARD_DEFS["Land Grant"], CARD_DEFS["Quirion Ranger"],
+    ] + [CARD_DEFS["Forest"]] * 10
+    cast_lead_the_stampede(state, CARD_DEFS["Lead the Stampede"])
+    assert select_to_hand_options(state) == ["keep", "bottom"]  # Masked Vandal: creature
+    execute_select_to_hand_option(state, "keep")
+    assert select_to_hand_options(state) == ["bottom"]  # Forest: not a creature -- keep unavailable
+    execute_select_to_hand_option(state, "bottom")
+    assert select_to_hand_options(state) == ["keep", "bottom"]  # Mesmeric Fiend
+    execute_select_to_hand_option(state, "keep")
+    assert select_to_hand_options(state) == ["bottom"]  # Land Grant: not a creature
+    execute_select_to_hand_option(state, "bottom")
+    assert select_to_hand_options(state) == ["keep", "bottom"]  # Quirion Ranger
+    execute_select_to_hand_option(state, "bottom")  # declined even though eligible
+    assert state.pending_resolution["kind"] == "select_to_hand"  # 3 bottomed -- ordering phase
+    assert sorted(select_to_hand_options(state)) == ["Forest", "Land Grant", "Quirion Ranger"]
+    execute_select_to_hand_option(state, "Forest")
+    execute_select_to_hand_option(state, "Land Grant")
+    execute_select_to_hand_option(state, "Quirion Ranger")
+    assert state.pending_resolution is None
+    assert CARD_DEFS["Masked Vandal"] in state.hand and CARD_DEFS["Mesmeric Fiend"] in state.hand
+    assert len(state.library) == 13
+
+    # Quirion Ranger: no {T} in its own cost -- works even while tapped.
+    state2 = GameState(on_the_play=True, rng=random.Random(0))
+    ranger = Permanent(CARD_DEFS["Quirion Ranger"], tapped=True)
+    forest = Permanent(CARD_DEFS["Forest"])
+    tapped_creature = Permanent(CARD_DEFS["Masked Vandal"], tapped=True)
+    state2.battlefield = [ranger, forest, tapped_creature]
+    assert quirion_ranger_untap_legal(state2, ranger)
+    quirion_ranger_untap_resolve(state2, ranger)
+    assert forest not in state2.battlefield
+    assert CARD_DEFS["Forest"] in state2.hand
+    assert state2.pending_resolution["kind"] == "choose_permanent"
+    execute_choose_permanent_option(state2, "Masked Vandal")
+    assert not tapped_creature.tapped
+    assert not quirion_ranger_untap_legal(state2, ranger), "already used this turn"
+
+    # Dread Return hard-cast: choose among graveyard creatures.
+    state3 = GameState(on_the_play=True, rng=random.Random(0))
+    state3.hand = [CARD_DEFS["Dread Return"]]
+    state3.graveyard = [CARD_DEFS["Lotleth Giant"], CARD_DEFS["Masked Vandal"]]
+    cast_dread_return(state3, CARD_DEFS["Dread Return"])
+    assert state3.pending_resolution["kind"] == "choose_graveyard_card"
+    assert choose_graveyard_card_options(state3) == ["Lotleth Giant", "Masked Vandal"]
+    execute_choose_graveyard_card_option(state3, "Lotleth Giant")
+    assert any(p.card_def.name == "Lotleth Giant" for p in state3.battlefield)
+    assert CARD_DEFS["Lotleth Giant"] not in state3.graveyard
+    assert CARD_DEFS["Dread Return"] in state3.graveyard, "hard-cast goes to the graveyard normally"
+
+    # Dread Return Flashback: sacrifice 3, reanimate (newly-sacrificed
+    # creatures are themselves eligible targets), card never comes back.
+    state4 = GameState(on_the_play=True, rng=random.Random(0))
+    state4.graveyard = [CARD_DEFS["Dread Return"], CARD_DEFS["Lotleth Giant"]]
+    state4.battlefield = [
+        Permanent(CARD_DEFS["Masked Vandal"]),
+        Permanent(CARD_DEFS["Mesmeric Fiend"]),
+        Permanent(CARD_DEFS["Quirion Ranger"]),
+    ]
+    flashback_dread_return(state4, CARD_DEFS["Dread Return"])
+    assert CARD_DEFS["Dread Return"] not in state4.graveyard, "left the graveyard the moment Flashback began"
+    assert state4.pending_resolution["kind"] == "sacrifice_creatures"
+    assert sacrifice_creatures_options(state4) == ["Masked Vandal", "Mesmeric Fiend", "Quirion Ranger"]
+    execute_sacrifice_creatures_option(state4, "Masked Vandal")
+    execute_sacrifice_creatures_option(state4, "Mesmeric Fiend")
+    assert state4.pending_resolution["kind"] == "sacrifice_creatures", "2 of 3 -- not done yet"
+    execute_sacrifice_creatures_option(state4, "Quirion Ranger")
+    assert state4.pending_resolution["kind"] == "choose_graveyard_card"
+    assert choose_graveyard_card_options(state4) == [
+        "Lotleth Giant", "Masked Vandal", "Mesmeric Fiend", "Quirion Ranger",
+    ]
+    execute_choose_graveyard_card_option(state4, "Lotleth Giant")
+    assert any(p.card_def.name == "Lotleth Giant" for p in state4.battlefield)
+    assert state4.pending_resolution is None
+    assert CARD_DEFS["Dread Return"] not in state4.graveyard, "exiled -- never returns"
+
+
 if __name__ == "__main__":
     _phase0_sanity_check()
     print(f"Phase 0 OK: {len(TRON_DECKLIST)} distinct cards, 60 total copies.")
@@ -1609,3 +2438,19 @@ if __name__ == "__main__":
     _phase_m4d_sanity_check()
     print("Phase M4d OK: Ancient Stirrings decline path -- all 5 revealed cards correctly go to the "
           "bottom, 6th unrevealed card stays on top.")
+
+    _phase_spy_combo_decklist_sanity_check()
+    print("spy_combo decklist OK: 60 cards, 17 new distinct names.")
+
+    _phase_spy_combo_mechanics_sanity_check()
+    print("spy_combo mechanics OK: mill-to-empty/decked_out, Lotleth Giant damage + spy_combo_terminated, "
+          "Land Grant's free alt-cost, Winding Way's modal cast, Gatecreeper Vine's declinable search.")
+
+    _phase_spy_combo_mana_sanity_check()
+    print("spy_combo mana OK: Saruli Caretaker's extra-creature-tap cost, Overgrown Battlement's "
+          "defender-count output, Lotus Petal's sacrifice-on-tap, Wall of Roots' 5th-use death -- "
+          "each including abandon_pay_cost's reversal.")
+
+    _phase_spy_combo_combo_sanity_check()
+    print("spy_combo combo OK: Lead the Stampede's hand/bottom split, Quirion Ranger's no-tap ability, "
+          "Dread Return's hard-cast and Flashback (sacrifice-then-reanimate, never returns to the graveyard).")

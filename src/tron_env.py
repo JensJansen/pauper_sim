@@ -26,7 +26,11 @@ CARD_COPIES = {name: qty for name, qty, *_ in game.TRON_DECKLIST}
 # Every kind string game.py's pending-resolution mechanism can produce,
 # plus "none" for "nothing pending" -- part of the engine's own vocabulary
 # (see game.py's begin_resolution), not decklist-specific.
-PENDING_KINDS = ("none", "pay_cost", "search_fetch", "choose_permanent", "ancient_stirrings", "scry", "surveil")
+PENDING_KINDS = (
+    "none", "pay_cost", "search_fetch", "choose_permanent", "ancient_stirrings", "scry", "surveil",
+    # spy_combo deck additions:
+    "select_to_hand", "choose_graveyard_card", "sacrifice_creatures",
+)
 
 OBSERVATION_DIM = len(CARD_NAMES) * 4 + 2 + len(PENDING_KINDS)
 
@@ -116,6 +120,14 @@ def build_observation(state, decklist, horizon):
 #      flexible/filter source for the wrong color could strand a game
 #      with an unpayable remaining cost and zero legal actions -- see
 #      game.abandon_pay_cost's docstring.
+#
+# spy_combo deck additions: B also covers Winding Way's modal cast (2
+# actions, one per mode), Land Grant's free alt-cost, and Dread Return's
+# Flashback (cast from the graveyard); C also covers non-mana activated
+# abilities (Quirion Ranger); F/H also cover select_to_hand's own
+# Keep/Bottom pair and its ordering phase (Lead the Stampede) and an
+# optional search's Decline (Gatecreeper Vine) alongside Ancient
+# Stirrings'.
 # ---------------------------------------------------------------------------
 
 def _land_drop_legal(name):
@@ -210,10 +222,16 @@ def _choose_name_options(state):
         return game.search_fetch_options(state)
     if kind == "choose_permanent":
         return game.choose_permanent_options(state)
+    if kind == "choose_graveyard_card":
+        return game.choose_graveyard_card_options(state)
+    if kind == "sacrifice_creatures":
+        return game.sacrifice_creatures_options(state)
     if kind == "ancient_stirrings":
         return [n for n in game.ancient_stirrings_options(state) if n != "decline"]
     if kind in ("scry", "surveil") and pending["ordered"] is not None:
         return game.scry_surveil_options(state)
+    if kind == "select_to_hand" and pending["ordered"] is not None:
+        return game.select_to_hand_options(state)  # ordering phase only -- "keep"/"bottom" are their own actions
     return []
 
 
@@ -232,8 +250,14 @@ def _choose_name_execute(name):
             game.execute_search_fetch_option(state, name)
         elif kind == "choose_permanent":
             game.execute_choose_permanent_option(state, name)
+        elif kind == "choose_graveyard_card":
+            game.execute_choose_graveyard_card_option(state, name)
+        elif kind == "sacrifice_creatures":
+            game.execute_sacrifice_creatures_option(state, name)
         elif kind == "ancient_stirrings":
             game.execute_ancient_stirrings_option(state, name)
+        elif kind == "select_to_hand":
+            game.execute_select_to_hand_option(state, name)  # ordering phase only
         else:  # scry / surveil, ordering phase
             game.execute_scry_surveil_option(state, name)
     return execute
@@ -293,6 +317,101 @@ def _abandon_payment_execute(state):
     game.abandon_pay_cost(state)
 
 
+# ---------------------------------------------------------------------------
+# spy_combo deck additions: select_to_hand's own fixed actions (Lead the
+# Stampede), an optional-search decline, non-mana activated abilities
+# (Quirion Ranger), Land Grant's free alt-cost, Dread Return's Flashback,
+# and Winding Way's modal cast. None of these fire for Tron cards -- each
+# is gated on a registry key no Tron EffectId sets.
+# ---------------------------------------------------------------------------
+
+def _select_to_hand_keep_legal(state):
+    pending = state.pending_resolution
+    return (
+        pending is not None and pending["kind"] == "select_to_hand"
+        and bool(pending["remaining"]) and pending["eligible"](pending["remaining"][0])
+    )
+
+
+def _select_to_hand_bottom_legal(state):
+    pending = state.pending_resolution
+    return pending is not None and pending["kind"] == "select_to_hand" and bool(pending["remaining"])
+
+
+def _select_to_hand_keep_execute(state):
+    game.execute_select_to_hand_option(state, "keep")
+
+
+def _select_to_hand_bottom_execute(state):
+    game.execute_select_to_hand_option(state, "bottom")
+
+
+def _decline_search_legal(state):
+    pending = state.pending_resolution
+    return (
+        pending is not None and pending["kind"] == "search_fetch" and pending.get("optional")
+        and bool(game.search_fetch_options(state))
+    )
+
+
+def _decline_search_execute(state):
+    game.execute_search_fetch_decline(state)
+
+
+def _activate_no_cost_legal(name, ability_legal):
+    """Non-mana activated-ability cost (Quirion Ranger's Forest bounce):
+    no {T}-of-self assumption, unlike _activate_legal -- the ability's own
+    legal(state, permanent) captures its whole cost precondition."""
+    def legal(state):
+        if state.pending_resolution is not None:
+            return False
+        p = next((p for p in state.battlefield if p.card_def.name == name), None)
+        return p is not None and ability_legal(state, p)
+    return legal
+
+
+def _activate_no_cost_execute(name, resolve):
+    def execute(state):
+        p = next(p for p in state.battlefield if p.card_def.name == name)
+        resolve(state, p)
+    return execute
+
+
+def _alt_cast_legal(name, extra_legal):
+    """Land Grant's free alt-cost: no mana payment at all, just the
+    card's own extra_legal predicate (0 lands in hand)."""
+    def legal(state):
+        if state.pending_resolution is not None:
+            return False
+        if not any(c.name == name for c in state.hand):
+            return False
+        return extra_legal(state)
+    return legal
+
+
+def _alt_cast_execute(name, resolve):
+    def execute(state):
+        resolve(state, game.CARD_DEFS[name])
+    return execute
+
+
+def _flashback_legal(name, ability_legal):
+    """Dread Return's Flashback: cast from the graveyard, not hand."""
+    def legal(state):
+        if state.pending_resolution is not None:
+            return False
+        if not any(c.name == name for c in state.graveyard):
+            return False
+        return ability_legal(state)
+    return legal
+
+
+def _flashback_execute(name, resolve):
+    def execute(state):
+        resolve(state, game.CARD_DEFS[name])
+    return execute
+
+
 def build_action_table(decklist, registry):
     distinct_names = sorted({name for name, *_rest in decklist})
     land_names = sorted({
@@ -306,22 +425,57 @@ def build_action_table(decklist, registry):
         actions.append((f"Play land: {name}", _land_drop_legal(name), _land_drop_execute(name)))
 
     for name in distinct_names:
-        cast_spec = registry.get(game.CARD_DEFS[name].effect_id, {}).get("cast")
+        card_spec = registry.get(game.CARD_DEFS[name].effect_id, {})
+        cast_spec = card_spec.get("cast")
         if cast_spec is not None:
             actions.append((
                 f"Cast {name}",
                 _cast_legal(name, cast_spec.get("extra_legal")),
                 _cast_execute(name, cast_spec["resolve"]),
             ))
+        # Winding Way: a modal cast (choose creature or land) instead of a
+        # single "cast" entry -- one action per mode.
+        cast_modes = card_spec.get("cast_modes")
+        if cast_modes is not None:
+            for mode_name, mode_spec in cast_modes.items():
+                actions.append((
+                    f"Cast {name} (choose {mode_name})",
+                    _cast_legal(name, mode_spec.get("extra_legal")),
+                    _cast_execute(name, mode_spec["resolve"]),
+                ))
+        # Land Grant: a second, free cast path alongside the normal one.
+        alt_cast = card_spec.get("alt_cast")
+        if alt_cast is not None:
+            actions.append((
+                f"Cast {name} (free)",
+                _alt_cast_legal(name, alt_cast["extra_legal"]),
+                _alt_cast_execute(name, alt_cast["resolve"]),
+            ))
+        # Dread Return: Flashback casts from the graveyard, not hand.
+        flashback = card_spec.get("flashback")
+        if flashback is not None:
+            actions.append((
+                f"Flashback {name}",
+                _flashback_legal(name, flashback["legal"]),
+                _flashback_execute(name, flashback["resolve"]),
+            ))
 
     for name in distinct_names:
         abilities = registry.get(game.CARD_DEFS[name].effect_id, {}).get("activated_abilities", {})
         for ability_name, spec in abilities.items():
-            actions.append((
-                f"Activate {name} ({ability_name})",
-                _activate_legal(name, spec["cost_key"]),
-                _activate_execute(name, spec["cost_key"], spec["resolve"]),
-            ))
+            if "cost_key" in spec:
+                actions.append((
+                    f"Activate {name} ({ability_name})",
+                    _activate_legal(name, spec["cost_key"]),
+                    _activate_execute(name, spec["cost_key"], spec["resolve"]),
+                ))
+            else:
+                # Non-mana cost (Quirion Ranger: return a Forest to hand).
+                actions.append((
+                    f"Activate {name} ({ability_name})",
+                    _activate_no_cost_legal(name, spec["legal"]),
+                    _activate_no_cost_execute(name, spec["resolve"]),
+                ))
 
     for name in distinct_names:
         fc_spec = registry.get(game.CARD_DEFS[name].effect_id, {}).get("forestcycle")
@@ -356,6 +510,9 @@ def build_action_table(decklist, registry):
     actions.append(("Keep (scry/surveil)", _keep_dispose_legal, _keep_execute))
     actions.append(("Dispose (scry/surveil)", _keep_dispose_legal, _dispose_execute))
     actions.append(("Decline (Ancient Stirrings)", _decline_legal, _decline_execute))
+    actions.append(("Keep (select to hand)", _select_to_hand_keep_legal, _select_to_hand_keep_execute))
+    actions.append(("Bottom (select to hand)", _select_to_hand_bottom_legal, _select_to_hand_bottom_execute))
+    actions.append(("Decline (search)", _decline_search_legal, _decline_search_execute))
     actions.append(("Abandon payment", _abandon_payment_legal, _abandon_payment_execute))
 
     return tuple(actions)
@@ -454,7 +611,7 @@ class TronEnv(gymnasium.Env):
             _, _, execute_fn = self.actions[action]
             execute_fn(self.state)
 
-        done = self.state.turn_won is not None or game_over
+        done = self.state.turn_won is not None or game_over or self.state.decked_out
         reward = self.reward_fn(self.state, done, self.horizon)
         obs = build_observation(self.state, self.decklist, self.horizon)
         return obs, reward, done, False, {}
@@ -677,6 +834,53 @@ def _phase_multi_deck_sanity_check():
     assert tron_env_instance.pass_action == PASS_ACTION
 
 
+def _phase_spy_combo_fuzz_sanity_check():
+    """Real spy_combo deck (game.SPY_COMBO_DECKLIST/spy_combo_terminated),
+    driven through the real, fully-generated action table exactly like
+    Phase M4g does for Tron: random-legal-action rollouts, primarily as a
+    robustness check (no stuck states, no runaways, no crashes across
+    every new mechanic's action-table wiring) rather than a policy-quality
+    one -- reaching 20 damage under pure random play within a modest
+    horizon is a bonus, not asserted, since the real combo is specific
+    enough that random play may rarely or never find it.
+
+    Uses a trivial placeholder reward_fn, not rewards.assembled_with_
+    resource_quality: that function's resource_quality_components helper
+    hardcodes Tron's own two flexible mana sources (Wooded Ridgeline,
+    Bonder's Ornament) and raises on spy_combo's new ones (Saruli
+    Caretaker, Lotus Petal). Generalizing it is rewards.py work, out of
+    scope here (the real spy_combo reward function is deferred, same as
+    the rest of rewards.py) -- this env-robustness check doesn't need a
+    real reward at all."""
+    def _dummy_reward(state, done, horizon):
+        return 0.0
+
+    rng = random.Random(11)
+    num_episodes = 500
+    horizon = 15
+    wins = 0
+    for _ in range(num_episodes):
+        env = TronEnv(
+            _dummy_reward, decklist=game.SPY_COMBO_DECKLIST,
+            terminated_fn=game.spy_combo_terminated, horizon=horizon, on_the_play=True, seed=rng.random(),
+        )
+        obs, info = env.reset()
+        done = False
+        steps = 0
+        while not done:
+            mask = env.action_masks()
+            legal = [i for i, ok in enumerate(mask) if ok]
+            assert legal, "no legal action available -- stuck state"
+            action = rng.choice(legal)
+            obs, reward, done, truncated, info = env.step(action)
+            steps += 1
+            assert steps < 2000, "runaway episode"
+        assert env.state.pending_resolution is None, "episode ended with a resolution still pending"
+        if env.state.turn_won is not None:
+            wins += 1
+    print(f"  (informational: {wins}/{num_episodes} reached 20 damage under pure random play)")
+
+
 if __name__ == "__main__":
     _phase_d2_sanity_check()
     print("Phase D2 OK: observation/action spaces, masking, reset/step all behave correctly.")
@@ -689,3 +893,7 @@ if __name__ == "__main__":
     _phase_multi_deck_sanity_check()
     print("Multi-deck OK: a second decklist/terminated_fn produces its own independent action table and "
           "observation dim, resolves to its own win condition, and Tron's own env is unaffected.")
+
+    _phase_spy_combo_fuzz_sanity_check()
+    print("spy_combo fuzz OK: 500 random episodes against the real 60-card deck through the real action "
+          "table, zero stuck states/runaways/leftover pending resolutions.")
