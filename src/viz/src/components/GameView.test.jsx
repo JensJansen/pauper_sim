@@ -1,5 +1,7 @@
 import { describe, it, expect } from "vitest";
-import { sortedBattlefield } from "./GameView.jsx";
+import { render, screen, fireEvent } from "@testing-library/react";
+import GameView, { sortedBattlefield } from "./GameView.jsx";
+import fixture from "../__fixtures__/sampleGames.json";
 
 describe("sortedBattlefield", () => {
   it("orders lands before artifacts before creatures", () => {
@@ -35,5 +37,21 @@ describe("sortedBattlefield", () => {
     const original = [...battlefield];
     sortedBattlefield(battlefield);
     expect(battlefield).toEqual(original);
+  });
+});
+
+describe("floating mana readout", () => {
+  it("shows the floating pool once mana is tapped, and clears once it's spent", () => {
+    // fixture.games[0] -- step 5 taps Urza's Power Plant for {generic: 1}
+    // against Expedition Map's cost, floating 1 colorless; step 6 spends it
+    // (see harness.py's per-action logging: every tap/spend is its own step).
+    const [game] = fixture.games;
+    render(<GameView game={game} onBack={() => {}} />);
+
+    for (let i = 0; i < 5; i++) fireEvent.keyDown(document, { key: "ArrowRight" });
+    expect(screen.getByText("C:1")).toBeTruthy();
+
+    fireEvent.keyDown(document, { key: "ArrowRight" });
+    expect(screen.getByText("none")).toBeTruthy();
   });
 });

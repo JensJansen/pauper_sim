@@ -18,8 +18,10 @@ src/            All source code (flat -- see "Why flat?" below)
   tron_env.py     Gymnasium environment adapter wrapping game.py.
   harness.py      TrainingHarness: train / evaluate / save / load a DRL
                   model, plus optional detailed per-game JSON logging.
-  train_drl.py    Thin script: pick a reward fn + model class, train, save.
-  evaluate_drl.py Thin script: load a saved model, evaluate it cold.
+  run.py          Unified train/eval runner, keyed off a JSON config under
+                  configs/ (superseded the old per-deck train_*.py/
+                  evaluate_drl.py scripts -- see
+                  docs/DECK_REGISTRY_REFRESH_PLAN.md).
   viz/            Game Viewer: a separate React+Vite app (its own
                   package.json, not part of the Python project) for
                   stepping through a harness.evaluate(log_path=...) log
@@ -59,10 +61,9 @@ the scripts are relative to the working directory, not the script's own
 location):
 
 ```
-python src/game.py            # heuristic simulator: sanity checks + a 50,000-game report
-python src/harness.py         # DRL harness sanity checks (construction, train, evaluate, save/load, logging)
-python src/train_drl.py       # train a DRL model (edit the constants at the top to configure)
-python src/evaluate_drl.py    # load a saved model and evaluate it against fresh games
+python src/harness.py                        # DRL harness sanity checks (construction, train, evaluate, save/load, logging)
+python src/run.py <config> <runs> --train    # train a deck (configs/<config>.json), continuing an existing model if one exists
+python src/run.py <config> <runs> --log      # evaluate a trained deck against fresh games
 ```
 
 ## Game Viewer (`src/viz/`)

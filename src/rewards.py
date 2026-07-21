@@ -24,10 +24,18 @@ def resource_quality_components(state):
 
     available_mana = 0
     for p in state.battlefield:
-        if p.tapped or p.card_def.effect_id not in game.SIMPLE_MANA_SOURCE_EFFECTS:
+        effect = p.card_def.effect_id
+        if p.tapped or effect not in game.SIMPLE_MANA_SOURCE_EFFECTS:
             continue
-        if p.card_def.effect_id in (game.EffectId.WOODED_RIDGELINE, game.EffectId.BONDERS_ORNAMENT):
-            available_mana += 1  # flexible-color sources always produce exactly 1 mana
+        spec = game.EFFECT_REGISTRY[effect]
+        # Saruli Caretaker: its own extra cost (tap another untapped
+        # creature) must be currently payable, same guard mana.py's
+        # tap_cost_options uses before ever offering it as a source.
+        extra_available = spec.get("mana_extra_available")
+        if extra_available is not None and not extra_available(state, p):
+            continue
+        if spec["mana"][0] == "flexible":
+            available_mana += 1  # flexible sources always produce exactly 1 mana, any color
         else:
             available_mana += len(game.mana_output(p, state))
 
@@ -107,107 +115,22 @@ def assembled_with_resource_quality(state, done, horizon):
     return (0.85 ** state.turn_number) + 0.02 * resource_quality(state)
 
 
-def _phase_d1_sanity_check():
-    import random
+def strict_binary_reward(state, done, horizon):
+    """Turn-of-win only, no tiebreaker, no board-state dependency at all --
+    deck-agnostic despite originating as spy_combo's reward function
+    (renamed off "spy_combo_reward" once reused by other decks;
+    DECK_REGISTRY_REFRESH_PLAN.md). Failure (horizon reached, decked out,
+    or any other non-win) -> 0. Success at turn T -> 0.85**T.
 
-    # Not done -> 0.0 regardless of contents.
-    mid_state = game.GameState(on_the_play=True, rng=random.Random(0))
-    mid_state.turn_number = 3
-    assert assembled_with_resource_quality(mid_state, done=False, horizon=6) == 0.0
-
-    # Done, never assembled -> 0.0.
-    failed_state = game.GameState(on_the_play=True, rng=random.Random(0))
-    failed_state.turn_number = 6
-    failed_state.turn_won = None
-    assert assembled_with_resource_quality(failed_state, done=True, horizon=6) == 0.0
-
-    # Done, assembled turn 3, zero resources -> 0.85**3.
-    turn3_min = game.GameState(on_the_play=True, rng=random.Random(0))
-    turn3_min.turn_number = 3
-    turn3_min.turn_won = 3
-    r_turn3_min = assembled_with_resource_quality(turn3_min, done=True, horizon=6)
-    assert abs(r_turn3_min - 0.85 ** 3) < 1e-9, r_turn3_min
-
-    # Done, assembled turn 6, maxed-out resource_quality -> 0.85**6 + 0.06.
-    # Caps are 3 non-land permanents / 12 available mana / 5 cards in hand:
-    # 3 untapped Bonder's Ornaments (1 flexible mana each) + 9 untapped
-    # Forests (1 mana each) = 3 non-land permanents and 12 mana exactly;
-    # 5 cards in hand exactly.
-    turn6_max = game.GameState(on_the_play=True, rng=random.Random(0))
-    turn6_max.turn_number = 6
-    turn6_max.turn_won = 6
-    turn6_max.battlefield = (
-        [game.Permanent(game.CARD_DEFS["Bonder's Ornament"]) for _ in range(3)]
-        + [game.Permanent(game.CARD_DEFS["Forest"]) for _ in range(9)]
-    )
-    turn6_max.hand = [game.CARD_DEFS["Forest"]] * 5
-    quality = resource_quality(turn6_max)
-    assert quality == 3.0, quality  # every term hit its cap
-    r_turn6_max = assembled_with_resource_quality(turn6_max, done=True, horizon=6)
-    assert abs(r_turn6_max - (0.85 ** 6 + 0.02 * 3.0)) < 1e-9, r_turn6_max
-
-    # The guarantee itself: worst turn-3 success still beats best turn-6 success.
-    assert r_turn3_min > r_turn6_max, (r_turn3_min, r_turn6_max)
-
-    # score 2 (resource_quality_pct): 0 at the floor, 100 at the same
-    # maxed-out state used above.
-    assert resource_quality_pct(turn3_min) == 0.0
-    assert resource_quality_pct(turn6_max) == 100.0
-
-    # score 2's failure gate: a resource-maxed board still scores 0 if the
-    # game never actually assembled Tron -- resource quality alone can't
-    # buy a failure a nonzero score.
-    failed_but_resource_rich = game.GameState(on_the_play=True, rng=random.Random(0))
-    failed_but_resource_rich.turn_number = 6
-    failed_but_resource_rich.turn_won = None
-    failed_but_resource_rich.battlefield = turn6_max.battlefield
-    failed_but_resource_rich.hand = turn6_max.hand
-    assert resource_quality(failed_but_resource_rich) == 3.0  # resources genuinely maxed
-    assert resource_quality_pct(failed_but_resource_rich) == 0.0  # but the gate zeroes it anyway
-
-
-def _phase_m7_sanity_check():
-    """MULTI_DECK_PLAN.md Phase M7: tron_online_score, the successor to
-    the old turn_online concept, now a post-hoc scoring function."""
-    import random
-
-    # All three types present and untapped -> online.
-    online = game.GameState(on_the_play=True, rng=random.Random(0))
-    online.turn_number = 4
-    online.turn_won = 4
-    online.battlefield = [
-        game.Permanent(game.CARD_DEFS["Urza's Mine"]),
-        game.Permanent(game.CARD_DEFS["Urza's Power Plant"]),
-        game.Permanent(game.CARD_DEFS["Urza's Tower"]),
-    ]
-    assert tron_online_score(online) == 1.0
-
-    # All three present, but one tapped (e.g. used to pay for the 3rd
-    # piece's own land drop cost isn't possible, but a prior activation
-    # could tap one) -> not online.
-    not_online = game.GameState(on_the_play=True, rng=random.Random(0))
-    not_online.turn_number = 4
-    not_online.turn_won = 4
-    not_online.battlefield = [
-        game.Permanent(game.CARD_DEFS["Urza's Mine"], tapped=True),
-        game.Permanent(game.CARD_DEFS["Urza's Power Plant"]),
-        game.Permanent(game.CARD_DEFS["Urza's Tower"]),
-    ]
-    assert tron_online_score(not_online) == 0.0
-
-    # Failure gate: an untapped-Tron board still scores 0 if the game
-    # never actually terminated (turn_won is None) -- same centrally
-    # redundant belt-and-suspenders pattern as the other scoring functions.
-    failed = game.GameState(on_the_play=True, rng=random.Random(0))
-    failed.turn_number = 6
-    failed.turn_won = None
-    failed.battlefield = online.battlefield
-    assert tron_online_score(failed) == 0.0
-
-
-if __name__ == "__main__":
-    _phase_d1_sanity_check()
-    print("Phase D1 OK: reward_fn matches the formula, and turn always dominates resource_quality.")
-
-    _phase_m7_sanity_check()
-    print("Phase M7 OK: tron_online_score correctly reads all-untapped board state, and is gated by the failure check.")
+    Originally spy_combo's own reward, simplified by request from an
+    earlier version that also scored board state/mana/hand as a
+    same-turn tiebreaker (SPY_REWARD_PLAN.md Tasks 3/5/6) -- dropped as
+    unnecessary complexity. Turn-dominance is trivial (0.85**T is
+    strictly decreasing in T on its own), so there's no coefficient to
+    derive or re-derive if horizon changes -- the reason it generalizes
+    cleanly to any deck with no per-deck tuning."""
+    if not done:
+        return 0.0
+    if state.turn_won is None:
+        return 0.0
+    return 0.85 ** state.turn_number

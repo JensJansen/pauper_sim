@@ -10,9 +10,9 @@ export default function DropZone({ onLoad }) {
       if (!file) return;
       try {
         const text = await file.text();
-        const games = parseLog(text);
+        const parsed = parseLog(text);
         setError(null);
-        onLoad(games, file.name);
+        onLoad(parsed, file.name);
       } catch (e) {
         setError(e.message);
       }

@@ -1,0 +1,16 @@
+{
+  "decklist": "spy_combo.txt",
+  "terminated_fn": "damage_threshold_20_terminated",
+  "reward_fns": ["strict_binary_reward"],
+  "horizon": 12,
+  "on_the_play": true,
+  "combat_enabled": false,
+  "seed": 0,
+  "n_envs": 8,
+  "model_kwargs": {
+    "policy_kwargs": {"net_arch": [64, 64]},
+    "verbose": 1,
+    "device": "cpu",
+    "n_steps": 256
+  }
+}

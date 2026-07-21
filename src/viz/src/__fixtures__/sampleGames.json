@@ -1,620 +1,1419 @@
-[
-  {
-    "game_index": 16,
-    "scores": [0.642125, 1.0],
-    "turn_won": 3,
-    "opening_hand": [
-      "Urza's Mine",
-      "Candy Trail",
-      "Crop Rotation",
-      "Barrels of Blasting Jelly",
-      "Bramble Wurm",
-      "Boulderbranch Golem",
-      "Ancient Stirrings"
+{
+  "meta": {
+    "config_name": "tron",
+    "reward_fn": "assembled_with_resource_quality",
+    "scoring_fns": [
+      "tron_online_score"
     ],
-    "turns": [
-      {
-        "turn": 1,
-        "drew": null,
-        "actions": [
-          {
-            "action": "Play land: Urza's Mine",
-            "fetched": [],
-            "left_battlefield": [],
-            "tapped_for_cost": [],
-            "state_after": {
-              "turn_number": 1,
-              "hand": [
-                "Candy Trail",
-                "Crop Rotation",
-                "Barrels of Blasting Jelly",
-                "Bramble Wurm",
-                "Boulderbranch Golem",
-                "Ancient Stirrings"
-              ],
-              "battlefield": [
-                {
-                  "name": "Urza's Mine",
-                  "tapped": false
-                }
-              ],
-              "graveyard": [],
-              "resource_quality": {
-                "non_land_permanents": 0,
-                "available_mana": 1,
-                "hand_size": 6
-              }
-            }
-          },
-          {
-            "action": "Cast Barrels of Blasting Jelly",
-            "fetched": [],
-            "left_battlefield": [],
-            "tapped_for_cost": [
+    "horizon": 6,
+    "on_the_play": true,
+    "seed": 1
+  },
+  "games": [
+    {
+      "game_index": 33,
+      "scores": {
+        "assembled_with_resource_quality": 0.6391249999999999,
+        "tron_online_score": 0.0
+      },
+      "turn_won": 3,
+      "opening_hand_state": {
+        "turn_number": 1,
+        "hand": [
+          "Maelstrom Colossus",
+          "Maelstrom Colossus",
+          "Conduit Pylons",
+          "Forest",
+          "Urza's Power Plant",
+          "Boulderbranch Golem",
+          "Urza's Mine"
+        ],
+        "battlefield": [],
+        "graveyard": [],
+        "mana_pool": {},
+        "resource_quality": {
+          "non_land_permanents": 0,
+          "available_mana": 0,
+          "hand_size": 7
+        }
+      },
+      "steps": [
+        {
+          "turn": 1,
+          "action": "Play land: Urza's Power Plant",
+          "fetched": [],
+          "left_battlefield": [],
+          "tapped_for_cost": [],
+          "decision": null,
+          "fallback": false,
+          "state_after": {
+            "turn_number": 1,
+            "hand": [
+              "Maelstrom Colossus",
+              "Maelstrom Colossus",
+              "Conduit Pylons",
+              "Forest",
+              "Boulderbranch Golem",
               "Urza's Mine"
             ],
-            "state_after": {
-              "turn_number": 1,
-              "hand": [
-                "Candy Trail",
-                "Crop Rotation",
-                "Bramble Wurm",
-                "Boulderbranch Golem",
-                "Ancient Stirrings"
-              ],
-              "battlefield": [
-                {
-                  "name": "Urza's Mine",
-                  "tapped": true
-                },
-                {
-                  "name": "Barrels of Blasting Jelly",
-                  "tapped": false
-                }
-              ],
-              "graveyard": [],
-              "resource_quality": {
-                "non_land_permanents": 1,
-                "available_mana": 0,
-                "hand_size": 5
+            "battlefield": [
+              {
+                "name": "Urza's Power Plant",
+                "tapped": false
               }
+            ],
+            "graveyard": [],
+            "mana_pool": {},
+            "resource_quality": {
+              "non_land_permanents": 0,
+              "available_mana": 1,
+              "hand_size": 6
             }
           }
-        ]
-      },
-      {
-        "turn": 2,
-        "drew": "Urza's Power Plant",
-        "actions": [
-          {
-            "action": "Draw a card",
-            "fetched": [
-              "Urza's Power Plant"
+        },
+        {
+          "turn": 2,
+          "action": "Draw a card",
+          "fetched": [
+            "Expedition Map"
+          ],
+          "left_battlefield": [],
+          "tapped_for_cost": [],
+          "decision": null,
+          "fallback": false,
+          "state_after": {
+            "turn_number": 2,
+            "hand": [
+              "Maelstrom Colossus",
+              "Maelstrom Colossus",
+              "Conduit Pylons",
+              "Forest",
+              "Boulderbranch Golem",
+              "Urza's Mine",
+              "Expedition Map"
             ],
-            "left_battlefield": [],
-            "tapped_for_cost": [],
-            "state_after": {
-              "turn_number": 2,
-              "hand": [
-                "Candy Trail",
-                "Crop Rotation",
-                "Bramble Wurm",
-                "Boulderbranch Golem",
-                "Ancient Stirrings",
-                "Urza's Power Plant"
-              ],
-              "battlefield": [
-                {
-                  "name": "Urza's Mine",
-                  "tapped": false
-                },
-                {
-                  "name": "Barrels of Blasting Jelly",
-                  "tapped": false
-                }
-              ],
-              "graveyard": [],
-              "resource_quality": {
-                "non_land_permanents": 1,
-                "available_mana": 1,
-                "hand_size": 6
+            "battlefield": [
+              {
+                "name": "Urza's Power Plant",
+                "tapped": false
               }
+            ],
+            "graveyard": [],
+            "mana_pool": {},
+            "resource_quality": {
+              "non_land_permanents": 0,
+              "available_mana": 1,
+              "hand_size": 7
             }
-          },
-          {
-            "action": "Play land: Urza's Power Plant",
-            "fetched": [],
-            "left_battlefield": [],
-            "tapped_for_cost": [],
-            "state_after": {
-              "turn_number": 2,
-              "hand": [
-                "Candy Trail",
-                "Crop Rotation",
-                "Bramble Wurm",
-                "Boulderbranch Golem",
-                "Ancient Stirrings"
-              ],
-              "battlefield": [
-                {
-                  "name": "Urza's Mine",
-                  "tapped": false
-                },
-                {
-                  "name": "Barrels of Blasting Jelly",
-                  "tapped": false
-                },
-                {
-                  "name": "Urza's Power Plant",
-                  "tapped": false
-                }
-              ],
-              "graveyard": [],
-              "resource_quality": {
-                "non_land_permanents": 1,
-                "available_mana": 2,
-                "hand_size": 5
+          }
+        },
+        {
+          "turn": 2,
+          "action": "Play land: Urza's Mine",
+          "fetched": [],
+          "left_battlefield": [],
+          "tapped_for_cost": [],
+          "decision": null,
+          "fallback": false,
+          "state_after": {
+            "turn_number": 2,
+            "hand": [
+              "Maelstrom Colossus",
+              "Maelstrom Colossus",
+              "Conduit Pylons",
+              "Forest",
+              "Boulderbranch Golem",
+              "Expedition Map"
+            ],
+            "battlefield": [
+              {
+                "name": "Urza's Power Plant",
+                "tapped": false
+              },
+              {
+                "name": "Urza's Mine",
+                "tapped": false
               }
+            ],
+            "graveyard": [],
+            "mana_pool": {},
+            "resource_quality": {
+              "non_land_permanents": 0,
+              "available_mana": 2,
+              "hand_size": 6
             }
-          },
-          {
-            "action": "Cast Ancient Stirrings",
-            "fetched": [
-              "Urza's Tower"
+          }
+        },
+        {
+          "turn": 2,
+          "action": "Cast Expedition Map",
+          "fetched": [],
+          "left_battlefield": [],
+          "tapped_for_cost": [],
+          "decision": null,
+          "fallback": false,
+          "state_after": {
+            "turn_number": 2,
+            "hand": [
+              "Maelstrom Colossus",
+              "Maelstrom Colossus",
+              "Conduit Pylons",
+              "Forest",
+              "Boulderbranch Golem",
+              "Expedition Map"
             ],
-            "left_battlefield": [],
-            "tapped_for_cost": [
-              "Urza's Mine"
-            ],
-            "state_after": {
-              "turn_number": 2,
-              "hand": [
-                "Candy Trail",
-                "Crop Rotation",
-                "Bramble Wurm",
-                "Boulderbranch Golem",
-                "Urza's Tower"
-              ],
-              "battlefield": [
-                {
-                  "name": "Urza's Mine",
-                  "tapped": true
-                },
-                {
-                  "name": "Barrels of Blasting Jelly",
-                  "tapped": false
-                },
-                {
-                  "name": "Urza's Power Plant",
-                  "tapped": false
-                }
-              ],
-              "graveyard": [
-                "Ancient Stirrings"
-              ],
-              "resource_quality": {
-                "non_land_permanents": 1,
-                "available_mana": 1,
-                "hand_size": 5
+            "battlefield": [
+              {
+                "name": "Urza's Power Plant",
+                "tapped": false
+              },
+              {
+                "name": "Urza's Mine",
+                "tapped": false
               }
-            }
-          },
-          {
-            "action": "Cast Candy Trail",
-            "fetched": [],
-            "left_battlefield": [],
-            "tapped_for_cost": [
-              "Urza's Power Plant"
             ],
-            "scry": {
-              "seen": [
-                "Bramble Wurm",
-                "Bonder's Ornament"
-              ],
-              "kept_on_top": [],
-              "bottomed": [
-                "Bramble Wurm",
-                "Bonder's Ornament"
-              ],
-              "binned": []
+            "graveyard": [],
+            "mana_pool": {},
+            "resource_quality": {
+              "non_land_permanents": 0,
+              "available_mana": 2,
+              "hand_size": 6
+            }
+          }
+        },
+        {
+          "turn": 2,
+          "action": "Choose: Urza's Power Plant",
+          "fetched": [],
+          "left_battlefield": [],
+          "tapped_for_cost": [
+            "Urza's Power Plant"
+          ],
+          "decision": {
+            "kind": "pay_cost"
+          },
+          "fallback": false,
+          "state_after": {
+            "turn_number": 2,
+            "hand": [
+              "Maelstrom Colossus",
+              "Maelstrom Colossus",
+              "Conduit Pylons",
+              "Forest",
+              "Boulderbranch Golem",
+              "Expedition Map"
+            ],
+            "battlefield": [
+              {
+                "name": "Urza's Power Plant",
+                "tapped": true
+              },
+              {
+                "name": "Urza's Mine",
+                "tapped": false
+              }
+            ],
+            "graveyard": [],
+            "mana_pool": {
+              "C": 1
             },
-            "state_after": {
-              "turn_number": 2,
-              "hand": [
-                "Crop Rotation",
-                "Bramble Wurm",
-                "Boulderbranch Golem",
-                "Urza's Tower"
-              ],
-              "battlefield": [
-                {
-                  "name": "Urza's Mine",
-                  "tapped": true
-                },
-                {
-                  "name": "Barrels of Blasting Jelly",
-                  "tapped": false
-                },
-                {
-                  "name": "Urza's Power Plant",
-                  "tapped": true
-                },
-                {
-                  "name": "Candy Trail",
-                  "tapped": false
-                }
-              ],
-              "graveyard": [
-                "Ancient Stirrings"
-              ],
-              "resource_quality": {
-                "non_land_permanents": 2,
-                "available_mana": 0,
-                "hand_size": 4
-              }
+            "resource_quality": {
+              "non_land_permanents": 0,
+              "available_mana": 1,
+              "hand_size": 6
             }
           }
-        ]
-      },
-      {
-        "turn": 3,
-        "drew": "Urza's Tower",
-        "actions": [
-          {
-            "action": "Draw a card",
-            "fetched": [
+        },
+        {
+          "turn": 2,
+          "action": "Spend C from pool",
+          "fetched": [],
+          "left_battlefield": [],
+          "tapped_for_cost": [],
+          "decision": {
+            "kind": "pay_cost"
+          },
+          "fallback": false,
+          "state_after": {
+            "turn_number": 2,
+            "hand": [
+              "Maelstrom Colossus",
+              "Maelstrom Colossus",
+              "Conduit Pylons",
+              "Forest",
+              "Boulderbranch Golem"
+            ],
+            "battlefield": [
+              {
+                "name": "Urza's Power Plant",
+                "tapped": true
+              },
+              {
+                "name": "Urza's Mine",
+                "tapped": false
+              },
+              {
+                "name": "Expedition Map",
+                "tapped": false
+              }
+            ],
+            "graveyard": [],
+            "mana_pool": {},
+            "resource_quality": {
+              "non_land_permanents": 1,
+              "available_mana": 1,
+              "hand_size": 5
+            }
+          }
+        },
+        {
+          "turn": 3,
+          "action": "Draw a card",
+          "fetched": [
+            "Breath Weapon"
+          ],
+          "left_battlefield": [],
+          "tapped_for_cost": [],
+          "decision": null,
+          "fallback": false,
+          "state_after": {
+            "turn_number": 3,
+            "hand": [
+              "Maelstrom Colossus",
+              "Maelstrom Colossus",
+              "Conduit Pylons",
+              "Forest",
+              "Boulderbranch Golem",
+              "Breath Weapon"
+            ],
+            "battlefield": [
+              {
+                "name": "Urza's Power Plant",
+                "tapped": false
+              },
+              {
+                "name": "Urza's Mine",
+                "tapped": false
+              },
+              {
+                "name": "Expedition Map",
+                "tapped": false
+              }
+            ],
+            "graveyard": [],
+            "mana_pool": {},
+            "resource_quality": {
+              "non_land_permanents": 1,
+              "available_mana": 2,
+              "hand_size": 6
+            }
+          }
+        },
+        {
+          "turn": 3,
+          "action": "Activate Expedition Map (activate)",
+          "fetched": [],
+          "left_battlefield": [],
+          "tapped_for_cost": [],
+          "decision": null,
+          "fallback": false,
+          "state_after": {
+            "turn_number": 3,
+            "hand": [
+              "Maelstrom Colossus",
+              "Maelstrom Colossus",
+              "Conduit Pylons",
+              "Forest",
+              "Boulderbranch Golem",
+              "Breath Weapon"
+            ],
+            "battlefield": [
+              {
+                "name": "Urza's Power Plant",
+                "tapped": false
+              },
+              {
+                "name": "Urza's Mine",
+                "tapped": false
+              },
+              {
+                "name": "Expedition Map",
+                "tapped": false
+              }
+            ],
+            "graveyard": [],
+            "mana_pool": {},
+            "resource_quality": {
+              "non_land_permanents": 1,
+              "available_mana": 2,
+              "hand_size": 6
+            }
+          }
+        },
+        {
+          "turn": 3,
+          "action": "Choose: Urza's Power Plant",
+          "fetched": [],
+          "left_battlefield": [],
+          "tapped_for_cost": [
+            "Urza's Power Plant"
+          ],
+          "decision": {
+            "kind": "pay_cost"
+          },
+          "fallback": false,
+          "state_after": {
+            "turn_number": 3,
+            "hand": [
+              "Maelstrom Colossus",
+              "Maelstrom Colossus",
+              "Conduit Pylons",
+              "Forest",
+              "Boulderbranch Golem",
+              "Breath Weapon"
+            ],
+            "battlefield": [
+              {
+                "name": "Urza's Power Plant",
+                "tapped": true
+              },
+              {
+                "name": "Urza's Mine",
+                "tapped": false
+              },
+              {
+                "name": "Expedition Map",
+                "tapped": false
+              }
+            ],
+            "graveyard": [],
+            "mana_pool": {
+              "C": 1
+            },
+            "resource_quality": {
+              "non_land_permanents": 1,
+              "available_mana": 1,
+              "hand_size": 6
+            }
+          }
+        },
+        {
+          "turn": 3,
+          "action": "Choose: Urza's Mine",
+          "fetched": [],
+          "left_battlefield": [],
+          "tapped_for_cost": [
+            "Urza's Mine"
+          ],
+          "decision": {
+            "kind": "pay_cost"
+          },
+          "fallback": false,
+          "state_after": {
+            "turn_number": 3,
+            "hand": [
+              "Maelstrom Colossus",
+              "Maelstrom Colossus",
+              "Conduit Pylons",
+              "Forest",
+              "Boulderbranch Golem",
+              "Breath Weapon"
+            ],
+            "battlefield": [
+              {
+                "name": "Urza's Power Plant",
+                "tapped": true
+              },
+              {
+                "name": "Urza's Mine",
+                "tapped": true
+              },
+              {
+                "name": "Expedition Map",
+                "tapped": false
+              }
+            ],
+            "graveyard": [],
+            "mana_pool": {
+              "C": 2
+            },
+            "resource_quality": {
+              "non_land_permanents": 1,
+              "available_mana": 0,
+              "hand_size": 6
+            }
+          }
+        },
+        {
+          "turn": 3,
+          "action": "Spend C from pool",
+          "fetched": [],
+          "left_battlefield": [],
+          "tapped_for_cost": [],
+          "decision": {
+            "kind": "pay_cost"
+          },
+          "fallback": false,
+          "state_after": {
+            "turn_number": 3,
+            "hand": [
+              "Maelstrom Colossus",
+              "Maelstrom Colossus",
+              "Conduit Pylons",
+              "Forest",
+              "Boulderbranch Golem",
+              "Breath Weapon"
+            ],
+            "battlefield": [
+              {
+                "name": "Urza's Power Plant",
+                "tapped": true
+              },
+              {
+                "name": "Urza's Mine",
+                "tapped": true
+              },
+              {
+                "name": "Expedition Map",
+                "tapped": false
+              }
+            ],
+            "graveyard": [],
+            "mana_pool": {
+              "C": 1
+            },
+            "resource_quality": {
+              "non_land_permanents": 1,
+              "available_mana": 0,
+              "hand_size": 6
+            }
+          }
+        },
+        {
+          "turn": 3,
+          "action": "Spend C from pool",
+          "fetched": [],
+          "left_battlefield": [
+            "Expedition Map"
+          ],
+          "tapped_for_cost": [],
+          "decision": {
+            "kind": "pay_cost"
+          },
+          "fallback": false,
+          "state_after": {
+            "turn_number": 3,
+            "hand": [
+              "Maelstrom Colossus",
+              "Maelstrom Colossus",
+              "Conduit Pylons",
+              "Forest",
+              "Boulderbranch Golem",
+              "Breath Weapon"
+            ],
+            "battlefield": [
+              {
+                "name": "Urza's Power Plant",
+                "tapped": true
+              },
+              {
+                "name": "Urza's Mine",
+                "tapped": true
+              }
+            ],
+            "graveyard": [
+              "Expedition Map"
+            ],
+            "mana_pool": {},
+            "resource_quality": {
+              "non_land_permanents": 0,
+              "available_mana": 0,
+              "hand_size": 6
+            }
+          }
+        },
+        {
+          "turn": 3,
+          "action": "Choose: Urza's Tower",
+          "fetched": [
+            "Urza's Tower"
+          ],
+          "left_battlefield": [],
+          "tapped_for_cost": [],
+          "decision": {
+            "kind": "search_fetch",
+            "library_matches": [
+              "Bojuka Bog",
+              "Forest",
+              "Tocasia's Dig Site",
+              "Urza's Mine",
+              "Urza's Power Plant",
+              "Urza's Tower",
+              "Wooded Ridgeline"
+            ]
+          },
+          "fallback": false,
+          "state_after": {
+            "turn_number": 3,
+            "hand": [
+              "Maelstrom Colossus",
+              "Maelstrom Colossus",
+              "Conduit Pylons",
+              "Forest",
+              "Boulderbranch Golem",
+              "Breath Weapon",
               "Urza's Tower"
             ],
-            "left_battlefield": [],
-            "tapped_for_cost": [],
-            "state_after": {
-              "turn_number": 3,
-              "hand": [
-                "Crop Rotation",
-                "Bramble Wurm",
-                "Boulderbranch Golem",
-                "Urza's Tower",
-                "Urza's Tower"
-              ],
-              "battlefield": [
-                {
-                  "name": "Urza's Mine",
-                  "tapped": false
-                },
-                {
-                  "name": "Barrels of Blasting Jelly",
-                  "tapped": false
-                },
-                {
-                  "name": "Urza's Power Plant",
-                  "tapped": false
-                },
-                {
-                  "name": "Candy Trail",
-                  "tapped": false
-                }
-              ],
-              "graveyard": [
-                "Ancient Stirrings"
-              ],
-              "resource_quality": {
-                "non_land_permanents": 2,
-                "available_mana": 2,
-                "hand_size": 5
+            "battlefield": [
+              {
+                "name": "Urza's Power Plant",
+                "tapped": true
+              },
+              {
+                "name": "Urza's Mine",
+                "tapped": true
               }
-            }
-          },
-          {
-            "action": "Play land: Urza's Tower",
-            "fetched": [],
-            "left_battlefield": [],
-            "tapped_for_cost": [],
-            "state_after": {
-              "turn_number": 3,
-              "hand": [
-                "Crop Rotation",
-                "Bramble Wurm",
-                "Boulderbranch Golem",
-                "Urza's Tower"
-              ],
-              "battlefield": [
-                {
-                  "name": "Urza's Mine",
-                  "tapped": false
-                },
-                {
-                  "name": "Barrels of Blasting Jelly",
-                  "tapped": false
-                },
-                {
-                  "name": "Urza's Power Plant",
-                  "tapped": false
-                },
-                {
-                  "name": "Candy Trail",
-                  "tapped": false
-                },
-                {
-                  "name": "Urza's Tower",
-                  "tapped": false
-                }
-              ],
-              "graveyard": [
-                "Ancient Stirrings"
-              ],
-              "resource_quality": {
-                "non_land_permanents": 2,
-                "available_mana": 6,
-                "hand_size": 4
-              }
+            ],
+            "graveyard": [
+              "Expedition Map"
+            ],
+            "mana_pool": {},
+            "resource_quality": {
+              "non_land_permanents": 0,
+              "available_mana": 0,
+              "hand_size": 7
             }
           }
-        ]
-      }
-    ],
-    "end_state": {
-      "turn_number": 3,
-      "hand": [
-        "Crop Rotation",
-        "Bramble Wurm",
-        "Boulderbranch Golem",
-        "Urza's Tower"
-      ],
-      "battlefield": [
-        {
-          "name": "Urza's Mine",
-          "tapped": false
         },
         {
-          "name": "Barrels of Blasting Jelly",
-          "tapped": false
-        },
-        {
-          "name": "Urza's Power Plant",
-          "tapped": false
-        },
-        {
-          "name": "Candy Trail",
-          "tapped": false
-        },
-        {
-          "name": "Urza's Tower",
-          "tapped": false
+          "turn": 3,
+          "action": "Play land: Urza's Tower",
+          "fetched": [],
+          "left_battlefield": [],
+          "tapped_for_cost": [],
+          "decision": null,
+          "fallback": false,
+          "state_after": {
+            "turn_number": 3,
+            "hand": [
+              "Maelstrom Colossus",
+              "Maelstrom Colossus",
+              "Conduit Pylons",
+              "Forest",
+              "Boulderbranch Golem",
+              "Breath Weapon"
+            ],
+            "battlefield": [
+              {
+                "name": "Urza's Power Plant",
+                "tapped": true
+              },
+              {
+                "name": "Urza's Mine",
+                "tapped": true
+              },
+              {
+                "name": "Urza's Tower",
+                "tapped": false
+              }
+            ],
+            "graveyard": [
+              "Expedition Map"
+            ],
+            "mana_pool": {},
+            "resource_quality": {
+              "non_land_permanents": 0,
+              "available_mana": 3,
+              "hand_size": 6
+            }
+          }
         }
       ],
-      "graveyard": [
-        "Ancient Stirrings"
-      ],
-      "resource_quality": {
-        "non_land_permanents": 2,
-        "available_mana": 6,
-        "hand_size": 4
+      "end_state": {
+        "turn_number": 3,
+        "hand": [
+          "Maelstrom Colossus",
+          "Maelstrom Colossus",
+          "Conduit Pylons",
+          "Forest",
+          "Boulderbranch Golem",
+          "Breath Weapon"
+        ],
+        "battlefield": [
+          {
+            "name": "Urza's Power Plant",
+            "tapped": true
+          },
+          {
+            "name": "Urza's Mine",
+            "tapped": true
+          },
+          {
+            "name": "Urza's Tower",
+            "tapped": false
+          }
+        ],
+        "graveyard": [
+          "Expedition Map"
+        ],
+        "mana_pool": {},
+        "resource_quality": {
+          "non_land_permanents": 0,
+          "available_mana": 3,
+          "hand_size": 6
+        }
       }
-    }
-  },
-  {
-    "game_index": 1,
-    "scores": [0.0, 0.0],
-    "turn_won": null,
-    "opening_hand": [
-      "Pinnacle Kill-Ship",
-      "Bramble Wurm",
-      "Maelstrom Colossus",
-      "Pinnacle Kill-Ship",
-      "Boulderbranch Golem",
-      "Candy Trail",
-      "Ancient Stirrings"
-    ],
-    "turns": [
-      {
-        "turn": 1,
-        "drew": null,
-        "actions": []
+    },
+    {
+      "game_index": 2,
+      "scores": {
+        "assembled_with_resource_quality": 0.0,
+        "tron_online_score": 0.0
       },
-      {
-        "turn": 2,
-        "drew": "Expedition Map",
-        "actions": [
-          {
-            "action": "Draw a card",
-            "fetched": [
-              "Expedition Map"
-            ],
-            "left_battlefield": [],
-            "tapped_for_cost": [],
-            "state_after": {
-              "turn_number": 2,
-              "hand": [
-                "Pinnacle Kill-Ship",
-                "Bramble Wurm",
-                "Maelstrom Colossus",
-                "Pinnacle Kill-Ship",
-                "Boulderbranch Golem",
-                "Candy Trail",
-                "Ancient Stirrings",
-                "Expedition Map"
-              ],
-              "battlefield": [],
-              "graveyard": [],
-              "resource_quality": {
-                "non_land_permanents": 0,
-                "available_mana": 0,
-                "hand_size": 8
-              }
-            }
-          }
-        ]
+      "turn_won": null,
+      "opening_hand_state": {
+        "turn_number": 1,
+        "hand": [
+          "Ancient Stirrings",
+          "Crop Rotation",
+          "Maelstrom Colossus",
+          "Pinnacle Kill-Ship",
+          "Rooftop Percher",
+          "Ancient Stirrings",
+          "Urza's Power Plant"
+        ],
+        "battlefield": [],
+        "graveyard": [],
+        "mana_pool": {},
+        "resource_quality": {
+          "non_land_permanents": 0,
+          "available_mana": 0,
+          "hand_size": 7
+        }
       },
-      {
-        "turn": 3,
-        "drew": "Bonder's Ornament",
-        "actions": [
-          {
-            "action": "Draw a card",
-            "fetched": [
-              "Bonder's Ornament"
-            ],
-            "left_battlefield": [],
-            "tapped_for_cost": [],
-            "state_after": {
-              "turn_number": 3,
-              "hand": [
-                "Pinnacle Kill-Ship",
-                "Bramble Wurm",
-                "Maelstrom Colossus",
-                "Pinnacle Kill-Ship",
-                "Boulderbranch Golem",
-                "Candy Trail",
-                "Ancient Stirrings",
-                "Expedition Map",
-                "Bonder's Ornament"
-              ],
-              "battlefield": [],
-              "graveyard": [],
-              "resource_quality": {
-                "non_land_permanents": 0,
-                "available_mana": 0,
-                "hand_size": 9
-              }
-            }
-          }
-        ]
-      },
-      {
-        "turn": 4,
-        "drew": "Expedition Map",
-        "actions": [
-          {
-            "action": "Draw a card",
-            "fetched": [
-              "Expedition Map"
-            ],
-            "left_battlefield": [],
-            "tapped_for_cost": [],
-            "state_after": {
-              "turn_number": 4,
-              "hand": [
-                "Pinnacle Kill-Ship",
-                "Bramble Wurm",
-                "Maelstrom Colossus",
-                "Pinnacle Kill-Ship",
-                "Boulderbranch Golem",
-                "Candy Trail",
-                "Ancient Stirrings",
-                "Expedition Map",
-                "Bonder's Ornament",
-                "Expedition Map"
-              ],
-              "battlefield": [],
-              "graveyard": [],
-              "resource_quality": {
-                "non_land_permanents": 0,
-                "available_mana": 0,
-                "hand_size": 10
-              }
-            }
-          }
-        ]
-      },
-      {
-        "turn": 5,
-        "drew": "Bramble Wurm",
-        "actions": [
-          {
-            "action": "Draw a card",
-            "fetched": [
-              "Bramble Wurm"
-            ],
-            "left_battlefield": [],
-            "tapped_for_cost": [],
-            "state_after": {
-              "turn_number": 5,
-              "hand": [
-                "Pinnacle Kill-Ship",
-                "Bramble Wurm",
-                "Maelstrom Colossus",
-                "Pinnacle Kill-Ship",
-                "Boulderbranch Golem",
-                "Candy Trail",
-                "Ancient Stirrings",
-                "Expedition Map",
-                "Bonder's Ornament",
-                "Expedition Map",
-                "Bramble Wurm"
-              ],
-              "battlefield": [],
-              "graveyard": [],
-              "resource_quality": {
-                "non_land_permanents": 0,
-                "available_mana": 0,
-                "hand_size": 11
-              }
-            }
-          }
-        ]
-      },
-      {
-        "turn": 6,
-        "drew": "Ancient Stirrings",
-        "actions": [
-          {
-            "action": "Draw a card",
-            "fetched": [
+      "steps": [
+        {
+          "turn": 1,
+          "action": "Play land: Urza's Power Plant",
+          "fetched": [],
+          "left_battlefield": [],
+          "tapped_for_cost": [],
+          "decision": null,
+          "fallback": false,
+          "state_after": {
+            "turn_number": 1,
+            "hand": [
+              "Ancient Stirrings",
+              "Crop Rotation",
+              "Maelstrom Colossus",
+              "Pinnacle Kill-Ship",
+              "Rooftop Percher",
               "Ancient Stirrings"
             ],
-            "left_battlefield": [],
-            "tapped_for_cost": [],
-            "state_after": {
-              "turn_number": 6,
-              "hand": [
-                "Pinnacle Kill-Ship",
-                "Bramble Wurm",
-                "Maelstrom Colossus",
-                "Pinnacle Kill-Ship",
-                "Boulderbranch Golem",
-                "Candy Trail",
-                "Ancient Stirrings",
-                "Expedition Map",
-                "Bonder's Ornament",
-                "Expedition Map",
-                "Bramble Wurm",
-                "Ancient Stirrings"
-              ],
-              "battlefield": [],
-              "graveyard": [],
-              "resource_quality": {
-                "non_land_permanents": 0,
-                "available_mana": 0,
-                "hand_size": 12
+            "battlefield": [
+              {
+                "name": "Urza's Power Plant",
+                "tapped": false
               }
+            ],
+            "graveyard": [],
+            "mana_pool": {},
+            "resource_quality": {
+              "non_land_permanents": 0,
+              "available_mana": 1,
+              "hand_size": 6
             }
           }
-        ]
-      }
-    ],
-    "end_state": {
-      "turn_number": 6,
-      "hand": [
-        "Pinnacle Kill-Ship",
-        "Bramble Wurm",
-        "Maelstrom Colossus",
-        "Pinnacle Kill-Ship",
-        "Boulderbranch Golem",
-        "Candy Trail",
-        "Ancient Stirrings",
-        "Expedition Map",
-        "Bonder's Ornament",
-        "Expedition Map",
-        "Bramble Wurm",
-        "Ancient Stirrings"
+        },
+        {
+          "turn": 2,
+          "action": "Draw a card",
+          "fetched": [
+            "Bonder's Ornament"
+          ],
+          "left_battlefield": [],
+          "tapped_for_cost": [],
+          "decision": null,
+          "fallback": false,
+          "state_after": {
+            "turn_number": 2,
+            "hand": [
+              "Ancient Stirrings",
+              "Crop Rotation",
+              "Maelstrom Colossus",
+              "Pinnacle Kill-Ship",
+              "Rooftop Percher",
+              "Ancient Stirrings",
+              "Bonder's Ornament"
+            ],
+            "battlefield": [
+              {
+                "name": "Urza's Power Plant",
+                "tapped": false
+              }
+            ],
+            "graveyard": [],
+            "mana_pool": {},
+            "resource_quality": {
+              "non_land_permanents": 0,
+              "available_mana": 1,
+              "hand_size": 7
+            }
+          }
+        },
+        {
+          "turn": 3,
+          "action": "Draw a card",
+          "fetched": [
+            "Expedition Map"
+          ],
+          "left_battlefield": [],
+          "tapped_for_cost": [],
+          "decision": null,
+          "fallback": false,
+          "state_after": {
+            "turn_number": 3,
+            "hand": [
+              "Ancient Stirrings",
+              "Crop Rotation",
+              "Maelstrom Colossus",
+              "Pinnacle Kill-Ship",
+              "Rooftop Percher",
+              "Ancient Stirrings",
+              "Bonder's Ornament",
+              "Expedition Map"
+            ],
+            "battlefield": [
+              {
+                "name": "Urza's Power Plant",
+                "tapped": false
+              }
+            ],
+            "graveyard": [],
+            "mana_pool": {},
+            "resource_quality": {
+              "non_land_permanents": 0,
+              "available_mana": 1,
+              "hand_size": 8
+            }
+          }
+        },
+        {
+          "turn": 3,
+          "action": "Cast Expedition Map",
+          "fetched": [],
+          "left_battlefield": [],
+          "tapped_for_cost": [],
+          "decision": null,
+          "fallback": false,
+          "state_after": {
+            "turn_number": 3,
+            "hand": [
+              "Ancient Stirrings",
+              "Crop Rotation",
+              "Maelstrom Colossus",
+              "Pinnacle Kill-Ship",
+              "Rooftop Percher",
+              "Ancient Stirrings",
+              "Bonder's Ornament",
+              "Expedition Map"
+            ],
+            "battlefield": [
+              {
+                "name": "Urza's Power Plant",
+                "tapped": false
+              }
+            ],
+            "graveyard": [],
+            "mana_pool": {},
+            "resource_quality": {
+              "non_land_permanents": 0,
+              "available_mana": 1,
+              "hand_size": 8
+            }
+          }
+        },
+        {
+          "turn": 3,
+          "action": "Choose: Urza's Power Plant",
+          "fetched": [],
+          "left_battlefield": [],
+          "tapped_for_cost": [
+            "Urza's Power Plant"
+          ],
+          "decision": {
+            "kind": "pay_cost"
+          },
+          "fallback": false,
+          "state_after": {
+            "turn_number": 3,
+            "hand": [
+              "Ancient Stirrings",
+              "Crop Rotation",
+              "Maelstrom Colossus",
+              "Pinnacle Kill-Ship",
+              "Rooftop Percher",
+              "Ancient Stirrings",
+              "Bonder's Ornament",
+              "Expedition Map"
+            ],
+            "battlefield": [
+              {
+                "name": "Urza's Power Plant",
+                "tapped": true
+              }
+            ],
+            "graveyard": [],
+            "mana_pool": {
+              "C": 1
+            },
+            "resource_quality": {
+              "non_land_permanents": 0,
+              "available_mana": 0,
+              "hand_size": 8
+            }
+          }
+        },
+        {
+          "turn": 3,
+          "action": "Spend C from pool",
+          "fetched": [],
+          "left_battlefield": [],
+          "tapped_for_cost": [],
+          "decision": {
+            "kind": "pay_cost"
+          },
+          "fallback": false,
+          "state_after": {
+            "turn_number": 3,
+            "hand": [
+              "Ancient Stirrings",
+              "Crop Rotation",
+              "Maelstrom Colossus",
+              "Pinnacle Kill-Ship",
+              "Rooftop Percher",
+              "Ancient Stirrings",
+              "Bonder's Ornament"
+            ],
+            "battlefield": [
+              {
+                "name": "Urza's Power Plant",
+                "tapped": true
+              },
+              {
+                "name": "Expedition Map",
+                "tapped": false
+              }
+            ],
+            "graveyard": [],
+            "mana_pool": {},
+            "resource_quality": {
+              "non_land_permanents": 1,
+              "available_mana": 0,
+              "hand_size": 7
+            }
+          }
+        },
+        {
+          "turn": 4,
+          "action": "Draw a card",
+          "fetched": [
+            "Pinnacle Kill-Ship"
+          ],
+          "left_battlefield": [],
+          "tapped_for_cost": [],
+          "decision": null,
+          "fallback": false,
+          "state_after": {
+            "turn_number": 4,
+            "hand": [
+              "Ancient Stirrings",
+              "Crop Rotation",
+              "Maelstrom Colossus",
+              "Pinnacle Kill-Ship",
+              "Rooftop Percher",
+              "Ancient Stirrings",
+              "Bonder's Ornament",
+              "Pinnacle Kill-Ship"
+            ],
+            "battlefield": [
+              {
+                "name": "Urza's Power Plant",
+                "tapped": false
+              },
+              {
+                "name": "Expedition Map",
+                "tapped": false
+              }
+            ],
+            "graveyard": [],
+            "mana_pool": {},
+            "resource_quality": {
+              "non_land_permanents": 1,
+              "available_mana": 1,
+              "hand_size": 8
+            }
+          }
+        },
+        {
+          "turn": 5,
+          "action": "Draw a card",
+          "fetched": [
+            "Bonder's Ornament"
+          ],
+          "left_battlefield": [],
+          "tapped_for_cost": [],
+          "decision": null,
+          "fallback": false,
+          "state_after": {
+            "turn_number": 5,
+            "hand": [
+              "Ancient Stirrings",
+              "Crop Rotation",
+              "Maelstrom Colossus",
+              "Pinnacle Kill-Ship",
+              "Rooftop Percher",
+              "Ancient Stirrings",
+              "Bonder's Ornament",
+              "Pinnacle Kill-Ship",
+              "Bonder's Ornament"
+            ],
+            "battlefield": [
+              {
+                "name": "Urza's Power Plant",
+                "tapped": false
+              },
+              {
+                "name": "Expedition Map",
+                "tapped": false
+              }
+            ],
+            "graveyard": [],
+            "mana_pool": {},
+            "resource_quality": {
+              "non_land_permanents": 1,
+              "available_mana": 1,
+              "hand_size": 9
+            }
+          }
+        },
+        {
+          "turn": 6,
+          "action": "Draw a card",
+          "fetched": [
+            "Urza's Power Plant"
+          ],
+          "left_battlefield": [],
+          "tapped_for_cost": [],
+          "decision": null,
+          "fallback": false,
+          "state_after": {
+            "turn_number": 6,
+            "hand": [
+              "Ancient Stirrings",
+              "Crop Rotation",
+              "Maelstrom Colossus",
+              "Pinnacle Kill-Ship",
+              "Rooftop Percher",
+              "Ancient Stirrings",
+              "Bonder's Ornament",
+              "Pinnacle Kill-Ship",
+              "Bonder's Ornament",
+              "Urza's Power Plant"
+            ],
+            "battlefield": [
+              {
+                "name": "Urza's Power Plant",
+                "tapped": false
+              },
+              {
+                "name": "Expedition Map",
+                "tapped": false
+              }
+            ],
+            "graveyard": [],
+            "mana_pool": {},
+            "resource_quality": {
+              "non_land_permanents": 1,
+              "available_mana": 1,
+              "hand_size": 10
+            }
+          }
+        },
+        {
+          "turn": 6,
+          "action": "Play land: Urza's Power Plant",
+          "fetched": [],
+          "left_battlefield": [],
+          "tapped_for_cost": [],
+          "decision": null,
+          "fallback": false,
+          "state_after": {
+            "turn_number": 6,
+            "hand": [
+              "Ancient Stirrings",
+              "Crop Rotation",
+              "Maelstrom Colossus",
+              "Pinnacle Kill-Ship",
+              "Rooftop Percher",
+              "Ancient Stirrings",
+              "Bonder's Ornament",
+              "Pinnacle Kill-Ship",
+              "Bonder's Ornament"
+            ],
+            "battlefield": [
+              {
+                "name": "Urza's Power Plant",
+                "tapped": false
+              },
+              {
+                "name": "Expedition Map",
+                "tapped": false
+              },
+              {
+                "name": "Urza's Power Plant",
+                "tapped": false
+              }
+            ],
+            "graveyard": [],
+            "mana_pool": {},
+            "resource_quality": {
+              "non_land_permanents": 1,
+              "available_mana": 2,
+              "hand_size": 9
+            }
+          }
+        },
+        {
+          "turn": 6,
+          "action": "Activate Expedition Map (activate)",
+          "fetched": [],
+          "left_battlefield": [],
+          "tapped_for_cost": [],
+          "decision": null,
+          "fallback": false,
+          "state_after": {
+            "turn_number": 6,
+            "hand": [
+              "Ancient Stirrings",
+              "Crop Rotation",
+              "Maelstrom Colossus",
+              "Pinnacle Kill-Ship",
+              "Rooftop Percher",
+              "Ancient Stirrings",
+              "Bonder's Ornament",
+              "Pinnacle Kill-Ship",
+              "Bonder's Ornament"
+            ],
+            "battlefield": [
+              {
+                "name": "Urza's Power Plant",
+                "tapped": false
+              },
+              {
+                "name": "Expedition Map",
+                "tapped": false
+              },
+              {
+                "name": "Urza's Power Plant",
+                "tapped": false
+              }
+            ],
+            "graveyard": [],
+            "mana_pool": {},
+            "resource_quality": {
+              "non_land_permanents": 1,
+              "available_mana": 2,
+              "hand_size": 9
+            }
+          }
+        },
+        {
+          "turn": 6,
+          "action": "Choose: Urza's Power Plant",
+          "fetched": [],
+          "left_battlefield": [],
+          "tapped_for_cost": [
+            "Urza's Power Plant"
+          ],
+          "decision": {
+            "kind": "pay_cost"
+          },
+          "fallback": false,
+          "state_after": {
+            "turn_number": 6,
+            "hand": [
+              "Ancient Stirrings",
+              "Crop Rotation",
+              "Maelstrom Colossus",
+              "Pinnacle Kill-Ship",
+              "Rooftop Percher",
+              "Ancient Stirrings",
+              "Bonder's Ornament",
+              "Pinnacle Kill-Ship",
+              "Bonder's Ornament"
+            ],
+            "battlefield": [
+              {
+                "name": "Urza's Power Plant",
+                "tapped": true
+              },
+              {
+                "name": "Expedition Map",
+                "tapped": false
+              },
+              {
+                "name": "Urza's Power Plant",
+                "tapped": false
+              }
+            ],
+            "graveyard": [],
+            "mana_pool": {
+              "C": 1
+            },
+            "resource_quality": {
+              "non_land_permanents": 1,
+              "available_mana": 1,
+              "hand_size": 9
+            }
+          }
+        },
+        {
+          "turn": 6,
+          "action": "Choose: Urza's Power Plant",
+          "fetched": [],
+          "left_battlefield": [],
+          "tapped_for_cost": [
+            "Urza's Power Plant"
+          ],
+          "decision": {
+            "kind": "pay_cost"
+          },
+          "fallback": false,
+          "state_after": {
+            "turn_number": 6,
+            "hand": [
+              "Ancient Stirrings",
+              "Crop Rotation",
+              "Maelstrom Colossus",
+              "Pinnacle Kill-Ship",
+              "Rooftop Percher",
+              "Ancient Stirrings",
+              "Bonder's Ornament",
+              "Pinnacle Kill-Ship",
+              "Bonder's Ornament"
+            ],
+            "battlefield": [
+              {
+                "name": "Urza's Power Plant",
+                "tapped": true
+              },
+              {
+                "name": "Expedition Map",
+                "tapped": false
+              },
+              {
+                "name": "Urza's Power Plant",
+                "tapped": true
+              }
+            ],
+            "graveyard": [],
+            "mana_pool": {
+              "C": 2
+            },
+            "resource_quality": {
+              "non_land_permanents": 1,
+              "available_mana": 0,
+              "hand_size": 9
+            }
+          }
+        },
+        {
+          "turn": 6,
+          "action": "Spend C from pool",
+          "fetched": [],
+          "left_battlefield": [],
+          "tapped_for_cost": [],
+          "decision": {
+            "kind": "pay_cost"
+          },
+          "fallback": false,
+          "state_after": {
+            "turn_number": 6,
+            "hand": [
+              "Ancient Stirrings",
+              "Crop Rotation",
+              "Maelstrom Colossus",
+              "Pinnacle Kill-Ship",
+              "Rooftop Percher",
+              "Ancient Stirrings",
+              "Bonder's Ornament",
+              "Pinnacle Kill-Ship",
+              "Bonder's Ornament"
+            ],
+            "battlefield": [
+              {
+                "name": "Urza's Power Plant",
+                "tapped": true
+              },
+              {
+                "name": "Expedition Map",
+                "tapped": false
+              },
+              {
+                "name": "Urza's Power Plant",
+                "tapped": true
+              }
+            ],
+            "graveyard": [],
+            "mana_pool": {
+              "C": 1
+            },
+            "resource_quality": {
+              "non_land_permanents": 1,
+              "available_mana": 0,
+              "hand_size": 9
+            }
+          }
+        },
+        {
+          "turn": 6,
+          "action": "Spend C from pool",
+          "fetched": [],
+          "left_battlefield": [
+            "Expedition Map"
+          ],
+          "tapped_for_cost": [],
+          "decision": {
+            "kind": "pay_cost"
+          },
+          "fallback": false,
+          "state_after": {
+            "turn_number": 6,
+            "hand": [
+              "Ancient Stirrings",
+              "Crop Rotation",
+              "Maelstrom Colossus",
+              "Pinnacle Kill-Ship",
+              "Rooftop Percher",
+              "Ancient Stirrings",
+              "Bonder's Ornament",
+              "Pinnacle Kill-Ship",
+              "Bonder's Ornament"
+            ],
+            "battlefield": [
+              {
+                "name": "Urza's Power Plant",
+                "tapped": true
+              },
+              {
+                "name": "Urza's Power Plant",
+                "tapped": true
+              }
+            ],
+            "graveyard": [
+              "Expedition Map"
+            ],
+            "mana_pool": {},
+            "resource_quality": {
+              "non_land_permanents": 0,
+              "available_mana": 0,
+              "hand_size": 9
+            }
+          }
+        },
+        {
+          "turn": 6,
+          "action": "Choose: Urza's Tower",
+          "fetched": [
+            "Urza's Tower"
+          ],
+          "left_battlefield": [],
+          "tapped_for_cost": [],
+          "decision": {
+            "kind": "search_fetch",
+            "library_matches": [
+              "Bojuka Bog",
+              "Conduit Pylons",
+              "Forest",
+              "Tocasia's Dig Site",
+              "Urza's Mine",
+              "Urza's Power Plant",
+              "Urza's Tower",
+              "Wooded Ridgeline"
+            ]
+          },
+          "fallback": false,
+          "state_after": {
+            "turn_number": 6,
+            "hand": [
+              "Ancient Stirrings",
+              "Crop Rotation",
+              "Maelstrom Colossus",
+              "Pinnacle Kill-Ship",
+              "Rooftop Percher",
+              "Ancient Stirrings",
+              "Bonder's Ornament",
+              "Pinnacle Kill-Ship",
+              "Bonder's Ornament",
+              "Urza's Tower"
+            ],
+            "battlefield": [
+              {
+                "name": "Urza's Power Plant",
+                "tapped": true
+              },
+              {
+                "name": "Urza's Power Plant",
+                "tapped": true
+              }
+            ],
+            "graveyard": [
+              "Expedition Map"
+            ],
+            "mana_pool": {},
+            "resource_quality": {
+              "non_land_permanents": 0,
+              "available_mana": 0,
+              "hand_size": 10
+            }
+          }
+        }
       ],
-      "battlefield": [],
-      "graveyard": [],
-      "resource_quality": {
-        "non_land_permanents": 0,
-        "available_mana": 0,
-        "hand_size": 12
+      "end_state": {
+        "turn_number": 6,
+        "hand": [
+          "Ancient Stirrings",
+          "Crop Rotation",
+          "Maelstrom Colossus",
+          "Pinnacle Kill-Ship",
+          "Rooftop Percher",
+          "Ancient Stirrings",
+          "Bonder's Ornament",
+          "Pinnacle Kill-Ship",
+          "Bonder's Ornament",
+          "Urza's Tower"
+        ],
+        "battlefield": [
+          {
+            "name": "Urza's Power Plant",
+            "tapped": true
+          },
+          {
+            "name": "Urza's Power Plant",
+            "tapped": true
+          }
+        ],
+        "graveyard": [
+          "Expedition Map"
+        ],
+        "mana_pool": {},
+        "resource_quality": {
+          "non_land_permanents": 0,
+          "available_mana": 0,
+          "hand_size": 10
+        }
       }
     }
-  }
-]
+  ]
+}

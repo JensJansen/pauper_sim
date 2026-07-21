@@ -21,15 +21,3 @@ Deck
 1 Bojuka Bog
 4 Urza's Mine
 2 Forest
-
-Sideboard
-1 Coalition Honor Guard
-2 Tamiyo's Safekeeping
-1 Crop Rotation
-1 Fiery Cannonade
-2 Monstrous Emergence
-2 Breath Weapon
-1 Pulse of Murasa
-1 Rooftop Percher
-2 Relic of Progenitus
-2 Vandalize

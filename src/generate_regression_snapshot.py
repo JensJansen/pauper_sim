@@ -26,12 +26,23 @@ import json
 import os
 
 import game
-import tron_env
+import drl_env
+import terminated
 
 SEEDS = range(50)
 HORIZON = 6
 ON_THE_PLAY = True
 OUT_PATH = "data/multi_deck_regression_snapshot.json"
+
+# No deck gets module-level-global special status any more (not even
+# Tron) -- built locally here, same as harness.py's own self.actions/
+# self.pass_action, instead of reading drl_env.py's old Tron-specific
+# ACTIONS/PASS_ACTION globals (removed).
+DECKLIST = game.parse_decklist_file(os.path.join(os.path.dirname(__file__), "..", "data", "monster_tron.txt"))
+TERMINATED_FN = terminated.tron_terminated
+PENDING_KINDS = game.derive_pending_kinds(DECKLIST)
+ACTIONS = drl_env.build_action_table(DECKLIST, game.EFFECT_REGISTRY, pending_kinds=PENDING_KINDS)
+PASS_ACTION = next(i for i, (name, _legal, _execute) in enumerate(ACTIONS) if name == "Pass")
 
 
 def _zone_snapshot(state):
@@ -48,17 +59,17 @@ def run_one(seed):
     action_log = []
 
     def choose_action(state):
-        mask = tron_env.legal_action_mask(state)
+        mask = drl_env.legal_action_mask(state, ACTIONS)
         legal = [i for i, ok in enumerate(mask) if ok]
         action = action_rng.choice(legal)
-        if action == tron_env.PASS_ACTION:
+        if action == PASS_ACTION:
             action_log.append("Pass")
             return None
-        name, _, execute_fn = tron_env.ACTIONS[action]
+        name, _, execute_fn = ACTIONS[action]
         action_log.append(name)
         return lambda: execute_fn(state)
 
-    state = game.run_game(game.TRON_DECKLIST, game.tron_terminated, state_rng, ON_THE_PLAY, HORIZON, choose_action)
+    state = game.run_game(DECKLIST, TERMINATED_FN, state_rng, ON_THE_PLAY, HORIZON, choose_action)
     return {
         "seed": seed,
         "actions": action_log,

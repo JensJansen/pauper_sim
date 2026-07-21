@@ -2,34 +2,32 @@ import { describe, it, expect } from "vitest";
 import { filterGames } from "./filterGames.js";
 
 function makeGame({ gameIndex, turnWon, score1, handEver, playEver = [] }) {
-  const turns = playEver.length
+  const steps = playEver.length
     ? [
         {
           turn: 1,
-          actions: [
-            {
-              action: "Play land",
-              fetched: [],
-              left_battlefield: [],
-              tapped_for_cost: [],
-              state_after: {
-                turn_number: 1,
-                hand: [],
-                battlefield: playEver.map((name) => ({ name, tapped: false })),
-                graveyard: [],
-                resource_quality: { non_land_permanents: 0, available_mana: 0, hand_size: 0 },
-              },
-            },
-          ],
+          action: "Play land",
+          fetched: [],
+          left_battlefield: [],
+          tapped_for_cost: [],
+          decision: null,
+          fallback: false,
+          state_after: {
+            turn_number: 1,
+            hand: [],
+            battlefield: playEver.map((name) => ({ name, tapped: false })),
+            graveyard: [],
+            resource_quality: { non_land_permanents: 0, available_mana: 0, hand_size: 0 },
+          },
         },
       ]
     : [];
   return {
     game_index: gameIndex,
-    scores: [score1],
+    scores: { reward_fn: score1 },
     turn_won: turnWon,
-    opening_hand: handEver,
-    turns,
+    opening_hand_state: { turn_number: 1, hand: handEver, battlefield: [], graveyard: [] },
+    steps,
     end_state: { turn_number: 1, hand: [], battlefield: [], graveyard: [] },
   };
 }
@@ -51,7 +49,7 @@ describe("filterGames", () => {
     expect(result.map((g) => g.game_index)).toEqual([0, 1]);
   });
 
-  it("score range alone (scores[0], score 1's raw scale)", () => {
+  it("score range alone (the primary/first named score's raw scale)", () => {
     const result = filterGames(games, { scoreMin: 0.5 });
     expect(result.map((g) => g.game_index)).toEqual([0, 1]);
   });

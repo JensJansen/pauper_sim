@@ -3,6 +3,42 @@ import Card from "./Card.jsx";
 import { flattenSteps } from "../flatten.js";
 import { cardInfo } from "../cardData.js";
 
+// One line per piece of hidden information a resolution step's decision
+// was actually based on -- generic over every game.pending_resolution
+// kind harness.py's _snapshot_pending can produce, rather than one
+// component per kind, since they're all just "label: list of names".
+function decisionDetailLines(decision) {
+  if (!decision) return [];
+  switch (decision.kind) {
+    case "scry":
+    case "surveil":
+      return [
+        decision.current_card && ["Deciding", decision.current_card],
+        decision.remaining.length > 0 && ["Still to reveal", decision.remaining.join(", ")],
+        decision.kept.length > 0 && ["Kept on top", decision.kept.join(", ")],
+        decision.disposed.length > 0 && [decision.kind === "scry" ? "Bottomed" : "Binned", decision.disposed.join(", ")],
+      ].filter(Boolean);
+    case "search_fetch":
+      return [["Library cards matching the search", decision.library_matches.join(", ") || "none"]];
+    case "choose_permanent":
+      return [["Eligible permanents", decision.battlefield_matches.join(", ") || "none"]];
+    case "discard":
+      return [["Hand options", decision.hand_options.join(", ") || "none"]];
+    case "sacrifice":
+      return [["Eligible to sacrifice", decision.sacrifice_options.join(", ") || "none"]];
+    case "madness_decision":
+      return [["Cast for madness cost or let go to graveyard", decision.card]];
+    default:
+      return [];
+  }
+}
+
+function formatManaPool(manaPool) {
+  const entries = Object.entries(manaPool);
+  if (entries.length === 0) return "none";
+  return entries.map(([color, count]) => `${color}:${count}`).join(", ");
+}
+
 export function sortedBattlefield(battlefield) {
   // Stable sort (spec-guaranteed since ES2019): ties keep their original
   // order. Lands first, then artifacts, then creatures -- real MTG table
@@ -106,7 +142,7 @@ export default function GameView({ game, onBack }) {
           <div className={`outcome ${game.turn_won !== null ? "success" : "fail"}`}>
             <div className="headline">
               {game.turn_won !== null ? "Success" : "Failure"} &middot;{" "}
-              {game.scores.map((s, i) => `score ${i + 1}: ${s.toFixed(2)}`).join(", ")}
+              {Object.entries(game.scores).map(([name, s]) => `${name}: ${s.toFixed(2)}`).join(", ")}
             </div>
             <div className="sub">
               {game.turn_won !== null ? `Won turn ${game.turn_won}` : "Never won"}
@@ -115,7 +151,14 @@ export default function GameView({ game, onBack }) {
         )}
 
         <div className="action-panel">
-          <div className="action-name">{step.action}</div>
+          <div className="action-name">
+            {step.action}
+            {step.fallback && (
+              <span className="fallback-badge" title="Model chose an illegal action here; the first legal action was substituted.">
+                fallback
+              </span>
+            )}
+          </div>
           {step.fetched?.length > 0 && (
             <div className="detail-line">
               Fetched: <b>{step.fetched.join(", ")}</b>
@@ -131,29 +174,11 @@ export default function GameView({ game, onBack }) {
               Tapped to pay for it: <b>{step.tapped_for_cost.join(", ")}</b>
             </div>
           )}
-          {step.scry && (
-            <div className="detail-line">
-              Looked at: <b>{step.scry.seen.join(", ")}</b>
-              {step.scry.kept_on_top.length > 0 && (
-                <>
-                  {" "}
-                  &middot; kept on top: <b>{step.scry.kept_on_top.join(", ")}</b>
-                </>
-              )}
-              {step.scry.bottomed.length > 0 && (
-                <>
-                  {" "}
-                  &middot; bottomed: <b>{step.scry.bottomed.join(", ")}</b>
-                </>
-              )}
-              {step.scry.binned.length > 0 && (
-                <>
-                  {" "}
-                  &middot; discarded: <b>{step.scry.binned.join(", ")}</b>
-                </>
-              )}
+          {decisionDetailLines(step.decision).map(([label, value]) => (
+            <div className="detail-line" key={label}>
+              {label}: <b>{value}</b>
             </div>
-          )}
+          ))}
         </div>
 
         {/* Table layout, top to bottom: battlefield (the play area) is the
@@ -186,6 +211,9 @@ export default function GameView({ game, onBack }) {
             </span>
             <span>
               Hand size: <b>{sa.resource_quality.hand_size}</b>
+            </span>
+            <span>
+              Floating mana: <b>{formatManaPool(sa.mana_pool)}</b>
             </span>
           </div>
 

@@ -11,13 +11,15 @@ const PAGE_SIZE = 25;
 
 export default function App() {
   const [games, setGames] = useState(null);
+  const [meta, setMeta] = useState(null);
   const [fileName, setFileName] = useState(null);
   const [criteria, setCriteria] = useState({});
   const [page, setPage] = useState(1);
   const [selectedGame, setSelectedGame] = useState(null);
 
-  const handleLoad = useCallback((loadedGames, name) => {
+  const handleLoad = useCallback(({ meta: loadedMeta, games: loadedGames }, name) => {
     setGames(loadedGames);
+    setMeta(loadedMeta);
     setFileName(name);
     setCriteria({});
     setPage(1);
@@ -60,6 +62,16 @@ export default function App() {
               Load a different file
             </span>
           </p>
+          {meta && (
+            <p className="run-meta">
+              {meta.config_name && <>Config <b>{meta.config_name}</b> &middot; </>}
+              Reward <b>{meta.reward_fn}</b>
+              {meta.scoring_fns?.length > 0 && <> &middot; Scoring: <b>{meta.scoring_fns.join(", ")}</b></>}
+              {meta.horizon != null && <> &middot; Horizon <b>{meta.horizon}</b></>}
+              {meta.on_the_play != null && <> &middot; {meta.on_the_play ? "On the play" : "On the draw"}</>}
+              {meta.seed != null && <> &middot; Seed <b>{meta.seed}</b></>}
+            </p>
+          )}
           <SearchFilters criteria={criteria} onChange={handleCriteriaChange} />
           <BatchList games={pageGames} startIndex={startIndex} onSelect={setSelectedGame} />
           <Pagination page={page} pageCount={pageCount} onPageChange={setPage} />
