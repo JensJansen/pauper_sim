@@ -47,6 +47,45 @@ def cast_permanent_from_hand(state, card_def):
     return enters_battlefield(state, card_def)
 
 
+def cast_aura(state, card_def, target_predicate, on_attached=None):
+    """Cast an Aura from hand: pick a legal target via
+    resolution.begin_choose_permanent (the same "one of my own permanents
+    matching a predicate" primitive Crop Rotation's sacrifice-target and
+    bounce_land_etb's bounce-target already use), then attach by recording
+    the target on the Aura's own flags. Every Aura's registry "cast"/
+    "cast_modes" entry pairs this with an extra_legal requiring
+    target_predicate to already match something on the battlefield, so a
+    legal target is guaranteed to exist by the time this runs (same
+    "guaranteed payable, not a maybe" contract every other extra_legal-
+    gated effect here already follows).
+
+    on_attached(state, aura_permanent), if given, runs once attached -- for
+    an Aura with its own ETB effect (Abundant Growth's draw, Cartouche of
+    Solidarity's token, Utopia Sprawl's chosen color). Routed through here
+    rather than the registry's own etb_trigger (which only ever receives
+    state, not the permanent) since every one of these needs to record
+    something onto the Aura's own Permanent, not just act on shared state.
+
+    Real-rules note: an Aura returns to the graveyard (and, for Rancor,
+    from there back to hand) when whatever it enchants leaves the
+    battlefield. Not modeled -- no removal effect reachable by boggles'
+    own cards can ever remove an enchanted creature or land, so that
+    state-based action is unreachable given the current card pool. Add a
+    battlefield-removal hook here (and thread it through every existing
+    state.battlefield.remove(p) call site) if a future deck's own effects
+    can target an enchanted permanent."""
+    state.hand.remove(card_def)
+
+    def _on_chosen(state, name):
+        target = next(p for p in state.battlefield if p.card_def.name == name and target_predicate(p))
+        aura = enters_battlefield(state, card_def)
+        aura.flags["enchanting"] = target
+        if on_attached is not None:
+            on_attached(state, aura)
+
+    resolution.begin_choose_permanent(state, target_predicate, _on_chosen)
+
+
 def enters_battlefield(state, card_def, force_tapped=False):
     """Move a CardDef onto the battlefield as a new Permanent, applying its
     enters-tapped default and ETB trigger (via game.registry.EFFECT_REGISTRY),
@@ -77,19 +116,52 @@ def enters_battlefield(state, card_def, force_tapped=False):
     return permanent
 
 
+def enchantment_count(state):
+    """How many ENCHANTMENT-type permanents are currently on the
+    battlefield -- shared by every "for each [other] enchantment you
+    control" pt_bonus (Ancestral Mask/Ethereal Armor differ only in
+    whether the caller subtracts 1 for itself). "On the battlefield" and
+    "you control" coincide exactly in this solitaire simulator (you
+    control the whole battlefield), so this counts everyone, not just a
+    specific controller."""
+    return sum(1 for p in state.battlefield if p.card_def.card_type == CardType.ENCHANTMENT)
+
+
+def permanent_power(state, permanent):
+    """A creature's effective power for combat_step (and Ram Through, once
+    it's more than a functional blank): its own base power
+    (card_def.extra["power"], same untracked-if-absent convention every
+    other creature here uses) plus every Aura currently enchanting it.
+    Each Aura's registry entry supplies its own "pt_bonus" (state,
+    aura_permanent) -> int -- a constant for a static bonus (Rancor's
+    +2), a battlefield-wide count for a dynamic one (Ancestral Mask/
+    Ethereal Armor's "for each [other] enchantment"). Toughness stays
+    untracked -- there's no combat damage back to your own creatures in
+    this simulator (no blockers), so it never matters, same precedent as
+    every vanilla creature's own missing toughness."""
+    base = permanent.card_def.extra.get("power", 0)
+    bonus = sum(
+        registry.EFFECT_REGISTRY.get(aura.card_def.effect_id, {}).get("pt_bonus", lambda *_a: 0)(state, aura)
+        for aura in state.battlefield
+        if aura.flags.get("enchanting") is permanent
+    )
+    return base + bonus
+
+
 def combat_step(state):
-    """Fully automatic mini-combat (rakdos madness / mono red madness
-    only -- see game.turn.run_turn's combat_enabled param): every
+    """Fully automatic mini-combat (rakdos madness / mono red madness /
+    boggles -- see game.turn.run_turn's combat_enabled param): every
     creature that is both untapped and not summoning sick deals damage
     equal to its power once, then taps. No attack/block decisions, no
     blockers (this simulator has no opposing board, only the running
     state.damage_dealt counter) -- a creature already tapped for
     something else earlier in the turn is how a model "holds it back"
-    instead of attacking. Power lives in card_def.extra["power"]; a
-    creature with none set (e.g. an untracked-stats vanilla from another
-    deck) contributes 0, so calling this unconditionally would already be
-    harmless -- combat_enabled still gates it structurally so no other
-    deck's creatures get tapped for a step that isn't theirs.
+    instead of attacking. Power is permanent_power(state, p) (base
+    card_def.extra["power"] plus any attached Auras' own "pt_bonus"); a
+    creature with neither set (e.g. an untracked-stats vanilla from
+    another deck) contributes 0, so calling this unconditionally would
+    already be harmless -- combat_enabled still gates it structurally so
+    no other deck's creatures get tapped for a step that isn't theirs.
 
     Checked against terminated_fn here directly (mirrors
     enters_battlefield's own check) -- combat is a second way
@@ -104,7 +176,7 @@ def combat_step(state):
         if p.card_def.card_type == CardType.CREATURE and not p.tapped
         and (not p.summoning_sick or registry.EFFECT_REGISTRY.get(p.card_def.effect_id, {}).get("haste", False))
     ]
-    state.damage_dealt += sum(p.card_def.extra.get("power", 0) for p in attackers)
+    state.damage_dealt += sum(permanent_power(state, p) for p in attackers)
     for p in attackers:
         p.tapped = True
     if state.terminated_fn is not None and state.turn_won is None and state.terminated_fn(state):
@@ -255,8 +327,25 @@ def activate_blood_sac(state, permanent):
     resolution.begin_discard(state, 1, optional=False, on_complete=lambda s, _cards: s.draw(1))
 
 
+def activate_eldrazi_spawn_sac(state, permanent):
+    """Malevolent Rumble's Eldrazi Spawn token: "Sacrifice this creature:
+    Add {C}." No {T} in the real cost -- unlike every other mana source
+    in this engine, this doesn't tap (so summoning sickness never gates
+    it) and isn't offered through mana.py's tap-based machinery at all.
+    Modeled as a standalone no-mana-cost activated ability (same shape
+    Quirion Ranger's Forest-bounce already uses) whose only effect is
+    floating {C} directly into the mana pool -- reusing state.mana_pool's
+    existing "produced now, spent later via a separate action" mechanism
+    unchanged, since a sacrifice isn't a tap this engine's interactive
+    pay_cost loop has any other way to represent."""
+    state.battlefield.remove(permanent)
+    state.mana_pool["C"] = state.mana_pool.get("C", 0) + 1
+
+
 BLOOD_TOKEN_CARD_DEF = CardDef("Blood", CardType.ARTIFACT, None, EffectId.BLOOD_TOKEN, sac_ability_cost={"generic": 1})
 ROBOT_TOKEN_CARD_DEF = CardDef("Robot", CardType.CREATURE, None, EffectId.ROBOT_TOKEN, power=2)  # 2/2, combat_step's only reader of "power"
+WARRIOR_TOKEN_CARD_DEF = CardDef("Warrior", CardType.CREATURE, None, EffectId.WARRIOR_TOKEN, power=1)  # Cartouche of Solidarity's ETB; vigilance is a documented no-op (no combat granularity for it here)
+ELDRAZI_SPAWN_TOKEN_CARD_DEF = CardDef("Eldrazi Spawn", CardType.CREATURE, None, EffectId.ELDRAZI_SPAWN_TOKEN)  # 0/1 -- no "power" key, same untracked-vanilla precedent as Masked Vandal
 
 
 if __name__ == "__main__":
@@ -485,3 +574,34 @@ if __name__ == "__main__":
         registry.EFFECT_REGISTRY[EffectId.FILLER] = _filler_backup
 
     print("effects_common.py combat self-check: OK")
+
+    # Auras (boggles deck): cast_aura's choose-target flow, plus
+    # permanent_power correctly summing MULTIPLE attached Auras' own
+    # pt_bonus (not just the first one) -- using the real Rancor/Ancestral
+    # Mask registry entries (green_cards.py), not a FILLER stand-in, since
+    # both now really exist.
+    state = GameState(on_the_play=True)
+    bogle = Permanent(CardDef("Slippery Bogle", CardType.CREATURE, {"G": 1}, EffectId.SLIPPERY_BOGLE, power=1))
+    state.battlefield = [bogle]
+    assert permanent_power(state, bogle) == 1  # no Auras yet -- just its own base power
+
+    rancor = CardDef("Rancor", CardType.ENCHANTMENT, {"G": 1}, EffectId.RANCOR)
+    state.hand = [rancor]
+    cast_aura(state, rancor, lambda p: p.card_def.card_type == CardType.CREATURE)
+    assert resolution.choose_permanent_options(state) == ["Slippery Bogle"]
+    resolution.execute_choose_permanent_option(state, "Slippery Bogle")
+    assert state.pending_resolution is None and state.hand == []
+    rancor_permanent = next(p for p in state.battlefield if p.card_def.name == "Rancor")
+    assert rancor_permanent.flags["enchanting"] is bogle
+    assert permanent_power(state, bogle) == 3  # 1 base + Rancor's own +2
+
+    ancestral_mask = CardDef("Ancestral Mask", CardType.ENCHANTMENT, {"generic": 2, "G": 1}, EffectId.ANCESTRAL_MASK)
+    state.hand = [ancestral_mask]
+    cast_aura(state, ancestral_mask, lambda p: p.card_def.card_type == CardType.CREATURE)
+    resolution.execute_choose_permanent_option(state, "Slippery Bogle")
+    # 1 base + 2 (Rancor) + 2 (Ancestral Mask's own "+2 per OTHER
+    # enchantment" -- exactly one other, Rancor, so +2, not +4) -- proves
+    # both Auras are actually summed, not just the most recently attached.
+    assert permanent_power(state, bogle) == 5
+
+    print("effects_common.py Aura self-check: OK")

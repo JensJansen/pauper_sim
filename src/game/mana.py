@@ -28,46 +28,86 @@ def controls_all_tron_types(state):
     return TRON_TYPES.issubset(present)
 
 
+def _bonus_mana_symbols(state, permanent):
+    """Utopia Sprawl's own mechanic: an Aura enchanting this permanent with
+    a "bonus_mana_color" flag (chosen once, at cast time) adds that
+    color's symbol every time this permanent is tapped for mana --
+    automatic, always on top of whatever ability was actually used
+    (contrast _granted_mana_colors below, Abundant Growth's genuinely
+    competing ability -- real Utopia Sprawl triggers on the land being
+    "tapped for mana" at all, not specifically its own native ability)."""
+    return [
+        aura.flags["bonus_mana_color"]
+        for aura in state.battlefield
+        if aura.flags.get("enchanting") is permanent and "bonus_mana_color" in aura.flags
+    ]
+
+
+def _granted_mana_colors(state, permanent):
+    """Colors a competing granted ability (Abundant Growth's "{T}: Add one
+    mana of any color") lets this permanent tap for, in ADDITION to (not
+    replacing) its own native ability -- the model chooses one or the
+    other each time it taps, unlike _bonus_mana_symbols above. Union
+    across every Aura enchanting this permanent, in case more than one
+    ever grants colors to the same land."""
+    granted = set()
+    for aura in state.battlefield:
+        if aura.flags.get("enchanting") is permanent:
+            granted |= aura.flags.get("bonus_mana_colors", set())
+    return granted
+
+
 def mana_output(permanent, state, color_choice=None):
     """Mana symbols this permanent would produce if tapped for its plain
     mana ability right now. Raises if effect_id isn't a simple source or if
-    a required/forbidden color_choice is missing/invalid."""
+    a required/forbidden color_choice is missing/invalid.
+
+    A granted color (_granted_mana_colors) is checked first and, if
+    matched, short-circuits the registry-driven dispatch below entirely --
+    it's a genuinely separate ability from the permanent's own, not a
+    variant of it, so none of the per-kind color_choice validation below
+    applies to it."""
     effect = permanent.card_def.effect_id
     spec = registry.EFFECT_REGISTRY.get(effect, {}).get("mana")
     if spec is None:
         raise ValueError(f"{permanent.card_def.name} is not a simple mana source")
+    if color_choice is not None and color_choice in _granted_mana_colors(state, permanent):
+        return [color_choice] + _bonus_mana_symbols(state, permanent)
     kind = spec[0]
     if kind == "tron":
         if not controls_all_tron_types(state):
-            return ["C"]
-        # Urza's Tower doubles to {C}{C}{C} when online; Mine/Power Plant
-        # double to {C}{C} -- the three Tron lands aren't interchangeable
-        # here despite sharing the same effect_id/kind.
-        return ["C", "C", "C"] if permanent.card_def.extra["tron_type"] == "Tower" else ["C", "C"]
-    if kind == "fixed":
+            output = ["C"]
+        else:
+            # Urza's Tower doubles to {C}{C}{C} when online; Mine/Power
+            # Plant double to {C}{C} -- the three Tron lands aren't
+            # interchangeable here despite sharing the same effect_id/kind.
+            output = ["C", "C", "C"] if permanent.card_def.extra["tron_type"] == "Tower" else ["C", "C"]
+    elif kind == "fixed":
         if color_choice is not None:
             raise ValueError(f"{permanent.card_def.name} has no color choice")
-        return [spec[1]]
-    if kind == "fixed_multi":
+        output = [spec[1]]
+    elif kind == "fixed_multi":
         # ("fixed_multi", (symbol, symbol, ...)): Rakdos Carnarium's
         # {T}: Add {B}{R} -- both symbols from one tap, not a choice of
         # one (docs/MADNESS_DECKS_PLAN.md item 9).
         if color_choice is not None:
             raise ValueError(f"{permanent.card_def.name} has no color choice")
-        return list(spec[1])
-    if kind == "flexible":
+        output = list(spec[1])
+    elif kind == "flexible":
         choices = spec[1]
         if color_choice not in choices:
             raise ValueError(f"{permanent.card_def.name} cannot produce {color_choice}")
-        return [color_choice]
-    if kind == "count":
+        output = [color_choice]
+    elif kind == "count":
         # ("count", symbol, predicate): Overgrown Battlement -- one symbol
         # per battlefield permanent matching predicate (itself included).
         if color_choice is not None:
             raise ValueError(f"{permanent.card_def.name} has no color choice")
         symbol, predicate = spec[1], spec[2]
-        return [symbol] * sum(1 for p in state.battlefield if predicate(p))
-    raise ValueError(f"{permanent.card_def.name} is not a simple mana source")
+        output = [symbol] * sum(1 for p in state.battlefield if predicate(p))
+    else:
+        raise ValueError(f"{permanent.card_def.name} is not a simple mana source")
+    return output + _bonus_mana_symbols(state, permanent)
 
 
 def pay_cost(state, cost, tap_choices):
@@ -167,6 +207,8 @@ def choose_taps_for_cost(state, cost):
             break
         if p.card_def.effect_id in registry._FLEXIBLE_SOURCE_CHOICES:
             continue  # pass 2
+        if _granted_mana_colors(state, p):
+            continue  # pass 2.5 -- might be better served by its grant than its own native color
         _apply(mana_output(p, state))
         chosen.append((p, None))
         pool.remove(p)
@@ -181,6 +223,33 @@ def choose_taps_for_cost(state, cost):
         color_choice = next((c for c in choices if remaining.get(c, 0) > 0), next(iter(choices)))
         _apply(mana_output(p, state, color_choice))
         chosen.append((p, color_choice))
+        pool.remove(p)
+
+    # Pass 2.5: permanents carrying a competing granted ability (Abundant
+    # Growth) -- a runtime, per-instance fact registry._FLEXIBLE_SOURCE_CHOICES
+    # can't see (that view is built once from EFFECT_REGISTRY, keyed by
+    # effect_id, so it can never reflect which specific permanent happens
+    # to be enchanted this game). Choose whichever of {native color,
+    # granted colors} is still useful, same "arbitrary once only generic
+    # remains" fallback pass 2 uses above -- native kind is assumed
+    # "fixed" here since every real card that can receive this grant
+    # today is a basic land.
+    for p in list(pool):
+        if not any(v > 0 for v in remaining.values()):
+            break
+        granted = _granted_mana_colors(state, p)
+        if not granted:
+            continue
+        native_spec = registry.EFFECT_REGISTRY[p.card_def.effect_id]["mana"]
+        native_choices = {native_spec[1]} if native_spec[0] == "fixed" else set()
+        candidates = native_choices | granted
+        color_choice = next((c for c in candidates if remaining.get(c, 0) > 0), None)
+        if color_choice is None or color_choice in native_choices:
+            _apply(mana_output(p, state))
+            chosen.append((p, None))
+        else:
+            _apply(mana_output(p, state, color_choice))
+            chosen.append((p, color_choice))
         pool.remove(p)
 
     if any(v > 0 for v in remaining.values()):
@@ -284,6 +353,19 @@ def tap_cost_options(state):
                         seen.add(key)
                         options.append(key)
 
+    # Abundant Growth's granted colors -- a runtime, per-instance fact, so
+    # this can't fold into the per-effect_id "flexible" branch above (every
+    # Forest shares one effect_id regardless of which specific copy, if
+    # any, is enchanted).
+    for p in state.battlefield:
+        if p.tapped or id(p) in tapped_ids:
+            continue
+        for color in _granted_mana_colors(state, p):
+            key = (p.card_def.name, color, False)
+            if key not in seen:
+                seen.add(key)
+                options.append(key)
+
     filter_color = _filter_mana_eligible(remaining)
     if filter_color is not None:
         for p in state.battlefield:
@@ -320,7 +402,28 @@ def execute_tap_cost_option(state, name, color_choice, is_filter):
             )
         return not p.tapped
 
-    permanent = next(p for p in state.battlefield if _available(p))
+    matching = [p for p in state.battlefield if _available(p)]
+    if is_filter:
+        permanent = matching[0]
+    else:
+        # Same-named untapped sources are normally fully interchangeable in
+        # this engine -- an attached bonus/granted-mana Aura breaks that for
+        # the first time, since not every same-named permanent necessarily
+        # produces the same output anymore. Prefer whichever one produces
+        # the most mana right now (e.g. a Utopia-Sprawl-enchanted Forest
+        # over a plain one, or specifically the Abundant-Growth-enchanted
+        # one when color_choice is a color only it grants -- mana_output
+        # raises for a same-named permanent that can't actually produce
+        # this particular color_choice, so that's treated as "never
+        # preferred," not a crash): strictly at least as good as picking
+        # the first match arbitrarily, never wrong.
+        def _output_len(p):
+            try:
+                return len(mana_output(p, state, color_choice))
+            except ValueError:
+                return -1
+
+        permanent = max(matching, key=_output_len)
     pending["tapped"].append((permanent, is_filter))  # is_filter recorded so abandon_pay_cost can reverse it correctly
 
     if is_filter:
@@ -563,3 +666,67 @@ if __name__ == "__main__":
     assert _resolved == [True]
 
     print("mana.py solver self-check: OK")
+
+    # Boggles' two mana-fixing Auras need genuinely different treatment:
+    # Utopia Sprawl's bonus is automatic (always on top of the land's own
+    # output, no extra choice), Abundant Growth's is a competing ability
+    # (the model picks native or granted each tap) -- see mana_output's
+    # own module comments. Both exercised directly against a real Forest/
+    # Plains, using synthetic Aura permanents (real Utopia Sprawl/Abundant
+    # Growth CardDefs, just not attached via the real cast_aura flow).
+    state = GameState(on_the_play=True)
+    forest = Permanent(CardDef("Forest", CardType.LAND, None, _EffectId.FOREST))
+    utopia_sprawl = Permanent(CardDef("Utopia Sprawl", CardType.ENCHANTMENT, {"G": 1}, _EffectId.UTOPIA_SPRAWL))
+    utopia_sprawl.flags["enchanting"] = forest
+    utopia_sprawl.flags["bonus_mana_color"] = "W"
+    state.battlefield = [forest, utopia_sprawl]
+
+    assert mana_output(forest, state) == ["G", "W"]  # native G, plus Utopia Sprawl's automatic bonus
+    begin_pay_cost(state, {"W": 1}, on_complete=lambda s: None)
+    assert tap_cost_options(state) == [("Forest", None, False)]  # no color choice needed -- the bonus is automatic
+    execute_tap_cost_option(state, "Forest", None, False)
+    assert state.pending_resolution is None  # {W: 1} fully covered by the single tap's bonus symbol
+    assert state.mana_pool.get("G", 0) == 1  # the native G floated, unneeded by this cost
+
+    # Abundant Growth: Plains gets a genuinely competing "any of {G, W}"
+    # ability -- both its own native W and the grant stay usable.
+    state = GameState(on_the_play=True)
+    plains = Permanent(CardDef("Plains", CardType.LAND, None, _EffectId.PLAINS))
+    abundant_growth = Permanent(CardDef("Abundant Growth", CardType.ENCHANTMENT, {"G": 1}, _EffectId.ABUNDANT_GROWTH))
+    abundant_growth.flags["enchanting"] = plains
+    abundant_growth.flags["bonus_mana_colors"] = {"G", "W"}
+    state.battlefield = [plains, abundant_growth]
+
+    assert mana_output(plains, state) == ["W"]  # native, no color_choice
+    assert mana_output(plains, state, "G") == ["G"]  # via the grant
+    # A {G: 1} cost is payable only via the grant (Plains' own native
+    # color is W) -- confirms choose_taps_for_cost/plan_payment (the
+    # upfront legality gate every "Cast X" check uses) sees the grant too,
+    # not just the interactive tap_cost_options path.
+    assert plan_payment(state, {"G": 1}) is not None
+    begin_pay_cost(state, {"G": 1}, on_complete=lambda s: None)
+    assert ("Plains", "G", False) in tap_cost_options(state)
+    execute_tap_cost_option(state, "Plains", "G", False)
+    assert state.pending_resolution is None  # {G: 1} fully covered via the grant
+
+    # execute_tap_cost_option must pick the ENCHANTED Plains specifically
+    # when tapping for the granted color, even with an identical-by-name
+    # plain Plains also in play -- same-named sources are normally fully
+    # interchangeable in this engine; a granted-mana Aura breaks that for
+    # the first time (this is the exact bug a full-decklist smoke test
+    # caught: picking an arbitrary same-named Plains raised "has no color
+    # choice" whenever it happened to pick the unenchanted one).
+    state = GameState(on_the_play=True)
+    plain_plains = Permanent(CardDef("Plains", CardType.LAND, None, _EffectId.PLAINS))
+    grant_plains = Permanent(CardDef("Plains", CardType.LAND, None, _EffectId.PLAINS))
+    abundant_growth2 = CardDef("Abundant Growth", CardType.ENCHANTMENT, {"G": 1}, _EffectId.ABUNDANT_GROWTH)
+    abundant_growth2 = Permanent(abundant_growth2)
+    abundant_growth2.flags["enchanting"] = grant_plains
+    abundant_growth2.flags["bonus_mana_colors"] = {"G", "W"}
+    state.battlefield = [plain_plains, grant_plains, abundant_growth2]
+
+    begin_pay_cost(state, {"G": 1}, on_complete=lambda s: None)
+    execute_tap_cost_option(state, "Plains", "G", False)
+    assert grant_plains.tapped and not plain_plains.tapped
+
+    print("mana.py Aura self-check: OK")

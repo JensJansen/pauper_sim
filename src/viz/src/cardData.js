@@ -1,43 +1,102 @@
-// Static reference data for the 22 distinct cards in this project's deck
-// (see data/deck_list.txt / game.py's DECKLIST, the source of truth).
+// Static reference data for every distinct card across every deck this
+// project plays (data/*.txt -- monster_tron, spy_combo, rakdos_madness,
+// mono_red_madness -- plus the two synthetic token CardDefs created
+// mid-game, game.BLOOD_TOKEN_CARD_DEF/ROBOT_TOKEN_CARD_DEF, which never
+// appear in a decklist file but do show up on a logged battlefield).
 // Fixed metadata -- a card's type never depends on game state, so this
-// never needs to track anything at runtime, just kept in sync by hand if
-// the decklist itself ever changes.
+// never needs to track anything at runtime, just kept in sync by hand
+// whenever a deck adds a card not already listed here (cross-check
+// against game.CARD_DEFS if unsure: `python -c "import game;
+// print(sorted(game.CARD_DEFS))"` from src/).
 import { slug } from "./slug.js";
 
 const SORT_PRIORITY = {
   LAND: 0,
   ARTIFACT: 1,
-  CREATURE: 2,
-  SORCERY: 3,
-  INSTANT: 3,
-  FILLER: 4,
+  ENCHANTMENT: 2,
+  CREATURE: 3,
+  SORCERY: 4,
+  INSTANT: 4,
+  FILLER: 5,
 };
 
-// [name, CardType] pairs, exactly matching game.py's DECKLIST order/values.
+// [name, CardType] pairs, alphabetical -- spans every deck, not just one.
 const RAW = [
+  ["Abundant Growth", "ENCHANTMENT"],
+  ["Alms of the Vein", "SORCERY"],
+  ["Ancestral Mask", "ENCHANTMENT"],
+  ["Ancient Stirrings", "SORCERY"],
+  ["Armadillo Cloak", "ENCHANTMENT"],
+  ["Ash Barrens", "LAND"],
+  ["Balustrade Spy", "CREATURE"],
+  ["Barrels of Blasting Jelly", "ARTIFACT"],
+  ["Blood", "ARTIFACT"], // token (effects_common.BLOOD_TOKEN_CARD_DEF)
+  ["Bojuka Bog", "LAND"],
+  ["Bonder's Ornament", "ARTIFACT"],
+  ["Boulderbranch Golem", "FILLER"],
+  ["Bramble Wurm", "FILLER"],
+  ["Breath Weapon", "FILLER"],
+  ["Candy Trail", "ARTIFACT"],
+  ["Cartouche of Solidarity", "ENCHANTMENT"],
+  ["Conduit Pylons", "LAND"],
+  ["Crop Rotation", "INSTANT"],
+  ["Dread Return", "SORCERY"],
+  ["Eldrazi Spawn", "CREATURE"], // token (effects_common.ELDRAZI_SPAWN_TOKEN_CARD_DEF)
+  ["End the Festivities", "SORCERY"],
+  ["Ethereal Armor", "ENCHANTMENT"],
+  ["Expedition Map", "ARTIFACT"],
+  ["Faithless Looting", "SORCERY"],
+  ["Fiery Temper", "INSTANT"],
+  ["Fireblast", "INSTANT"],
+  ["Forest", "LAND"],
+  ["Gatecreeper Vine", "CREATURE"],
+  ["Generous Ent", "CREATURE"],
+  ["Gladecover Scout", "CREATURE"],
+  ["Grab the Prize", "SORCERY"],
+  ["Guttersnipe", "CREATURE"],
+  ["Highway Robbery", "SORCERY"],
+  ["Jagged Barrens", "LAND"],
+  ["Kitchen Imp", "CREATURE"],
+  ["Land Grant", "SORCERY"],
+  ["Lava Dart", "INSTANT"],
+  ["Lead the Stampede", "SORCERY"],
+  ["Lightning Bolt", "INSTANT"],
+  ["Lotleth Giant", "CREATURE"],
+  ["Lotus Petal", "ARTIFACT"],
+  ["Maelstrom Colossus", "FILLER"],
+  ["Malevolent Rumble", "SORCERY"],
+  ["Masked Vandal", "CREATURE"],
+  ["Melded Moxite", "ARTIFACT"],
+  ["Mesmeric Fiend", "CREATURE"],
+  ["Mountain", "LAND"],
+  ["Nyxborn Hydra", "CREATURE"],
+  ["Overgrown Battlement", "CREATURE"],
+  ["Pinnacle Kill-Ship", "FILLER"],
+  ["Plains", "LAND"],
+  ["Quirion Ranger", "CREATURE"],
+  ["Rakdos Carnarium", "LAND"],
+  ["Ram Through", "INSTANT"],
+  ["Rancor", "ENCHANTMENT"],
+  ["Relic of Progenitus", "ARTIFACT"],
+  ["Robot", "CREATURE"], // token (effects_common.ROBOT_TOKEN_CARD_DEF)
+  ["Rooftop Percher", "FILLER"],
+  ["Sagu Wildling", "SORCERY"],
+  ["Saruli Caretaker", "CREATURE"],
+  ["Silhana Ledgewalker", "CREATURE"],
+  ["Slippery Bogle", "CREATURE"],
+  ["Sneaky Snacker", "CREATURE"],
+  ["Swamp", "LAND"],
+  ["Tocasia's Dig Site", "LAND"],
   ["Urza's Mine", "LAND"],
   ["Urza's Power Plant", "LAND"],
   ["Urza's Tower", "LAND"],
-  ["Forest", "LAND"],
+  ["Utopia Sprawl", "ENCHANTMENT"],
+  ["Vampire's Kiss", "SORCERY"],
+  ["Voldaren Epicure", "CREATURE"],
+  ["Wall of Roots", "CREATURE"],
+  ["Warrior", "CREATURE"], // token (effects_common.WARRIOR_TOKEN_CARD_DEF)
+  ["Winding Way", "SORCERY"],
   ["Wooded Ridgeline", "LAND"],
-  ["Bojuka Bog", "LAND"],
-  ["Tocasia's Dig Site", "LAND"],
-  ["Conduit Pylons", "LAND"],
-  ["Expedition Map", "ARTIFACT"],
-  ["Crop Rotation", "INSTANT"],
-  ["Ancient Stirrings", "SORCERY"],
-  ["Bonder's Ornament", "ARTIFACT"],
-  ["Candy Trail", "ARTIFACT"],
-  ["Barrels of Blasting Jelly", "ARTIFACT"],
-  ["Relic of Progenitus", "ARTIFACT"],
-  ["Generous Ent", "CREATURE"], // never actually cast in this deck (forestcycled only), but correct to include
-  ["Rooftop Percher", "FILLER"],
-  ["Boulderbranch Golem", "FILLER"],
-  ["Maelstrom Colossus", "FILLER"],
-  ["Bramble Wurm", "FILLER"],
-  ["Pinnacle Kill-Ship", "FILLER"],
-  ["Breath Weapon", "FILLER"],
 ];
 
 export const CARD_DATA = Object.fromEntries(

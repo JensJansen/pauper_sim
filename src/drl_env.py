@@ -264,6 +264,8 @@ def _choose_name_options(state):
         return game.discard_options(state)
     if kind == "ancient_stirrings":
         return [n for n in game.ancient_stirrings_options(state) if n != "decline"]
+    if kind == "malevolent_rumble":
+        return [n for n in game.malevolent_rumble_options(state) if n != "decline"]
     if kind in ("scry", "surveil") and pending["ordered"] is not None:
         return game.scry_surveil_options(state)
     if kind == "select_to_hand" and pending["ordered"] is not None:
@@ -294,6 +296,8 @@ def _choose_name_execute(name):
             game.execute_discard_option(state, name)
         elif kind == "ancient_stirrings":
             game.execute_ancient_stirrings_option(state, name)
+        elif kind == "malevolent_rumble":
+            game.execute_malevolent_rumble_option(state, name)
         elif kind == "select_to_hand":
             game.execute_select_to_hand_option(state, name)  # ordering phase only
         else:  # scry / surveil, ordering phase
@@ -360,6 +364,15 @@ def _decline_legal(state):
 
 def _decline_execute(state):
     game.execute_ancient_stirrings_option(state, "decline")
+
+
+def _decline_malevolent_rumble_legal(state):
+    pending = state.pending_resolution
+    return pending is not None and pending["kind"] == "malevolent_rumble"
+
+
+def _decline_malevolent_rumble_execute(state):
+    game.execute_malevolent_rumble_option(state, "decline")
 
 
 def _abandon_payment_legal(state):
@@ -567,16 +580,24 @@ def _cast_from_exile_execute(name, resolve):
 
 
 def build_action_table(decklist, registry, token_card_defs=(), pending_kinds=()):
-    """token_card_defs: activatable tokens a deck's own cards can create
-    at runtime (Blood, Robot -- docs/MADNESS_DECKS_PLAN.md item 8), e.g.
-    (game.BLOOD_TOKEN_CARD_DEF,). Tokens are never decklist entries (no
-    quantity, not in game.CARD_DEFS), so they can't flow through
-    distinct_names/game.CARD_DEFS[name] the way every other action here
-    does -- only the activated-abilities loop below needs to know about
-    them at all; casting/land-drop/Flashback/etc. stay decklist-only, a
-    token is never cast or played as a land. Defaults to () so every
-    existing call site (Tron, spy_combo -- neither creates tokens) is
-    unaffected.
+    """token_card_defs: every token CardDef this deck's own cards can
+    create at runtime (Blood, Robot, Warrior, Eldrazi Spawn --
+    docs/MADNESS_DECKS_PLAN.md item 8), e.g. (game.BLOOD_TOKEN_CARD_DEF,).
+    Tokens are never decklist entries (no quantity, not in game.CARD_DEFS),
+    so they can't flow through distinct_names/game.CARD_DEFS[name] the way
+    every other action here does -- casting/land-drop/Flashback/etc. stay
+    decklist-only, a token is never cast or played as a land.
+
+    Two independent things read this list, for two different reasons: the
+    activated-abilities loop below (a token's own ability, e.g. Blood's
+    sac-for-a-card or Eldrazi Spawn's sac-for-{C}, needs an action to
+    exist at all), and the "Choose: X" name list (a token can be a
+    perfectly legal choose_permanent/sacrifice/discard target -- e.g. any
+    creature-enchanting Aura can enchant a token creature -- despite never
+    appearing in the decklist; list a token here even if it has no
+    activated ability of its own, like Warrior, so it stays a legal target
+    once it's on the battlefield). Defaults to () so every existing call
+    site (Tron, spy_combo -- neither creates tokens) is unaffected.
 
     pending_kinds: this deck's own extra pending-resolution kinds beyond
     the universal baseline (pay_cost) -- see game.registry.
@@ -687,8 +708,28 @@ def build_action_table(decklist, registry, token_card_defs=(), pending_kinds=())
 
     actions.append(("Pass", _pass_legal, _pass_execute))
 
-    for name in distinct_names:
+    # "Choose: X" needs to cover every name a choose_permanent/sacrifice/
+    # discard resolution could ever offer -- not just decklist names.
+    # A token (e.g. boggles' Eldrazi Spawn) is a perfectly legal
+    # choose_permanent target (any creature-enchanting Aura can enchant
+    # it) despite never appearing in CARD_DEFS/the decklist; omitting
+    # token names here left exactly that case legal-to-cast but
+    # impossible-to-target once a token was the only eligible permanent
+    # in play, softlocking the game.
+    choosable_names = sorted(set(distinct_names) | {cd.name for cd in token_card_defs})
+    for name in choosable_names:
         actions.append((f"Choose: {name}", _choose_name_legal(name), _choose_name_execute(name)))
+
+    # Abundant Growth's own grant: a runtime, per-instance fact (which
+    # specific land, if any, ends up enchanted) that can't be known when
+    # this table is built, before any game state exists -- so every land
+    # name gets a "Choose: X as color" slot for every color ANY card in
+    # this decklist can ever grant, pre-registered here and masked
+    # legal/illegal at runtime by mana.tap_cost_options actually seeing
+    # (or not seeing) an attached grant.
+    grantable_colors = set()
+    for name in distinct_names:
+        grantable_colors |= registry.get(game.CARD_DEFS[name].effect_id, {}).get("grants_mana_colors", set())
 
     for name in distinct_names:
         spec = registry.get(game.CARD_DEFS[name].effect_id, {})
@@ -699,6 +740,8 @@ def build_action_table(decklist, registry, token_card_defs=(), pending_kinds=())
         filter_mana = spec.get("filter_mana")
         if filter_mana is not None:
             colors |= filter_mana["colors"]
+        if game.CARD_DEFS[name].card_type == game.CardType.LAND:
+            colors |= grantable_colors
         for color in sorted(colors):
             actions.append((
                 f"Choose: {name} as {color}",
@@ -718,6 +761,8 @@ def build_action_table(decklist, registry, token_card_defs=(), pending_kinds=())
         actions.append(("Dispose (scry/surveil)", _keep_dispose_legal, _dispose_execute))
     if "ancient_stirrings" in pending_kinds:
         actions.append(("Decline (Ancient Stirrings)", _decline_legal, _decline_execute))
+    if "malevolent_rumble" in pending_kinds:
+        actions.append(("Decline (Malevolent Rumble)", _decline_malevolent_rumble_legal, _decline_malevolent_rumble_execute))
     if "select_to_hand" in pending_kinds:
         actions.append(("Keep (select to hand)", _select_to_hand_keep_legal, _select_to_hand_keep_execute))
         actions.append(("Bottom (select to hand)", _select_to_hand_bottom_legal, _select_to_hand_bottom_execute))
@@ -772,7 +817,7 @@ class DeckEnv(gymnasium.Env):
     # Its own action table and observation dim are built fresh per
     # instance, never read from any module-level global.
     def __init__(self, reward_fn, decklist, terminated_fn, pending_kinds,
-                 horizon=6, on_the_play=True, seed=None, combat_enabled=False):
+                 horizon=6, on_the_play=True, seed=None, combat_enabled=False, token_card_defs=()):
         super().__init__()
         self.reward_fn = reward_fn
         self.decklist = decklist
@@ -786,9 +831,17 @@ class DeckEnv(gymnasium.Env):
         # no action-table entries and no observation dims, just a call at
         # the same "Pass ends the main phase" point below.
         self.combat_enabled = combat_enabled
+        # Tokens an in-play card can create at runtime (Blood/Robot/Warrior/
+        # Eldrazi Spawn) whose own activated ability, if any, needs an
+        # action-table entry -- see build_action_table's own token_card_defs
+        # docstring. Defaults to () so every existing caller (none of which
+        # currently pass this) is unaffected.
+        self.token_card_defs = token_card_defs
         self._rng = random.Random(seed)
         self.state = None
-        self.actions = build_action_table(decklist, game.EFFECT_REGISTRY, pending_kinds=pending_kinds)
+        self.actions = build_action_table(
+            decklist, game.EFFECT_REGISTRY, token_card_defs=token_card_defs, pending_kinds=pending_kinds,
+        )
         self.pass_action = next(i for i, (name, _legal, _execute) in enumerate(self.actions) if name == "Pass")
         self.observation_dim = observation_dim_for(decklist, pending_kinds)
         self.observation_space = spaces.Box(low=0.0, high=1.0, shape=(self.observation_dim,), dtype=np.float32)

@@ -53,6 +53,18 @@ MODEL_CLS = MaskablePPO  # every config uses this today -- no JSON field for it,
 # ~104 (spy_combo) steps/episode -- no per-config field needed.
 TIMESTEPS_PER_RUN = 2000
 
+# Tokens a config's own "token_card_defs" list (names) resolves against --
+# add only what an actual config needs (boggles' Eldrazi Spawn is the
+# first real user; Blood/Robot/Warrior have no config referencing them
+# yet, listed here anyway since they already exist and cost nothing to
+# include).
+TOKEN_CARD_DEFS_BY_NAME = {
+    "Blood": game.BLOOD_TOKEN_CARD_DEF,
+    "Robot": game.ROBOT_TOKEN_CARD_DEF,
+    "Warrior": game.WARRIOR_TOKEN_CARD_DEF,
+    "Eldrazi Spawn": game.ELDRAZI_SPAWN_TOKEN_CARD_DEF,
+}
+
 
 def load_config(config_name):
     path = os.path.join(CONFIGS_DIR, f"{config_name}.json")
@@ -71,6 +83,7 @@ def load_config(config_name):
         "horizon": raw["horizon"],
         "on_the_play": raw["on_the_play"],
         "combat_enabled": raw.get("combat_enabled", False),
+        "token_card_defs": tuple(TOKEN_CARD_DEFS_BY_NAME[name] for name in raw.get("token_card_defs", [])),
         "seed": raw.get("seed", 0),
         "n_envs": raw.get("n_envs", 1),
         "model_kwargs": raw.get("model_kwargs", {}),
@@ -87,7 +100,7 @@ def _load_harness(path, config_name, cfg):
             path, reward_fn=cfg["reward_fn"], model_cls=MODEL_CLS, decklist=cfg["decklist"],
             terminated_fn=cfg["terminated_fn"], pending_kinds=cfg["pending_kinds"],
             horizon=cfg["horizon"], on_the_play=cfg["on_the_play"], scoring_fns=cfg["scoring_fns"],
-            combat_enabled=cfg["combat_enabled"],
+            combat_enabled=cfg["combat_enabled"], token_card_defs=cfg["token_card_defs"],
         )
     except ValueError as e:
         raise ValueError(
@@ -111,7 +124,7 @@ def train(config_name, cfg, num_runs):
             terminated_fn=cfg["terminated_fn"], pending_kinds=cfg["pending_kinds"],
             model_kwargs=cfg["model_kwargs"], horizon=cfg["horizon"], on_the_play=cfg["on_the_play"],
             seed=cfg["seed"], scoring_fns=cfg["scoring_fns"], n_envs=cfg["n_envs"],
-            combat_enabled=cfg["combat_enabled"],
+            combat_enabled=cfg["combat_enabled"], token_card_defs=cfg["token_card_defs"],
         )
 
     t0 = time.time()

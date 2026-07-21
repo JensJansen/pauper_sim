@@ -50,6 +50,8 @@ class EffectId(Enum):
     # CARD_DEFS/any decklist quantity; see effects_common.create_token.
     BLOOD_TOKEN = auto()
     ROBOT_TOKEN = auto()
+    WARRIOR_TOKEN = auto()  # Cartouche of Solidarity
+    ELDRAZI_SPAWN_TOKEN = auto()  # Malevolent Rumble
 
     # --- shared between rakdos_madness and mono_red_madness (both decklists
     # play these) -- registry entries live in game.catalog.red_cards
@@ -78,6 +80,22 @@ class EffectId(Enum):
     FIREBLAST = auto()
     LAVA_DART = auto()
 
+    # --- boggles deck ---
+    PLAINS = auto()
+    GLADECOVER_SCOUT = auto()
+    SILHANA_LEDGEWALKER = auto()
+    SLIPPERY_BOGLE = auto()
+    RANCOR = auto()
+    ARMADILLO_CLOAK = auto()
+    ANCESTRAL_MASK = auto()
+    ETHEREAL_ARMOR = auto()
+    CARTOUCHE_OF_SOLIDARITY = auto()
+    ASH_BARRENS = auto()
+    MALEVOLENT_RUMBLE = auto()
+    RAM_THROUGH = auto()  # functional blank -- see green_cards.py comment
+    UTOPIA_SPRAWL = auto()
+    ABUNDANT_GROWTH = auto()
+
 
 class CardType(Enum):
     LAND = auto()
@@ -85,6 +103,7 @@ class CardType(Enum):
     SORCERY = auto()
     INSTANT = auto()
     CREATURE = auto()
+    ENCHANTMENT = auto()
     FILLER = auto()
 
 

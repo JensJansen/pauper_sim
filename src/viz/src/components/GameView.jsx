@@ -90,7 +90,7 @@ function Zone({ title, children, empty, className = "" }) {
   );
 }
 
-export default function GameView({ game, onBack }) {
+export default function GameView({ game, meta, onBack }) {
   const steps = useMemo(() => flattenSteps(game), [game]);
   const [stepIndex, setStepIndex] = useState(0);
   const [hoveredCard, setHoveredCard] = useState(null);
@@ -123,6 +123,13 @@ export default function GameView({ game, onBack }) {
   const sa = step.state_after;
   const isLast = stepIndex === steps.length - 1;
   const { lands, nonLands } = splitBattlefield(sa.battlefield);
+  // Only meaningful for a damage-race deck (meta.win_threshold set --
+  // see terminated.damage_threshold_terminated); null for e.g. Tron,
+  // which has no such notion, and for older logs predating this field.
+  const opponentLife =
+    meta?.win_threshold != null && sa.damage_dealt != null
+      ? Math.max(0, meta.win_threshold - sa.damage_dealt)
+      : null;
 
   return (
     <div className="game-view">
@@ -133,6 +140,7 @@ export default function GameView({ game, onBack }) {
 
         <div className="step-bar">
           <div className="turn">Turn {sa.turn_number}</div>
+          {opponentLife != null && <div className="opponent-life">Opponent life: {opponentLife}</div>}
           <div className="nav">
             Step {stepIndex + 1} / {steps.length} &middot; &larr;/&rarr; to navigate
           </div>
@@ -197,6 +205,11 @@ export default function GameView({ game, onBack }) {
             </div>
             <Zone title="Discard pile" className="zone-graveyard" empty={sa.graveyard.length === 0}>
               {sa.graveyard.map((name, i) => (
+                <Card key={`${name}-${i}`} name={name} size="small" onHover={setHoveredCard} />
+              ))}
+            </Zone>
+            <Zone title="Exile" className="zone-exile" empty={!sa.exile?.length}>
+              {sa.exile?.map((name, i) => (
                 <Card key={`${name}-${i}`} name={name} size="small" onHover={setHoveredCard} />
               ))}
             </Zone>

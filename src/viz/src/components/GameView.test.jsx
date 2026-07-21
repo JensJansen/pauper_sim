@@ -40,6 +40,60 @@ describe("sortedBattlefield", () => {
   });
 });
 
+describe("exile zone and opponent life", () => {
+  function makeGame({ exile = [], damageDealt = 0 }) {
+    const stateAfter = {
+      turn_number: 1,
+      hand: [],
+      battlefield: [],
+      graveyard: [],
+      exile,
+      mana_pool: {},
+      damage_dealt: damageDealt,
+      resource_quality: { non_land_permanents: 0, available_mana: 0, hand_size: 0 },
+    };
+    return {
+      game_index: 0,
+      scores: { reward_fn: 1 },
+      turn_won: null,
+      opening_hand_state: stateAfter,
+      steps: [],
+      end_state: stateAfter,
+    };
+  }
+
+  it("shows exiled cards when present", () => {
+    render(<GameView game={makeGame({ exile: ["Fiery Temper"] })} onBack={() => {}} />);
+    expect(screen.getByText("Exile")).toBeTruthy();
+    expect(screen.getByAltText("Fiery Temper")).toBeTruthy();
+  });
+
+  it("shows the exile zone as empty when nothing's exiled", () => {
+    render(<GameView game={makeGame({})} onBack={() => {}} />);
+    expect(screen.getByText("Exile")).toBeTruthy();
+    expect(screen.queryByAltText("Fiery Temper")).toBeNull();
+  });
+
+  it("shows opponent life (win_threshold - damage_dealt) when meta.win_threshold is set", () => {
+    render(
+      <GameView game={makeGame({ damageDealt: 14 })} meta={{ win_threshold: 20 }} onBack={() => {}} />
+    );
+    expect(screen.getByText("Opponent life: 6")).toBeTruthy();
+  });
+
+  it("floors opponent life at 0 rather than going negative", () => {
+    render(
+      <GameView game={makeGame({ damageDealt: 27 })} meta={{ win_threshold: 20 }} onBack={() => {}} />
+    );
+    expect(screen.getByText("Opponent life: 0")).toBeTruthy();
+  });
+
+  it("hides opponent life entirely for a deck with no win_threshold (e.g. Tron)", () => {
+    render(<GameView game={makeGame({ damageDealt: 0 })} onBack={() => {}} />);
+    expect(screen.queryByText(/Opponent life/)).toBeNull();
+  });
+});
+
 describe("floating mana readout", () => {
   it("shows the floating pool once mana is tapped, and clears once it's spent", () => {
     // fixture.games[0] -- step 5 taps Urza's Power Plant for {generic: 1}

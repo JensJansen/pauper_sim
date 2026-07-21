@@ -1,11 +1,11 @@
 {
-  "decklist": "mono_red_madness.txt",
+  "decklist": "boggles.txt",
   "terminated_fn": "damage_threshold_20_terminated",
   "reward_fns": ["assembled_with_resource_quality"],
   "horizon": 10,
   "on_the_play": true,
   "combat_enabled": true,
-  "token_card_defs": ["Blood"],
+  "token_card_defs": ["Eldrazi Spawn", "Warrior"],
   "seed": 0,
   "n_envs": 8,
   "model_kwargs": {

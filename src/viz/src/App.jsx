@@ -39,7 +39,7 @@ export default function App() {
   if (selectedGame) {
     return (
       <div className="app">
-        <GameView game={selectedGame} onBack={() => setSelectedGame(null)} />
+        <GameView game={selectedGame} meta={meta} onBack={() => setSelectedGame(null)} />
       </div>
     );
   }

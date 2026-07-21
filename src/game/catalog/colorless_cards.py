@@ -18,7 +18,7 @@ IS a "fixed" mana source below) -- offered by mana.tap_cost_options only
 when exactly one colored pip of quantity 1 remains outstanding."""
 
 from ..cards import CardDef, CardType, EffectId
-from ..effects_common import cast_permanent_from_hand, find_and_remove_by_name
+from ..effects_common import activate_blood_sac, cast_permanent_from_hand, find_and_remove_by_name
 from ..mana import COLORS
 from ..resolution import begin_search_fetch, scry, surveil
 
@@ -55,6 +55,9 @@ COLORLESS_CARD_CATALOG = {
     "Boulderbranch Golem": CardDef("Boulderbranch Golem", CardType.FILLER, None, EffectId.FILLER),
     "Maelstrom Colossus": CardDef("Maelstrom Colossus", CardType.FILLER, None, EffectId.FILLER),
     "Pinnacle Kill-Ship": CardDef("Pinnacle Kill-Ship", CardType.FILLER, None, EffectId.FILLER),
+
+    # --- boggles deck ---
+    "Ash Barrens": CardDef("Ash Barrens", CardType.LAND, None, EffectId.ASH_BARRENS, cycling_cost={"generic": 1}),
 }
 
 
@@ -111,6 +114,31 @@ def _lotus_petal_on_tap_undo(state, permanent):
     state.battlefield.append(permanent)
 
 
+def _basic_land(card_def):
+    return card_def.extra.get("basic", False)
+
+
+def _ash_barrens_to_hand(state, name):
+    found = find_and_remove_by_name(state, name)
+    state.rng.shuffle(state.library)
+    if found:
+        state.hand.append(found)
+
+
+def cycle_ash_barrens(state, card_def):
+    """Basic landcycling {1}: discard this card from hand, search library
+    for a basic land, put it into hand, shuffle. No draw-a-card rider (a
+    plain Cycling ability would have one; Basic Landcycling doesn't --
+    verified via Scryfall, not guessed), and the found land goes to hand,
+    not the battlefield -- this is exactly Generous Ent's own forestcycle
+    shape (game.catalog.green_cards), just with a real model choice of
+    WHICH basic land (this decklist runs both Forest and Plains, unlike
+    Generous Ent's single fixed "Forest" target)."""
+    state.hand.remove(card_def)
+    state.graveyard.append(card_def)
+    begin_search_fetch(state, _basic_land, _ash_barrens_to_hand)
+
+
 COLORLESS_EFFECT_REGISTRY = {
     EffectId.TRON_LAND: {
         "mana": ("tron",),
@@ -162,6 +190,14 @@ COLORLESS_EFFECT_REGISTRY = {
         },
         "pending_kinds": {"scry"},
     },
+    EffectId.BLOOD_TOKEN: {
+        "activated_abilities": {
+            "sac": {
+                "cost_key": "sac_ability_cost",
+                "resolve": lambda state, permanent: activate_blood_sac(state, permanent),
+            },
+        },
+    },
     EffectId.BARRELS_OF_BLASTING_JELLY: {
         "cast": {"resolve": lambda state, card_def: cast_permanent_from_hand(state, card_def)},
         "filter_mana": {"colors": set(COLORS)},
@@ -191,4 +227,46 @@ COLORLESS_EFFECT_REGISTRY = {
     # temporarily reassigns registry.EFFECT_REGISTRY[EffectId.FILLER] via
     # direct bracket indexing, which requires the key to already exist.
     EffectId.FILLER: {},
+
+    # --- boggles deck ---
+    EffectId.ASH_BARRENS: {
+        "mana": ("fixed", "C"),
+        "forestcycle": {
+            "cost_key": "cycling_cost",
+            "resolve": lambda state, card_def: cycle_ash_barrens(state, card_def),
+        },
+        "pending_kinds": {"search_fetch"},
+    },
 }
+
+
+if __name__ == "__main__":
+    # ponytail self-check: no pytest in this project, mirrors the
+    # assert-based demo convention -- run via
+    # `python -m game.catalog.colorless_cards` from src/.
+    from ..state import GameState
+
+    # Basic landcycling {1}: discard this card from hand, search for a
+    # basic land -- a real model choice between Forest and Plains (unlike
+    # Generous Ent's own forestcycle, which always searches "Forest"
+    # specifically), put into hand, shuffle. No draw-a-card rider (unlike
+    # a plain Cycling ability) -- verified via Scryfall, not guessed.
+    state = GameState(on_the_play=True)
+    ash_barrens = CardDef("Ash Barrens", CardType.LAND, None, EffectId.ASH_BARRENS, cycling_cost={"generic": 1})
+    state.hand = [ash_barrens]
+    state.library = [
+        CardDef("Forest", CardType.LAND, None, EffectId.FOREST, basic=True),
+        CardDef("Plains", CardType.LAND, None, EffectId.PLAINS, basic=True),
+        CardDef("Ash Barrens", CardType.LAND, None, EffectId.ASH_BARRENS, cycling_cost={"generic": 1}),  # not basic -- ineligible
+    ]
+    cycle_ash_barrens(state, ash_barrens)
+    assert state.pending_resolution["kind"] == "search_fetch"
+    from ..resolution import search_fetch_options, execute_search_fetch_option
+    assert search_fetch_options(state) == ["Forest", "Plains"]  # the 2nd Ash Barrens is correctly excluded
+    execute_search_fetch_option(state, "Plains")
+    assert state.pending_resolution is None
+    assert [c.name for c in state.hand] == ["Plains"]
+    assert sorted(c.name for c in state.graveyard) == ["Ash Barrens"]  # discarded itself, not the fetched land
+    assert sorted(c.name for c in state.library) == ["Ash Barrens", "Forest"]  # shuffled; the unchosen basic stays
+
+    print("colorless_cards.py Ash Barrens self-check: OK")

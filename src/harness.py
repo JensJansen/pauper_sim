@@ -56,7 +56,14 @@ def _snapshot_state(state):
         "hand": [c.name for c in state.hand],
         "battlefield": [{"name": p.card_def.name, "tapped": p.tapped} for p in state.battlefield],
         "graveyard": [c.name for c in state.graveyard],
+        "exile": [c.name for c, _plotted_turn in state.exile],
         "mana_pool": dict(state.mana_pool),  # copy -- state.mana_pool mutates in place (mana.py, turn.untap_step)
+        # Running non-combat damage counter against the implicit opponent
+        # (game/state.py's own note: no modeled opponent state beyond
+        # this) -- 0 and never read by any deck whose terminated_fn isn't
+        # one of terminated.damage_threshold_terminated's instances, but
+        # cheap enough to always include rather than special-case by deck.
+        "damage_dealt": state.damage_dealt,
     }
     snapshot["resource_quality"] = rewards.resource_quality_components(state)
     return snapshot
@@ -229,7 +236,8 @@ class _GameLogger:
         }
 
 
-def _make_env(reward_fn, decklist, terminated_fn, horizon, on_the_play, seed, pending_kinds, combat_enabled):
+def _make_env(reward_fn, decklist, terminated_fn, horizon, on_the_play, seed, pending_kinds, combat_enabled,
+              token_card_defs=()):
     """Zero-arg factory for DummyVecEnv -- each call builds one fresh
     DeckEnv wrapped in Monitor. Monitor is required here: SB3 only
     auto-wraps an env in Monitor when it is NOT already a VecEnv (see
@@ -241,7 +249,7 @@ def _make_env(reward_fn, decklist, terminated_fn, horizon, on_the_play, seed, pe
         return Monitor(drl_env.DeckEnv(
             reward_fn, decklist=decklist, terminated_fn=terminated_fn,
             horizon=horizon, on_the_play=on_the_play, seed=seed, pending_kinds=pending_kinds,
-            combat_enabled=combat_enabled,
+            combat_enabled=combat_enabled, token_card_defs=token_card_defs,
         ))
     return _init
 
@@ -254,7 +262,8 @@ class TrainingHarness:
     # second deck/model is just different arguments passed in here --
     # never a change to this file.
     def __init__(self, reward_fn, model_cls, decklist, terminated_fn, pending_kinds, model_kwargs=None,
-                 horizon=6, on_the_play=True, seed=0, scoring_fns=None, n_envs=1, combat_enabled=False):
+                 horizon=6, on_the_play=True, seed=0, scoring_fns=None, n_envs=1, combat_enabled=False,
+                 token_card_defs=()):
         self.reward_fn = reward_fn
         self.model_cls = model_cls
         self.model_kwargs = model_kwargs or {}
@@ -270,6 +279,15 @@ class TrainingHarness:
         # load()'s metadata mismatch-check: combat is behavioral only (like
         # terminated_fn), it never changes action_space_size/observation_dim.
         self.combat_enabled = combat_enabled
+        # Tokens this deck's own cards can create at runtime whose activated
+        # ability (if any) needs an action-table entry -- e.g. boggles'
+        # Eldrazi Spawn (Malevolent Rumble). Defaults to () so every
+        # existing caller (none of which currently pass this) is
+        # unaffected. IS part of load()'s mismatch-check below (via
+        # action_space_size), same as pending_kinds: adding/removing a
+        # token's own actions changes the action space just like a new
+        # card would.
+        self.token_card_defs = token_card_defs
         self.total_timesteps_trained = 0
         # MULTI_DECK_PLAN.md Phase M6: reward_fn (score 1) is mandatory --
         # called every env step during training, and the sort key for
@@ -285,7 +303,9 @@ class TrainingHarness:
         # .pass_action/.observation_dim used to be read below) -- required
         # once self.env can be a VecEnv (n_envs>1), which has no such
         # attributes of its own.
-        self.actions = drl_env.build_action_table(decklist, game.EFFECT_REGISTRY, pending_kinds=pending_kinds)
+        self.actions = drl_env.build_action_table(
+            decklist, game.EFFECT_REGISTRY, token_card_defs=token_card_defs, pending_kinds=pending_kinds,
+        )
         self.pass_action = next(i for i, (name, _legal, _execute) in enumerate(self.actions) if name == "Pass")
         self.observation_dim = drl_env.observation_dim_for(decklist, pending_kinds)
 
@@ -293,11 +313,14 @@ class TrainingHarness:
             self.env = drl_env.DeckEnv(
                 reward_fn, decklist=decklist, terminated_fn=terminated_fn,
                 horizon=horizon, on_the_play=on_the_play, seed=seed, pending_kinds=pending_kinds,
-                combat_enabled=combat_enabled,
+                combat_enabled=combat_enabled, token_card_defs=token_card_defs,
             )
         else:
             self.env = DummyVecEnv([
-                _make_env(reward_fn, decklist, terminated_fn, horizon, on_the_play, seed + i, pending_kinds, combat_enabled)
+                _make_env(
+                    reward_fn, decklist, terminated_fn, horizon, on_the_play, seed + i, pending_kinds,
+                    combat_enabled, token_card_defs=token_card_defs,
+                )
                 for i in range(n_envs)
             ])
         self.model = model_cls("MlpPolicy", self.env, **self.model_kwargs)
@@ -412,6 +435,11 @@ class TrainingHarness:
                     "horizon": horizon,
                     "on_the_play": self.on_the_play,
                     "seed": seed,
+                    # Only present for a damage-race deck (see
+                    # terminated.damage_threshold_terminated) -- None for
+                    # e.g. Tron's controls_all_tron_types, which has no
+                    # such notion.
+                    "win_threshold": getattr(self.terminated_fn, "threshold", None),
                 },
                 "games": game_logs,
             }
@@ -449,11 +477,13 @@ class TrainingHarness:
 
     @classmethod
     def load(cls, path, reward_fn, model_cls, decklist, terminated_fn, pending_kinds,
-              horizon=6, on_the_play=True, scoring_fns=None, combat_enabled=False):
+              horizon=6, on_the_play=True, scoring_fns=None, combat_enabled=False, token_card_defs=()):
         with open(os.path.join(path, "metadata.json")) as f:
             metadata = json.load(f)
 
-        current_action_space_size = len(drl_env.build_action_table(decklist, game.EFFECT_REGISTRY, pending_kinds=pending_kinds))
+        current_action_space_size = len(drl_env.build_action_table(
+            decklist, game.EFFECT_REGISTRY, token_card_defs=token_card_defs, pending_kinds=pending_kinds,
+        ))
         current_observation_dim = drl_env.observation_dim_for(decklist, pending_kinds)
 
         mismatches = []
@@ -479,6 +509,7 @@ class TrainingHarness:
             decklist=decklist, terminated_fn=terminated_fn,
             horizon=horizon, on_the_play=on_the_play, seed=metadata["train_seed"],
             scoring_fns=scoring_fns, pending_kinds=pending_kinds, combat_enabled=combat_enabled,
+            token_card_defs=token_card_defs,
         )
         harness.model = model_cls.load(os.path.join(path, "model.zip"), env=harness.env)
         harness.total_timesteps_trained = metadata["total_timesteps_trained"]

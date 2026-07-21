@@ -5,6 +5,7 @@
   "horizon": 10,
   "on_the_play": true,
   "combat_enabled": true,
+  "token_card_defs": ["Blood"],
   "seed": 0,
   "n_envs": 8,
   "model_kwargs": {

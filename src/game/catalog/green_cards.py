@@ -13,11 +13,20 @@ Battlement's own mana ability counts (itself included)."""
 
 from .. import resolution
 from ..cards import CardDef, CardType, EffectId
-from ..effects_common import cast_permanent_from_hand, enters_battlefield, find_and_remove_by_name
+from ..effects_common import (
+    ELDRAZI_SPAWN_TOKEN_CARD_DEF,
+    activate_eldrazi_spawn_sac,
+    cast_aura,
+    cast_permanent_from_hand,
+    create_token,
+    enchantment_count,
+    enters_battlefield,
+    find_and_remove_by_name,
+)
 from ..mana import COLORS
 
 GREEN_CARD_CATALOG = {
-    "Forest": CardDef("Forest", CardType.LAND, None, EffectId.FOREST),
+    "Forest": CardDef("Forest", CardType.LAND, None, EffectId.FOREST, basic=True),
     "Generous Ent": CardDef(
         "Generous Ent", CardType.CREATURE, {"generic": 5, "G": 1}, EffectId.GENEROUS_ENT,
         forestcycling_cost={"generic": 1},
@@ -40,6 +49,27 @@ GREEN_CARD_CATALOG = {
     "Crop Rotation": CardDef("Crop Rotation", CardType.INSTANT, {"G": 1}, EffectId.CROP_ROTATION),
     "Ancient Stirrings": CardDef("Ancient Stirrings", CardType.SORCERY, {"G": 1}, EffectId.ANCIENT_STIRRINGS),
     "Bramble Wurm": CardDef("Bramble Wurm", CardType.FILLER, None, EffectId.FILLER),
+
+    # --- boggles deck ---
+    "Gladecover Scout": CardDef("Gladecover Scout", CardType.CREATURE, {"G": 1}, EffectId.GLADECOVER_SCOUT, power=1),
+    "Silhana Ledgewalker": CardDef(
+        "Silhana Ledgewalker", CardType.CREATURE, {"generic": 1, "G": 1}, EffectId.SILHANA_LEDGEWALKER, power=1,
+    ),
+    "Rancor": CardDef("Rancor", CardType.ENCHANTMENT, {"G": 1}, EffectId.RANCOR),
+    "Ancestral Mask": CardDef("Ancestral Mask", CardType.ENCHANTMENT, {"generic": 2, "G": 1}, EffectId.ANCESTRAL_MASK),
+    "Utopia Sprawl": CardDef("Utopia Sprawl", CardType.ENCHANTMENT, {"G": 1}, EffectId.UTOPIA_SPRAWL),
+    "Abundant Growth": CardDef("Abundant Growth", CardType.ENCHANTMENT, {"G": 1}, EffectId.ABUNDANT_GROWTH),
+    "Malevolent Rumble": CardDef(
+        "Malevolent Rumble", CardType.SORCERY, {"generic": 1, "G": 1}, EffectId.MALEVOLENT_RUMBLE,
+    ),
+    # Functional blank for now: real text needs an opposing creature and a
+    # life total, neither modeled in this solitaire simulator (no other
+    # card here has ever needed either). No registry entry below -- same
+    # mechanism that makes Bramble Wurm/Breath Weapon uncastable -- so
+    # this never appears as a legal action. Cost/type kept accurate
+    # (verified via Scryfall) for card art and for whenever an
+    # adversarial/opponent mode makes it relevant to revisit.
+    "Ram Through": CardDef("Ram Through", CardType.INSTANT, {"generic": 1, "G": 1}, EffectId.RAM_THROUGH),
 }
 
 
@@ -361,6 +391,97 @@ def cast_ancient_stirrings(state, card_def):
     begin_ancient_stirrings(state, top, _on_chosen)
 
 
+def _creature_extra_legal(state):
+    return any(p.card_def.card_type == CardType.CREATURE for p in state.battlefield)
+
+
+def cast_rancor(state, card_def):
+    cast_aura(state, card_def, lambda p: p.card_def.card_type == CardType.CREATURE)
+
+
+def cast_ancestral_mask(state, card_def):
+    cast_aura(state, card_def, lambda p: p.card_def.card_type == CardType.CREATURE)
+
+
+def _utopia_sprawl_attach(color):
+    def on_attached(state, aura):
+        aura.flags["bonus_mana_color"] = color
+    return on_attached
+
+
+def cast_utopia_sprawl(state, card_def, color):
+    """Enchant Forest specifically -- the real card's own restriction, not
+    "enchant land" generally (verified via Scryfall). The chosen color is
+    recorded on the Aura's own flags; mana.py's own _bonus_mana_symbols
+    reads it to add that color automatically alongside the Forest's own G
+    every time it's tapped -- not a competing choice, unlike Abundant
+    Growth below (see mana.py's module comments for why these two need
+    genuinely different treatment despite reading like twins)."""
+    cast_aura(state, card_def, lambda p: p.card_def.name == "Forest", on_attached=_utopia_sprawl_attach(color))
+
+
+def abundant_growth_attach(state, aura):
+    state.draw(1)
+    # Real card grants any of 5 colors; scoped to this deck's own two
+    # colors as a documented simplification (a design choice, not
+    # Scryfall data, same category as every creature's own P/T here) --
+    # flag if full 5-color flexibility is ever wanted.
+    aura.flags["bonus_mana_colors"] = {"G", "W"}
+
+
+def cast_abundant_growth(state, card_def):
+    cast_aura(state, card_def, lambda p: p.card_def.card_type == CardType.LAND, on_attached=abundant_growth_attach)
+
+
+def begin_malevolent_rumble(state, revealed, on_complete):
+    """Reveal the top four cards of your library. You may put a permanent
+    card from among them into your hand. Put the rest into your
+    graveyard. Its own dedicated resolution kind, not a reuse of
+    ancient_stirrings' take-one-or-decline shape above: despite looking
+    similar, the real disposal zone differs (graveyard here, library
+    bottom there), so once you know Malevolent Rumble's real text they
+    aren't actually the same primitive."""
+    resolution.begin_resolution(state, "malevolent_rumble", on_complete, revealed=revealed)
+
+
+_PERMANENT_CARD_TYPES = (CardType.LAND, CardType.ARTIFACT, CardType.CREATURE, CardType.ENCHANTMENT)
+
+
+def malevolent_rumble_options(state):
+    revealed = state.pending_resolution["revealed"]
+    eligible_names = sorted({c.name for c in revealed if c.card_type in _PERMANENT_CARD_TYPES})
+    return eligible_names + ["decline"]
+
+
+def execute_malevolent_rumble_option(state, option):
+    revealed = state.pending_resolution["revealed"]
+    if option == "decline":
+        chosen = None
+    else:
+        idx = next(i for i, c in enumerate(revealed) if c.name == option)
+        chosen = revealed.pop(idx)
+    state.graveyard.extend(revealed)  # the rest -- order is never read again
+    resolution.complete_resolution(state, chosen)
+
+
+def cast_malevolent_rumble(state, card_def):
+    """{1}{G}: reveal top 4, may take one permanent card to hand, rest to
+    graveyard, create a 0/1 Eldrazi Spawn token ("Sacrifice this
+    creature: Add {C}."). No Madness -- real card has none (verified via
+    Scryfall; an earlier draft of this plan wrongly assumed it did)."""
+    state.hand.remove(card_def)
+    state.graveyard.append(card_def)
+    create_token(state, ELDRAZI_SPAWN_TOKEN_CARD_DEF)
+    top = state.library[:4]
+    del state.library[:4]
+
+    def _on_chosen(state, chosen):
+        if chosen is not None:
+            state.hand.append(chosen)
+
+    begin_malevolent_rumble(state, top, _on_chosen)
+
+
 GREEN_EFFECT_REGISTRY = {
     EffectId.FOREST: {
         "mana": ("fixed", "G"),
@@ -452,4 +573,142 @@ GREEN_EFFECT_REGISTRY = {
     },
     # Bramble Wurm (filler): no entry needed, same EffectId.FILLER
     # single-canonical-entry precedent as Breath Weapon (red_cards.py).
+
+    # --- boggles deck ---
+    EffectId.GLADECOVER_SCOUT: {
+        # No ability -- functionally a vanilla 1/1 hexproof for {G}.
+        # Hexproof is a documented no-op: no opposing spells/abilities
+        # exist in this solitaire simulator to be hexproof against.
+        "cast": {"resolve": lambda state, card_def: cast_permanent_from_hand(state, card_def)},
+    },
+    EffectId.SILHANA_LEDGEWALKER: {
+        # Real text also has "can't be blocked except by creatures with
+        # flying" -- a documented no-op, same reasoning as hexproof above
+        # (no blockers exist here at all, of any kind).
+        "cast": {"resolve": lambda state, card_def: cast_permanent_from_hand(state, card_def)},
+    },
+    EffectId.RANCOR: {
+        # Real text also grants trample (no-op, no blockers to trample
+        # over) and returns Rancor to hand when put into the graveyard
+        # from the battlefield -- not modeled; see cast_aura's own
+        # docstring for why that's unreachable given this deck's cards.
+        "cast": {
+            "resolve": lambda state, card_def: cast_rancor(state, card_def),
+            "extra_legal": lambda state: _creature_extra_legal(state),
+        },
+        "pending_kinds": {"choose_permanent"},
+        "pt_bonus": lambda state, aura: 2,
+    },
+    EffectId.ANCESTRAL_MASK: {
+        # Real text: +2/+2 for each OTHER enchantment you control (unlike
+        # Ethereal Armor's "each enchantment," this one excludes itself --
+        # verified via Scryfall).
+        "cast": {
+            "resolve": lambda state, card_def: cast_ancestral_mask(state, card_def),
+            "extra_legal": lambda state: _creature_extra_legal(state),
+        },
+        "pending_kinds": {"choose_permanent"},
+        "pt_bonus": lambda state, aura: 2 * (enchantment_count(state) - 1),
+    },
+    EffectId.UTOPIA_SPRAWL: {
+        "cast_modes": {
+            "green": {
+                "resolve": lambda state, card_def: cast_utopia_sprawl(state, card_def, "G"),
+                "extra_legal": lambda state: any(p.card_def.name == "Forest" for p in state.battlefield),
+            },
+            "white": {
+                "resolve": lambda state, card_def: cast_utopia_sprawl(state, card_def, "W"),
+                "extra_legal": lambda state: any(p.card_def.name == "Forest" for p in state.battlefield),
+            },
+        },
+        "pending_kinds": {"choose_permanent"},
+    },
+    EffectId.ABUNDANT_GROWTH: {
+        "cast": {
+            "resolve": lambda state, card_def: cast_abundant_growth(state, card_def),
+            "extra_legal": lambda state: any(p.card_def.card_type == CardType.LAND for p in state.battlefield),
+        },
+        "pending_kinds": {"choose_permanent"},
+        # Static fact for drl_env.build_action_table's own action-table
+        # pre-registration (which land x color "Choose" actions need to
+        # exist at all, before any game state does) -- kept in sync by
+        # hand with abundant_growth_attach's runtime aura.flags value.
+        "grants_mana_colors": {"G", "W"},
+    },
+    EffectId.MALEVOLENT_RUMBLE: {
+        "cast": {"resolve": lambda state, card_def: cast_malevolent_rumble(state, card_def)},
+        "pending_kinds": {"malevolent_rumble"},
+    },
+    EffectId.ELDRAZI_SPAWN_TOKEN: {
+        "activated_abilities": {
+            "sac": {
+                "legal": lambda state, permanent: True,
+                "resolve": lambda state, permanent: activate_eldrazi_spawn_sac(state, permanent),
+            },
+        },
+    },
+    # Ram Through (functional blank): deliberately no entry -- see the
+    # comment on its CardDef above.
 }
+
+
+if __name__ == "__main__":
+    # ponytail self-check: no pytest in this project, mirrors the
+    # assert-based demo convention -- run via
+    # `python -m game.catalog.green_cards` from src/.
+    from .. import registry
+    from ..state import GameState
+
+    # Malevolent Rumble: reveal top 4, may take one permanent card to
+    # hand (rest to graveyard, NOT the library bottom -- unlike Ancient
+    # Stirrings' own take-one-or-decline shape above, verified via
+    # Scryfall), create a 0/1 Eldrazi Spawn token whose own "Sacrifice:
+    # Add {C}" ability floats mana with no {T} at all.
+    state = GameState(on_the_play=True)
+    rumble = CardDef("Malevolent Rumble", CardType.SORCERY, {"generic": 1, "G": 1}, EffectId.MALEVOLENT_RUMBLE)
+    state.hand = [rumble]
+    state.library = [
+        CardDef("A Creature", CardType.CREATURE, {"G": 1}, None),
+        CardDef("An Instant", CardType.INSTANT, {"G": 1}, None),
+        CardDef("A Land", CardType.LAND, None, None),
+        CardDef("Filler 4", CardType.SORCERY, {}, None),
+        CardDef("Filler 5", CardType.SORCERY, {}, None),  # 5th card -- never revealed, stays in library
+    ]
+    cast_malevolent_rumble(state, rumble)
+    assert [p.card_def.name for p in state.battlefield] == ["Eldrazi Spawn"]
+    assert state.pending_resolution["kind"] == "malevolent_rumble"
+    # Instants/sorceries aren't "permanent cards" -- ineligible; only the
+    # creature and the land are offered, plus the ever-present decline.
+    assert malevolent_rumble_options(state) == ["A Creature", "A Land", "decline"]
+    execute_malevolent_rumble_option(state, "A Creature")
+    assert state.pending_resolution is None
+    assert [c.name for c in state.hand] == ["A Creature"]
+    # Everything revealed but not taken -- including the ineligible ones
+    # -- goes to the graveyard, alongside Malevolent Rumble itself.
+    assert sorted(c.name for c in state.graveyard) == ["A Land", "An Instant", "Filler 4", "Malevolent Rumble"]
+    assert [c.name for c in state.library] == ["Filler 5"]  # never revealed, untouched
+
+    spawn = state.battlefield[0]
+    assert state.mana_pool == {}
+    activate_eldrazi_spawn_sac(state, spawn)
+    assert state.battlefield == []  # sacrificed, not graveyarded -- a token ceases to exist
+    assert state.mana_pool == {"C": 1}
+
+    # Declining leaves everything revealed in the graveyard, nothing kept.
+    state = GameState(on_the_play=True)
+    rumble2 = CardDef("Malevolent Rumble", CardType.SORCERY, {"generic": 1, "G": 1}, EffectId.MALEVOLENT_RUMBLE)
+    state.hand = [rumble2]
+    state.library = [CardDef(f"Card {i}", CardType.CREATURE, {"G": 1}, None) for i in range(4)]
+    cast_malevolent_rumble(state, rumble2)
+    execute_malevolent_rumble_option(state, "decline")
+    assert state.pending_resolution is None
+    assert state.hand == []
+    assert sorted(c.name for c in state.graveyard) == ["Card 0", "Card 1", "Card 2", "Card 3", "Malevolent Rumble"]
+
+    print("green_cards.py Malevolent Rumble self-check: OK")
+
+    # Ram Through: a documented functional blank -- no registry entry at
+    # all, so it can never appear as a "Cast" action (same mechanism that
+    # makes Bramble Wurm/Breath Weapon uncastable).
+    assert registry.EFFECT_REGISTRY.get(EffectId.RAM_THROUGH, {}) == {}
+    print("green_cards.py Ram Through self-check: OK")
