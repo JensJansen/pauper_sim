@@ -6,14 +6,10 @@ any priority) and Cleanup (priority only if something triggers there)."""
 
 import enum
 
-from .effects_common import (
-    check_state_based_actions,
-    cleanup_step,
-    combat_damage_step,
-    declare_attackers_step,
-    promote_triggers_to_stack,
-    resolve_top_of_stack,
-)
+from .effects.combat import combat_damage_step, declare_attackers_step
+from .effects.stack import resolve_top_of_stack
+from .effects.state_based import check_state_based_actions, cleanup_step
+from .effects.triggers import promote_triggers_to_stack
 from .resolution import begin_declare_blockers
 from .state import DeckedOut, new_game_state, new_multiplayer_game_state
 
@@ -144,7 +140,21 @@ PHASE_ACTION_CAPS = {phase: 200 for phase in Phase}
 # limits -- mana, cards in hand -- stop a policy cold) rather than a whole
 # phase, since docs/PRIORITY_PLAN.md's general priority round can now run
 # more than once per phase (once per stack resolution).
-PRIORITY_ROUND_ACTION_CAP = 200
+#
+# ponytail: dropped from 200 to 20 as a temporary stopgap while
+# investigating a suspected deterministic-eval stall (a tap-a-source ->
+# Abandon payment loop: abandoning fully reverses the tap/pool delta, so a
+# deterministic policy facing the identical resulting observation could
+# keep re-choosing the same doomed payment attempt, burning the old
+# 200-iteration budget almost silently every phase). 4 was tried first and
+# was too aggressive -- turn.py's own regression self-check failed casting
+# a single Lightning Bolt (tap + spend + both-players-pass-to-resolve
+# already costs 4 by itself). 20 leaves room for a couple of real casts
+# plus combat per phase while still bounding a runaway loop far below 200.
+# Revisit once the loop's actual root cause is confirmed: either raise this
+# back toward 200 once fixed properly, or replace it with a smarter "no
+# observable progress" detector instead of a blunt iteration count.
+PRIORITY_ROUND_ACTION_CAP = 20
 
 
 def untap_step(state):
@@ -274,6 +284,17 @@ def _run_priority_round_gen(state):
             action()
             consecutive_passes = 0  # the priority holder keeps priority (rule 2) -- state.active_idx unchanged
 
+    # PRIORITY_ROUND_ACTION_CAP exhausted without ever reaching the clean
+    # "everyone passed, stack empty" exit above -- same invariant that exit
+    # already enforces before returning: state.active_idx must be back to
+    # state.turn_player_idx by the time this generator ends, or whoever
+    # last held priority (not necessarily the turn player) would incorrectly
+    # stay "active" going into the next phase. Unreachable in practice at
+    # the old cap of 200 (essentially never hit); became reachable once the
+    # cap dropped low enough to actually bind during real multi-action
+    # turns -- found via turn.py's own regression self-check, not guessed.
+    state.active_idx = state.turn_player_idx
+
 
 def _run_turn_gen(state, combat_enabled=False):
     """Generator form of one full turn -- the single implementation shared
@@ -314,7 +335,7 @@ def _run_turn_gen(state, combat_enabled=False):
     deck-specific knob here) -- only rakdos madness/mono red madness/
     boggles pass True. Phase.DECLARE_ATTACKERS is a real per-creature
     decision (declare_attackers_step/creature_attack_eligible/
-    declare_attacker, effects_common.py); Phase.COMBAT_DAMAGE totals
+    declare_attacker, game/effects/combat.py); Phase.COMBAT_DAMAGE totals
     unblocked attackers' power into state.damage_dealt/the opponent's
     life_total."""
     try:
@@ -435,7 +456,7 @@ def run_multiplayer_game(decklists, terminated_fns, rng, starting_player_idx, ch
     before active_idx flips to the next one. horizon=None (default) means
     uncapped: the loop instead ends only on an actual game-loss condition
     (state.turn_won, set by a player's own terminated_fn, a life_total
-    hitting 0 -- both via effects_common._check_end_of_game -- or a
+    hitting 0 -- both via game.effects.win_check._check_end_of_game -- or a
     decked-out draw). This can't hang: draw_step draws exactly one card
     every turn for whichever player is active, so total combined library
     size across every player is a hard upper bound on turns regardless of
@@ -477,7 +498,9 @@ if __name__ == "__main__":
 
     from . import mana, registry, resolution
     from .cards import CardDef, CardType, EffectId
-    from .effects_common import deal_damage_to_opponent, play_land_from_hand, push_to_stack
+    from .effects.casting import play_land_from_hand
+    from .effects.stack import push_to_stack
+    from .effects.win_check import deal_damage_to_opponent
     from .state import GameState, PlayerState
 
     # -- construction: opening hands, on_the_play, starting life ----------
@@ -575,7 +598,7 @@ if __name__ == "__main__":
         # legal to "cast" again even with a copy already pushed, paid-for-
         # but-unresolved on the stack -- a copy already there is still
         # physically in state.hand (its resolve only removes it once it
-        # actually resolves; see effects_common.push_to_stack) but isn't
+        # actually resolves; see game.effects.stack.push_to_stack) but isn't
         # really available. Same accounting drl_env._hand_count_available
         # does for exactly this reason.
         hand_count = sum(1 for c in state.hand if c.name == "Lightning Bolt")

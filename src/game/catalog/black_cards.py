@@ -4,21 +4,17 @@ Every card's cost/type/oracle-text below is a direct Scryfall pull,
 except creature power/toughness, which is a design choice, not Scryfall
 data. Real Jagged Barrens/End the Festivities/Vampire's Kiss/Voldaren
 Epicure/Alms of the Vein reference "each opponent"/"target opponent" --
-all of these route through effects_common.deal_damage_to_opponent, which
+all of these route through win_check.deal_damage_to_opponent, which
 hits a real per-player life_total in a 2-player game and the historical
 state.damage_dealt counter otherwise (docs/MULTIPLAYER_ENGINE_PLAN.md)."""
 
 from .. import resolution
 from ..cards import CardDef, CardType, EffectId
-from ..effects_common import (
-    BLOOD_TOKEN_CARD_DEF,
-    cast_permanent_from_hand,
-    create_token,
-    deal_damage_to_opponent,
-    discard_from_hand_to_graveyard,
-    enters_battlefield,
-    push_to_stack,
-)
+from ..effects.casting import cast_permanent_from_hand, enters_battlefield
+from ..effects.shared import discard_from_hand_to_graveyard
+from ..effects.stack import push_to_stack
+from ..effects.tokens import BLOOD_TOKEN_CARD_DEF, create_token
+from ..effects.win_check import deal_damage_to_opponent
 
 BLACK_CARD_CATALOG = {
     "Swamp": CardDef("Swamp", CardType.LAND, None, EffectId.SWAMP),

@@ -18,13 +18,9 @@ single unreachable branch on one card -- a deliberate simplification, not
 a guess (real cost verified via Scryfall)."""
 
 from ..cards import CardDef, CardType, EffectId
-from ..effects_common import (
-    any_creature_on_battlefield,
-    bounce_land_etb,
-    cast_aura,
-    cast_permanent_from_hand,
-    deal_damage_to_opponent,
-)
+from ..effects.casting import bounce_land_etb, cast_aura, cast_permanent_from_hand
+from ..effects.shared import any_creature_on_battlefield
+from ..effects.win_check import deal_damage_to_opponent
 
 MULTICOLOR_CARD_CATALOG = {
     "Wooded Ridgeline": CardDef("Wooded Ridgeline", CardType.LAND, None, EffectId.WOODED_RIDGELINE),
@@ -92,6 +88,7 @@ MULTICOLOR_EFFECT_REGISTRY = {
                 state, card_def, lambda p: p.card_def.card_type == CardType.CREATURE,
             ),
             "extra_legal": lambda state: any_creature_on_battlefield(state),
+            "precast_choice": True,  # real MTG "enchant target creature" -- must be chosen before the stack, see drl_env._precast_choice_execute
         },
         "pending_kinds": {"choose_permanent"},
         "pt_bonus": lambda state, aura: 2,

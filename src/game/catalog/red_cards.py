@@ -7,16 +7,12 @@ than colorless_cards.py -- verified via Scryfall, not guessed."""
 
 from .. import resolution
 from ..cards import CardDef, CardType, EffectId
-from ..effects_common import (
-    BLOOD_TOKEN_CARD_DEF,
-    ROBOT_TOKEN_CARD_DEF,
-    cast_permanent_from_hand,
-    create_token,
-    deal_damage_to_opponent,
-    discard_from_hand_to_graveyard,
-    plot_to_exile,
-    push_to_stack,
-)
+from ..effects.casting import cast_permanent_from_hand
+from ..effects.madness_and_plot import plot_to_exile
+from ..effects.shared import discard_from_hand_to_graveyard
+from ..effects.stack import push_to_stack
+from ..effects.tokens import BLOOD_TOKEN_CARD_DEF, ROBOT_TOKEN_CARD_DEF, create_token
+from ..effects.win_check import deal_damage_to_opponent
 
 RED_CARD_CATALOG = {
     "Mountain": CardDef("Mountain", CardType.LAND, None, EffectId.MOUNTAIN),

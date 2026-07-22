@@ -1,0 +1,16 @@
+{
+  "decklist": "monster_tron_half_cantrips.txt",
+  "terminated_fn": "tron_terminated",
+  "reward_fns": ["assembled_with_resource_quality", "tron_online_score"],
+  "horizon": 6,
+  "on_the_play": true,
+  "combat_enabled": false,
+  "seed": 0,
+  "n_envs": 8,
+  "model_kwargs": {
+    "policy_kwargs": {"net_arch": [64, 64]},
+    "verbose": 1,
+    "device": "cpu",
+    "n_steps": 256
+  }
+}

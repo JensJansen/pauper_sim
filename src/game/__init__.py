@@ -15,11 +15,12 @@ caller (drl_env.py, rewards.py, harness.py, run.py,
 generate_regression_snapshot.py) keeps working unchanged.
 
 Import order matters: `from . import registry` first is what actually
-triggers loading every catalog module (and, transitively, effects_common /
-mana / resolution / state / cards) -- see effects_common.py's module
-docstring for why those modules only reference `registry.EFFECT_REGISTRY`
-lazily instead of importing the name directly, which is what makes this
-order-independent rather than a real problem.
+triggers loading every catalog module (and, transitively, most of the
+game.effects package / mana / resolution / state / cards) -- see
+game/registry.py's own module docstring for why several of those modules
+only reference `registry.EFFECT_REGISTRY` lazily instead of importing the
+name directly, which is what makes this order-independent rather than a
+real problem.
 """
 
 import random  # noqa: F401 -- re-exported so `game.random.Random(seed)` keeps working
@@ -65,40 +66,24 @@ from .catalog.green_cards import (
     select_to_hand_options,
 )
 from .decklist import parse_decklist_file, parse_decklist_text
-from .effects_common import (
+from .effects.casting import bounce_land_etb, cast_aura, cast_permanent_from_hand, enters_battlefield, play_land_from_hand
+from .effects.combat import combat_damage_step, creature_attack_eligible, creature_block_eligible, declare_attacker, declare_attackers_step
+from .effects.madness_and_plot import execute_madness_cast, plot_to_exile
+from .effects.shared import find_and_remove_by_name
+from .effects.stack import on_cast_trigger, push_to_stack, resolve_top_of_stack
+from .effects.state_based import HAND_SIZE_LIMIT, cleanup_step
+from .effects.stats import creature_keywords, enchantment_count, has_keyword, permanent_power, permanent_toughness
+from .effects.tokens import (
     BLOOD_TOKEN_CARD_DEF,
     ELDRAZI_SPAWN_TOKEN_CARD_DEF,
-    HAND_SIZE_LIMIT,
     ROBOT_TOKEN_CARD_DEF,
     TOKEN_LIMIT,
     WARRIOR_TOKEN_CARD_DEF,
     activate_blood_sac,
     activate_eldrazi_spawn_sac,
-    bounce_land_etb,
-    cast_aura,
-    cast_permanent_from_hand,
-    cleanup_step,
-    combat_damage_step,
     create_token,
-    creature_attack_eligible,
-    creature_block_eligible,
-    creature_keywords,
-    declare_attacker,
-    declare_attackers_step,
-    enchantment_count,
-    enters_battlefield,
-    execute_madness_cast,
-    find_and_remove_by_name,
-    has_keyword,
-    on_cast_trigger,
-    permanent_power,
-    permanent_toughness,
-    plot_to_exile,
-    play_land_from_hand,
-    promote_triggers_to_stack,
-    push_to_stack,
-    resolve_top_of_stack,
 )
+from .effects.triggers import promote_triggers_to_stack
 from .mana import (
     COLORS,
     POOL_COLORS,

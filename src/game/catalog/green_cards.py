@@ -13,20 +13,11 @@ Battlement's own mana ability counts (itself included)."""
 
 from .. import resolution
 from ..cards import CardDef, CardType, EffectId
-from ..effects_common import (
-    ELDRAZI_SPAWN_TOKEN_CARD_DEF,
-    activate_eldrazi_spawn_sac,
-    any_creature_on_battlefield,
-    cast_aura,
-    cast_permanent_from_hand,
-    create_token,
-    discard_from_hand_to_graveyard,
-    enchantment_count,
-    enters_battlefield,
-    find_and_remove_by_name,
-    find_to_hand,
-    push_to_stack,
-)
+from ..effects.casting import cast_aura, cast_permanent_from_hand, enters_battlefield
+from ..effects.shared import any_creature_on_battlefield, discard_from_hand_to_graveyard, find_and_remove_by_name, find_to_hand
+from ..effects.stack import push_to_stack
+from ..effects.stats import enchantment_count
+from ..effects.tokens import ELDRAZI_SPAWN_TOKEN_CARD_DEF, activate_eldrazi_spawn_sac, create_token
 from ..mana import COLORS
 
 GREEN_CARD_CATALOG = {
@@ -209,15 +200,24 @@ def quirion_ranger_untap_legal(state, permanent):
 
 
 def quirion_ranger_untap_resolve(state, permanent):
+    """Real text says "untap TARGET creature" -- genuinely a target, same
+    as cast_aura's own Auras. Doesn't need cast_aura's cast-time-selection/
+    resolve-time-fizzle treatment though: activated abilities in this
+    engine resolve immediately once paid (_activate_execute, no
+    push_to_stack, no stack step at all), so there's no cast/resolve gap
+    for the target to become illegal across -- the (name, slot) addressing
+    below still applies (same "disambiguate identical copies" reason as
+    everywhere else), it just never needs a fizzle path to go with it."""
     permanent.flags["used_this_turn"] = True
     forest = next(p for p in state.battlefield if p.card_def.name == "Forest")
     state.battlefield.remove(forest)
     state.hand.append(forest.card_def)
 
-    def _on_chosen(state, name):
-        if name is None:
+    def _on_chosen(state, choice):
+        if choice is None:
             return
-        target = next(p for p in state.battlefield if p.card_def.name == name)
+        name, slot = choice
+        target = next(p for p in state.battlefield if p.card_def.name == name and p.slot == slot)
         target.tapped = False
 
     resolution.begin_choose_permanent(state, lambda p: p.card_def.card_type == CardType.CREATURE, _on_chosen)
@@ -326,31 +326,37 @@ def is_noncreature_colorless(card_def):
 def cast_crop_rotation(state, card_def):
     """{G}, sacrifice a land: search library for a land, put it directly
     onto the battlefield (its own normal tapped/ETB rules apply), shuffle.
-    Both the sacrifice target and the fetch target are the model's choice
-    (begins a choose_permanent resolution for the sacrifice, chaining into
-    a search_fetch resolution for the fetch). Caller has already paid the
-    {G} cost."""
+
+    Real card text: "As an additional cost to cast this spell, sacrifice a
+    land." -- a COST, not a target and not a resolve-time choice. Like any
+    other additional cost (mana, a discard-as-a-cost), it has to be chosen
+    and paid before the spell is fully cast, so it can't be interacted
+    with or undone once the spell is actually on the stack -- exactly the
+    same category as Fireblast/Lava Dart's own sacrifice alt-costs
+    (cast_fireblast_alt above). This function runs directly as pay_cost's
+    on_complete (drl_env._precast_choice_execute), right alongside the
+    {G} mana payment, not deferred onto the stack itself -- only the
+    SEARCH (the spell's actual effect) gets pushed to the stack and waits
+    to resolve; the sacrifice, once paid here, is already done."""
     discard_from_hand_to_graveyard(state, card_def)
 
-    def _on_sac_chosen(state, sac_name):
-        if sac_name is None:
-            return  # begin_choose_permanent found no valid sacrifice target -- fizzle, shouldn't happen per legality, but don't crash if it somehow does
-        sac_permanent = next(p for p in state.battlefield if p.card_def.name == sac_name)
-        state.battlefield.remove(sac_permanent)
-        state.graveyard.append(sac_permanent.card_def)
+    def _on_sacrificed(state, _ok):
+        def _resolve(state, card_def):
+            def _on_fetch_chosen(state, land_name):
+                found = find_and_remove_by_name(state, land_name)
+                state.rng.shuffle(state.library)
+                if found:
+                    enters_battlefield(state, found)
 
-        def _on_fetch_chosen(state, land_name):
-            found = find_and_remove_by_name(state, land_name)
-            state.rng.shuffle(state.library)
-            if found:
-                enters_battlefield(state, found)
+            resolution.begin_search_fetch(state, lambda c: c.card_type == CardType.LAND, _on_fetch_chosen)
 
-        resolution.begin_search_fetch(state, lambda c: c.card_type == CardType.LAND, _on_fetch_chosen)
+        push_to_stack(state, card_def, _resolve)
 
-    resolution.begin_choose_permanent(
+    resolution.begin_sacrifice(
         state,
         lambda p: p.card_def.card_type == CardType.LAND and p.card_def.effect_id != EffectId.TRON_LAND,
-        _on_sac_chosen,
+        1,
+        _on_sacrificed,
     )
 
 
@@ -565,6 +571,16 @@ GREEN_EFFECT_REGISTRY = {
                 p.card_def.card_type == CardType.LAND and p.card_def.effect_id != EffectId.TRON_LAND
                 for p in state.battlefield
             ),
+            # NOT "targeted" -- real MTG text has no "target" here, "sacrifice
+            # a land" is an ADDITIONAL COST (paid alongside the {G} mana cost,
+            # before the spell is even fully cast), same category as
+            # cast_fireblast_alt's own sacrifice cost -- see cast_crop_
+            # rotation's own docstring. Reuses the same drl_env.
+            # _precast_choice_execute routing as Auras' real targets purely
+            # because both need "resolve runs immediately once paid, manages
+            # its own push_to_stack" instead of the generic auto-push -- not
+            # because this is a target.
+            "precast_choice": True,
         },
         "pending_kinds": {"choose_permanent", "search_fetch"},
     },
@@ -598,13 +614,14 @@ GREEN_EFFECT_REGISTRY = {
         # returns Rancor to hand instead of the graveyard when it's put
         # there from the battlefield -- modeled via
         # returns_to_hand_when_orphaned now that combat death (step 6)
-        # makes that reachable; see effects_common._destroy_creature.
+        # makes that reachable; see effects.state_based._destroy_creature.
         # +2/+0, power only -- no toughness_bonus (unlike Ancestral Mask/
         # Ethereal Armor/Cartouche of Solidarity/Armadillo Cloak, all
         # symmetric +X/+X) -- see permanent_toughness's own docstring.
         "cast": {
             "resolve": lambda state, card_def: cast_rancor(state, card_def),
             "extra_legal": lambda state: any_creature_on_battlefield(state),
+            "precast_choice": True,  # real MTG "enchant target creature" -- must be chosen before the stack, see drl_env._precast_choice_execute
         },
         "pending_kinds": {"choose_permanent"},
         "pt_bonus": lambda state, aura: 2,
@@ -618,6 +635,7 @@ GREEN_EFFECT_REGISTRY = {
         "cast": {
             "resolve": lambda state, card_def: cast_ancestral_mask(state, card_def),
             "extra_legal": lambda state: any_creature_on_battlefield(state),
+            "precast_choice": True,  # real MTG "enchant target creature" -- must be chosen before the stack, see drl_env._precast_choice_execute
         },
         "pending_kinds": {"choose_permanent"},
         "pt_bonus": lambda state, aura: 2 * (enchantment_count(state, aura) - 1),
@@ -628,10 +646,12 @@ GREEN_EFFECT_REGISTRY = {
             "green": {
                 "resolve": lambda state, card_def: cast_utopia_sprawl(state, card_def, "G"),
                 "extra_legal": lambda state: any(p.card_def.name == "Forest" for p in state.battlefield),
+                "precast_choice": True,  # real MTG "enchant target Forest" -- must be chosen before the stack, see drl_env._precast_choice_execute
             },
             "white": {
                 "resolve": lambda state, card_def: cast_utopia_sprawl(state, card_def, "W"),
                 "extra_legal": lambda state: any(p.card_def.name == "Forest" for p in state.battlefield),
+                "precast_choice": True,
             },
         },
         "pending_kinds": {"choose_permanent"},
@@ -640,6 +660,7 @@ GREEN_EFFECT_REGISTRY = {
         "cast": {
             "resolve": lambda state, card_def: cast_abundant_growth(state, card_def),
             "extra_legal": lambda state: any(p.card_def.card_type == CardType.LAND for p in state.battlefield),
+            "precast_choice": True,  # real MTG "enchant target land" -- must be chosen before the stack, see drl_env._precast_choice_execute
         },
         "pending_kinds": {"choose_permanent"},
         # Static fact for drl_env.build_action_table's own action-table

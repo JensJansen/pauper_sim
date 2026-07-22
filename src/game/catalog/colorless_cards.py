@@ -19,7 +19,9 @@ any of the 5 colors, same as a flexible source (its own {1} activation
 cost is tracked separately, see mana.execute_tap_cost_option)."""
 
 from ..cards import CardDef, CardType, EffectId
-from ..effects_common import activate_blood_sac, cast_permanent_from_hand, discard_from_hand_to_graveyard, find_to_hand
+from ..effects.casting import cast_permanent_from_hand
+from ..effects.shared import discard_from_hand_to_graveyard, find_to_hand
+from ..effects.tokens import activate_blood_sac
 from ..mana import COLORS
 from ..resolution import begin_search_fetch, scry, surveil
 
@@ -209,8 +211,8 @@ COLORLESS_EFFECT_REGISTRY = {
     # canonical registry entry. Every reader consults it via
     # EFFECT_REGISTRY.get(effect_id, {}), which already defaults a
     # missing key to {} the same way -- kept explicit here (rather than
-    # omitted entirely) only because effects_common.py's own self-check
-    # temporarily reassigns registry.EFFECT_REGISTRY[EffectId.FILLER] via
+    # omitted entirely) only because several game/effects/*.py self-checks
+    # temporarily reassign registry.EFFECT_REGISTRY[EffectId.FILLER] via
     # direct bracket indexing, which requires the key to already exist.
     EffectId.FILLER: {},
 

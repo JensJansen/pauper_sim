@@ -23,7 +23,7 @@ import rewards  # only for resource_quality_components/its two caps -- see _oppo
 # ---------------------------------------------------------------------------
 
 # Every deck needs "none" (nothing pending), "pay_cost" (mana.py is
-# universal), and -- since game.effects_common.cleanup_step
+# universal), and -- since game.effects.state_based.cleanup_step
 # (docs/COMBAT_PLAN.md) can discard down to hand size at the end of
 # ANY deck's turn, whether or not any of its own cards ever discard --
 # "discard" too. Kept as the baseline here, not per-deck, since no deck
@@ -142,7 +142,7 @@ def build_observation(state, decklist, horizon, pending_kinds):
     bf_tapped = {name: 0 for name in card_names}
     for p in state.battlefield:
         if p.card_def.name not in bf_untapped:
-            continue  # a token (Blood, Robot, ...) -- never a decklist member, so no observation slot exists for it (hand/graveyard never hold one, only battlefield -- see effects_common.py's token docstrings)
+            continue  # a token (Blood, Robot, ...) -- never a decklist member, so no observation slot exists for it (hand/graveyard never hold one, only battlefield -- see game/effects/tokens.py's own docstrings)
         if p.tapped:
             bf_tapped[p.card_def.name] += 1
         else:
@@ -322,8 +322,8 @@ def _creature_slot_block(state, owner_idx, creature_names, creature_copies):
 #   E. Pass
 #   F. Choose: <name>               -- shared across every pending-resolution
 #      kind that picks a plain card name (paying with a fixed/Tron mana
-#      source, search_fetch, choose_permanent, ancient_stirrings, and
-#      scry/surveil's ordering phase), dispatched by pending_resolution["kind"]
+#      source, search_fetch, ancient_stirrings, and scry/surveil's ordering
+#      phase), dispatched by pending_resolution["kind"]
 #   G. Choose: <name> as <color>    -- flexible/filter mana sources during
 #      a pay_cost resolution specifically (the only kind needing a color)
 #   H. Keep / Dispose (scry/surveil)
@@ -333,6 +333,14 @@ def _creature_slot_block(state, owner_idx, creature_names, creature_copies):
 #      flexible/filter source for the wrong color could strand a game
 #      with an unpayable remaining cost and zero legal actions -- see
 #      game.abandon_pay_cost's docstring.
+#   K. Choose target: <name> (slot k) -- exact-(name, slot)-addressed, the
+#      "choose_permanent" resolution's own actions (Aura enchant-targets,
+#      Crop Rotation's sacrifice cost, land bounce) -- NOT category F,
+#      unlike before: two same-named permanents stop being interchangeable
+#      the instant an Aura attaches to only one of them, and cast_aura's
+#      cast-time-target/resolve-time-fizzle contract depends on knowing
+#      exactly which physical permanent was chosen (docs/MULTIPLAYER_GAPS.md
+#      "Permanent identity").
 #
 # spy_combo deck additions: B also covers Winding Way's modal cast (2
 # actions, one per mode), Land Grant's free alt-cost, and Dread Return's
@@ -391,7 +399,7 @@ def _land_drop_execute(name):
 def _hand_count_available(state, name):
     """How many copies of `name` in state.hand are actually still castable
     right now. A cast-like resolve function only removes its card from hand
-    when it finally RUNS -- which, since push_to_stack (game.effects_common)
+    when it finally RUNS -- which, since push_to_stack (game.effects.stack)
     defers it, can be well after the cost is paid -- so a copy already
     pushed onto state.stack (paid for, awaiting resolution) is still
     physically present in state.hand but must not count as available: an
@@ -445,6 +453,27 @@ def _cast_execute(name, resolve):
     return execute
 
 
+def _precast_choice_execute(name, resolve):
+    """Cast-like execute for a card whose own `resolve` needs to settle
+    something -- a real target (cast_aura's "enchant target creature"), or
+    an additional cost (cast_crop_rotation's "sacrifice a land") -- BEFORE
+    the spell is fully cast, not once it resolves off the stack. Real MTG:
+    both targets and additional costs are locked in as part of casting the
+    spell, never deferred to resolution; only the spell's own EFFECT waits
+    on the stack. Unlike _cast_execute, `resolve` is called directly as
+    pay_cost's on_complete and is responsible for its own game.push_to_stack
+    call (having already run whatever precast resolution it needs -- see
+    cast_aura/cast_crop_rotation's own docstrings for each one's exact
+    contract) instead of this function pushing to the stack generically on
+    its behalf. Selected via each registry cast/cast_modes spec's own
+    "precast_choice": True flag (build_action_table)."""
+    def execute(state):
+        card_def = game.CARD_DEFS[name]
+        game.on_cast_trigger(state, card_def)  # same timing as _cast_execute -- see its own comment
+        game.begin_pay_cost(state, card_def.cast_cost, on_complete=lambda s: resolve(s, card_def))
+    return execute
+
+
 def _activate_legal(name, cost_key, speed):
     def legal(state):
         if state.pending_resolution is not None:
@@ -492,7 +521,12 @@ def _pass_execute(state):
 
 def _choose_name_options(state):
     """Plain (uncolored) 'Choose: X' names currently legal, given whatever
-    kind of pending resolution -- if any -- is active."""
+    kind of pending resolution -- if any -- is active. "choose_permanent"
+    is NOT handled here -- see _choose_permanent_legal/_choose_permanent_
+    execute below: it needs exact (name, slot) addressing (docs/
+    MULTIPLAYER_GAPS.md's "Permanent identity"), same as
+    "choose_opponent_permanent" already gets, not this generic by-name
+    dispatch."""
     pending = state.pending_resolution
     if pending is None:
         return []
@@ -501,8 +535,6 @@ def _choose_name_options(state):
         return [n for n, c, f in _cached_tap_cost_options(state) if c is None and not f]
     if kind == "search_fetch":
         return game.search_fetch_options(state)
-    if kind == "choose_permanent":
-        return game.choose_permanent_options(state)
     if kind == "choose_graveyard_card":
         return game.choose_graveyard_card_options(state)
     if kind == "sacrifice":
@@ -535,8 +567,6 @@ def _choose_name_execute(name):
             game.execute_tap_cost_option(state, name, None, False)
         elif kind == "search_fetch":
             game.execute_search_fetch_option(state, name)
-        elif kind == "choose_permanent":
-            game.execute_choose_permanent_option(state, name)
         elif kind == "choose_graveyard_card":
             game.execute_choose_graveyard_card_option(state, name)
         elif kind == "sacrifice":
@@ -617,6 +647,31 @@ def _attack_execute(name, slot):
             if p.card_def.name == name and p.slot == slot and game.creature_attack_eligible(state, p)
         )
         game.declare_attacker(state, permanent)
+    return execute
+
+
+def _choose_permanent_legal(name, slot):
+    """The "choose_permanent" resolution's action-table half (Aura
+    enchant-targets, Crop Rotation's sacrifice cost, land bounce) -- legal
+    only while that kind is pending and (name, slot) is one of its own
+    current options. Exact (name, slot) addressing, same reason
+    _choose_opponent_permanent_legal below needs it (docs/
+    MULTIPLAYER_GAPS.md's "Permanent identity") -- a plain by-name "Choose:
+    X" can't tell two same-named permanents apart, and cast_aura's whole
+    fizzle-on-invalid-target contract depends on knowing exactly which one
+    was chosen."""
+    def legal(state):
+        pending = state.pending_resolution
+        return (
+            pending is not None and pending["kind"] == "choose_permanent"
+            and (name, slot) in game.choose_permanent_options(state)
+        )
+    return legal
+
+
+def _choose_permanent_execute(name, slot):
+    def execute(state):
+        game.execute_choose_permanent_option(state, name, slot)
     return execute
 
 
@@ -1008,11 +1063,12 @@ def build_action_table(decklist, registry, token_card_defs=(), pending_kinds=(),
     Two independent things read this list, for two different reasons: the
     activated-abilities loop below (a token's own ability, e.g. Blood's
     sac-for-a-card or Eldrazi Spawn's sac-for-{C}, needs an action to
-    exist at all), and the "Choose: X" name list (a token can be a
-    perfectly legal choose_permanent/sacrifice/discard target -- e.g. any
+    exist at all), and the choosable_names set that both the "Choose: X"
+    and "Choose target: X (slot k)" name lists build from (a token can be
+    a perfectly legal choose_permanent/sacrifice/discard choice -- e.g. any
     creature-enchanting Aura can enchant a token creature -- despite never
     appearing in the decklist; list a token here even if it has no
-    activated ability of its own, like Warrior, so it stays a legal target
+    activated ability of its own, like Warrior, so it stays a legal choice
     once it's on the battlefield). Defaults to () so every existing call
     site (Tron, spy_combo -- neither creates tokens) is unaffected.
 
@@ -1036,20 +1092,27 @@ def build_action_table(decklist, registry, token_card_defs=(), pending_kinds=(),
         card_spec = registry.get(game.CARD_DEFS[name].effect_id, {})
         cast_spec = card_spec.get("cast")
         if cast_spec is not None:
+            # "precast_choice": True (Auras' real targets, Crop Rotation's
+            # sacrifice-as-a-cost) -- resolve must run immediately once paid
+            # and manage its own push_to_stack, instead of the generic
+            # auto-push _cast_execute does (see _precast_choice_execute's
+            # own docstring for exactly why).
+            cast_execute_fn = _precast_choice_execute if cast_spec.get("precast_choice") else _cast_execute
             actions.append((
                 f"Cast {name}",
                 _cast_legal(name, cast_spec.get("extra_legal"), _cast_speed(game.CARD_DEFS[name], cast_spec)),
-                _cast_execute(name, cast_spec["resolve"]),
+                cast_execute_fn(name, cast_spec["resolve"]),
             ))
         # Winding Way: a modal cast (choose creature or land) instead of a
         # single "cast" entry -- one action per mode.
         cast_modes = card_spec.get("cast_modes")
         if cast_modes is not None:
             for mode_name, mode_spec in cast_modes.items():
+                mode_execute_fn = _precast_choice_execute if mode_spec.get("precast_choice") else _cast_execute
                 actions.append((
                     f"Cast {name} (choose {mode_name})",
                     _cast_legal(name, mode_spec.get("extra_legal"), _cast_speed(game.CARD_DEFS[name], mode_spec)),
-                    _cast_execute(name, mode_spec["resolve"]),
+                    mode_execute_fn(name, mode_spec["resolve"]),
                 ))
         # Land Grant: a second, free cast path alongside the normal one.
         alt_cast = card_spec.get("alt_cast")
@@ -1134,14 +1197,14 @@ def build_action_table(decklist, registry, token_card_defs=(), pending_kinds=(),
 
     actions.append(("Pass", _pass_legal, _pass_execute))
 
-    # "Choose: X" needs to cover every name a choose_permanent/sacrifice/
-    # discard resolution could ever offer -- not just decklist names.
-    # A token (e.g. boggles' Eldrazi Spawn) is a perfectly legal
-    # choose_permanent target (any creature-enchanting Aura can enchant
-    # it) despite never appearing in CARD_DEFS/the decklist; omitting
-    # token names here left exactly that case legal-to-cast but
-    # impossible-to-target once a token was the only eligible permanent
-    # in play, softlocking the game.
+    # "Choose: X" needs to cover every name a sacrifice/discard/search_fetch/
+    # etc. resolution could ever offer -- not just decklist names. (NOT
+    # choose_permanent -- that's the "Choose target: X (slot k)" block
+    # below, exact-(name, slot) addressed.) A token (e.g. boggles' Eldrazi
+    # Spawn) is a perfectly legal sacrifice/discard choice despite never
+    # appearing in CARD_DEFS/the decklist; omitting token names here left
+    # exactly that case legal-to-create but impossible-to-choose once a
+    # token was the only eligible option, softlocking the game.
     choosable_names = sorted(set(distinct_names) | {cd.name for cd in token_card_defs})
     for name in choosable_names:
         actions.append((f"Choose: {name}", _choose_name_legal(name), _choose_name_execute(name)))
@@ -1163,6 +1226,26 @@ def build_action_table(decklist, registry, token_card_defs=(), pending_kinds=(),
     card_type_by_name = {name: game.CARD_DEFS[name].card_type for name in distinct_names}
     card_type_by_name.update({cd.name: cd.card_type for cd in token_card_defs})
     qty_by_name = {name: qty for name, qty, *_rest in decklist}
+
+    # "Choose target: X (slot k)" -- the "choose_permanent" resolution's own
+    # exact-(name, slot) addressed actions (Aura enchant-targets, Crop
+    # Rotation's sacrifice cost, land bounce), same shape/reasoning as
+    # "Choose opponent's: X (slot k)" below just scoped to THIS side's own
+    # battlefield. Registered for every choosable name, not just creatures
+    # (unlike "Attack:"/"Assign Blocker:" below) -- Utopia Sprawl/Abundant
+    # Growth target lands, not creatures -- and legal() gates precisely at
+    # runtime against whichever predicate the actual pending choose_permanent
+    # resolution holds, same "pre-register broadly, mask precisely" pattern
+    # "Choose: X as color" below already uses.
+    for name in choosable_names:
+        max_slot = qty_by_name.get(name, game.TOKEN_LIMIT)
+        for slot in range(1, max_slot + 1):
+            actions.append((
+                f"Choose target: {name} (slot {slot})",
+                _choose_permanent_legal(name, slot),
+                _choose_permanent_execute(name, slot),
+            ))
+
     attackable_names = sorted(name for name in choosable_names if card_type_by_name[name] == game.CardType.CREATURE)
     for name in attackable_names:
         max_slot = qty_by_name.get(name, game.TOKEN_LIMIT)
@@ -2265,7 +2348,7 @@ if __name__ == "__main__":
 
     # Combat gating: DeckEnv's wiring of it across the phase sequence
     # (creature_attack_eligible/declare_attacker/combat_damage_step are
-    # already self-checked directly in effects_common.py; this exercises
+    # already self-checked directly in game/effects/combat.py; this exercises
     # the "Attack: <name>" action drl_env itself adds -- MULTIPLAYER_GAPS.md's
     # manual attack declaration). Passing until DECLARE_ATTACKERS, then
     # issuing "Attack: Generous Ent" explicitly (attacking is no longer
@@ -2557,6 +2640,86 @@ if __name__ == "__main__":
     assert state.players[0].blocked_by == {attacking_ledgewalker: defending_imp}
 
     print("drl_env.py flying self-check: OK")
+
+    # Targeting (real MTG rule, per drl_env._precast_choice_execute /
+    # game.effects.casting.cast_aura's own docstrings): a target is chosen once,
+    # at cast time, exact (name, slot) addressed -- not just by name -- and
+    # re-validated by identity only once the spell resolves off the stack.
+    # End to end through the REAL action table: "Cast Rancor" pays its {G}
+    # cost, then (precast_choice, not deferred) immediately opens
+    # choose_permanent with BOTH Slippery Bogles offered by their own
+    # distinct slot; "Choose target: Slippery Bogle (slot 2)" picks the
+    # specific one, which pushes to the stack (not yet attached, still in
+    # hand); resolving the stack attaches it to exactly the one chosen, not
+    # an arbitrary same-named match.
+    targeting_decklist = [("Slippery Bogle", 2), ("Rancor", 2), ("Forest", 10)]
+    targeting_actions = build_action_table(targeting_decklist, game.EFFECT_REGISTRY)
+
+    def _gidx(action_name):
+        return next(i for i, (nm, _l, _e) in enumerate(targeting_actions) if nm == action_name)
+
+    bogle_1 = Permanent(game.CARD_DEFS["Slippery Bogle"])
+    bogle_2 = Permanent(game.CARD_DEFS["Slippery Bogle"])
+    bogle_2.slot = 2
+    forest = Permanent(game.CARD_DEFS["Forest"])
+    rancor_card = game.CARD_DEFS["Rancor"]
+    state = GameState(on_the_play=True)
+    state.phase = game.turn.Phase.MAIN1  # sorcery-speed cast requires this -- GameState defaults phase=None
+    state.battlefield = [bogle_1, bogle_2, forest]
+    state.hand = [rancor_card]
+
+    _, cast_rancor_legal, cast_rancor_execute = targeting_actions[_gidx("Cast Rancor")]
+    assert cast_rancor_legal(state)
+    cast_rancor_execute(state)
+    assert state.pending_resolution["kind"] == "pay_cost"
+    targeting_actions[_gidx("Choose: Forest")][2](state)  # tap the Forest -- floats {G}
+    targeting_actions[_gidx("Spend G from pool")][2](state)  # pays Rancor's {G}
+
+    # Cost fully paid -- precast_choice means cast_aura runs its target
+    # choice IMMEDIATELY here, NOT deferred to when this eventually pops
+    # off the stack (that's the whole point of this redesign).
+    assert state.pending_resolution["kind"] == "choose_permanent"
+    assert set(game.choose_permanent_options(state)) == {("Slippery Bogle", 1), ("Slippery Bogle", 2)}
+
+    _, choose_slot_2_legal, choose_slot_2_execute = targeting_actions[_gidx("Choose target: Slippery Bogle (slot 2)")]
+    assert choose_slot_2_legal(state)
+    choose_slot_2_execute(state)
+    # Target chosen -- pushed to the stack, not yet attached (still
+    # physically in hand, same "still in hand while on stack" convention
+    # every other cast path here follows).
+    assert state.pending_resolution is None
+    assert state.hand == [rancor_card] and len(state.stack) == 1
+
+    game.resolve_top_of_stack(state)
+    assert state.hand == []
+    rancor_permanent = next(p for p in state.battlefield if p.card_def.name == "Rancor")
+    assert rancor_permanent.flags["enchanting"] is bogle_2  # the SPECIFIC one chosen -- not bogle_1, despite the identical name
+
+    print("drl_env.py Aura targeting (exact slot addressing) self-check: OK")
+
+    # Fizzle, same end-to-end path: the exact chosen permanent (bogle_1
+    # this time) is gone by the time the cast resolves -- the whole spell
+    # fails, no effect, straight to the graveyard, never attaches.
+    state = GameState(on_the_play=True)
+    state.phase = game.turn.Phase.MAIN1
+    bogle_1 = Permanent(game.CARD_DEFS["Slippery Bogle"])
+    forest = Permanent(game.CARD_DEFS["Forest"])
+    state.battlefield = [bogle_1, forest]
+    state.hand = [rancor_card]
+
+    targeting_actions[_gidx("Cast Rancor")][2](state)
+    targeting_actions[_gidx("Choose: Forest")][2](state)
+    targeting_actions[_gidx("Spend G from pool")][2](state)
+    targeting_actions[_gidx("Choose target: Slippery Bogle (slot 1)")][2](state)
+    assert len(state.stack) == 1
+    state.battlefield.remove(bogle_1)  # dies before the cast resolves
+
+    game.resolve_top_of_stack(state)
+    assert state.hand == []
+    assert rancor_card in state.graveyard
+    assert not any(p.card_def.name == "Rancor" for p in state.battlefield)
+
+    print("drl_env.py Aura target-fizzle (end to end) self-check: OK")
 
     # Stack: casting a spell defers its effect (state.stack) instead of
     # resolving immediately; "Pass" resolves one entry at a time (LIFO)

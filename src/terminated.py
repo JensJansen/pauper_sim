@@ -6,7 +6,7 @@ inside the other's module.
 
 Contract: terminated_fn(state) -> bool, checked after anything that could
 newly make it true (a permanent entering, combat damage) -- see
-game.effects_common.enters_battlefield / combat_damage_step.
+game.effects.casting.enters_battlefield / game.effects.combat.combat_damage_step.
 """
 
 import game

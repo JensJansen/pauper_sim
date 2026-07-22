@@ -47,7 +47,7 @@ class EffectId(Enum):
 
     # --- shared tokens (mono_red_madness / rakdos_madness engine work,
     # docs/MADNESS_DECKS_PLAN.md item 8) -- not decklist cards, never in
-    # CARD_DEFS/any decklist quantity; see effects_common.create_token.
+    # CARD_DEFS/any decklist quantity; see game.effects.tokens.create_token.
     BLOOD_TOKEN = auto()
     ROBOT_TOKEN = auto()
     WARRIOR_TOKEN = auto()  # Cartouche of Solidarity

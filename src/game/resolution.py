@@ -15,13 +15,13 @@ nothing else currently reuses them.
 
 References game.registry.EFFECT_REGISTRY only from inside function
 bodies, via `registry.EFFECT_REGISTRY` -- same lazy-lookup convention
-mana.py/effects_common.py already use, for the same reason (registry.py's
-own import chain reaches this module before EFFECT_REGISTRY exists).
-Deliberately does NOT import game.mana (mana.py imports THIS module at
-its own top level; the reverse import would cycle) -- so the madness
-"cast for its madness cost" path's cost payment lives in
-effects_common.py instead, which is free to depend on both this module
-and mana.py. See docs/MADNESS_DECKS_PLAN.md items 1/3.
+mana.py/several of game/effects/*.py already use, for the same reason
+(registry.py's own import chain reaches this module before EFFECT_REGISTRY
+exists). Deliberately does NOT import game.mana (mana.py imports THIS
+module at its own top level; the reverse import would cycle) -- so the
+madness "cast for its madness cost" path's cost payment lives in
+game/effects/madness_and_plot.py instead, which is free to depend on both
+this module and mana.py. See docs/MADNESS_DECKS_PLAN.md items 1/3.
 """
 
 from . import registry
@@ -81,13 +81,17 @@ def execute_search_fetch_decline(state):
 
 
 def begin_choose_permanent(state, predicate, on_complete):
-    """The model picks ONE of its own battlefield permanents, by name,
-    among those matching `predicate` -- e.g. Crop Rotation's sacrifice
-    target. Same fungible-by-name simplification as mana's tap_cost_options:
-    which physical copy doesn't matter, only which name. on_complete(state,
-    chosen_name) runs once decided. Same empty-options safety net as
-    begin_search_fetch -- fizzles immediately with chosen_name=None if
-    nothing matches."""
+    """The model picks ONE of its own battlefield permanents, addressed by
+    the exact (name, slot) it occupies -- docs/MULTIPLAYER_GAPS.md's
+    "Permanent identity" gap, closed here: same (name, slot) addressing
+    begin_choose_opponent_permanent already uses, not the old
+    fungible-by-name shortcut (two same-named permanents stop being
+    interchangeable the moment an Aura attaches to only one of them, or a
+    caller needs the EXACT physical permanent it chose to still be there
+    later -- see cast_aura's own targeting contract). on_complete(state,
+    (name, slot)_or_None) runs once decided. Same empty-options safety net
+    as begin_search_fetch -- fizzles immediately with None if nothing
+    matches."""
     begin_resolution(state, "choose_permanent", on_complete, predicate=predicate)
     if not choose_permanent_options(state):
         complete_resolution(state, None)
@@ -95,11 +99,11 @@ def begin_choose_permanent(state, predicate, on_complete):
 
 def choose_permanent_options(state):
     predicate = state.pending_resolution["predicate"]
-    return sorted({p.card_def.name for p in state.battlefield if predicate(p)})
+    return sorted((p.card_def.name, p.slot) for p in state.battlefield if predicate(p))
 
 
-def execute_choose_permanent_option(state, name):
-    complete_resolution(state, name)
+def execute_choose_permanent_option(state, name, slot):
+    complete_resolution(state, (name, slot))
 
 
 def begin_choose_opponent_permanent(state, predicate, on_complete):
@@ -173,10 +177,10 @@ def declare_blocker_assignment(state, blocker, on_complete, extra_predicate=lamb
     "is a currently-unblocked attacker" -- e.g. flying's own blocking
     restriction (docs/COMBAT_PLAN.md step 7: a flying attacker can only be
     blocked by a flying blocker). Supplied by the CALLER (drl_env.py)
-    rather than computed here: this module can't import game.effects_common
-    (effects_common imports resolution.py, not the other way -- see this
-    module's own docstring), so it has no way to ask "does this creature
-    have flying" itself. Defaults to "no extra restriction," unchanged
+    rather than computed here: this module stays effect-agnostic (see its
+    own module docstring) and doesn't import game.effects.stats itself, so
+    it has no way to ask "does this creature have flying" on its own.
+    Defaults to "no extra restriction," unchanged
     from before this parameter existed -- a wasted "Assign Blocker" action
     (parking a blocker with nothing legal left for it to block, once this
     predicate is applied) just re-opens the consult with nothing recorded,
@@ -306,7 +310,7 @@ def begin_discard(state, n, optional, on_complete):
 def discard_options(state):
     """Distinct names in hand still available to discard -- excluding any
     copy already reserved on state.stack (paid for, awaiting resolution;
-    see game.effects_common.push_to_stack). That card's own resolve
+    see game.effects.stack.push_to_stack). That card's own resolve
     function hasn't removed it from hand yet (deferred until it actually
     resolves), so it's still physically present here, but offering it as a
     discard option (from an instant-speed activated ability like Blood's
@@ -370,8 +374,8 @@ def begin_madness_decision(state, card_def, on_complete):
     """A qualifying card was just exiled by a discard (see
     execute_discard_option) -- offer "cast it for its madness cost" or
     "let it go to the graveyard." Only ever entered via the trigger-queue
-    drain in effects_common.py, once the discard's enclosing action is
-    fully done -- never mid-discard."""
+    drain in game/effects/triggers.py, once the discard's enclosing action
+    is fully done -- never mid-discard."""
     begin_resolution(state, "madness_decision", on_complete, card_def=card_def)
 
 
@@ -389,7 +393,7 @@ def execute_madness_decline(state):
 
 # "cast" isn't handled here -- paying the madness cost needs
 # game.mana.begin_pay_cost, which this module can't import (see the
-# module docstring) -- see effects_common.execute_madness_cast.
+# module docstring) -- see game.effects.madness_and_plot.execute_madness_cast.
 
 
 def begin_order_triggers(state, entries, on_complete):
@@ -399,17 +403,17 @@ def begin_order_triggers(state, entries, on_complete):
     two Sneaky Snackers both crossing their own draw-count trigger on the
     same draw) -- real Magic lets that player choose the PLACEMENT order
     (603.3b: APNAP among different players, but this engine only ever
-    queues triggers for the active player -- see effects_common.
+    queues triggers for the active player -- see game.effects.triggers.
     promote_triggers_to_stack's own docstring for why that's sufficient
     given the current card pool), not a fixed queue order.
 
     entries: list of {"card_def", "resolve"} dicts, already stack-ready
-    (built by effects_common.promote_triggers_to_stack, which is also
-    what turns each queued trigger's own (type, kind) into the right
+    (built by game.effects.triggers.promote_triggers_to_stack, which is
+    also what turns each queued trigger's own (type, kind) into the right
     resolve function -- this module only ever deals in the stack's own
     generic shape, never trigger-specific semantics, same reverse-import
     reason execute_madness_cast's own cost-payment lives in
-    effects_common.py instead of here).
+    game/effects/madness_and_plot.py instead of here).
 
     Picks one at a time; each pick is pushed onto state.stack immediately
     (execute_order_triggers_option below), not deferred to the end --
@@ -559,8 +563,8 @@ if __name__ == "__main__":
         assert [c.name for c, _stamp in state.exile] == ["Fake Madness Card"]
         assert state.trigger_queue == [{"type": "decision", "kind": "madness", "card_def": madness_card}]
 
-        # Promoting the queue (effects_common.promote_triggers_to_stack's
-        # job in real play, docs/PRIORITY_PLAN.md item 1) and declining:
+        # Promoting the queue (game.effects.triggers.promote_triggers_to_
+        # stack's job in real play, docs/PRIORITY_PLAN.md item 1) and declining:
         # back out of exile, into the graveyard.
         state.trigger_queue.clear()
         drain_completed = []
@@ -729,11 +733,11 @@ if __name__ == "__main__":
     print("resolution.py blocking self-check: OK")
 
     # declare_blocker_assignment's extra_predicate (docs/COMBAT_PLAN.md
-    # step 7's flying restriction): this module can't compute "does this
-    # creature have flying" itself (effects_common imports resolution.py,
-    # not the reverse -- see this module's own docstring), so the actual
-    # restriction is supplied by the CALLER (drl_env._assign_blocker_
-    # execute, using game.has_keyword) -- this proves the parameter itself
+    # step 7's flying restriction): this module stays effect-agnostic (see
+    # its own module docstring) and doesn't import game.effects.stats
+    # itself, so the actual restriction is supplied by the CALLER
+    # (drl_env._assign_blocker_execute, using game.has_keyword) -- this
+    # proves the parameter itself
     # is correctly applied on top of the usual "unblocked attacker" filter,
     # using a plain stand-in predicate rather than a real keyword lookup.
     flyer = _permanent("Flyer", CardType.CREATURE)
@@ -760,10 +764,10 @@ if __name__ == "__main__":
     # begin_order_triggers (docs/PRIORITY_PLAN.md item 1): 2+ simultaneous
     # triggers get a real placement-order choice -- PLACEMENT order, not
     # resolution order (the stack is LIFO). Driven directly against a
-    # hand-built state, bypassing effects_common.promote_triggers_to_stack
-    # entirely (this module can't import effects_common -- see its own
-    # docstring), using plain no-op resolve functions since only the
-    # ordering mechanism itself is under test here.
+    # hand-built state, bypassing game.effects.triggers.promote_triggers_
+    # to_stack entirely (this module doesn't import game.effects.triggers
+    # -- see its own docstring), using plain no-op resolve functions since
+    # only the ordering mechanism itself is under test here.
     resolved_order = []
     entry_a = {"card_def": CardDef("Trigger A", CardType.CREATURE, None, None), "resolve": lambda s, cd: resolved_order.append(cd.name)}
     entry_b = {"card_def": CardDef("Trigger B", CardType.CREATURE, None, None), "resolve": lambda s, cd: resolved_order.append(cd.name)}

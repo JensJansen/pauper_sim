@@ -96,7 +96,13 @@ def _snapshot_pending(state):
     elif kind == "search_fetch":
         snap["library_matches"] = game.search_fetch_options(state)
     elif kind == "choose_permanent":
-        snap["battlefield_matches"] = game.choose_permanent_options(state)
+        # (name, slot) pairs now (docs/MULTIPLAYER_GAPS.md's "Permanent
+        # identity" -- two same-named permanents aren't interchangeable
+        # once only one might be the actual target). Formatted as readable
+        # "Name (slot k)" strings, same convention drl_env's own "Choose
+        # target: ..." action names use, so the existing viz frontend (a
+        # plain joined list of strings) keeps working with no changes.
+        snap["battlefield_matches"] = [f"{name} (slot {slot})" for name, slot in game.choose_permanent_options(state)]
     elif kind == "discard":
         snap["hand_options"] = game.discard_options(state)
     elif kind == "sacrifice":

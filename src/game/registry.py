@@ -17,10 +17,19 @@ catalog file matching its real color identity, regardless of how many
 decklists name it.
 
 Importing this module is what actually triggers loading every catalog
-module (and, transitively, effects_common/mana/resolution/state/cards) --
-see effects_common.py's module docstring for why those modules only ever
-reference `registry.EFFECT_REGISTRY` / `registry.CARD_DEFS` etc. lazily,
-from inside function bodies, instead of importing the names directly.
+module (and, transitively, most of game/effects/*.py, plus mana/
+resolution/state/cards) -- several of those submodules (whichever ones
+catalog files import directly, or that those in turn depend on: casting,
+tokens, stack, state_based, madness_and_plot, stats) reference
+`registry.EFFECT_REGISTRY` / `registry.CARD_DEFS` etc. only from inside
+function bodies, never as a bare attribute-access at module load time, for
+the same reason -- this module's own import of `catalog` hasn't finished
+building these dicts yet by the time those modules are first loaded.
+Importing the `registry` module OBJECT at their own top level is still
+safe (and is what all of them do) -- only binding a *specific name off
+it* (`from .registry import EFFECT_REGISTRY`) at that point would fail;
+deferring the dot-access to call time, by which point game/__init__.py
+has finished importing every submodule, breaks the cycle.
 """
 
 from .catalog import black_cards, blue_cards, colorless_cards, green_cards, multicolor_cards, red_cards, white_cards

@@ -8,12 +8,12 @@ trigger_queue/lands_played_this_turn/cards_drawn_this_turn/decked_out/
 damage_dealt/attackers/terminated_fn/on_the_play/life_total) as a property
 that reads/writes state.players[state.active_idx] -- the player whose turn
 it currently is. This is what lets every existing card-effect function and
-all of mana.py/resolution.py/effects_common.py keep working completely
+all of mana.py/resolution.py/game/effects/*.py keep working completely
 unchanged: they only ever meant "my own board" to begin with, and the
 proxy makes that automatically correct for whichever player has priority,
 in both 1-player (today's only mode -- active_idx never leaves 0) and
 2-player games. state.opponent is the one new accessor genuinely-
-opponent-facing code (effects_common.deal_damage_to_opponent) needs.
+opponent-facing code (game.effects.win_check.deal_damage_to_opponent) needs.
 
 mana_pool holds mana tapped-but-not-yet-spent (e.g. a tap that produces more
 than a cost's live needs) -- spending it, even toward a cost it could cover,
@@ -54,7 +54,7 @@ class Permanent:
         # on the battlefield -- matches real Magic's "under your control
         # since your most recent turn began" (a permanent entering mid-turn,
         # by any path, is sick for the rest of that turn regardless of how
-        # it got there). Only declare_attackers_step (game.effects_common)
+        # it got there). Only declare_attackers_step (game.effects.combat)
         # reads this today.
         self.summoning_sick = True
         # Generic per-permanent runtime flags, e.g. "used_mana_filter_this_turn"
@@ -66,7 +66,7 @@ class Permanent:
         # physical creature ("Attack: Slippery Bogle (slot 2)") instead of
         # picking an arbitrary same-named match, since two copies stop being
         # interchangeable the moment an Aura attaches to only one of them.
-        # Assigned for real by effects_common.enters_battlefield (pooled:
+        # Assigned for real by game.effects.casting.enters_battlefield (pooled:
         # the lowest number not already in use among currently-live
         # same-named permanents -- reused once a permanent leaves, never
         # incremented forever, so it stays bounded even through repeated
@@ -76,7 +76,7 @@ class Permanent:
         # value for free; a real game always overwrites this on entry.
         self.slot = 1
         # Combat damage marked on this creature this turn (docs/COMBAT_PLAN.md
-        # step 6) -- compared against effects_common.permanent_toughness by
+        # step 6) -- compared against game.effects.stats.permanent_toughness by
         # check_state_based_actions to decide creature death. Cleared for
         # every permanent, both players, each turn's cleanup_step (real
         # Magic: damage clears at cleanup regardless of whose turn it is).
@@ -111,7 +111,7 @@ class PlayerState:
         # list[dict], each {"type": "decision"|"automatic", "kind": str, ...}.
         # Populated by things that happen mid-resolution but must not be
         # acted on until the enclosing action's entire effect is fully
-        # done. Promoted onto state.stack by game.effects_common.
+        # done. Promoted onto state.stack by game.effects.triggers.
         # promote_triggers_to_stack, called once per priority round
         # (docs/PRIORITY_PLAN.md item 1) -- never mutated directly by any
         # card's own resolve function.
@@ -123,7 +123,7 @@ class PlayerState:
         self.cards_drawn_this_turn = 0
 
         # spy_combo deck: damage this player has dealt via non-combat
-        # damage effects and combat (see effects_common.
+        # damage effects and combat (see game.effects.win_check.
         # deal_damage_to_opponent) -- kept exactly as before
         # MULTIPLAYER_ENGINE_PLAN.md for 1-player back-compat
         # (terminated.damage_threshold_terminated reads this, unchanged).
@@ -134,7 +134,7 @@ class PlayerState:
         self.decked_out = False
 
         # Real per-player life total (MULTIPLAYER_ENGINE_PLAN.md) -- only
-        # ever decremented by effects_common.deal_damage_to_opponent acting
+        # ever decremented by game.effects.win_check.deal_damage_to_opponent acting
         # on the *other* player's PlayerState. Unused/inert in 1-player
         # mode (nothing ever reads a lone player's own life_total there).
         self.life_total = life_total
@@ -156,7 +156,7 @@ class PlayerState:
         # terminated_fn(state) -> bool is this player's own injected win
         # condition (their deck's own combo-completion check -- Tron
         # assembly, a damage threshold), checked generically via
-        # effects_common._check_end_of_game rather than hardcoded to any
+        # game.effects.win_check._check_end_of_game rather than hardcoded to any
         # one deck. Defaults to None so hand-built test states (which set
         # state.turn_won directly, bypassing this mechanism) don't need to
         # supply one; real games always pass one explicitly.
@@ -209,7 +209,7 @@ def _active_player_property(attr):
     state.players[state.active_idx].<attr> -- see this module's own
     docstring for why this is the load-bearing trick that lets every
     existing card-effect function and mana.py/resolution.py/
-    effects_common.py stay unchanged under a 2-player game."""
+    game/effects/*.py stay unchanged under a 2-player game."""
     def getter(self):
         return getattr(self.players[self.active_idx], attr)
 
@@ -264,7 +264,7 @@ class GameState:
         # state.players) won it -- None/None while the game is still in
         # progress. turn_won's meaning is unchanged from before
         # MULTIPLAYER_ENGINE_PLAN.md (every existing 1-player reader --
-        # effects_common.py, drl_env.py, harness.py, rewards.py,
+        # game/effects/*.py, drl_env.py, harness.py, rewards.py,
         # generate_regression_snapshot.py -- keeps working unmodified);
         # winner is the new field 2-player games need to say *who*.
         # winner stays None for a bare failure (horizon reached in
@@ -288,7 +288,7 @@ class GameState:
         # object shared by both players -- kept here (not per-player) for
         # that reason, even though only the active player ever pushes to
         # it under this engine's no-interrupt-window rule. See
-        # game.effects_common.push_to_stack/resolve_top_of_stack.
+        # game.effects.stack.push_to_stack/resolve_top_of_stack.
         self.stack = []
 
     hand = _active_player_property("hand")
@@ -312,7 +312,7 @@ class GameState:
     @property
     def opponent(self):
         """The non-active PlayerState -- only meaningful (and only ever
-        called) in a 2-player game; effects_common.deal_damage_to_opponent
+        called) in a 2-player game; game.effects.win_check.deal_damage_to_opponent
         guards every call with len(state.players) > 1 first."""
         return self.players[1 - self.active_idx]
 

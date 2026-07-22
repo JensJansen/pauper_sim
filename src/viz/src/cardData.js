@@ -30,7 +30,7 @@ const RAW = [
   ["Ash Barrens", "LAND"],
   ["Balustrade Spy", "CREATURE"],
   ["Barrels of Blasting Jelly", "ARTIFACT"],
-  ["Blood", "ARTIFACT"], // token (effects_common.BLOOD_TOKEN_CARD_DEF)
+  ["Blood", "ARTIFACT"], // token (game.effects.tokens.BLOOD_TOKEN_CARD_DEF)
   ["Bojuka Bog", "LAND"],
   ["Bonder's Ornament", "ARTIFACT"],
   ["Boulderbranch Golem", "FILLER"],
@@ -41,7 +41,7 @@ const RAW = [
   ["Conduit Pylons", "LAND"],
   ["Crop Rotation", "INSTANT"],
   ["Dread Return", "SORCERY"],
-  ["Eldrazi Spawn", "CREATURE"], // token (effects_common.ELDRAZI_SPAWN_TOKEN_CARD_DEF)
+  ["Eldrazi Spawn", "CREATURE"], // token (game.effects.tokens.ELDRAZI_SPAWN_TOKEN_CARD_DEF)
   ["End the Festivities", "SORCERY"],
   ["Ethereal Armor", "ENCHANTMENT"],
   ["Expedition Map", "ARTIFACT"],
@@ -78,7 +78,7 @@ const RAW = [
   ["Ram Through", "INSTANT"],
   ["Rancor", "ENCHANTMENT"],
   ["Relic of Progenitus", "ARTIFACT"],
-  ["Robot", "CREATURE"], // token (effects_common.ROBOT_TOKEN_CARD_DEF)
+  ["Robot", "CREATURE"], // token (game.effects.tokens.ROBOT_TOKEN_CARD_DEF)
   ["Rooftop Percher", "FILLER"],
   ["Sagu Wildling", "SORCERY"],
   ["Saruli Caretaker", "CREATURE"],
@@ -94,7 +94,7 @@ const RAW = [
   ["Vampire's Kiss", "SORCERY"],
   ["Voldaren Epicure", "CREATURE"],
   ["Wall of Roots", "CREATURE"],
-  ["Warrior", "CREATURE"], // token (effects_common.WARRIOR_TOKEN_CARD_DEF)
+  ["Warrior", "CREATURE"], // token (game.effects.tokens.WARRIOR_TOKEN_CARD_DEF)
   ["Winding Way", "SORCERY"],
   ["Wooded Ridgeline", "LAND"],
 ];
