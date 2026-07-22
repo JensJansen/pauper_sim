@@ -171,6 +171,13 @@ class PlayerState:
         self.on_the_play = on_the_play
         self.turns_taken = 0
 
+        # How many mulligans this player has taken in the pregame mulligan
+        # phase (game.turn.run_mulligan_phase) -- 0 for a kept opening hand.
+        # Determines how many cards a "keep" must bottom (London Mulligan --
+        # see game.resolution.execute_mulligan_keep). Never reset once the
+        # game is underway; nothing after the pregame phase reads it again.
+        self.mulligans_taken = 0
+
         # dict[str symbol -> int count], e.g. {"G": 2}. Absent/zero entries
         # mean "none floating" -- never holds a "generic" key, only real
         # color/colorless symbols (generic is a cost-side concept, never
@@ -308,6 +315,7 @@ class GameState:
     terminated_fn = _active_player_property("terminated_fn")
     on_the_play = _active_player_property("on_the_play")
     turns_taken = _active_player_property("turns_taken")
+    mulligans_taken = _active_player_property("mulligans_taken")
 
     @property
     def opponent(self):

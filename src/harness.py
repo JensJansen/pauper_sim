@@ -480,6 +480,24 @@ class TrainingHarness:
             base = env.env if isinstance(env, Monitor) else env
             base.opponent_model = model
 
+    def episode_count(self):
+        """Total episodes completed so far across every underlying env, via
+        self.model.get_env() rather than self.env directly: at n_envs>1
+        self.env IS the Monitor-wrapped DummyVecEnv we built ourselves
+        (_make_env/_make_two_player_env), but at n_envs==1 self.env is the
+        bare DeckEnv/TwoPlayerDeckEnv (no Monitor of our own -- see
+        TrainingHarness.__init__), and SB3 only wraps that in its OWN
+        Monitor+DummyVecEnv internally once handed to model_cls(...). Going
+        through the model's own env is the one path that's always
+        Monitor-wrapped either way, so episode_lengths is always there to
+        read. train_two_player's own episode-based stop condition needs this
+        directly (unlike 1-player train() below, two-player training drives
+        model.learn() itself in bursts, so SB3's own StopTrainingOnMaxEpisodes
+        callback -- reset at the start of every separate learn() call -- has
+        no cumulative count to stop on across bursts the way a single
+        1-player .learn() call does)."""
+        return sum(len(env.episode_lengths) for env in self.model.get_env().envs)
+
     # -- D5: training ---------------------------------------------------
 
     def train(self, total_timesteps, save_path=None, max_episodes=None):
@@ -723,7 +741,7 @@ class TrainingHarness:
 # ---------------------------------------------------------------------------
 
 def train_two_player(harness_a, harness_b, total_timesteps, burst_timesteps=2000,
-                      save_path_a=None, save_path_b=None):
+                      max_episodes=None, save_path_a=None, save_path_b=None):
     """Alternates short .learn() bursts between two harnesses trained
     against each other -- the confirmed "opponent-as-environment" design
     (see TwoPlayerDeckEnv's own docstring): harness_a.env auto-plays
@@ -739,12 +757,27 @@ def train_two_player(harness_a, harness_b, total_timesteps, burst_timesteps=2000
     frozen-in-place opponent snapshot, without bursts so short that SB3's
     own per-.learn() setup overhead starts to matter. total_timesteps is
     split evenly between both sides, same as one 1-player .train() call's
-    total_timesteps is that side's own full budget."""
+    total_timesteps is that side's own full budget.
+
+    max_episodes: same "stop as soon as this many episodes complete, total_
+    timesteps is only the upper bound" contract as 1-player TrainingHarness.
+    train() -- but checked here via harness.episode_count() between bursts,
+    rather than via SB3's own StopTrainingOnMaxEpisodes callback: that
+    callback's own episode counter resets every separate .learn() call, and
+    this function calls .learn() once per burst per side, so it has no
+    cumulative count to stop on across bursts the way a single 1-player
+    .learn() call does. Checked against EITHER side reaching the target
+    (both sides train the same number of bursts, so they stay close
+    together regardless), same spirit as 1-player's own max_episodes."""
     harness_a.set_opponent_model(harness_b.model)
     harness_b.set_opponent_model(harness_a.model)
 
     trained = 0
     while trained < total_timesteps:
+        if max_episodes is not None and (
+            harness_a.episode_count() >= max_episodes or harness_b.episode_count() >= max_episodes
+        ):
+            break
         step = min(burst_timesteps, total_timesteps - trained)
         harness_a.model.learn(total_timesteps=step, reset_num_timesteps=False)
         harness_b.model.learn(total_timesteps=step, reset_num_timesteps=False)

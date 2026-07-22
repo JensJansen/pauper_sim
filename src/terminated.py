@@ -12,6 +12,21 @@ game.effects.casting.enters_battlefield / game.effects.combat.combat_damage_step
 import game
 
 
+def never_terminated(state):
+    """Always False -- for a real 2-player adversarial config where the
+    ONLY win condition should be the engine's own real one (an opponent's
+    life_total hitting 0, or decking out): every other terminated_fn here
+    is a 1-player heuristic proxy for "no real opponent to actually beat"
+    (Tron assembly, a damage threshold), which game.effects.win_check.
+    _check_end_of_game checks ahead of the real life_total check -- fine
+    when it's the only way to win, wrong once a real opponent (and life
+    total) exists. Since _check_end_of_game already treats terminated_fn
+    as fully optional (`if active.terminated_fn is not None and ...`),
+    this is the explicit way to opt out of it rather than the two paths
+    racing to fire first."""
+    return False
+
+
 def tron_terminated(state):
     """Tron's win condition: controls_all_tron_types. Structurally
     different from every other deck's (not a damage threshold), so it
@@ -75,5 +90,12 @@ if __name__ == "__main__":
     assert not damage_threshold_20_terminated(state)
     state.damage_dealt = 20
     assert damage_threshold_20_terminated(state)
+
+    # never_terminated: always False, regardless of board state -- the
+    # real 2-player win condition (life_total/deck-out, checked separately
+    # by game.effects.win_check._check_end_of_game) is the only way to win.
+    assert not never_terminated(state)
+    state.damage_dealt = 10 ** 9
+    assert not never_terminated(state)
 
     print("terminated.py self-check: OK")

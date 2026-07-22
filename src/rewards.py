@@ -134,3 +134,78 @@ def strict_binary_reward(state, done, horizon):
     if state.turn_won is None:
         return 0.0
     return 0.85 ** state.turn_number
+
+
+def fast_win_reward(decay=0.99):
+    """Factory for a pure win/loss reward with a gentle preference for
+    winning sooner -- same shape as strict_binary_reward (0 for a loss,
+    draw, or horizon cutoff; decay**turn_number for a win), but with its
+    own tunable decay instead of reusing that function's fixed 0.85.
+
+    0.85 was calibrated for the short, ~6-10 turn horizons every 1-player
+    deck uses -- fine there, but at a real 2-player adversarial game's own
+    natural horizon (this decklist's deck-out ceiling is ~109 turns,
+    docs/MULTIPLAYER_ENGINE_PLAN.md's boggles_mirror config), 0.85**109 is
+    effectively 0: a turn-100 win would be reward-indistinguishable from a
+    loss, destroying the entire win/loss signal for any normal-length
+    game. decay close to 1 keeps that from happening -- adjacent turns
+    stay nearly equal (an intentional "prefer speed, but only as a
+    tiebreaker" request) while a win at ANY reachable turn stays clearly
+    above 0.
+
+    decay stamped onto the returned function itself (not just closed
+    over), same convention terminated.damage_threshold_terminated's own
+    threshold already uses -- lets a caller holding only reward_fn read
+    back getattr(reward_fn, "decay", None) without a separate copy of the
+    number."""
+    def reward_fn(state, done, horizon):
+        if not done or state.turn_won is None:
+            return 0.0
+        return decay ** state.turn_number
+    reward_fn.decay = decay
+    return reward_fn
+
+
+# Pre-baked named instance -- configs/*.json reference reward_fns by plain
+# name (getattr off this module), same convention terminated.py's own
+# damage_threshold_20_terminated uses. 0.99: turn 1 vs turn 3 differ by
+# only ~2% ("marginal", as requested), while a win even at boggles_mirror's
+# own ~109-turn deck-out ceiling (0.99**109 ~= 0.34) stays clearly above a
+# loss's flat 0.
+# ponytail: 0.99 chosen for boggles_mirror specifically, not derived --
+# retune (or add another named instance) if a deck with a very different
+# natural horizon ever needs this reward too.
+fast_win_reward_099 = fast_win_reward(0.99)
+
+
+if __name__ == "__main__":
+    # ponytail self-check: run via `python rewards.py` from src/.
+    from game.state import GameState
+
+    assert fast_win_reward_099.decay == 0.99
+
+    state = GameState(on_the_play=True)
+    state.turn_number = 1
+    state.turn_won = None
+    assert fast_win_reward_099(state, done=True, horizon=120) == 0.0  # no winner (loss/draw) -> 0
+    assert fast_win_reward_099(state, done=False, horizon=120) == 0.0  # not done yet -> 0
+
+    state.turn_won = 1
+    assert abs(fast_win_reward_099(state, done=True, horizon=120) - 0.99) < 1e-9  # win at turn 1
+
+    # Strictly decreasing in turn number, but only marginally (turn 1 vs
+    # turn 3 within ~2%) -- the whole point of a 0.99 decay over 0.85.
+    win_turn_1 = fast_win_reward_099(state, done=True, horizon=120)
+    state.turn_number = 3
+    win_turn_3 = fast_win_reward_099(state, done=True, horizon=120)
+    assert win_turn_3 < win_turn_1
+    assert (win_turn_1 - win_turn_3) / win_turn_1 < 0.03
+
+    # Even at boggles_mirror's own ~109-turn natural deck-out ceiling, a
+    # win still stays clearly above a loss's flat 0 -- 0.85 (every other
+    # deck's shared constant) could not make this same claim.
+    state.turn_number = 109
+    win_turn_109 = fast_win_reward_099(state, done=True, horizon=120)
+    assert win_turn_109 > 0.3
+
+    print("rewards.py fast_win_reward self-check: OK")

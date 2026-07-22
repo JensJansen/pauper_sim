@@ -360,6 +360,80 @@ def execute_discard_option(state, name):
         complete_resolution(state, pending["discarded_cards"])
 
 
+def begin_mulligan(state, on_complete):
+    """Pregame: this player already has an opening 7-card hand (dealt by
+    state.new_game_state/new_multiplayer_game_state's own eager draw(7)) --
+    decide keep or mulligan (London Mulligan). Driven by
+    game.turn.run_mulligan_phase/_run_mulligan_gen, once per player, before
+    turn 1 ever starts."""
+    begin_resolution(state, "mulligan_decision", on_complete)
+
+
+def mulligan_decision_options(state):
+    return ["keep", "mulligan"]
+
+
+def execute_mulligan_keep(state):
+    """Keep the current hand. London Mulligan: put a number of cards equal
+    to mulligans already taken this game onto the library bottom, model-
+    chosen -- opens a "mulligan_bottom" resolution for exactly that many
+    (capped at hand size, in case someone ever mulligans past 7) before
+    completing; on_complete only runs once the whole keep (bottoming
+    included) is done."""
+    on_complete = state.pending_resolution["on_complete"]
+    n = min(state.mulligans_taken, len(state.hand))
+    if n <= 0:
+        complete_resolution(state)
+        return
+    state.pending_resolution = None
+    begin_bottom(state, n, on_complete)
+
+
+def execute_mulligan_take(state):
+    """Take a mulligan: shuffle the current hand back into the library,
+    redraw a fresh 7, increment mulligans_taken, then offer the same
+    keep-or-mulligan decision again -- London Mulligan allows this as many
+    times as the model likes, bounded only by library size like any other
+    draw."""
+    state.library.extend(state.hand)
+    state.hand = []
+    state.rng.shuffle(state.library)
+    state.mulligans_taken += 1
+    on_complete = state.pending_resolution["on_complete"]
+    state.pending_resolution = None
+    state.draw(7)
+    begin_mulligan(state, on_complete)
+
+
+def begin_bottom(state, n, on_complete):
+    """Put exactly n cards from hand on the library bottom, model-chosen
+    one at a time, in the order chosen -- London Mulligan's own "any order"
+    (never read back by anything in this engine, so pick order = final
+    order, same fungible-by-name picking as begin_discard). Deliberately
+    not begin_discard itself -- its Madness routing is discard-specific and
+    wrong here."""
+    begin_resolution(state, "mulligan_bottom", on_complete, remaining=n)
+    if not bottom_options(state):
+        complete_resolution(state)
+
+
+def bottom_options(state):
+    pending = state.pending_resolution
+    if pending["remaining"] <= 0:
+        return []
+    return sorted({c.name for c in state.hand})
+
+
+def execute_bottom_option(state, name):
+    pending = state.pending_resolution
+    card = next(c for c in state.hand if c.name == name)
+    state.hand.remove(card)
+    state.library.append(card)
+    pending["remaining"] -= 1
+    if pending["remaining"] <= 0 or not bottom_options(state):
+        complete_resolution(state)
+
+
 def _remove_one_from_exile(state, card_def):
     """First state.exile entry for this exact card_def object -- CardDefs
     are shared/interned per name (game.registry.CARD_DEFS holds one per
@@ -541,6 +615,55 @@ if __name__ == "__main__":
     assert len(completed) == 1 and [c.name for c in completed[0]] == ["A"]
     assert state.hand == []
     assert [c.name for c in state.graveyard] == ["A"]
+
+    # Mulligan (London style): begin_mulligan/execute_mulligan_take loop
+    # twice (redraw to 7 each time, mulligans_taken incrementing), then
+    # execute_mulligan_keep bottoms exactly mulligans_taken (2) cards before
+    # completing.
+    state = GameState(on_the_play=True)
+    state.library = [_card(f"L{i}") for i in range(20)]
+    state.rng.shuffle(state.library)
+    state.draw(7)  # new_game_state's own eager opening draw -- begin_mulligan's own precondition
+    completed = []
+    begin_mulligan(state, on_complete=lambda s: completed.append(True))
+    assert mulligan_decision_options(state) == ["keep", "mulligan"]
+    assert state.pending_resolution["kind"] == "mulligan_decision"
+    assert len(state.hand) == 7
+
+    execute_mulligan_take(state)
+    assert state.mulligans_taken == 1
+    assert len(state.hand) == 7  # redrawn fresh, not bottomed yet
+    assert state.pending_resolution["kind"] == "mulligan_decision"
+
+    execute_mulligan_take(state)
+    assert state.mulligans_taken == 2
+    assert len(state.hand) == 7
+    assert completed == []  # still deciding -- on_complete hasn't fired
+
+    execute_mulligan_keep(state)
+    assert completed == []  # not yet -- 2 cards still need to be bottomed
+    assert state.pending_resolution["kind"] == "mulligan_bottom"
+    bottomed = []
+    while state.pending_resolution is not None:
+        name = bottom_options(state)[0]
+        bottomed.append(name)
+        execute_bottom_option(state, name)
+    assert completed == [True]
+    assert len(state.hand) == 5  # 7 - 2 bottomed
+    assert [c.name for c in state.library[-2:]] == bottomed  # bottomed, in the order chosen
+
+    # Keeping with 0 mulligans taken never opens a mulligan_bottom at all.
+    state = GameState(on_the_play=True)
+    state.library = [_card(f"L{i}") for i in range(20)]
+    state.draw(7)
+    completed = []
+    begin_mulligan(state, on_complete=lambda s: completed.append(True))
+    execute_mulligan_keep(state)
+    assert completed == [True]
+    assert state.pending_resolution is None
+    assert len(state.hand) == 7
+
+    print("resolution.py mulligan self-check: OK")
 
     # Madness routing: a discarded card whose EffectId has a "madness"
     # registry spec goes to exile + the trigger queue, not the graveyard.

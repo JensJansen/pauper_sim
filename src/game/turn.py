@@ -10,7 +10,7 @@ from .effects.combat import combat_damage_step, declare_attackers_step
 from .effects.stack import resolve_top_of_stack
 from .effects.state_based import check_state_based_actions, cleanup_step
 from .effects.triggers import promote_triggers_to_stack
-from .resolution import begin_declare_blockers
+from .resolution import begin_declare_blockers, begin_mulligan
 from .state import DeckedOut, new_game_state, new_multiplayer_game_state
 
 
@@ -186,6 +186,40 @@ _PHASE_AUTO_EFFECTS = {
 }
 
 
+def _run_mulligan_gen(state):
+    """Pregame: every player decides keep-or-mulligan for their own opening
+    hand (already dealt by state.new_game_state/new_multiplayer_game_state's
+    own eager draw(7)), one player fully at a time -- same per-player
+    active_idx flip pattern as _declare_blockers_gen, just scoped to the
+    whole pregame instead of one phase. APNAP order: whoever active_idx
+    already points at (the real starting player) goes first. Runs entirely
+    before turn 1 (state.turn_number is still 0, state.phase is still None)
+    -- nothing here touches any turn-scoped field, so it's driven by
+    run_mulligan_phase below rather than folded into _run_turn_gen."""
+    starting_idx = state.active_idx
+    order = [starting_idx] + [i for i in range(len(state.players)) if i != starting_idx]
+    for idx in order:
+        state.active_idx = idx
+        begin_mulligan(state, on_complete=lambda s: None)
+        while state.pending_resolution is not None:
+            action = yield
+            action()  # keep/mulligan/bottom -- None (Pass) is never expected, same as _declare_blockers_gen
+    state.active_idx = starting_idx
+
+
+def run_mulligan_phase(state, choose_action):
+    """Synchronous driver for _run_mulligan_gen -- same run_turn/
+    _run_turn_gen pairing shape. Called once, by run_game/
+    run_multiplayer_game below, before their own turn loop starts."""
+    gen = _run_mulligan_gen(state)
+    try:
+        next(gen)
+        while True:
+            gen.send(choose_action(state))
+    except StopIteration:
+        pass
+
+
 def _declare_blockers_gen(state):
     """The defending player's own block-assignment decision
     (docs/COMBAT_PLAN.md), yielded through the SAME generic decision
@@ -294,6 +328,24 @@ def _run_priority_round_gen(state):
     # cap dropped low enough to actually bind during real multi-action
     # turns -- found via turn.py's own regression self-check, not guessed.
     state.active_idx = state.turn_player_idx
+    # A pending_resolution can ALSO still be open here (e.g. a deterministic
+    # or barely-trained policy oscillating tap-a-source -> Abandon payment
+    # for 20 straight iterations, confirmed live via boggles_mirror
+    # training: Ash Barrens' landcycling stuck this way, its still-open
+    # pay_cost silently surviving into later phases/turns until it finally
+    # completed with the card long gone from hand -- discard_from_hand_to_
+    # graveyard's own "should be unreachable" RuntimeError). Every other
+    # exit from this loop guarantees pending_resolution is None (the clean
+    # exit above only returns once the stack's empty AND no cost/choice is
+    # outstanding); this is the one path that doesn't, so it has to drop it
+    # itself rather than let it leak across a phase boundary no caller
+    # expects. ponytail: a dropped pay_cost's own taps/floated pool mana
+    # are simply left as an over-tap (already a normal, safe state
+    # elsewhere in this engine) rather than precisely reversed via
+    # mana.abandon_pay_cost -- upgrade to that (or a smarter "no observable
+    # progress" detector, per PRIORITY_ROUND_ACTION_CAP's own note above)
+    # if leaving lands tapped for nothing turns out to matter.
+    state.pending_resolution = None
 
 
 def _run_turn_gen(state, combat_enabled=False):
@@ -441,6 +493,7 @@ def run_game(decklist, terminated_fn, rng, on_the_play, horizon, choose_action, 
     MULTIPLAYER_ENGINE_PLAN.md (harness.py's evaluate(), out of scope for
     that plan, calls this directly and must keep working unmodified)."""
     state = new_game_state(decklist, terminated_fn, on_the_play, rng)
+    run_mulligan_phase(state, choose_action)
     while state.turn_number < horizon and state.turn_won is None and not state.decked_out:
         run_turn(state, choose_action, combat_enabled=combat_enabled)
     return state
@@ -470,6 +523,7 @@ def run_multiplayer_game(decklists, terminated_fns, rng, starting_player_idx, ch
     who never actually got a turn, misattributing every state.hand/
     state.decked_out/etc. read a caller does on the returned state)."""
     state = new_multiplayer_game_state(decklists, terminated_fns, starting_player_idx, rng)
+    run_mulligan_phase(state, choose_action)
     first_turn = True
     while (horizon is None or state.turn_number < horizon) and state.turn_won is None and not state.decked_out:
         if not first_turn:
@@ -527,6 +581,12 @@ if __name__ == "__main__":
         # actually drives the resolution to completion instead of
         # silently abandoning it on a stray Pass).
         if state.pending_resolution is not None:
+            # run_multiplayer_game now runs the pregame mulligan phase
+            # (game.turn.run_mulligan_phase) before turn 1 -- always keep
+            # (0 mulligans taken), same net opening-hand outcome this
+            # policy already had before mulligans existed.
+            if state.pending_resolution["kind"] == "mulligan_decision":
+                return lambda: resolution.execute_mulligan_keep(state)
             name = resolution.discard_options(state)[0]
             return lambda: resolution.execute_discard_option(state, name)
         return None
@@ -606,6 +666,12 @@ if __name__ == "__main__":
         return hand_count - stacked_count
 
     def _burn_policy(state):
+        if state.pending_resolution is not None and state.pending_resolution["kind"] == "mulligan_decision":
+            # run_multiplayer_game now runs the pregame mulligan phase for
+            # BOTH players first -- always keep (0 mulligans taken), same
+            # net opening-hand outcome this policy already had before
+            # mulligans existed.
+            return lambda: resolution.execute_mulligan_keep(state)
         if state.pending_resolution is not None and state.pending_resolution["kind"] == "discard":
             # cleanup_step's own hand-size discard (docs/COMBAT_PLAN.md)
             # can now happen to EITHER player at the end of THEIR OWN

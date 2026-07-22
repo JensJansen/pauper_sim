@@ -78,7 +78,14 @@ def _load_side(raw, suffix, primary_on_the_play=None):
     (never inherited) tokens, decorrelated seed."""
     decklist = game.parse_decklist_file(os.path.join(DATA_DIR, raw[f"decklist{suffix}"]))
     reward_fn_names = raw.get(f"reward_fns{suffix}", raw["reward_fns"])
-    default_on_the_play = raw.get("on_the_play", True) if suffix == "" else not primary_on_the_play
+    if suffix == "":
+        default_on_the_play = raw.get("on_the_play", True)
+    else:
+        # primary_on_the_play is None when the primary seat itself
+        # randomizes each game (TwoPlayerDeckEnv.reset()) -- mirror that
+        # (independent coin flip), not "not None" (== True), or the
+        # opponent side would silently go back to always going first.
+        default_on_the_play = None if primary_on_the_play is None else not primary_on_the_play
     return {
         "decklist": decklist,
         "terminated_fn": getattr(terminated, raw.get(f"terminated_fn{suffix}", raw["terminated_fn"])),
@@ -232,10 +239,16 @@ def _train_two_player(config_name, cfg, num_runs):
         harness_b = _build_harness(opp, opponent_cfg=cfg, my_seat_idx=1)
 
     t0 = time.time()
-    train_two_player(harness_a, harness_b, total_timesteps=total_timesteps, save_path_a=path_a, save_path_b=path_b)
+    train_two_player(
+        harness_a, harness_b, total_timesteps=total_timesteps, max_episodes=num_runs,
+        save_path_a=path_a, save_path_b=path_b,
+    )
     dt = time.time() - t0
-    print(f"\nTrained {harness_a.total_timesteps_trained} timesteps per side ({num_runs} episode-units) "
-          f"in {dt:.1f}s.")
+    print(
+        f"\nTrained {harness_a.total_timesteps_trained} timesteps per side "
+        f"(target {num_runs} episodes; actually completed agent_a={harness_a.episode_count()}, "
+        f"agent_b={harness_b.episode_count()}) in {dt:.1f}s."
+    )
     print(f"Saved to {path_a}/ (agent_a) and {path_b}/ (agent_b) -- model.zip + metadata.json each.")
 
 

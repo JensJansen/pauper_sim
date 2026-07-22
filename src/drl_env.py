@@ -28,7 +28,7 @@ import rewards  # only for resource_quality_components/its two caps -- see _oppo
 # ANY deck's turn, whether or not any of its own cards ever discard --
 # "discard" too. Kept as the baseline here, not per-deck, since no deck
 # could ever function without them.
-BASELINE_PENDING_KINDS = ("none", "pay_cost", "discard")
+BASELINE_PENDING_KINDS = ("none", "pay_cost", "discard", "mulligan_decision", "mulligan_bottom")
 
 
 def _all_pending_kinds(pending_kinds):
@@ -71,6 +71,13 @@ PER_CREATURE_POWER_CAP = 20
 # here are +X/+X (symmetric with power), so the same magnitude/cap applies.
 PER_CREATURE_TOUGHNESS_CAP = 20
 
+# Mulligans-taken observation cap, same fixed-cap-then-normalize pattern as
+# POOL_CAP/STACK_DEPTH_CAP -- the model needs to see this to know how many
+# cards a "Keep hand" will cost to bottom (game.resolution.
+# execute_mulligan_keep); 7 is already generous (mulliganing past a fresh
+# 7-card hand has no real precedent worth distinguishing further).
+MULLIGAN_CAP = 7
+
 
 def observation_dim_for(decklist, pending_kinds):
     """Shared by DeckEnv.__init__ and harness.py's load() so a deck's
@@ -86,24 +93,28 @@ def observation_dim_for(decklist, pending_kinds):
 
     The `* 4` block is hand/battlefield-untapped/battlefield-tapped/
     remaining-elsewhere counts (see build_observation); `+ 2` more per-name
-    blocks (stack_counts, stack_top's one-hot-plus-none) plus `+ 1` scalar
-    (stack_depth) cover state.stack -- see build_observation's own stack
-    section for what each holds. `+ 2` more scalars: turn_number and "am I
+    blocks (stack_counts, stack_top's one-hot-plus-none) plus the first
+    trailing `+ 1` (stack_depth) cover state.stack -- see build_observation's
+    own stack section for what each holds. The final trailing `+ 1` is "am I
     the turn player right now" (docs/PRIORITY_PLAN.md item 5 -- state.
     active_idx == state.turn_player_idx, a genuinely new fact once most
     reactive priority windows share pending_kind == "none" with an ordinary
-    proactive decision). The final term is the per-(creature name, slot)
-    block (docs/COMBAT_PLAN.md's permanent-identity design, extended by
-    docs/PRIORITY_PLAN.md item 5) -- 6 values (untapped-and-present/
-    tapped-and-present/power/remaining-toughness/blocked-as-attacker/
-    committed-as-blocker) per slot, `quantity` slots per creature name, real
-    decklist creatures only (a token has no observation representation at
-    all, same pre-existing precedent as every other block here)."""
+    proactive decision). The leading `+ 3` (bumped from `+ 2`) is
+    turn_number, lands_played_this_turn, and mulligans_taken
+    (MULLIGAN_CAP-normalized -- how many cards a "Keep hand" will cost to
+    bottom, see game.resolution.execute_mulligan_keep). The final term is
+    the per-(creature name, slot) block (docs/COMBAT_PLAN.md's permanent-
+    identity design, extended by docs/PRIORITY_PLAN.md item 5) -- 6 values
+    (untapped-and-present/tapped-and-present/power/remaining-toughness/
+    blocked-as-attacker/committed-as-blocker) per slot, `quantity` slots per
+    creature name, real decklist creatures only (a token has no observation
+    representation at all, same pre-existing precedent as every other block
+    here)."""
     num_names = len({name for name, *_rest in decklist})
     creature_slot_dim = sum(
         qty * 6 for name, qty, *_rest in decklist if game.CARD_DEFS[name].card_type == game.CardType.CREATURE
     )
-    return (num_names * 4 + 2 + len(_all_pending_kinds(pending_kinds))
+    return (num_names * 4 + 3 + len(_all_pending_kinds(pending_kinds))
             + len(game.POOL_COLORS) + len(game.turn.Phase)
             + num_names + (num_names + 1) + 1 + 1
             + creature_slot_dim)
@@ -129,7 +140,7 @@ def build_observation(state, decklist, horizon, pending_kinds):
     all_kinds = _all_pending_kinds(pending_kinds)
     creature_names = [name for name in card_names if game.CARD_DEFS[name].card_type == game.CardType.CREATURE]
     creature_slot_dim = sum(card_copies[name] * 6 for name in creature_names)
-    dim = (len(card_names) * 4 + 2 + len(all_kinds) + len(game.POOL_COLORS) + len(game.turn.Phase)
+    dim = (len(card_names) * 4 + 3 + len(all_kinds) + len(game.POOL_COLORS) + len(game.turn.Phase)
            + len(card_names) + (len(card_names) + 1) + 1 + 1
            + creature_slot_dim)
     obs = np.zeros(dim, dtype=np.float32)
@@ -180,6 +191,8 @@ def build_observation(state, decklist, horizon, pending_kinds):
     obs[i] = state.turn_number / horizon
     i += 1
     obs[i] = 1.0 if state.lands_played_this_turn > 0 else 0.0
+    i += 1
+    obs[i] = min(state.mulligans_taken, MULLIGAN_CAP) / MULLIGAN_CAP
     i += 1
 
     # "Am I the turn player right now" (docs/PRIORITY_PLAN.md item 5) --
@@ -541,6 +554,8 @@ def _choose_name_options(state):
         return game.sacrifice_options(state)
     if kind == "discard":
         return game.discard_options(state)
+    if kind == "mulligan_bottom":
+        return game.bottom_options(state)
     if kind == "ancient_stirrings":
         return [n for n in game.ancient_stirrings_options(state) if n != "decline"]
     if kind == "malevolent_rumble":
@@ -573,6 +588,8 @@ def _choose_name_execute(name):
             game.execute_sacrifice_option(state, name)
         elif kind == "discard":
             game.execute_discard_option(state, name)
+        elif kind == "mulligan_bottom":
+            game.execute_bottom_option(state, name)
         elif kind == "ancient_stirrings":
             game.execute_ancient_stirrings_option(state, name)
         elif kind == "malevolent_rumble":
@@ -787,6 +804,32 @@ def _keep_execute(state):
 
 def _dispose_execute(state):
     game.execute_scry_surveil_option(state, "dispose")
+
+
+def _mulligan_decision_legal(state):
+    pending = state.pending_resolution
+    return pending is not None and pending["kind"] == "mulligan_decision"
+
+
+def _mulligan_take_legal(state):
+    # Caps London Mulligan at HAND_SIZE_LIMIT (7): execute_mulligan_take
+    # never runs out of library to bound itself (mulliganed cards go back
+    # into the library before the redraw), so a deterministically-evaluated
+    # policy that argmaxes to "Mulligan" regardless of hand quality would
+    # otherwise retake it forever -- confirmed live (a barely-trained
+    # MaskablePPO checkpoint did exactly this during evaluate_two_player).
+    # Past 7 mulligans, "Keep hand" becomes the only legal action, same
+    # illegal-action-gets-substituted fallback every other action already
+    # relies on (see model_choose_action).
+    return _mulligan_decision_legal(state) and state.mulligans_taken < game.HAND_SIZE_LIMIT
+
+
+def _mulligan_keep_execute(state):
+    game.execute_mulligan_keep(state)
+
+
+def _mulligan_take_execute(state):
+    game.execute_mulligan_take(state)
 
 
 def _decline_legal(state):
@@ -1357,6 +1400,14 @@ def build_action_table(decklist, registry, token_card_defs=(), pending_kinds=(),
         # share "search_fetch" either way, so this isn't a growth vector).
         actions.append(("Decline (search)", _decline_search_legal, _decline_search_execute))
     actions.append(("Abandon payment", _abandon_payment_legal, _abandon_payment_execute))  # pay_cost is baseline, always present
+    # mulligan_decision/mulligan_bottom are baseline too (BASELINE_PENDING_KINDS,
+    # game.turn.run_mulligan_phase) -- every deck goes through the pregame
+    # mulligan phase, so these are unconditional, same footing as "Abandon
+    # payment" above. Bottoming itself reuses the existing "Choose: X"
+    # action (_choose_name_options/_choose_name_execute's own "mulligan_bottom"
+    # branch) -- no separate action needed for it.
+    actions.append(("Keep hand", _mulligan_decision_legal, _mulligan_keep_execute))
+    actions.append(("Mulligan", _mulligan_take_legal, _mulligan_take_execute))
     if "discard" in pending_kinds:
         actions.append(("Decline (discard)", _decline_discard_legal, _decline_discard_execute))
     if "madness_decision" in pending_kinds:
@@ -1468,6 +1519,21 @@ def _start_turn(state, combat_enabled, my_seat_idx=None, other_seat_choose_actio
     return gen
 
 
+def _start_mulligan(state, my_seat_idx=None, other_seat_choose_action=None):
+    """Primes game.turn._run_mulligan_gen -- same shape as _start_turn, run
+    once before it (DeckEnv/TwoPlayerDeckEnv.reset()) since the pregame
+    mulligan phase always comes before turn 1. Unlike _start_turn, this
+    never returns None: mulligan_decision has no empty-options auto-fizzle
+    path (mulligan_decision_options is always ["keep", "mulligan"]), so
+    my_seat_idx (or DeckEnv's sole player) is always guaranteed at least one
+    real decision -- next(gen) can't raise StopIteration before the first
+    yield."""
+    gen = game.turn._run_mulligan_gen(state)
+    next(gen)
+    _fast_forward(gen, state, my_seat_idx, other_seat_choose_action)
+    return gen
+
+
 def _substitute_and_resolve(state, actions, pass_action, mask, action):
     """Shared tail of _resolve_step_action (DeckEnv.step/TwoPlayerDeckEnv.
     step) and model_choose_action: substitute the first currently-legal
@@ -1563,6 +1629,7 @@ class DeckEnv(gymnasium.Env):
         self._rng = random.Random(seed)
         self.state = None
         self._turn_gen = None  # set by reset(); the live game.turn._run_turn_gen for the current turn
+        self._mulligan_gen = None  # set by reset(); the live game.turn._run_mulligan_gen for the pregame phase
         self.actions = build_action_table(
             decklist, game.EFFECT_REGISTRY, token_card_defs=token_card_defs, pending_kinds=pending_kinds,
         )
@@ -1583,7 +1650,8 @@ class DeckEnv(gymnasium.Env):
         if seed is not None:
             self._rng = random.Random(seed)
         self.state = game.new_game_state(self.decklist, self.terminated_fn, self.on_the_play, self._rng)
-        self._turn_gen = _start_turn(self.state, self.combat_enabled)
+        self._turn_gen = None
+        self._mulligan_gen = _start_mulligan(self.state)
         self._cached_mask = None
         return build_observation(self.state, self.decklist, self.horizon, self.pending_kinds), {}
 
@@ -1604,21 +1672,34 @@ class DeckEnv(gymnasium.Env):
         to_send = _resolve_step_action(self, action)
 
         game_over = False
-        turn_ended = True
-        if self._turn_gen is not None:
+        if self._mulligan_gen is not None:
+            # Pregame (game.turn.run_mulligan_phase's own generator): every
+            # player's keep-or-mulligan/bottoming decisions, before turn 1
+            # starts -- state.turn_number/decked_out can't meaningfully
+            # change here, so this doesn't touch the turn_ended/game_over
+            # logic below at all, only starts the real turn generator once
+            # the pregame phase is fully resolved.
             try:
-                self._turn_gen.send(to_send)
-                turn_ended = False
+                self._mulligan_gen.send(to_send)
             except StopIteration:
-                turn_ended = True
-
-        if turn_ended:
-            if self.state.turn_won is not None or self.state.decked_out:
-                pass  # nothing else to do this step, done computed below
-            elif self.state.turn_number < self.horizon:
+                self._mulligan_gen = None
                 self._turn_gen = _start_turn(self.state, self.combat_enabled)
-            else:
-                game_over = True  # just finished the final turn -- no more turns left
+        else:
+            turn_ended = True
+            if self._turn_gen is not None:
+                try:
+                    self._turn_gen.send(to_send)
+                    turn_ended = False
+                except StopIteration:
+                    turn_ended = True
+
+            if turn_ended:
+                if self.state.turn_won is not None or self.state.decked_out:
+                    pass  # nothing else to do this step, done computed below
+                elif self.state.turn_number < self.horizon:
+                    self._turn_gen = _start_turn(self.state, self.combat_enabled)
+                else:
+                    game_over = True  # just finished the final turn -- no more turns left
 
         done = self.state.turn_won is not None or game_over or self.state.decked_out
         reward = self.reward_fn(self.state, done, self.horizon)
@@ -1899,7 +1980,12 @@ class TwoPlayerDeckEnv(gymnasium.Env):
         self.opponent_pending_kinds = opponent_pending_kinds
         self.my_seat_idx = my_seat_idx
         self.horizon = horizon
-        self.on_the_play = on_the_play  # whether MY seat takes the very first turn
+        # Whether MY seat takes the very first turn -- True/False fixes it
+        # (every self-check/eval caller that wants a deterministic seat
+        # order passes one of these explicitly); None (used by run.py's
+        # config default) instead re-flips a coin via self._rng on EVERY
+        # reset(), so training doesn't always hand the same seat the play.
+        self.on_the_play = on_the_play
         self.token_card_defs = token_card_defs
         self.opponent_token_card_defs = opponent_token_card_defs
         self.shaping_weight = shaping_weight
@@ -1924,6 +2010,7 @@ class TwoPlayerDeckEnv(gymnasium.Env):
         self._rng = random.Random(seed)
         self.state = None
         self._turn_gen = None
+        self._mulligan_gen = None  # set by reset(); the live game.turn._run_mulligan_gen for the pregame phase
 
         # Set post-construction by TrainingHarness.set_opponent_model, once
         # the opponent's own model actually exists. None only briefly (or
@@ -2095,8 +2182,9 @@ class TwoPlayerDeckEnv(gymnasium.Env):
         """Runs exactly one opponent turn via game.turn.run_turn (the same
         driver harness.evaluate/generate_regression_snapshot.py already
         use -- state.active_idx is already theirs, set by the caller just
-        before this runs), then flips state.active_idx back to my seat if
-        the game continues. With exactly 2 players, turns strictly
+        before this runs), then flips state.active_idx back to my seat
+        unconditionally, whether or not the game just ended (see the flip's
+        own comment below). With exactly 2 players, turns strictly
         alternate -- there is never a second consecutive opponent turn to
         loop for. Mirrors game.turn.run_multiplayer_game's own lazy-flip
         convention (flip right before the NEXT turn starts, not right
@@ -2119,8 +2207,17 @@ class TwoPlayerDeckEnv(gymnasium.Env):
             return self._opponent_choose_action(state)
 
         game.turn.run_turn(self.state, choose_action, combat_enabled=True)
-        if not self._game_over():
-            self.state.active_idx = self.my_seat_idx
+        # Unconditional, NOT "if not self._game_over()" (this method's own
+        # former guard): step() always builds and returns an observation
+        # regardless of done, even on the very step the opponent's own turn
+        # ends the game -- an observation built with active_idx still
+        # pointing at the OPPONENT's seat reads THEIR zones as "mine" for
+        # that final step, wrong for every asymmetric-decklist matchup and,
+        # for a mirror match, silently wrong rather than loudly so (found
+        # live: an asymmetric 2p smoke test crashed outright building that
+        # final observation -- graveyard_counts KeyError on a card name
+        # that's only in the opponent's own decklist, never mine).
+        self.state.active_idx = self.my_seat_idx
 
     def action_masks(self):
         if self.state is None:
@@ -2139,15 +2236,26 @@ class TwoPlayerDeckEnv(gymnasium.Env):
         decklists[1 - self.my_seat_idx] = self.opponent_decklist
         terminated_fns[self.my_seat_idx] = self.terminated_fn
         terminated_fns[1 - self.my_seat_idx] = self.opponent_terminated_fn
-        starting_idx = self.my_seat_idx if self.on_the_play else 1 - self.my_seat_idx
+        if self.on_the_play is None:
+            starting_idx = self._rng.randint(0, 1)
+        else:
+            starting_idx = self.my_seat_idx if self.on_the_play else 1 - self.my_seat_idx
 
         self.state = game.new_multiplayer_game_state(decklists, terminated_fns, starting_idx, self._rng)
-        if self.state.active_idx != self.my_seat_idx:
-            self._play_opponent_turn()
         self._cached_mask = None
-        self._turn_gen = None if self._game_over() else _start_turn(
-            self.state, combat_enabled=True,
-            my_seat_idx=self.my_seat_idx, other_seat_choose_action=self._opponent_choose_action,
+        self._turn_gen = None
+        # Pregame mulligan phase for BOTH seats (game.turn.run_mulligan_phase's
+        # own generator, game.turn._run_mulligan_gen) -- fast-forwards through
+        # whichever seat isn't mine, stopping the instant it's genuinely my
+        # own decision. mulligan_decision always guarantees at least one real
+        # decision per seat (see _start_mulligan's own docstring), so unlike
+        # _start_turn below this never needs a None/_game_over() check here --
+        # the "start the real turn loop, possibly after playing the
+        # opponent's first turn" logic that used to live here moves into
+        # step()'s own mulligan-exit branch instead, since it must run
+        # whenever the pregame phase finishes, not only at reset() time.
+        self._mulligan_gen = _start_mulligan(
+            self.state, my_seat_idx=self.my_seat_idx, other_seat_choose_action=self._opponent_choose_action,
         )
         return self._build_observation(), {}
 
@@ -2161,27 +2269,44 @@ class TwoPlayerDeckEnv(gymnasium.Env):
 
         to_send = _resolve_step_action(self, action)
 
-        turn_ended = True
-        if self._turn_gen is not None:
+        if self._mulligan_gen is not None:
             try:
-                self._turn_gen.send(to_send)
-                # My own action might have been a Pass, flipping priority to
-                # the opponent (docs/PRIORITY_PLAN.md) -- fast-forward
-                # through however much of their reaction that provokes
-                # (declining/responding, etc.) before handing control back.
-                _fast_forward(self._turn_gen, self.state, self.my_seat_idx, self._opponent_choose_action)
-                turn_ended = False
+                self._mulligan_gen.send(to_send)
+                # My own decision just completed my own player's pregame
+                # segment -- fast-forward through however much of the
+                # opponent's own pregame decisions comes next, same as the
+                # real turn loop below does for their in-turn reactions.
+                _fast_forward(self._mulligan_gen, self.state, self.my_seat_idx, self._opponent_choose_action)
             except StopIteration:
-                turn_ended = True
+                self._mulligan_gen = None
+                if self.state.active_idx != self.my_seat_idx:
+                    self._play_opponent_turn()
+                self._turn_gen = None if self._game_over() else _start_turn(
+                    self.state, combat_enabled=True,
+                    my_seat_idx=self.my_seat_idx, other_seat_choose_action=self._opponent_choose_action,
+                )
+        else:
+            turn_ended = True
+            if self._turn_gen is not None:
+                try:
+                    self._turn_gen.send(to_send)
+                    # My own action might have been a Pass, flipping priority to
+                    # the opponent (docs/PRIORITY_PLAN.md) -- fast-forward
+                    # through however much of their reaction that provokes
+                    # (declining/responding, etc.) before handing control back.
+                    _fast_forward(self._turn_gen, self.state, self.my_seat_idx, self._opponent_choose_action)
+                    turn_ended = False
+                except StopIteration:
+                    turn_ended = True
 
-        if turn_ended:
-            if not self._game_over():
-                self.state.active_idx = 1 - self.my_seat_idx  # flip to the opponent for their turn
-                self._play_opponent_turn()
-            self._turn_gen = None if self._game_over() else _start_turn(
-                self.state, combat_enabled=True,
-                my_seat_idx=self.my_seat_idx, other_seat_choose_action=self._opponent_choose_action,
-            )
+            if turn_ended:
+                if not self._game_over():
+                    self.state.active_idx = 1 - self.my_seat_idx  # flip to the opponent for their turn
+                    self._play_opponent_turn()
+                self._turn_gen = None if self._game_over() else _start_turn(
+                    self.state, combat_enabled=True,
+                    my_seat_idx=self.my_seat_idx, other_seat_choose_action=self._opponent_choose_action,
+                )
 
         done = self._game_over()
         reward = 0.0 if _lost(self.state, self.my_seat_idx) else self.reward_fn(self.state, done, self.horizon)
@@ -2208,6 +2333,19 @@ if __name__ == "__main__":
     # global game.CARD_DEFS/game.EFFECT_REGISTRY, saving/restoring both.
     from game.cards import CardDef, CardType, EffectId
     from game.state import GameState, Permanent, PlayerState
+
+    def _keep_hand(env):
+        """DeckEnv/TwoPlayerDeckEnv.reset() now leaves the pregame mulligan
+        phase pending (game.turn.run_mulligan_phase) instead of starting the
+        turn loop immediately -- every self-check below that wants an
+        ordinary MAIN1-onward game needs one step to keep with 0 mulligans
+        first. Only steps MY OWN seat's decision; TwoPlayerDeckEnv's
+        opponent seat (no opponent_model set in any of these self-checks)
+        auto-keeps its own hand for free via _opponent_choose_action's own
+        no-model fallback (first legal action -- "Keep hand" is registered
+        before "Mulligan")."""
+        keep_idx = next(i for i, (nm, _l, _e) in enumerate(env.actions) if nm == "Keep hand")
+        return env.step(keep_idx)
 
     _card_defs_backup = dict(game.CARD_DEFS)
     _filler_backup = game.EFFECT_REGISTRY[EffectId.FILLER]
@@ -2374,6 +2512,7 @@ if __name__ == "__main__":
             pending_kinds=tron_pending_kinds, horizon=5, combat_enabled=True,
         )
         env.reset()
+        _keep_hand(env)
         attacker = Permanent(ent_card_def)
         attacker.summoning_sick = False
         env.state.battlefield = [attacker]
@@ -2401,6 +2540,7 @@ if __name__ == "__main__":
             pending_kinds=tron_pending_kinds, horizon=5,
         )
         env2.reset()
+        _keep_hand(env2)
         attacker2 = Permanent(ent_card_def)
         attacker2.summoning_sick = False
         env2.state.battlefield = [attacker2]
@@ -2508,12 +2648,13 @@ if __name__ == "__main__":
     turn_owner_n = len(_card_lookup(boggles_decklist)[0])
     turn_owner_state.active_idx = turn_owner_state.turn_player_idx = 0
     obs_mine = build_observation(turn_owner_state, boggles_decklist, horizon=10, pending_kinds=turn_owner_pending_kinds)
-    assert obs_mine[turn_owner_n * 4 + 2] == 1.0  # I hold priority AND it's my own turn
+    # index n*4+3: turn_number(+0), lands_played_this_turn(+1), mulligans_taken(+2), is_turn_player(+3)
+    assert obs_mine[turn_owner_n * 4 + 3] == 1.0  # I hold priority AND it's my own turn
     turn_owner_state.active_idx = 1  # a reactive consult -- still turn_player_idx == 0's own turn
     obs_reactive = build_observation(
         turn_owner_state, boggles_decklist, horizon=10, pending_kinds=turn_owner_pending_kinds,
     )
-    assert obs_reactive[turn_owner_n * 4 + 2] == 0.0
+    assert obs_reactive[turn_owner_n * 4 + 3] == 0.0
 
     # Blocking (docs/COMBAT_PLAN.md): build_action_table's "Assign Blocker:
     # <name> (slot j)" / "Done blocking" entries, end to end through the
@@ -2571,7 +2712,7 @@ if __name__ == "__main__":
     def _creature_slot_values(obs, decklist, pending_kinds, name, slot):
         card_names, card_copies = _card_lookup(decklist)
         creature_names_ordered = [n for n in card_names if game.CARD_DEFS[n].card_type == game.CardType.CREATURE]
-        idx = (len(card_names) * 4 + 2 + len(_all_pending_kinds(pending_kinds))
+        idx = (len(card_names) * 4 + 3 + len(_all_pending_kinds(pending_kinds))
                + len(game.POOL_COLORS) + len(game.turn.Phase)
                + len(card_names) + (len(card_names) + 1) + 1 + 1)
         for n in creature_names_ordered:
@@ -2738,6 +2879,7 @@ if __name__ == "__main__":
         pending_kinds=mono_red_pending_kinds, horizon=5,
     )
     env.reset()
+    _keep_hand(env)  # pregame mulligan phase, resolved -- keep with 0 mulligans, same opening hand as before
     # Untap never opens a priority round at all (rule 4), so reset()
     # itself already lands on the first phase that does: DRAW. One Pass
     # (a 1-player priority round ends after a single pass -- len(players)
@@ -2787,10 +2929,10 @@ if __name__ == "__main__":
     assert len(obs) == env.observation_dim == observation_dim_for(mono_red_decklist, mono_red_pending_kinds)
     n = len(card_names)
     all_kinds_len = len(_all_pending_kinds(mono_red_pending_kinds))
-    # +3 scalars ahead of the pending_kind block: turn_number,
-    # lands_played_this_turn, and "am I the turn player" (docs/PRIORITY_
-    # PLAN.md item 5).
-    stack_counts_start = n * 4 + 3 + all_kinds_len + len(game.POOL_COLORS) + len(game.turn.Phase)
+    # +4 scalars ahead of the pending_kind block, in this exact runtime
+    # order: turn_number, lands_played_this_turn, mulligans_taken, and "am I
+    # the turn player" (docs/PRIORITY_PLAN.md item 5).
+    stack_counts_start = n * 4 + 4 + all_kinds_len + len(game.POOL_COLORS) + len(game.turn.Phase)
     stack_top_start = stack_counts_start + n
     stack_none_idx = stack_top_start + n
     stack_depth_idx = stack_none_idx + 1
@@ -3147,6 +3289,7 @@ if __name__ == "__main__":
     )
     shaping_env.opponent_model = _AlwaysPassModel(shaping_env.opponent_pass_action)
     shaping_env.reset()
+    _keep_hand(shaping_env)  # pregame mulligan phase (both seats) -- keep with 0 mulligans, Pass is illegal there so _AlwaysPassModel can't answer it, but the mask-substitution fallback (first legal action) keeps the opponent's seat too
     assert shaping_env.state.active_idx == 0
 
     def _sidx(name):
@@ -3233,3 +3376,41 @@ if __name__ == "__main__":
     assert result is None  # Pass -- and no exception, confirming predict() was genuinely never invoked
 
     print("drl_env.py model_choose_action auto-pass self-check: OK")
+
+    # Pregame mulligan phase, end to end through DeckEnv's real step()
+    # interface (not resolution.py's primitives directly -- this exercises
+    # the actual gym-facing action table/action_masks wiring). reset()
+    # leaves "Keep hand"/"Mulligan" as the only two legal actions; taking
+    # one mulligan then keeping bottoms exactly 1 card (via the existing
+    # "Choose: X" action, dispatched through _choose_name_execute's own
+    # "mulligan_bottom" branch) before the real turn loop starts.
+    mull_decklist = [("Mountain", 10), ("Lightning Bolt", 10)]
+    mull_pending = game.derive_pending_kinds(mull_decklist)
+    mull_env = DeckEnv(
+        lambda *a: 0.0, decklist=mull_decklist, terminated_fn=lambda s: False,
+        pending_kinds=mull_pending, horizon=5,
+    )
+    mull_env.reset()
+    keep_idx = next(i for i, (nm, _l, _e) in enumerate(mull_env.actions) if nm == "Keep hand")
+    mulligan_idx = next(i for i, (nm, _l, _e) in enumerate(mull_env.actions) if nm == "Mulligan")
+
+    mask = mull_env.action_masks()
+    assert mask[keep_idx] and mask[mulligan_idx]
+    assert mask.sum() == 2  # nothing else is legal mid-mulligan-decision
+    assert mull_env.state.pending_resolution["kind"] == "mulligan_decision"
+
+    mull_env.step(mulligan_idx)
+    assert mull_env.state.mulligans_taken == 1
+    assert len(mull_env.state.hand) == 7  # redrawn fresh
+    assert mull_env.state.pending_resolution["kind"] == "mulligan_decision"
+
+    mull_env.step(keep_idx)
+    assert mull_env.state.pending_resolution["kind"] == "mulligan_bottom"
+    bottom_idx = next(i for i, (_nm, legal, _e) in enumerate(mull_env.actions) if legal(mull_env.state))
+    mull_env.step(bottom_idx)
+
+    assert mull_env.state.pending_resolution is None  # the whole pregame phase is done -- turn 1 has started
+    assert len(mull_env.state.hand) == 6  # 7 - 1 bottomed
+    assert mull_env.state.phase is not None  # _start_turn actually primed the real turn loop
+
+    print("drl_env.py mulligan self-check: OK")
