@@ -4,82 +4,75 @@ function numOrNull(value) {
   return value === "" ? null : Number(value);
 }
 
+function RangeFilter({ label, min, step, minValue, maxValue, onMinChange, onMaxChange }) {
+  return (
+    <div className="filter-group">
+      <label>{label}</label>
+      <div className="range-inputs">
+        <input
+          type="number"
+          min={min}
+          step={step}
+          placeholder="min"
+          value={minValue ?? ""}
+          onChange={(e) => onMinChange(numOrNull(e.target.value))}
+        />
+        <span>&ndash;</span>
+        <input
+          type="number"
+          min={min}
+          step={step}
+          placeholder="max"
+          value={maxValue ?? ""}
+          onChange={(e) => onMaxChange(numOrNull(e.target.value))}
+        />
+      </div>
+    </div>
+  );
+}
+
+function CardSelect({ label, value, onChange }) {
+  return (
+    <div className="filter-group">
+      <label>{label}</label>
+      <select value={value ?? ""} onChange={(e) => onChange(e.target.value || null)}>
+        <option value="">Any</option>
+        {CARD_NAMES.map((name) => (
+          <option key={name} value={name}>
+            {name}
+          </option>
+        ))}
+      </select>
+    </div>
+  );
+}
+
 export default function SearchFilters({ criteria, onChange }) {
   const set = (patch) => onChange({ ...criteria, ...patch });
 
   return (
     <div className="search-filters">
-      <div className="filter-group">
-        <label>Turn won</label>
-        <div className="range-inputs">
-          <input
-            type="number"
-            min="1"
-            placeholder="min"
-            value={criteria.turnWonMin ?? ""}
-            onChange={(e) => set({ turnWonMin: numOrNull(e.target.value) })}
-          />
-          <span>&ndash;</span>
-          <input
-            type="number"
-            min="1"
-            placeholder="max"
-            value={criteria.turnWonMax ?? ""}
-            onChange={(e) => set({ turnWonMax: numOrNull(e.target.value) })}
-          />
-        </div>
-      </div>
+      <RangeFilter
+        label="Turn won"
+        min="1"
+        minValue={criteria.turnWonMin}
+        maxValue={criteria.turnWonMax}
+        onMinChange={(v) => set({ turnWonMin: v })}
+        onMaxChange={(v) => set({ turnWonMax: v })}
+      />
 
-      <div className="filter-group">
-        <label>Card in hand</label>
-        <select
-          value={criteria.cardInHand ?? ""}
-          onChange={(e) => set({ cardInHand: e.target.value || null })}
-        >
-          <option value="">Any</option>
-          {CARD_NAMES.map((name) => (
-            <option key={name} value={name}>
-              {name}
-            </option>
-          ))}
-        </select>
-      </div>
+      <CardSelect label="Card in hand" value={criteria.cardInHand} onChange={(v) => set({ cardInHand: v })} />
 
-      <div className="filter-group">
-        <label>Card in play</label>
-        <select
-          value={criteria.cardInPlay ?? ""}
-          onChange={(e) => set({ cardInPlay: e.target.value || null })}
-        >
-          <option value="">Any</option>
-          {CARD_NAMES.map((name) => (
-            <option key={name} value={name}>
-              {name}
-            </option>
-          ))}
-        </select>
-      </div>
+      <CardSelect label="Card in play" value={criteria.cardInPlay} onChange={(v) => set({ cardInPlay: v })} />
 
-      <div className="filter-group">
-        <label>Score 1</label>
-        <div className="range-inputs">
-          <input
-            type="number"
-            step="0.01"
-            placeholder="min"
-            value={criteria.scoreMin ?? ""}
-            onChange={(e) => set({ scoreMin: numOrNull(e.target.value) })}
-          />
-          <span>&ndash;</span>
-          <input
-            type="number"
-            step="0.01"
-            placeholder="max"
-            value={criteria.scoreMax ?? ""}
-            onChange={(e) => set({ scoreMax: numOrNull(e.target.value) })}
-          />
-        </div>
-      </div>
+      <RangeFilter
+        label="Score 1"
+        step="0.01"
+        minValue={criteria.scoreMin}
+        maxValue={criteria.scoreMax}
+        onMinChange={(v) => set({ scoreMin: v })}
+        onMaxChange={(v) => set({ scoreMax: v })}
+      />
 
       <button className="clear-filters" onClick={() => onChange({})}>
         Clear filters

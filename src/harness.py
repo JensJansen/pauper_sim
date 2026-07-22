@@ -57,6 +57,10 @@ def _snapshot_state(state):
         "battlefield": [{"name": p.card_def.name, "tapped": p.tapped} for p in state.battlefield],
         "graveyard": [c.name for c in state.graveyard],
         "exile": [c.name for c, _plotted_turn in state.exile],
+        # Bottom-to-top order (index 0 = bottom of stack, last = next to
+        # resolve) -- every spell fully paid for but not yet resolved (see
+        # game.push_to_stack); empty outside of a cast awaiting a "Pass".
+        "stack": [entry["card_def"].name for entry in state.stack],
         "mana_pool": dict(state.mana_pool),  # copy -- state.mana_pool mutates in place (mana.py, turn.untap_step)
         # Running non-combat damage counter against the implicit opponent
         # (game/state.py's own note: no modeled opponent state beyond
@@ -102,7 +106,7 @@ def _snapshot_pending(state):
     return snap
 
 
-def finalize_scores(state, reward_fn, scoring_fns, horizon):
+def finalize_scores(state, reward_fn, scoring_fns, horizon, seat_idx=None):
     """The full scores dict for one finished game: reward_fn (mandatory,
     called with done=True since this only ever runs at a game's true end,
     keyed by its own __name__) plus each additional scoring_fns entry,
@@ -114,9 +118,17 @@ def finalize_scores(state, reward_fn, scoring_fns, horizon):
     centrally, rather than relying on each scoring function to remember
     its own failure check (reward_fn's own internal check stays too, as
     belt-and-suspenders, but this is what actually guarantees it for any
-    scoring function that might forget)."""
+    scoring function that might forget).
+
+    seat_idx: 2-player games only (None -- the default -- preserves 1p
+    behavior exactly). state.turn_won/turn_number alone never say WHO won
+    once a real opponent exists (see drl_env._lost's own docstring), so a
+    seat that lost (state.winner set to the OTHER seat) also gets every
+    score forced to 0.0, on top of the existing "never terminated" gate."""
     names = [reward_fn.__name__] + [fn.__name__ for fn in scoring_fns]
     if state.turn_won is None:
+        return {name: 0.0 for name in names}
+    if seat_idx is not None and drl_env._lost(state, seat_idx):
         return {name: 0.0 for name in names}
     values = [reward_fn(state, True, horizon)] + [fn(state) for fn in scoring_fns]
     return dict(zip(names, values))
@@ -254,6 +266,25 @@ def _make_env(reward_fn, decklist, terminated_fn, horizon, on_the_play, seed, pe
     return _init
 
 
+def _make_two_player_env(reward_fn, decklist, terminated_fn, pending_kinds, opponent_decklist,
+                          opponent_terminated_fn, opponent_pending_kinds, my_seat_idx, horizon, on_the_play,
+                          seed, token_card_defs, opponent_token_card_defs, shaping_weight, shaping_gamma):
+    """_make_env's two-player counterpart -- same Monitor-wrapping reason
+    (n_envs>1 needs it, see _make_env's own docstring). opponent_model
+    starts unset here (TrainingHarness.set_opponent_model wires it in once
+    both sides' models exist -- see that method's own docstring)."""
+    def _init():
+        return Monitor(drl_env.TwoPlayerDeckEnv(
+            reward_fn, decklist=decklist, terminated_fn=terminated_fn, pending_kinds=pending_kinds,
+            opponent_decklist=opponent_decklist, opponent_terminated_fn=opponent_terminated_fn,
+            opponent_pending_kinds=opponent_pending_kinds, my_seat_idx=my_seat_idx, horizon=horizon,
+            on_the_play=on_the_play, seed=seed, token_card_defs=token_card_defs,
+            opponent_token_card_defs=opponent_token_card_defs,
+            shaping_weight=shaping_weight, shaping_gamma=shaping_gamma,
+        ))
+    return _init
+
+
 class TrainingHarness:
     # Deck-parameterized (MULTI_DECK_PLAN.md Phase M4/M7): no deck gets a
     # default here (not even Tron) -- decklist/terminated_fn/pending_kinds
@@ -263,10 +294,53 @@ class TrainingHarness:
     # never a change to this file.
     def __init__(self, reward_fn, model_cls, decklist, terminated_fn, pending_kinds, model_kwargs=None,
                  horizon=6, on_the_play=True, seed=0, scoring_fns=None, n_envs=1, combat_enabled=False,
-                 token_card_defs=()):
+                 token_card_defs=(), opponent_decklist=None, opponent_terminated_fn=None,
+                 opponent_pending_kinds=None, opponent_token_card_defs=(), my_seat_idx=0, shaping_weight=0.0):
+        # Two-player mode (docs/MULTIPLAYER_ENGINE_PLAN.md's harness pass):
+        # triggered purely by opponent_decklist being given, same "presence
+        # of a second decklist is the mode switch" rule run.py applies to a
+        # config's own JSON. This harness still trains exactly ONE model
+        # (my_seat_idx's own) -- a full match needs a SECOND TrainingHarness
+        # for the opponent's own decklist/model, cross-wired via
+        # set_opponent_model and run together by train_two_player below;
+        # nothing here builds that second harness itself.
+        self.two_player = opponent_decklist is not None
+        self.opponent_decklist = opponent_decklist
+        self.opponent_terminated_fn = opponent_terminated_fn
+        self.opponent_pending_kinds = opponent_pending_kinds
+        self.opponent_token_card_defs = opponent_token_card_defs
+        self.my_seat_idx = my_seat_idx
+        # Opponent-visibility observation blocks (MULTIPLAYER_GAPS.md) --
+        # same values TwoPlayerDeckEnv computes for itself, kept here too
+        # so evaluate_two_player (which drives games directly through
+        # game.run_multiplayer_game, never through self.env) can build the
+        # identical observation shape its model actually trained on
+        # without reaching into self.env's own internals.
+        if self.two_player:
+            self.opponent_total_cards = sum(qty for _name, qty, *_rest in opponent_decklist)
+            self.opponent_creature_names, self.opponent_creature_copies = drl_env.creature_names_and_copies(
+                opponent_decklist,
+            )
+            self.opponent_card_names, self.opponent_card_copies = drl_env._card_lookup(opponent_decklist)
+        else:
+            self.opponent_total_cards = None
+            self.opponent_creature_names = None
+            self.opponent_creature_copies = None
+            self.opponent_card_names = None
+            self.opponent_card_copies = None
         self.reward_fn = reward_fn
         self.model_cls = model_cls
         self.model_kwargs = model_kwargs or {}
+        # Potential-based dense reward (MULTIPLAYER_GAPS.md), 2-player only
+        # -- opt-in (default 0.0 -- no behavior change unless a config
+        # asks for it), see TwoPlayerDeckEnv's own docstring for the full
+        # design. shaping_gamma deliberately reuses the model's own PPO
+        # discount (falling back to SB3's own default of 0.99 if
+        # model_kwargs doesn't set one) rather than an independent value --
+        # see TwoPlayerDeckEnv.__init__'s own comment on why they must
+        # agree.
+        self.shaping_weight = shaping_weight
+        self.shaping_gamma = self.model_kwargs.get("gamma", 0.99)
         self.decklist = decklist
         self.terminated_fn = terminated_fn
         self.horizon = horizon
@@ -303,13 +377,54 @@ class TrainingHarness:
         # .pass_action/.observation_dim used to be read below) -- required
         # once self.env can be a VecEnv (n_envs>1), which has no such
         # attributes of its own.
+        # Two-player mode: opponent_decklist/opponent_token_card_defs too --
+        # evaluate_two_player dispatches through THIS table (harness.actions/
+        # harness.pass_action), and a real blocking consult needs a "Choose
+        # opponent's: <name> (slot k)" action addressing the OTHER side's
+        # battlefield once a blocker's been assigned (declare_blocker_
+        # assignment's own nested resolution) -- omitting it here left that
+        # resolution with zero legal actions the instant blocking actually
+        # fired during evaluation (same bug TwoPlayerDeckEnv.__init__ had
+        # for its own self.actions/self.opponent_actions, caught by a live
+        # smoke test rather than any narrower unit check).
         self.actions = drl_env.build_action_table(
             decklist, game.EFFECT_REGISTRY, token_card_defs=token_card_defs, pending_kinds=pending_kinds,
+            opponent_decklist=opponent_decklist, opponent_token_card_defs=opponent_token_card_defs,
         )
         self.pass_action = next(i for i, (name, _legal, _execute) in enumerate(self.actions) if name == "Pass")
-        self.observation_dim = drl_env.observation_dim_for(decklist, pending_kinds)
+        # 2-player observation includes the opponent-visibility blocks on
+        # top of the plain 1-player shape (drl_env.two_player_observation_
+        # dim/TwoPlayerDeckEnv's own observation_dim) -- must match exactly,
+        # since this value is what _metadata()/load()'s mismatch-check
+        # actually compares.
+        if self.two_player:
+            self.observation_dim = drl_env.two_player_observation_dim(
+                decklist, pending_kinds, opponent_decklist,
+            )
+        else:
+            self.observation_dim = drl_env.observation_dim_for(decklist, pending_kinds)
 
-        if n_envs == 1:
+        if self.two_player:
+            if n_envs == 1:
+                self.env = drl_env.TwoPlayerDeckEnv(
+                    reward_fn, decklist=decklist, terminated_fn=terminated_fn, pending_kinds=pending_kinds,
+                    opponent_decklist=opponent_decklist, opponent_terminated_fn=opponent_terminated_fn,
+                    opponent_pending_kinds=opponent_pending_kinds, my_seat_idx=my_seat_idx, horizon=horizon,
+                    on_the_play=on_the_play, seed=seed, token_card_defs=token_card_defs,
+                    opponent_token_card_defs=opponent_token_card_defs,
+                    shaping_weight=self.shaping_weight, shaping_gamma=self.shaping_gamma,
+                )
+            else:
+                self.env = DummyVecEnv([
+                    _make_two_player_env(
+                        reward_fn, decklist, terminated_fn, pending_kinds, opponent_decklist,
+                        opponent_terminated_fn, opponent_pending_kinds, my_seat_idx, horizon, on_the_play,
+                        seed + i, token_card_defs, opponent_token_card_defs,
+                        self.shaping_weight, self.shaping_gamma,
+                    )
+                    for i in range(n_envs)
+                ])
+        elif n_envs == 1:
             self.env = drl_env.DeckEnv(
                 reward_fn, decklist=decklist, terminated_fn=terminated_fn,
                 horizon=horizon, on_the_play=on_the_play, seed=seed, pending_kinds=pending_kinds,
@@ -324,6 +439,40 @@ class TrainingHarness:
                 for i in range(n_envs)
             ])
         self.model = model_cls("MlpPolicy", self.env, **self.model_kwargs)
+        if self.two_player:
+            # Always MY OWN model, unlike set_opponent_model below (which
+            # needs a SECOND harness -- train_two_player wires that one in).
+            # Needed so TwoPlayerDeckEnv._play_opponent_turn can simulate my
+            # own blocking decision while the opponent's whole turn runs
+            # synchronously inside step() (TwoPlayerDeckEnv.own_model's own
+            # docstring) -- re-set again in load() once self.model is
+            # replaced by the reloaded one.
+            self.set_own_model(self.model)
+
+    def set_own_model(self, model):
+        """Two-player mode only: point every underlying TwoPlayerDeckEnv's
+        own_model at the given model object (always THIS harness's own
+        model -- see __init__'s call right after self.model is built, and
+        load()'s re-call once self.model is replaced by the reloaded one).
+        Same Monitor/DummyVecEnv unwrapping as set_opponent_model."""
+        envs = self.env.envs if isinstance(self.env, DummyVecEnv) else [self.env]
+        for env in envs:
+            base = env.env if isinstance(env, Monitor) else env
+            base.own_model = model
+
+    def set_opponent_model(self, model):
+        """Two-player mode only: point every underlying TwoPlayerDeckEnv at
+        the opponent's own live SB3 model OBJECT (not a snapshot) -- both
+        sides then improve together with zero re-wiring needed between
+        train_two_player's alternating bursts, since the object each env
+        holds a reference to is the exact one the opponent's own
+        TrainingHarness keeps mutating via .learn(). Reaches through
+        Monitor/DummyVecEnv the same way n_envs>1 already wraps every env
+        (see _make_env's own docstring for why Monitor is always there)."""
+        envs = self.env.envs if isinstance(self.env, DummyVecEnv) else [self.env]
+        for env in envs:
+            base = env.env if isinstance(env, Monitor) else env
+            base.opponent_model = model
 
     # -- D5: training ---------------------------------------------------
 
@@ -372,7 +521,16 @@ class TrainingHarness:
         terminated by the horizon gets every score forced to 0.0 (see
         finalize_scores), so failures naturally sort to the bottom as a
         block with no meaningful order among themselves -- no special
-        casing needed for that, it just falls out of the sort."""
+        casing needed for that, it just falls out of the sort.
+
+        Two-player mode only: use the module-level evaluate_two_player
+        instead -- this plays a solitaire game.run_game, which has no
+        opponent to speak of."""
+        if self.two_player:
+            raise NotImplementedError(
+                "TrainingHarness.evaluate() is 1-player only -- use harness.evaluate_two_player(harness_a, "
+                "harness_b, ...) for a two-player harness (see docs/MULTIPLAYER_ENGINE_PLAN.md)."
+            )
         horizon = horizon or self.horizon
         rng = random.Random(seed)
         game_logs = [] if log_path is not None else None
@@ -467,6 +625,23 @@ class TrainingHarness:
             # never touch training or the saved model (MULTI_DECK_PLAN.md
             # Phase M7), they're a live argument to load() like reward_fn.
             "scoring_fns": [fn.__name__ for fn in self.scoring_fns],
+            # two_player IS mismatch-checked on load (below) -- silently
+            # loading a model trained against a live opponent back into
+            # 1-player mode, or vice versa, would use an env whose
+            # observation the model was never actually trained against
+            # (TwoPlayerDeckEnv and DeckEnv share observation_dim/
+            # action_space_size for the same decklist, so those two checks
+            # alone wouldn't catch this). my_seat_idx is informational only
+            # (which seat a saved model played never changes what it
+            # learned about its OWN cards).
+            "two_player": self.two_player,
+            "my_seat_idx": self.my_seat_idx,
+            # Informational only, no mismatch-check on load -- same
+            # "behavioral, doesn't change action_space_size/observation_dim"
+            # bucket as combat_enabled above. shaping_gamma itself isn't
+            # saved separately: it's always re-derived from model_kwargs
+            # (already saved/restored above), never an independent value.
+            "shaping_weight": self.shaping_weight,
         }
 
     def save(self, path):
@@ -477,14 +652,21 @@ class TrainingHarness:
 
     @classmethod
     def load(cls, path, reward_fn, model_cls, decklist, terminated_fn, pending_kinds,
-              horizon=6, on_the_play=True, scoring_fns=None, combat_enabled=False, token_card_defs=()):
+              horizon=6, on_the_play=True, scoring_fns=None, combat_enabled=False, token_card_defs=(),
+              opponent_decklist=None, opponent_terminated_fn=None, opponent_pending_kinds=None,
+              opponent_token_card_defs=(), my_seat_idx=0, shaping_weight=0.0):
         with open(os.path.join(path, "metadata.json")) as f:
             metadata = json.load(f)
 
         current_action_space_size = len(drl_env.build_action_table(
             decklist, game.EFFECT_REGISTRY, token_card_defs=token_card_defs, pending_kinds=pending_kinds,
+            opponent_decklist=opponent_decklist, opponent_token_card_defs=opponent_token_card_defs,
         ))
-        current_observation_dim = drl_env.observation_dim_for(decklist, pending_kinds)
+        current_two_player = opponent_decklist is not None
+        if current_two_player:
+            current_observation_dim = drl_env.two_player_observation_dim(decklist, pending_kinds, opponent_decklist)
+        else:
+            current_observation_dim = drl_env.observation_dim_for(decklist, pending_kinds)
 
         mismatches = []
         if metadata["reward_fn"] != reward_fn.__name__:
@@ -501,6 +683,10 @@ class TrainingHarness:
                 f"observation_dim: saved={metadata['observation_dim']!r}, "
                 f"current={current_observation_dim!r}"
             )
+        if metadata.get("two_player", False) != current_two_player:
+            mismatches.append(
+                f"two_player: saved={metadata.get('two_player', False)!r}, current={current_two_player!r}"
+            )
         if mismatches:
             raise ValueError("TrainingHarness.load: metadata mismatch -- " + "; ".join(mismatches))
 
@@ -509,8 +695,209 @@ class TrainingHarness:
             decklist=decklist, terminated_fn=terminated_fn,
             horizon=horizon, on_the_play=on_the_play, seed=metadata["train_seed"],
             scoring_fns=scoring_fns, pending_kinds=pending_kinds, combat_enabled=combat_enabled,
-            token_card_defs=token_card_defs,
+            token_card_defs=token_card_defs, opponent_decklist=opponent_decklist,
+            opponent_terminated_fn=opponent_terminated_fn, opponent_pending_kinds=opponent_pending_kinds,
+            opponent_token_card_defs=opponent_token_card_defs, my_seat_idx=my_seat_idx,
+            shaping_weight=shaping_weight,
         )
         harness.model = model_cls.load(os.path.join(path, "model.zip"), env=harness.env)
+        if harness.two_player:
+            harness.set_own_model(harness.model)  # __init__'s own_model wiring pointed at the PRE-reload model object
         harness.total_timesteps_trained = metadata["total_timesteps_trained"]
         return harness
+
+
+# ---------------------------------------------------------------------------
+# Two-player training/evaluation coordinators. Each operates on a PAIR of
+# TrainingHarness instances already built in two-player mode (opponent_
+# decklist given, my_seat_idx 0 and 1 respectively, one pointed at the
+# other's own decklist as ITS opponent) -- neither function builds a
+# harness itself, run.py's own two-player dispatch does that (see
+# run.py's decklist_2-triggered path).
+# ---------------------------------------------------------------------------
+
+def train_two_player(harness_a, harness_b, total_timesteps, burst_timesteps=2000,
+                      save_path_a=None, save_path_b=None):
+    """Alternates short .learn() bursts between two harnesses trained
+    against each other -- the confirmed "opponent-as-environment" design
+    (see TwoPlayerDeckEnv's own docstring): harness_a.env auto-plays
+    harness_b's CURRENT model during harness_b's turns, and vice versa.
+    set_opponent_model stores the model OBJECT itself (not a snapshot), so
+    both sides face an ever-improving live opponent with zero re-wiring
+    needed between bursts -- each .learn() call mutates the very object
+    the other side's env already holds a reference to.
+
+    burst_timesteps: how often the two sides swap training turns, not a
+    tunable that changes the end result in any principled way -- small
+    enough that neither side trains for a very long stretch against a
+    frozen-in-place opponent snapshot, without bursts so short that SB3's
+    own per-.learn() setup overhead starts to matter. total_timesteps is
+    split evenly between both sides, same as one 1-player .train() call's
+    total_timesteps is that side's own full budget."""
+    harness_a.set_opponent_model(harness_b.model)
+    harness_b.set_opponent_model(harness_a.model)
+
+    trained = 0
+    while trained < total_timesteps:
+        step = min(burst_timesteps, total_timesteps - trained)
+        harness_a.model.learn(total_timesteps=step, reset_num_timesteps=False)
+        harness_b.model.learn(total_timesteps=step, reset_num_timesteps=False)
+        trained += step
+
+    harness_a.total_timesteps_trained = harness_a.model.num_timesteps
+    harness_b.total_timesteps_trained = harness_b.model.num_timesteps
+    if save_path_a:
+        harness_a.save(save_path_a)
+    if save_path_b:
+        harness_b.save(save_path_b)
+
+
+def evaluate_two_player(harness_a, harness_b, num_games, horizon=None, seed=0):
+    """Plays num_games real 2-player games (game.run_multiplayer_game)
+    between harness_a's and harness_b's CURRENT models, deterministic
+    (same convention 1-player evaluate() uses). Returns (wins_a, wins_b,
+    draws, turn_counts, action_counts) -- action_counts is each game's
+    total choose_action call count (both sides combined, one per real
+    decision including Pass -- the same granularity _GameLogger's steps
+    use in 1-player evaluate()), for efficiency metrics like
+    actions-per-turn; paired index-for-index with turn_counts. No rich
+    per-game JSON log yet: harness._snapshot_state is single-sided
+    (docs/MULTIPLAYER_ENGINE_PLAN.md's own "downstream impact" note), a
+    real 2p replay log is future work, not this pass's scope."""
+    horizon = horizon or harness_a.horizon
+    rng = random.Random(seed)
+    harnesses = (harness_a, harness_b)
+    wins = [0, 0]
+    draws = 0
+    turn_counts = []
+    action_counts = []
+
+    for _ in range(num_games):
+        starting_idx = rng.randint(0, 1)
+        action_count = [0]
+
+        def choose_action(state, action_count=action_count):
+            action_count[0] += 1
+            harness = harnesses[state.active_idx]
+            obs = drl_env.build_two_player_observation(
+                state, state.active_idx, harness.decklist, horizon, harness.pending_kinds,
+                harness.opponent_total_cards, harness.opponent_creature_names, harness.opponent_creature_copies,
+                harness.opponent_card_names, harness.opponent_card_copies,
+            )
+            return drl_env.model_choose_action(
+                state, obs, harness.model, harness.actions, harness.pass_action, deterministic=True,
+            )
+
+        state = game.run_multiplayer_game(
+            decklists=[harness_a.decklist, harness_b.decklist],
+            terminated_fns=[harness_a.terminated_fn, harness_b.terminated_fn],
+            rng=rng, starting_player_idx=starting_idx, choose_action=choose_action,
+            horizon=horizon, combat_enabled=True,
+        )
+        turn_counts.append(state.turn_number)
+        action_counts.append(action_count[0])
+        if state.winner is None:
+            draws += 1
+        else:
+            wins[state.winner] += 1
+
+    return wins[0], wins[1], draws, turn_counts, action_counts
+
+
+if __name__ == "__main__":
+    # ponytail self-check: no pytest in this project, mirrors the
+    # assert-based demo convention every other module here uses -- run via
+    # `python harness.py` from src/. End-to-end two-player smoke test: two
+    # tiny real MaskablePPO models (same mirror decklists drl_env.py's own
+    # TwoPlayerDeckEnv self-check uses -- Mountain+Bolt vs. a pure-Mountain
+    # punching bag) actually trained against each other via
+    # train_two_player, saved, reloaded through load()'s own mismatch
+    # check, then played against each other via evaluate_two_player. Not
+    # a claim about learned play quality -- total_timesteps here is
+    # deliberately tiny, just enough to exercise every moving part (env
+    # wiring, opponent cross-referencing, save/load, evaluate) at least
+    # once.
+    import shutil
+    import tempfile
+
+    from sb3_contrib import MaskablePPO
+
+    import terminated as terminated_module  # noqa: F401 -- not used here (terminated_fn is a trivial lambda below), imported only to confirm the module still loads alongside this self-check
+
+    deck_a = [("Mountain", 20), ("Lightning Bolt", 10)]
+    deck_b = [("Mountain", 20)]
+    pending_a = game.derive_pending_kinds(deck_a)
+    pending_b = game.derive_pending_kinds(deck_b)
+    tiny_model_kwargs = {
+        "policy_kwargs": {"net_arch": [8, 8]}, "verbose": 0, "device": "cpu", "n_steps": 32, "batch_size": 16,
+    }
+
+    tmp_dir = tempfile.mkdtemp(prefix="azul_2p_selfcheck_")
+    try:
+        harness_a = TrainingHarness(
+            reward_fn=rewards.strict_binary_reward, model_cls=MaskablePPO, decklist=deck_a,
+            terminated_fn=lambda s: False, pending_kinds=pending_a, model_kwargs=tiny_model_kwargs,
+            horizon=40, on_the_play=True, seed=0, opponent_decklist=deck_b,
+            opponent_terminated_fn=lambda s: False, opponent_pending_kinds=pending_b, my_seat_idx=0,
+        )
+        harness_b = TrainingHarness(
+            reward_fn=rewards.strict_binary_reward, model_cls=MaskablePPO, decklist=deck_b,
+            terminated_fn=lambda s: False, pending_kinds=pending_b, model_kwargs=tiny_model_kwargs,
+            horizon=40, on_the_play=False, seed=1, opponent_decklist=deck_a,
+            opponent_terminated_fn=lambda s: False, opponent_pending_kinds=pending_a, my_seat_idx=1,
+        )
+        assert harness_a.two_player and harness_b.two_player
+        assert harness_a.env.opponent_model is None and harness_b.env.opponent_model is None
+        # Potential-based shaping (MULTIPLAYER_GAPS.md): default off
+        # (shaping_weight=0.0, no config asked for it here), shaping_gamma
+        # falls back to SB3's own PPO default (0.99) since tiny_model_kwargs
+        # sets no "gamma" -- and both reach all the way through to the
+        # actual TwoPlayerDeckEnv the model trains against, not just the
+        # harness's own attributes.
+        assert harness_a.shaping_weight == 0.0 and harness_a.shaping_gamma == 0.99
+        assert harness_a.env.shaping_weight == 0.0 and harness_a.env.shaping_gamma == 0.99
+
+        path_a, path_b = os.path.join(tmp_dir, "a"), os.path.join(tmp_dir, "b")
+        train_two_player(harness_a, harness_b, total_timesteps=64, burst_timesteps=32,
+                          save_path_a=path_a, save_path_b=path_b)
+        assert harness_a.env.opponent_model is harness_b.model  # live reference, not a snapshot
+        assert harness_a.total_timesteps_trained == 64 and harness_b.total_timesteps_trained == 64
+        print("harness.py train_two_player self-check: OK")
+
+        # Loading with the WRONG mode (no opponent_decklist -- i.e. 1p)
+        # must fail loudly, not silently produce a mismatched env -- this
+        # is exactly the failure two_player's new mismatch-check exists to
+        # catch (see _metadata's own docstring).
+        try:
+            TrainingHarness.load(
+                path_a, reward_fn=rewards.strict_binary_reward, model_cls=MaskablePPO, decklist=deck_a,
+                terminated_fn=lambda s: False, pending_kinds=pending_a, horizon=40,
+            )
+            raise AssertionError("load() should have rejected a 1-player reload of a two-player model")
+        except ValueError as e:
+            assert "two_player" in str(e)
+
+        loaded_a = TrainingHarness.load(
+            path_a, reward_fn=rewards.strict_binary_reward, model_cls=MaskablePPO, decklist=deck_a,
+            terminated_fn=lambda s: False, pending_kinds=pending_a, horizon=40,
+            opponent_decklist=deck_b, opponent_terminated_fn=lambda s: False, opponent_pending_kinds=pending_b,
+            my_seat_idx=0,
+        )
+        loaded_b = TrainingHarness.load(
+            path_b, reward_fn=rewards.strict_binary_reward, model_cls=MaskablePPO, decklist=deck_b,
+            terminated_fn=lambda s: False, pending_kinds=pending_b, horizon=40,
+            opponent_decklist=deck_a, opponent_terminated_fn=lambda s: False, opponent_pending_kinds=pending_a,
+            my_seat_idx=1,
+        )
+        assert loaded_a.total_timesteps_trained == 64 and loaded_b.total_timesteps_trained == 64
+        print("harness.py two-player save/load round-trip self-check: OK")
+
+        wins_a, wins_b, draws, turn_counts, action_counts = evaluate_two_player(
+            loaded_a, loaded_b, num_games=4, horizon=40, seed=7,
+        )
+        assert wins_a + wins_b + draws == 4
+        assert all(t <= 40 for t in turn_counts)
+        assert len(action_counts) == 4 and all(a > 0 for a in action_counts)  # every game takes at least 1 action
+        print(f"harness.py evaluate_two_player self-check: OK (wins_a={wins_a}, wins_b={wins_b}, draws={draws})")
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)

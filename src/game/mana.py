@@ -19,6 +19,10 @@ COLORS = ("W", "U", "B", "R", "G")
 POOL_COLORS = COLORS + ("C",)  # every symbol a mana source can actually produce
 
 
+def _cost_satisfied(remaining):
+    return not any(v > 0 for v in remaining.values())
+
+
 def controls_all_tron_types(state):
     present = {
         p.card_def.extra["tron_type"]
@@ -134,16 +138,16 @@ def pay_cost(state, cost, tap_choices):
         produced.extend(mana_output(permanent, state, color_choice))
 
     remaining = dict(cost)
-    leftover_generic = 0
+    leftover = 0
     for symbol in produced:
         need = remaining.get(symbol, 0)
         if need > 0:
             remaining[symbol] = need - 1
         else:
-            leftover_generic += 1
+            leftover += 1
     generic_needed = remaining.get("generic", 0)
-    remaining["generic"] = max(0, generic_needed - leftover_generic)
-    if any(v > 0 for v in remaining.values()):
+    remaining["generic"] = max(0, generic_needed - leftover)
+    if not _cost_satisfied(remaining):
         raise ValueError(f"tap_choices do not cover cost {cost} (produced {produced})")
 
     for permanent, _color in tap_choices:
@@ -203,7 +207,7 @@ def choose_taps_for_cost(state, cost):
             remaining["generic"] = max(0, remaining.get("generic", 0) - leftover)
 
     for p in list(pool):
-        if not any(v > 0 for v in remaining.values()):
+        if _cost_satisfied(remaining):
             break
         if p.card_def.effect_id in registry._FLEXIBLE_SOURCE_CHOICES:
             continue  # pass 2
@@ -214,7 +218,7 @@ def choose_taps_for_cost(state, cost):
         pool.remove(p)
 
     for p in list(pool):
-        if not any(v > 0 for v in remaining.values()):
+        if _cost_satisfied(remaining):
             break
         effect = p.card_def.effect_id
         if effect not in registry._FLEXIBLE_SOURCE_CHOICES:
@@ -235,7 +239,7 @@ def choose_taps_for_cost(state, cost):
     # "fixed" here since every real card that can receive this grant
     # today is a basic land.
     for p in list(pool):
-        if not any(v > 0 for v in remaining.values()):
+        if _cost_satisfied(remaining):
             break
         granted = _granted_mana_colors(state, p)
         if not granted:
@@ -252,7 +256,7 @@ def choose_taps_for_cost(state, cost):
             chosen.append((p, color_choice))
         pool.remove(p)
 
-    if any(v > 0 for v in remaining.values()):
+    if not _cost_satisfied(remaining):
         return None
     return chosen
 
@@ -279,50 +283,35 @@ def begin_pay_cost(state, cost, on_complete):
     payment" as the only legal action -- softlocking the cast forever
     instead of resolving it."""
     begin_resolution(state, "pay_cost", on_complete, remaining=dict(cost), tapped=[], pool_delta={})
-    if not any(v > 0 for v in state.pending_resolution["remaining"].values()):
+    if _cost_satisfied(state.pending_resolution["remaining"]):
         complete_resolution(state)
 
 
-def _apply_tap_to_remaining(remaining, pool, pool_delta, produced_symbols):
-    """One tap's output, applied one symbol at a time: a symbol matching a
-    live outstanding need for that exact color fills it directly; anything
-    else -- wrong color, or quantity beyond what's needed -- floats into
-    the mana pool untouched. Deliberately no "any leftover color pays
-    generic" fallback (MANA_POOL_PLAN.md): spending floated mana, even
-    toward generic, is always its own later model action via
-    execute_pool_spend, never automatic."""
+def _float_produced_mana(pool, pool_delta, produced_symbols):
+    """Every tap's output floats into the mana pool, unconditionally -- a
+    tap never directly pays any part of a cost, including generic. Paying
+    a cost, generic included, is always a separate explicit
+    execute_pool_spend action from here on (MANA_POOL_PLAN.md)."""
     for symbol in produced_symbols:
-        need = remaining.get(symbol, 0)
-        if need > 0:
-            remaining[symbol] = need - 1
-        else:
-            pool[symbol] = pool.get(symbol, 0) + 1
-            pool_delta[symbol] = pool_delta.get(symbol, 0) + 1
-
-
-def _filter_mana_eligible(remaining):
-    """Barrels of Blasting Jelly / Conduit Pylons' colored-pip filter mode
-    is only ever useful for exactly one outstanding colored pip of exactly
-    quantity 1 -- the same narrow scope plan_payment already enforces for
-    its own legality check, preserved exactly here for the interactive
-    version. Returns that one color, or None if the condition isn't met."""
-    needed_colors = [c for c in COLORS if remaining.get(c, 0) > 0]
-    if len(needed_colors) == 1 and remaining[needed_colors[0]] == 1:
-        return needed_colors[0]
-    return None
+        pool[symbol] = pool.get(symbol, 0) + 1
+        pool_delta[symbol] = pool_delta.get(symbol, 0) + 1
 
 
 def tap_cost_options(state):
     """While a pay_cost resolution is pending: every (name, color_choice,
-    is_filter) option that would make progress on the remaining cost right
-    now, one per distinct source *name* (not per physical permanent --
-    same-named untapped sources are interchangeable, so this stays a small
-    bounded list regardless of how many copies are in play). color_choice
-    is None for fixed-color/Tron sources; is_filter marks Barrels/Conduit
-    Pylons used in their colored-pip filter mode."""
+    is_filter) tap option still available, one per distinct source *name*
+    (not per physical permanent -- same-named untapped sources are
+    interchangeable, so this stays a small bounded list regardless of how
+    many copies are in play). color_choice is None for fixed-color/Tron
+    sources; is_filter marks Barrels/Conduit Pylons used in their
+    colored-pip filter mode -- offered for any of the 5 colors, same as a
+    flexible source, never gated on whether that exact color still has a
+    live need: every tap here only ever floats to the pool for a later,
+    separate spend decision (execute_tap_cost_option/execute_pool_spend),
+    so there's no way for an untimely tap to be "wasted."""
     pending = state.pending_resolution
     remaining = pending["remaining"]
-    if not any(v > 0 for v in remaining.values()):
+    if _cost_satisfied(remaining):
         return []
 
     tapped_ids = {id(p) for p, _is_filter in pending["tapped"]}
@@ -366,21 +355,20 @@ def tap_cost_options(state):
                 seen.add(key)
                 options.append(key)
 
-    filter_color = _filter_mana_eligible(remaining)
-    if filter_color is not None:
-        for p in state.battlefield:
-            if id(p) in tapped_ids:
-                continue
-            effect = p.card_def.effect_id
-            if registry.EFFECT_REGISTRY.get(effect, {}).get("filter_mana") is None:
-                continue
-            already_used = (
-                p.flags.get("used_this_turn", False) if effect == EffectId.BARRELS_OF_BLASTING_JELLY
-                else p.tapped
-            )
-            if already_used:
-                continue
-            key = (p.card_def.name, filter_color, True)
+    for p in state.battlefield:
+        if id(p) in tapped_ids:
+            continue
+        effect = p.card_def.effect_id
+        if registry.EFFECT_REGISTRY.get(effect, {}).get("filter_mana") is None:
+            continue
+        already_used = (
+            p.flags.get("used_this_turn", False) if effect == EffectId.BARRELS_OF_BLASTING_JELLY
+            else p.tapped
+        )
+        if already_used:
+            continue
+        for color in COLORS:
+            key = (p.card_def.name, color, True)
             if key not in seen:
                 seen.add(key)
                 options.append(key)
@@ -431,15 +419,17 @@ def execute_tap_cost_option(state, name, color_choice, is_filter):
             permanent.flags["used_this_turn"] = True
         else:
             permanent.tapped = True
-        pending["remaining"][color_choice] = max(0, pending["remaining"].get(color_choice, 0) - 1)
         # The filter ability itself costs {1} (real cards: "{1}: Add one
         # mana of any color" / "{1}, T: Add one mana of any color") -- a
-        # pure color-fix, never a net mana gain.
+        # pure color-fix, never a net mana gain -- represented as an extra
+        # generic now owed in this resolution, paid the same explicit
+        # execute_pool_spend way as everything else.
         pending["remaining"]["generic"] = pending["remaining"].get("generic", 0) + 1
+        _float_produced_mana(state.mana_pool, pending["pool_delta"], [color_choice])
     else:
         permanent.tapped = True
         produced = mana_output(permanent, state, color_choice)
-        _apply_tap_to_remaining(pending["remaining"], state.mana_pool, pending["pool_delta"], produced)
+        _float_produced_mana(state.mana_pool, pending["pool_delta"], produced)
         # spy_combo: Lotus Petal sacrifices itself, Saruli Caretaker also
         # taps another creature, Wall of Roots may die on its 5th use --
         # each an optional per-effect side effect of a normal tap, mirrored
@@ -448,8 +438,8 @@ def execute_tap_cost_option(state, name, color_choice, is_filter):
         if on_tap is not None:
             on_tap(state, permanent)
 
-    if not any(v > 0 for v in pending["remaining"].values()):
-        complete_resolution(state)
+    # A tap never directly pays any part of `remaining` anymore -- only
+    # execute_pool_spend can complete this resolution now.
 
 
 def pool_spend_options(state):
@@ -459,7 +449,7 @@ def pool_spend_options(state):
     outstanding generic need."""
     pending = state.pending_resolution
     remaining = pending["remaining"]
-    if not any(v > 0 for v in remaining.values()):
+    if _cost_satisfied(remaining):
         return []
     generic_needed = remaining.get("generic", 0) > 0
     return sorted(
@@ -487,7 +477,7 @@ def execute_pool_spend(state, color):
     else:
         remaining["generic"] = max(0, remaining.get("generic", 0) - 1)
 
-    if not any(v > 0 for v in remaining.values()):
+    if _cost_satisfied(remaining):
         complete_resolution(state)
 
 
@@ -540,9 +530,9 @@ def _reduce_cost_by_pool(pool, cost):
         if used:
             remaining[color] = need - used
             spare[color] = have - used
-    leftover_pool = sum(spare.values())
+    leftover = sum(spare.values())
     generic_needed = remaining.get("generic", 0)
-    remaining["generic"] = max(0, generic_needed - leftover_pool)
+    remaining["generic"] = max(0, generic_needed - leftover)
     return remaining
 
 
@@ -685,8 +675,15 @@ if __name__ == "__main__":
     begin_pay_cost(state, {"W": 1}, on_complete=lambda s: None)
     assert tap_cost_options(state) == [("Forest", None, False)]  # no color choice needed -- the bonus is automatic
     execute_tap_cost_option(state, "Forest", None, False)
-    assert state.pending_resolution is None  # {W: 1} fully covered by the single tap's bonus symbol
-    assert state.mana_pool.get("G", 0) == 1  # the native G floated, unneeded by this cost
+    # Pool-only model (MANA_POOL_PLAN.md): a tap only ever floats its
+    # output -- both G and W here -- into the pool; it never directly
+    # pays a cost, even a color that happens to match. The resolution
+    # stays pending until an explicit pool spend actually pays the {W: 1}.
+    assert state.pending_resolution is not None
+    assert state.mana_pool == {"G": 1, "W": 1}
+    execute_pool_spend(state, "W")
+    assert state.pending_resolution is None  # {W: 1} now fully paid, via the explicit spend
+    assert state.mana_pool.get("G", 0) == 1  # the native G stays floating, unneeded by this cost
 
     # Abundant Growth: Plains gets a genuinely competing "any of {G, W}"
     # ability -- both its own native W and the grant stay usable.
@@ -707,7 +704,9 @@ if __name__ == "__main__":
     begin_pay_cost(state, {"G": 1}, on_complete=lambda s: None)
     assert ("Plains", "G", False) in tap_cost_options(state)
     execute_tap_cost_option(state, "Plains", "G", False)
-    assert state.pending_resolution is None  # {G: 1} fully covered via the grant
+    assert state.pending_resolution is not None and state.mana_pool == {"G": 1}  # floated, not yet spent
+    execute_pool_spend(state, "G")
+    assert state.pending_resolution is None  # {G: 1} now fully covered via the grant
 
     # execute_tap_cost_option must pick the ENCHANTED Plains specifically
     # when tapping for the granted color, even with an identical-by-name
@@ -730,3 +729,27 @@ if __name__ == "__main__":
     assert grant_plains.tapped and not plain_plains.tapped
 
     print("mana.py Aura self-check: OK")
+
+    # Pool-only model, filter mana (MANA_POOL_PLAN.md): Conduit Pylons'
+    # colored-pip filter mode used to be offered only for the single
+    # color matching exactly one outstanding pip of quantity 1. Now that
+    # every tap only ever floats to the pool (never wasted by tapping
+    # "too early"), it's offered for any of the 5 colors regardless of
+    # what the remaining cost actually looks like -- exercised here
+    # against a cost with two different colored needs, neither of
+    # quantity 1, which the old eligibility rule would have rejected
+    # entirely (zero filter options offered at all).
+    state = GameState(on_the_play=True)
+    pylons = Permanent(CardDef("Conduit Pylons", CardType.LAND, None, _EffectId.CONDUIT_PYLONS))
+    state.battlefield = [pylons]
+    begin_pay_cost(state, {"B": 2, "R": 2}, on_complete=lambda s: None)
+    options = tap_cost_options(state)
+    assert sorted(o for o in options if o[2]) == [("Conduit Pylons", c, True) for c in sorted(COLORS)]
+    execute_tap_cost_option(state, "Conduit Pylons", "U", True)
+    # Its own {1} activation cost is now owed on top of the original
+    # cost, tracked the same explicit way as everything else -- not paid
+    # automatically just because a color happened to float.
+    assert state.pending_resolution["remaining"]["generic"] == 1
+    assert state.mana_pool == {"U": 1}
+
+    print("mana.py filter-mana self-check: OK")

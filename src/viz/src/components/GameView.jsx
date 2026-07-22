@@ -7,30 +7,30 @@ import { cardInfo } from "../cardData.js";
 // was actually based on -- generic over every game.pending_resolution
 // kind harness.py's _snapshot_pending can produce, rather than one
 // component per kind, since they're all just "label: list of names".
+// kind -> [label, field]: every resolution kind whose detail is just "the
+// list of names the model was choosing among," rendered identically.
+const SIMPLE_DECISION_FIELDS = {
+  search_fetch: ["Library cards matching the search", "library_matches"],
+  choose_permanent: ["Eligible permanents", "battlefield_matches"],
+  discard: ["Hand options", "hand_options"],
+  sacrifice: ["Eligible to sacrifice", "sacrifice_options"],
+};
+
 function decisionDetailLines(decision) {
   if (!decision) return [];
-  switch (decision.kind) {
-    case "scry":
-    case "surveil":
-      return [
-        decision.current_card && ["Deciding", decision.current_card],
-        decision.remaining.length > 0 && ["Still to reveal", decision.remaining.join(", ")],
-        decision.kept.length > 0 && ["Kept on top", decision.kept.join(", ")],
-        decision.disposed.length > 0 && [decision.kind === "scry" ? "Bottomed" : "Binned", decision.disposed.join(", ")],
-      ].filter(Boolean);
-    case "search_fetch":
-      return [["Library cards matching the search", decision.library_matches.join(", ") || "none"]];
-    case "choose_permanent":
-      return [["Eligible permanents", decision.battlefield_matches.join(", ") || "none"]];
-    case "discard":
-      return [["Hand options", decision.hand_options.join(", ") || "none"]];
-    case "sacrifice":
-      return [["Eligible to sacrifice", decision.sacrifice_options.join(", ") || "none"]];
-    case "madness_decision":
-      return [["Cast for madness cost or let go to graveyard", decision.card]];
-    default:
-      return [];
+  if (decision.kind === "scry" || decision.kind === "surveil") {
+    return [
+      decision.current_card && ["Deciding", decision.current_card],
+      decision.remaining.length > 0 && ["Still to reveal", decision.remaining.join(", ")],
+      decision.kept.length > 0 && ["Kept on top", decision.kept.join(", ")],
+      decision.disposed.length > 0 && [decision.kind === "scry" ? "Bottomed" : "Binned", decision.disposed.join(", ")],
+    ].filter(Boolean);
   }
+  if (decision.kind === "madness_decision") {
+    return [["Cast for madness cost or let go to graveyard", decision.card]];
+  }
+  const simple = SIMPLE_DECISION_FIELDS[decision.kind];
+  return simple ? [[simple[0], decision[simple[1]].join(", ") || "none"]] : [];
 }
 
 function formatManaPool(manaPool) {
@@ -48,20 +48,6 @@ export function sortedBattlefield(battlefield) {
   );
 }
 
-// Battlefield box is a fixed 5-wide x 2-row grid (lands bottom row, every
-// other permanent type above) that never resizes. A row that would exceed
-// 5 cards shrinks its card width to still fit, rather than wrapping.
-const BF_COLS = 5;
-const BF_CARD_WIDTH = 90;
-const BF_GAP_X = 10;
-const BF_ROW_WIDTH = BF_COLS * BF_CARD_WIDTH + (BF_COLS - 1) * BF_GAP_X;
-
-function battlefieldRowCardWidth(count) {
-  if (count <= BF_COLS) return BF_CARD_WIDTH;
-  const shrunk = (BF_ROW_WIDTH - (count - 1) * BF_GAP_X) / count;
-  return Math.max(shrunk, 20); // ponytail: floor so cards never vanish at extreme counts
-}
-
 function splitBattlefield(battlefield) {
   const sorted = sortedBattlefield(battlefield);
   return {
@@ -71,17 +57,17 @@ function splitBattlefield(battlefield) {
 }
 
 function BattlefieldRow({ cards, onHover }) {
-  const width = battlefieldRowCardWidth(cards.length);
   return (
     <div className="battlefield-row">
       {cards.map((p, i) => (
-        <Card key={`${p.name}-${i}`} name={p.name} tapped={p.tapped} width={width} onHover={onHover} />
+        <Card key={`${p.name}-${i}`} name={p.name} tapped={p.tapped} onHover={onHover} />
       ))}
     </div>
   );
 }
 
-function Zone({ title, children, empty, className = "" }) {
+function Zone({ title, children, className = "" }) {
+  const empty = Array.isArray(children) ? children.length === 0 : !children;
   return (
     <div className={`zone ${className}`}>
       <h3>{title}</h3>
@@ -203,12 +189,12 @@ export default function GameView({ game, meta, onBack }) {
                 <BattlefieldRow cards={lands} onHover={setHoveredCard} />
               </div>
             </div>
-            <Zone title="Discard pile" className="zone-graveyard" empty={sa.graveyard.length === 0}>
+            <Zone title="Discard pile" className="zone-graveyard">
               {sa.graveyard.map((name, i) => (
                 <Card key={`${name}-${i}`} name={name} size="small" onHover={setHoveredCard} />
               ))}
             </Zone>
-            <Zone title="Exile" className="zone-exile" empty={!sa.exile?.length}>
+            <Zone title="Exile" className="zone-exile">
               {sa.exile?.map((name, i) => (
                 <Card key={`${name}-${i}`} name={name} size="small" onHover={setHoveredCard} />
               ))}
@@ -230,7 +216,7 @@ export default function GameView({ game, meta, onBack }) {
             </span>
           </div>
 
-          <Zone title="Hand" className="zone-hand" empty={sa.hand.length === 0}>
+          <Zone title="Hand" className="zone-hand">
             {sa.hand.map((name, i) => (
               <Card key={`${name}-${i}`} name={name} size="large" onHover={setHoveredCard} />
             ))}

@@ -7,11 +7,22 @@ than colorless_cards.py -- verified via Scryfall, not guessed."""
 
 from .. import resolution
 from ..cards import CardDef, CardType, EffectId
-from ..effects_common import BLOOD_TOKEN_CARD_DEF, ROBOT_TOKEN_CARD_DEF, cast_permanent_from_hand, create_token, plot_to_exile
+from ..effects_common import (
+    BLOOD_TOKEN_CARD_DEF,
+    ROBOT_TOKEN_CARD_DEF,
+    cast_permanent_from_hand,
+    create_token,
+    deal_damage_to_opponent,
+    discard_from_hand_to_graveyard,
+    plot_to_exile,
+    push_to_stack,
+)
 
 RED_CARD_CATALOG = {
     "Mountain": CardDef("Mountain", CardType.LAND, None, EffectId.MOUNTAIN),
-    "Voldaren Epicure": CardDef("Voldaren Epicure", CardType.CREATURE, {"R": 1}, EffectId.VOLDAREN_EPICURE, power=1),
+    "Voldaren Epicure": CardDef(
+        "Voldaren Epicure", CardType.CREATURE, {"R": 1}, EffectId.VOLDAREN_EPICURE, power=1, toughness=1,
+    ),
     "Lightning Bolt": CardDef("Lightning Bolt", CardType.INSTANT, {"R": 1}, EffectId.LIGHTNING_BOLT),
     "Fiery Temper": CardDef("Fiery Temper", CardType.INSTANT, {"generic": 1, "R": 2}, EffectId.FIERY_TEMPER),
     "Faithless Looting": CardDef("Faithless Looting", CardType.SORCERY, {"R": 1}, EffectId.FAITHLESS_LOOTING),
@@ -22,7 +33,12 @@ RED_CARD_CATALOG = {
         sac_ability_cost={"generic": 3},
     ),
     "Fireblast": CardDef("Fireblast", CardType.INSTANT, {"generic": 4, "R": 2}, EffectId.FIREBLAST),
-    "Guttersnipe": CardDef("Guttersnipe", CardType.CREATURE, {"generic": 2, "R": 1}, EffectId.GUTTERSNIPE, power=0),
+    # power was previously 0 (an unexplained placeholder from before combat
+    # was real) -- corrected to Guttersnipe's real printed 2/2
+    # (docs/COMBAT_PLAN.md's full-stats pass).
+    "Guttersnipe": CardDef(
+        "Guttersnipe", CardType.CREATURE, {"generic": 2, "R": 1}, EffectId.GUTTERSNIPE, power=2, toughness=2,
+    ),
     "Lava Dart": CardDef("Lava Dart", CardType.INSTANT, {"R": 1}, EffectId.LAVA_DART),
     "End the Festivities": CardDef("End the Festivities", CardType.SORCERY, {"R": 1}, EffectId.END_THE_FESTIVITIES),
     # Real cast cost is irrelevant here: filler is never cast (Tron deck bulk).
@@ -33,26 +49,24 @@ RED_CARD_CATALOG = {
 def voldaren_epicure_etb(state):
     """Oracle: "When this creature enters, it deals 1 damage to each
     opponent. Create a Blood token." """
-    state.damage_dealt += 1
+    deal_damage_to_opponent(state, 1)
     create_token(state, BLOOD_TOKEN_CARD_DEF)
 
 
 def cast_lightning_bolt(state, card_def):
-    """{R}: deals 3 damage to any target -- no real opposing board in this
-    simulator, so straight to state.damage_dealt (every other burn
-    effect's own precedent)."""
-    state.hand.remove(card_def)
-    state.graveyard.append(card_def)
-    state.damage_dealt += 3
+    """{R}: deals 3 damage to any target -- targeting is simplified to
+    "the opponent" (every other burn effect's own precedent; see
+    deal_damage_to_opponent)."""
+    discard_from_hand_to_graveyard(state, card_def)
+    deal_damage_to_opponent(state, 3)
 
 
 def _fiery_temper_damage(state):
-    state.damage_dealt += 3
+    deal_damage_to_opponent(state, 3)
 
 
 def cast_fiery_temper(state, card_def):
-    state.hand.remove(card_def)
-    state.graveyard.append(card_def)
+    discard_from_hand_to_graveyard(state, card_def)
     _fiery_temper_damage(state)
 
 
@@ -74,14 +88,17 @@ def faithless_looting_discard(state):
 
 
 def cast_faithless_looting(state, card_def):
-    state.hand.remove(card_def)
-    state.graveyard.append(card_def)
+    discard_from_hand_to_graveyard(state, card_def)
     faithless_looting_discard(state)
 
 
 def flashback_faithless_looting(state, card_def):
+    """No alternate cost of its own (unlike Dread Return/Lava Dart's
+    sacrifice) -- so, same as Land Grant's free alt_cast, the effect is
+    already "fully paid for" the instant Flashback is chosen and pushes
+    onto the stack immediately, not gated behind any further resolution."""
     state.graveyard.remove(card_def)  # leaves the graveyard the moment Flashback is chosen -- exiled after, untracked (Dread Return's own Flashback precedent)
-    faithless_looting_discard(state)
+    push_to_stack(state, card_def, lambda st, cd: faithless_looting_discard(st))
 
 
 def _highway_robbery_effect(state):
@@ -95,8 +112,7 @@ def _highway_robbery_effect(state):
 
 
 def cast_highway_robbery(state, card_def):
-    state.hand.remove(card_def)
-    state.graveyard.append(card_def)
+    discard_from_hand_to_graveyard(state, card_def)
     _highway_robbery_effect(state)
 
 
@@ -118,15 +134,22 @@ def _grab_the_prize_effect(state, discarded_cards):
     """Oracle: "Draw two cards. If the discarded card wasn't a land card,
     Grab the Prize deals 2 damage to each opponent." discarded_cards is
     always exactly 1 card here (mandatory n=1 discard, guaranteed payable
-    by extra_legal above)."""
+    by extra_legal above).
+
+    This discard is a real-rules additional cost, but -- unlike Fireblast/
+    Lava Dart/Dread Return's sacrifice alt costs -- it happens after the
+    spell's own mana cost is already paid via the normal begin_pay_cost
+    path, so the whole cast_grab_the_prize call (discard included) is what
+    gets pushed onto the stack as one deferred unit, not split further. No
+    observable difference in this solitaire sim: nothing can respond to or
+    depend on the timing of an in-hand discard choice."""
     state.draw(2)
     if discarded_cards and discarded_cards[0].card_type != CardType.LAND:
-        state.damage_dealt += 2
+        deal_damage_to_opponent(state, 2)
 
 
 def cast_grab_the_prize(state, card_def):
-    state.hand.remove(card_def)
-    state.graveyard.append(card_def)
+    discard_from_hand_to_graveyard(state, card_def)
     resolution.begin_discard(state, 1, optional=False, on_complete=lambda s, cards: _grab_the_prize_effect(s, cards))
 
 
@@ -148,16 +171,15 @@ def guttersnipe_on_cast(state, permanent):
     each opponent -- fires via the generic on_cast_trigger chokepoint,
     identically for every cast path (normal, Flashback, Madness, Plot)
     already wired through it."""
-    state.damage_dealt += 2
+    deal_damage_to_opponent(state, 2)
 
 
 def _fireblast_damage(state):
-    state.damage_dealt += 4
+    deal_damage_to_opponent(state, 4)
 
 
 def cast_fireblast(state, card_def):
-    state.hand.remove(card_def)
-    state.graveyard.append(card_def)
+    discard_from_hand_to_graveyard(state, card_def)
     _fireblast_damage(state)
 
 
@@ -167,40 +189,41 @@ def _fireblast_alt_extra_legal(state):
 
 def cast_fireblast_alt(state, card_def):
     """You may sacrifice two Mountains rather than pay this spell's mana
-    cost. Same effect as the hard-cast above, chained after the
-    sacrifice resolves."""
-    state.hand.remove(card_def)
-    state.graveyard.append(card_def)
+    cost. Same effect as the hard-cast above, deferred onto the stack
+    (push_to_stack) only once the sacrifice -- this alt cost -- is
+    actually paid; the damage itself waits for the stack to resolve."""
+    discard_from_hand_to_graveyard(state, card_def)
     resolution.begin_sacrifice(
-        state, lambda p: p.card_def.name == "Mountain", 2, on_complete=lambda s, ok: _fireblast_damage(s),
+        state, lambda p: p.card_def.name == "Mountain", 2,
+        on_complete=lambda s, ok: push_to_stack(s, card_def, lambda st, cd: _fireblast_damage(st)),
     )
 
 
 def _lava_dart_damage(state):
-    state.damage_dealt += 1
+    deal_damage_to_opponent(state, 1)
 
 
 def cast_lava_dart(state, card_def):
-    state.hand.remove(card_def)
-    state.graveyard.append(card_def)
+    discard_from_hand_to_graveyard(state, card_def)
     _lava_dart_damage(state)
 
 
 def flashback_lava_dart(state, card_def):
     """Flashback -- Sacrifice a Mountain: no mana component at all, same
-    shape as Dread Return's Flashback but a land instead of 3 creatures."""
+    shape as Dread Return's Flashback but a land instead of 3 creatures --
+    same deferred-onto-the-stack treatment as Fireblast's alt cost above."""
     state.graveyard.remove(card_def)  # leaves the graveyard the moment Flashback is chosen -- exiled after, untracked (Dread Return's own Flashback precedent)
     resolution.begin_sacrifice(
-        state, lambda p: p.card_def.name == "Mountain", 1, on_complete=lambda s, ok: _lava_dart_damage(s),
+        state, lambda p: p.card_def.name == "Mountain", 1,
+        on_complete=lambda s, ok: push_to_stack(s, card_def, lambda st, cd: _lava_dart_damage(st)),
     )
 
 
 def cast_end_the_festivities(state, card_def):
     """Deals 1 damage to each opponent and each creature and planeswalker
     they control -- no opposing board modeled, so just the 1 damage."""
-    state.hand.remove(card_def)
-    state.graveyard.append(card_def)
-    state.damage_dealt += 1
+    discard_from_hand_to_graveyard(state, card_def)
+    deal_damage_to_opponent(state, 1)
 
 
 RED_EFFECT_REGISTRY = {
@@ -217,7 +240,10 @@ RED_EFFECT_REGISTRY = {
     EffectId.FIERY_TEMPER: {
         "cast": {"resolve": lambda state, card_def: cast_fiery_temper(state, card_def)},
         "madness": {"cost": {"R": 1}, "resolve": lambda state, card_def: madness_fiery_temper(state, card_def)},
-        "pending_kinds": {"madness_decision"},
+        # order_triggers (docs/PRIORITY_PLAN.md item 1): reachable the
+        # instant 2+ Madness cards get discarded at once -- Faithless
+        # Looting's own discard-2, right below, is exactly that source.
+        "pending_kinds": {"madness_decision", "order_triggers"},
     },
     EffectId.FAITHLESS_LOOTING: {
         "cast": {"resolve": lambda state, card_def: cast_faithless_looting(state, card_def)},

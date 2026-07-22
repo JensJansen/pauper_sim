@@ -355,9 +355,19 @@ h1 {
 }
 .battlefield-row {
   height: 126px;
+  width: 490px; /* 5 * 90px card + 4 * 10px gap -- matches .battlefield-box's own fixed width */
   display: flex;
   align-items: flex-end;
   gap: 10px;
+}
+/* A row with more than 5 cards shrinks them to still fit this fixed width,
+   rather than wrapping or growing the box -- the browser's own flexbox
+   shrink math, not hand-computed pixel widths in JS. min-width floors how
+   far a card can shrink so it never vanishes at extreme counts. */
+.battlefield-row .card {
+  width: auto;
+  flex: 0 1 90px;
+  min-width: 20px;
 }
 .zone-hand {
   border-color: var(--accent);

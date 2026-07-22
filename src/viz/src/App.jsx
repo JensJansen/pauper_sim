@@ -1,4 +1,4 @@
-import { useState, useMemo, useCallback } from "react";
+import { useState, useMemo } from "react";
 import DropZone from "./components/DropZone.jsx";
 import SearchFilters from "./components/SearchFilters.jsx";
 import Pagination from "./components/Pagination.jsx";
@@ -17,19 +17,19 @@ export default function App() {
   const [page, setPage] = useState(1);
   const [selectedGame, setSelectedGame] = useState(null);
 
-  const handleLoad = useCallback(({ meta: loadedMeta, games: loadedGames }, name) => {
+  const handleLoad = ({ meta: loadedMeta, games: loadedGames }, name) => {
     setGames(loadedGames);
     setMeta(loadedMeta);
     setFileName(name);
     setCriteria({});
     setPage(1);
     setSelectedGame(null);
-  }, []);
+  };
 
-  const handleCriteriaChange = useCallback((next) => {
+  const handleCriteriaChange = (next) => {
     setCriteria(next);
     setPage(1);
-  }, []);
+  };
 
   const filtered = useMemo(() => (games ? filterGames(games, criteria) : []), [games, criteria]);
   const pageCount = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));

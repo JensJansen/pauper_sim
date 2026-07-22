@@ -16,12 +16,16 @@ from ..cards import CardDef, CardType, EffectId
 from ..effects_common import (
     ELDRAZI_SPAWN_TOKEN_CARD_DEF,
     activate_eldrazi_spawn_sac,
+    any_creature_on_battlefield,
     cast_aura,
     cast_permanent_from_hand,
     create_token,
+    discard_from_hand_to_graveyard,
     enchantment_count,
     enters_battlefield,
     find_and_remove_by_name,
+    find_to_hand,
+    push_to_stack,
 )
 from ..mana import COLORS
 
@@ -29,20 +33,29 @@ GREEN_CARD_CATALOG = {
     "Forest": CardDef("Forest", CardType.LAND, None, EffectId.FOREST, basic=True),
     "Generous Ent": CardDef(
         "Generous Ent", CardType.CREATURE, {"generic": 5, "G": 1}, EffectId.GENEROUS_ENT,
-        forestcycling_cost={"generic": 1},
+        forestcycling_cost={"generic": 1}, power=5, toughness=5,
     ),
-    "Masked Vandal": CardDef("Masked Vandal", CardType.CREATURE, {"generic": 1, "G": 1}, EffectId.MASKED_VANDAL),
-    "Saruli Caretaker": CardDef("Saruli Caretaker", CardType.CREATURE, {"G": 1}, EffectId.SARULI_CARETAKER, defender=True),
+    "Masked Vandal": CardDef(
+        "Masked Vandal", CardType.CREATURE, {"generic": 1, "G": 1}, EffectId.MASKED_VANDAL, power=1, toughness=3,
+    ),
+    "Saruli Caretaker": CardDef(
+        "Saruli Caretaker", CardType.CREATURE, {"G": 1}, EffectId.SARULI_CARETAKER, defender=True, power=1, toughness=1,
+    ),
     "Overgrown Battlement": CardDef(
         "Overgrown Battlement", CardType.CREATURE, {"generic": 1, "G": 1}, EffectId.OVERGROWN_BATTLEMENT, defender=True,
+        power=0, toughness=4,
     ),
-    "Wall of Roots": CardDef("Wall of Roots", CardType.CREATURE, {"generic": 1, "G": 1}, EffectId.WALL_OF_ROOTS, defender=True),
+    "Wall of Roots": CardDef(
+        "Wall of Roots", CardType.CREATURE, {"generic": 1, "G": 1}, EffectId.WALL_OF_ROOTS, defender=True,
+        power=0, toughness=5,
+    ),
     "Sagu Wildling": CardDef("Sagu Wildling", CardType.SORCERY, {"G": 1}, EffectId.ROOST_SEEK),
     "Gatecreeper Vine": CardDef(
         "Gatecreeper Vine", CardType.CREATURE, {"generic": 1, "G": 1}, EffectId.GATECREEPER_VINE, defender=True,
+        power=0, toughness=3,
     ),
-    "Nyxborn Hydra": CardDef("Nyxborn Hydra", CardType.CREATURE, {"G": 1}, EffectId.NYXBORN_HYDRA),
-    "Quirion Ranger": CardDef("Quirion Ranger", CardType.CREATURE, {"G": 1}, EffectId.QUIRION_RANGER),
+    "Nyxborn Hydra": CardDef("Nyxborn Hydra", CardType.CREATURE, {"G": 1}, EffectId.NYXBORN_HYDRA, power=0, toughness=1),
+    "Quirion Ranger": CardDef("Quirion Ranger", CardType.CREATURE, {"G": 1}, EffectId.QUIRION_RANGER, power=1, toughness=1),
     "Winding Way": CardDef("Winding Way", CardType.SORCERY, {"generic": 1, "G": 1}, EffectId.WINDING_WAY),
     "Lead the Stampede": CardDef("Lead the Stampede", CardType.SORCERY, {"generic": 2, "G": 1}, EffectId.LEAD_THE_STAMPEDE),
     "Land Grant": CardDef("Land Grant", CardType.SORCERY, {"generic": 1, "G": 1}, EffectId.LAND_GRANT),
@@ -51,9 +64,12 @@ GREEN_CARD_CATALOG = {
     "Bramble Wurm": CardDef("Bramble Wurm", CardType.FILLER, None, EffectId.FILLER),
 
     # --- boggles deck ---
-    "Gladecover Scout": CardDef("Gladecover Scout", CardType.CREATURE, {"G": 1}, EffectId.GLADECOVER_SCOUT, power=1),
+    "Gladecover Scout": CardDef(
+        "Gladecover Scout", CardType.CREATURE, {"G": 1}, EffectId.GLADECOVER_SCOUT, power=1, toughness=1,
+    ),
     "Silhana Ledgewalker": CardDef(
-        "Silhana Ledgewalker", CardType.CREATURE, {"generic": 1, "G": 1}, EffectId.SILHANA_LEDGEWALKER, power=1,
+        "Silhana Ledgewalker", CardType.CREATURE, {"generic": 1, "G": 1}, EffectId.SILHANA_LEDGEWALKER,
+        power=1, toughness=1,
     ),
     "Rancor": CardDef("Rancor", CardType.ENCHANTMENT, {"G": 1}, EffectId.RANCOR),
     "Ancestral Mask": CardDef("Ancestral Mask", CardType.ENCHANTMENT, {"generic": 2, "G": 1}, EffectId.ANCESTRAL_MASK),
@@ -81,12 +97,8 @@ def forestcycle_generous_ent(state, card_def):
     """{1}, discard this card from hand: search library for a Forest, put
     into hand, shuffle. Only one possible target name, so this resolves
     immediately -- no model choice/pending resolution needed."""
-    state.hand.remove(card_def)
-    state.graveyard.append(card_def)
-    found = find_and_remove_by_name(state, "Forest")
-    state.rng.shuffle(state.library)
-    if found:
-        state.hand.append(found)
+    discard_from_hand_to_graveyard(state, card_def)
+    find_to_hand(state, "Forest")
 
 
 def _saruli_caretaker_extra_available(state, permanent):
@@ -139,44 +151,41 @@ def _wall_of_roots_on_tap_undo(state, permanent):
         state.graveyard.remove(permanent.card_def)
 
 
-def _search_to_hand(state, name):
-    """Shared on_complete callback for search-and-reshuffle-into-hand
-    effects (Roost Seek, Gatecreeper Vine)."""
-    found = find_and_remove_by_name(state, name) if name is not None else None
-    state.rng.shuffle(state.library)
-    if found:
-        state.hand.append(found)
-
-
 def cast_roost_seek(state, card_def):
     """Sagu Wildling's Adventure sorcery half -- the only half this
     simulator implements. {G}: search library for a basic land. Two
     possible names here (Forest or Swamp), a real model choice, unlike
     Land Grant's single fixed target below."""
-    state.hand.remove(card_def)
-    state.graveyard.append(card_def)
-    resolution.begin_search_fetch(state, lambda c: c.card_type == CardType.LAND, lambda s, name: _search_to_hand(s, name))
+    discard_from_hand_to_graveyard(state, card_def)
+    resolution.begin_search_fetch(state, lambda c: c.card_type == CardType.LAND, find_to_hand)
 
 
 def gatecreeper_vine_etb(state):
     """ETB: may search a basic land to hand -- optional even when a target
     exists, unlike Expedition Map/Crop Rotation's mandatory fetches."""
-    resolution.begin_search_fetch(
-        state, lambda c: c.card_type == CardType.LAND, lambda s, name: _search_to_hand(s, name), optional=True,
-    )
+    resolution.begin_search_fetch(state, lambda c: c.card_type == CardType.LAND, find_to_hand, optional=True)
 
 
 def cast_land_grant(state, card_def):
     """Search library for a Forest specifically -- single target name, so
-    this resolves immediately, no pending resolution. Serves both the
-    normal {1}{G} cast and the free alt-cost cast below -- they differ
-    only in how the cost was paid."""
-    state.hand.remove(card_def)
-    state.graveyard.append(card_def)
-    found = find_and_remove_by_name(state, "Forest")
-    state.rng.shuffle(state.library)
-    if found:
-        state.hand.append(found)
+    this resolves immediately once actually invoked, no pending resolution
+    of its own. The pure effect, shared by both the normal {1}{G} cast
+    (already deferred generically by drl_env._cast_execute's own mana-cost
+    push, so this must NOT also push itself) and the free alt-cost cast
+    below (which pushes itself, via cast_land_grant_alt, since nothing else
+    would defer it) -- they differ only in how/whether the cost was paid
+    and who's responsible for the stack push, never in the effect itself."""
+    discard_from_hand_to_graveyard(state, card_def)
+    find_to_hand(state, "Forest")
+
+
+def cast_land_grant_alt(state, card_def):
+    """Free alt-cost path: no cost at all, so already "fully paid for" the
+    instant this is chosen -- push immediately instead of resolving now
+    (drl_env._alt_cast_execute calls this synchronously, unlike the normal
+    cast path, so nothing else will defer it), same treatment as Faithless
+    Looting's free Flashback."""
+    push_to_stack(state, card_def, cast_land_grant)
 
 
 def land_grant_alt_cost_legal(state):
@@ -219,8 +228,7 @@ def _cast_winding_way(state, card_def, chosen_type):
     entries, not a pending resolution. Reveal top 4; matches to hand, the
     rest to the graveyard. Fully deterministic given the chosen type -- no
     further model choice."""
-    state.hand.remove(card_def)
-    state.graveyard.append(card_def)
+    discard_from_hand_to_graveyard(state, card_def)
     revealed = state.library[:4]
     del state.library[:4]
     for card in revealed:
@@ -303,8 +311,7 @@ def execute_select_to_hand_option(state, option):
 def cast_lead_the_stampede(state, card_def):
     """{2}{G}: look at top 5, may reveal any number of creatures to hand,
     rest to the bottom in any order."""
-    state.hand.remove(card_def)
-    state.graveyard.append(card_def)
+    discard_from_hand_to_graveyard(state, card_def)
     begin_select_to_hand(state, 5, lambda c: c.card_type == CardType.CREATURE, on_complete=lambda s: None)
 
 
@@ -323,8 +330,7 @@ def cast_crop_rotation(state, card_def):
     (begins a choose_permanent resolution for the sacrifice, chaining into
     a search_fetch resolution for the fetch). Caller has already paid the
     {G} cost."""
-    state.hand.remove(card_def)
-    state.graveyard.append(card_def)
+    discard_from_hand_to_graveyard(state, card_def)
 
     def _on_sac_chosen(state, sac_name):
         if sac_name is None:
@@ -379,8 +385,7 @@ def cast_ancient_stirrings(state, card_def):
     """{G}: look at top 5, may take one noncreature colorless card to hand
     -- the model's choice among eligible ones, or decline -- rest to
     bottom in random order."""
-    state.hand.remove(card_def)
-    state.graveyard.append(card_def)
+    discard_from_hand_to_graveyard(state, card_def)
     top = state.library[:5]
     del state.library[:5]
 
@@ -389,10 +394,6 @@ def cast_ancient_stirrings(state, card_def):
             state.hand.append(chosen)
 
     begin_ancient_stirrings(state, top, _on_chosen)
-
-
-def _creature_extra_legal(state):
-    return any(p.card_def.card_type == CardType.CREATURE for p in state.battlefield)
 
 
 def cast_rancor(state, card_def):
@@ -469,8 +470,7 @@ def cast_malevolent_rumble(state, card_def):
     graveyard, create a 0/1 Eldrazi Spawn token ("Sacrifice this
     creature: Add {C}."). No Madness -- real card has none (verified via
     Scryfall; an earlier draft of this plan wrongly assumed it did)."""
-    state.hand.remove(card_def)
-    state.graveyard.append(card_def)
+    discard_from_hand_to_graveyard(state, card_def)
     create_token(state, ELDRAZI_SPAWN_TOKEN_CARD_DEF)
     top = state.library[:4]
     del state.library[:4]
@@ -494,8 +494,9 @@ GREEN_EFFECT_REGISTRY = {
         },
     },
     EffectId.MASKED_VANDAL: {
-        # No ability -- functionally a vanilla 1/3 for {1}{G} (P/T isn't
-        # tracked anywhere in this engine; see design discussion).
+        # No ability -- functionally a vanilla 1/3 for {1}{G} (real
+        # ability, "exile a creature card from graveyard: exile target
+        # artifact/enchantment," unimplemented -- see design discussion).
         "cast": {"resolve": lambda state, card_def: cast_permanent_from_hand(state, card_def)},
     },
     EffectId.SARULI_CARETAKER: {
@@ -554,7 +555,7 @@ GREEN_EFFECT_REGISTRY = {
         "cast": {"resolve": lambda state, card_def: cast_land_grant(state, card_def)},
         "alt_cast": {
             "extra_legal": lambda state: land_grant_alt_cost_legal(state),
-            "resolve": lambda state, card_def: cast_land_grant(state, card_def),
+            "resolve": lambda state, card_def: cast_land_grant_alt(state, card_def),
         },
     },
     EffectId.CROP_ROTATION: {
@@ -582,22 +583,33 @@ GREEN_EFFECT_REGISTRY = {
         "cast": {"resolve": lambda state, card_def: cast_permanent_from_hand(state, card_def)},
     },
     EffectId.SILHANA_LEDGEWALKER: {
-        # Real text also has "can't be blocked except by creatures with
-        # flying" -- a documented no-op, same reasoning as hexproof above
-        # (no blockers exist here at all, of any kind).
+        # Real text: "can't be blocked except by creatures with flying" --
+        # modeled as the "flying" keyword (docs/COMBAT_PLAN.md step 7):
+        # functionally identical blocking restriction in a ruleset with no
+        # reach (not modeled -- no card grants it), so one flag covers
+        # both this and real flying (Kitchen Imp) rather than a second,
+        # near-duplicate keyword.
         "cast": {"resolve": lambda state, card_def: cast_permanent_from_hand(state, card_def)},
+        "keywords": {"flying"},
     },
     EffectId.RANCOR: {
-        # Real text also grants trample (no-op, no blockers to trample
-        # over) and returns Rancor to hand when put into the graveyard
-        # from the battlefield -- not modeled; see cast_aura's own
-        # docstring for why that's unreachable given this deck's cards.
+        # Real text also grants trample (docs/COMBAT_PLAN.md step 7 --
+        # combat_damage_step's own trample-aware damage assignment) and
+        # returns Rancor to hand instead of the graveyard when it's put
+        # there from the battlefield -- modeled via
+        # returns_to_hand_when_orphaned now that combat death (step 6)
+        # makes that reachable; see effects_common._destroy_creature.
+        # +2/+0, power only -- no toughness_bonus (unlike Ancestral Mask/
+        # Ethereal Armor/Cartouche of Solidarity/Armadillo Cloak, all
+        # symmetric +X/+X) -- see permanent_toughness's own docstring.
         "cast": {
             "resolve": lambda state, card_def: cast_rancor(state, card_def),
-            "extra_legal": lambda state: _creature_extra_legal(state),
+            "extra_legal": lambda state: any_creature_on_battlefield(state),
         },
         "pending_kinds": {"choose_permanent"},
         "pt_bonus": lambda state, aura: 2,
+        "returns_to_hand_when_orphaned": True,
+        "keywords": {"trample"},
     },
     EffectId.ANCESTRAL_MASK: {
         # Real text: +2/+2 for each OTHER enchantment you control (unlike
@@ -605,10 +617,11 @@ GREEN_EFFECT_REGISTRY = {
         # verified via Scryfall).
         "cast": {
             "resolve": lambda state, card_def: cast_ancestral_mask(state, card_def),
-            "extra_legal": lambda state: _creature_extra_legal(state),
+            "extra_legal": lambda state: any_creature_on_battlefield(state),
         },
         "pending_kinds": {"choose_permanent"},
-        "pt_bonus": lambda state, aura: 2 * (enchantment_count(state) - 1),
+        "pt_bonus": lambda state, aura: 2 * (enchantment_count(state, aura) - 1),
+        "toughness_bonus": lambda state, aura: 2 * (enchantment_count(state, aura) - 1),
     },
     EffectId.UTOPIA_SPRAWL: {
         "cast_modes": {

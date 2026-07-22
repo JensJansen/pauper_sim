@@ -2,19 +2,15 @@
 stats and a printable report. No GameState dependency -- pure functions
 over the (terminated_turn_or_None, scores) pairs the caller collects."""
 
+import statistics
+
 
 def _mean(xs):
-    return sum(xs) / len(xs) if xs else None
+    return statistics.mean(xs) if xs else None
 
 
 def _median(xs):
-    if not xs:
-        return None
-    s = sorted(xs)
-    mid = len(s) // 2
-    if len(s) % 2 == 1:
-        return s[mid]
-    return (s[mid - 1] + s[mid]) / 2
+    return statistics.median(xs) if xs else None
 
 
 def aggregate_results(results, horizon):

@@ -4,23 +4,40 @@ Every card's cost/type/oracle-text below is a direct Scryfall pull,
 except creature power/toughness, which is a design choice, not Scryfall
 data. Real Jagged Barrens/End the Festivities/Vampire's Kiss/Voldaren
 Epicure/Alms of the Vein reference "each opponent"/"target opponent" --
-this simulator has no modeled opponent beyond state.damage_dealt, so all
-of these just add to it."""
+all of these route through effects_common.deal_damage_to_opponent, which
+hits a real per-player life_total in a 2-player game and the historical
+state.damage_dealt counter otherwise (docs/MULTIPLAYER_ENGINE_PLAN.md)."""
 
 from .. import resolution
 from ..cards import CardDef, CardType, EffectId
-from ..effects_common import BLOOD_TOKEN_CARD_DEF, cast_permanent_from_hand, create_token, enters_battlefield
+from ..effects_common import (
+    BLOOD_TOKEN_CARD_DEF,
+    cast_permanent_from_hand,
+    create_token,
+    deal_damage_to_opponent,
+    discard_from_hand_to_graveyard,
+    enters_battlefield,
+    push_to_stack,
+)
 
 BLACK_CARD_CATALOG = {
     "Swamp": CardDef("Swamp", CardType.LAND, None, EffectId.SWAMP),
     "Bojuka Bog": CardDef("Bojuka Bog", CardType.LAND, None, EffectId.BOJUKA_BOG),
-    "Balustrade Spy": CardDef("Balustrade Spy", CardType.CREATURE, {"generic": 3, "B": 1}, EffectId.BALUSTRADE_SPY),
-    "Lotleth Giant": CardDef("Lotleth Giant", CardType.CREATURE, {"generic": 6, "B": 1}, EffectId.LOTLETH_GIANT),
+    "Balustrade Spy": CardDef(
+        "Balustrade Spy", CardType.CREATURE, {"generic": 3, "B": 1}, EffectId.BALUSTRADE_SPY, power=2, toughness=2,
+    ),
+    "Lotleth Giant": CardDef(
+        "Lotleth Giant", CardType.CREATURE, {"generic": 6, "B": 1}, EffectId.LOTLETH_GIANT, power=5, toughness=5,
+    ),
     # No ability -- vanilla 1/1 for {1}{B} (opponent hand-disruption isn't
     # modeled; see design discussion).
-    "Mesmeric Fiend": CardDef("Mesmeric Fiend", CardType.CREATURE, {"generic": 1, "B": 1}, EffectId.MESMERIC_FIEND),
+    "Mesmeric Fiend": CardDef(
+        "Mesmeric Fiend", CardType.CREATURE, {"generic": 1, "B": 1}, EffectId.MESMERIC_FIEND, power=1, toughness=1,
+    ),
     "Dread Return": CardDef("Dread Return", CardType.SORCERY, {"generic": 2, "B": 2}, EffectId.DREAD_RETURN),
-    "Kitchen Imp": CardDef("Kitchen Imp", CardType.CREATURE, {"generic": 3, "B": 1}, EffectId.KITCHEN_IMP, power=2),
+    "Kitchen Imp": CardDef(
+        "Kitchen Imp", CardType.CREATURE, {"generic": 3, "B": 1}, EffectId.KITCHEN_IMP, power=2, toughness=2,
+    ),
     "Vampire's Kiss": CardDef("Vampire's Kiss", CardType.SORCERY, {"generic": 1, "B": 1}, EffectId.VAMPIRES_KISS),
     "Alms of the Vein": CardDef("Alms of the Vein", CardType.SORCERY, {"generic": 2, "B": 1}, EffectId.ALMS_OF_THE_VEIN),
 }
@@ -42,11 +59,10 @@ def mill_until_land(state):
 
 
 def lotleth_giant_etb(state):
-    """Undergrowth ETB: 1 damage to the (abstracted) opponent per creature
-    card in your graveyard. This simulator tracks no opponent state beyond
-    the running state.damage_dealt counter."""
+    """Undergrowth ETB: 1 damage to the opponent per creature card in your
+    graveyard."""
     creature_count = sum(1 for c in state.graveyard if c.card_type == CardType.CREATURE)
-    state.damage_dealt += creature_count
+    deal_damage_to_opponent(state, creature_count)
 
 
 def begin_choose_graveyard_card(state, predicate, on_complete):
@@ -73,8 +89,7 @@ def cast_dread_return(state, card_def):
     battlefield. This card is already in the graveyard by the time the
     reanimation choice begins (below), so -- being a sorcery, not a
     creature card -- it's correctly never offered as its own target."""
-    state.hand.remove(card_def)
-    state.graveyard.append(card_def)
+    discard_from_hand_to_graveyard(state, card_def)
 
     def _on_chosen(state, name):
         if name is None:
@@ -89,19 +104,18 @@ def cast_dread_return(state, card_def):
 def flashback_dread_return(state, card_def):
     """Flashback -- Sacrifice three creatures: cast from the graveyard
     instead of paying {2}{B}{B}. Same reanimation effect as the hard-cast
-    above, chained after the sacrifice resolves. Newly-sacrificed
-    creatures land in the graveyard before the reanimation choice begins,
-    so they're correctly eligible targets for this same casting -- a real
-    rules interaction, not a bug. The card itself never returns to the
-    graveyard afterward (exiled, per its own text) -- reusing the existing
-    "exile is untracked" precedent (Relic of Progenitus) rather than
-    adding a real exile zone."""
+    above, deferred onto the stack (push_to_stack) only once the
+    sacrifice -- Flashback's alternate cost -- is actually paid; the
+    reanimation itself doesn't happen until something resolves the stack.
+    Newly-sacrificed creatures land in the graveyard before the
+    reanimation choice begins, so they're correctly eligible targets for
+    this same casting -- a real rules interaction, not a bug. The card
+    itself never returns to the graveyard afterward (exiled, per its own
+    text) -- reusing the existing "exile is untracked" precedent (Relic of
+    Progenitus) rather than adding a real exile zone."""
     state.graveyard.remove(card_def)  # leaves the graveyard the moment Flashback is chosen, same as any other cast
 
-    def _on_sacrificed(state, ok):
-        if not ok:
-            return  # the environment's own Flashback legality check guarantees this can't happen
-
+    def _reanimate(state, card_def):
         def _on_chosen(state, name):
             if name is None:
                 return
@@ -110,6 +124,11 @@ def flashback_dread_return(state, card_def):
             enters_battlefield(state, found)
 
         begin_choose_graveyard_card(state, lambda c: c.card_type == CardType.CREATURE, _on_chosen)
+
+    def _on_sacrificed(state, ok):
+        if not ok:
+            return  # the environment's own Flashback legality check guarantees this can't happen
+        push_to_stack(state, card_def, _reanimate)
 
     resolution.begin_sacrifice(state, lambda p: p.card_def.card_type == CardType.CREATURE, 3, _on_sacrificed)
 
@@ -127,21 +146,19 @@ def cast_vampires_kiss(state, card_def):
     """Target player loses 2 life and you gain 2 life. Create two Blood
     tokens. No Madness on this one (only Fiery Temper/Alms of the Vein
     have it)."""
-    state.hand.remove(card_def)
-    state.graveyard.append(card_def)
-    state.damage_dealt += 2
+    discard_from_hand_to_graveyard(state, card_def)
+    deal_damage_to_opponent(state, 2)
     create_token(state, BLOOD_TOKEN_CARD_DEF)
     create_token(state, BLOOD_TOKEN_CARD_DEF)
 
 
 def _alms_of_the_vein_damage(state):
-    state.damage_dealt += 3
+    deal_damage_to_opponent(state, 3)
 
 
 def cast_alms_of_the_vein(state, card_def):
     """Target opponent loses 3 life and you gain 3 life. Madness {B}."""
-    state.hand.remove(card_def)
-    state.graveyard.append(card_def)
+    discard_from_hand_to_graveyard(state, card_def)
     _alms_of_the_vein_damage(state)
 
 
@@ -181,10 +198,18 @@ BLACK_EFFECT_REGISTRY = {
         "pending_kinds": {"choose_graveyard_card", "sacrifice"},
     },
     EffectId.KITCHEN_IMP: {
+        # Real text: Flying, haste (docs/COMBAT_PLAN.md step 7 -- flying
+        # means it can only be blocked by a creature that itself has
+        # flying, drl_env._assign_blocker_execute's own extra_predicate).
         "cast": {"resolve": lambda state, card_def: cast_permanent_from_hand(state, card_def)},
         "haste": True,
+        "keywords": {"flying"},
         "madness": {"cost": {"B": 1}, "resolve": lambda state, card_def: madness_kitchen_imp(state, card_def)},
-        "pending_kinds": {"madness_decision"},
+        # order_triggers (docs/PRIORITY_PLAN.md item 1): reachable the
+        # instant 2+ Madness cards get discarded at once (Faithless
+        # Looting's discard-2) -- both trigger simultaneously and need a
+        # real placement-order choice.
+        "pending_kinds": {"madness_decision", "order_triggers"},
     },
     EffectId.VAMPIRES_KISS: {
         "cast": {"resolve": lambda state, card_def: cast_vampires_kiss(state, card_def)},
@@ -192,6 +217,6 @@ BLACK_EFFECT_REGISTRY = {
     EffectId.ALMS_OF_THE_VEIN: {
         "cast": {"resolve": lambda state, card_def: cast_alms_of_the_vein(state, card_def)},
         "madness": {"cost": {"B": 1}, "resolve": lambda state, card_def: madness_alms_of_the_vein(state, card_def)},
-        "pending_kinds": {"madness_decision"},
+        "pending_kinds": {"madness_decision", "order_triggers"},  # see EffectId.KITCHEN_IMP's own comment
     },
 }

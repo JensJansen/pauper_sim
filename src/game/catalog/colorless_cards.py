@@ -14,11 +14,12 @@ and red respectively and file there instead.
 {symbols}) -- caller chooses one of several. "filter_mana": {"colors":
 {...}} marks Barrels of Blasting Jelly's and Conduit Pylons' colored-pip
 filter ability (as opposed to Conduit Pylons' plain {T}: Add {C}, which
-IS a "fixed" mana source below) -- offered by mana.tap_cost_options only
-when exactly one colored pip of quantity 1 remains outstanding."""
+IS a "fixed" mana source below) -- offered by mana.tap_cost_options for
+any of the 5 colors, same as a flexible source (its own {1} activation
+cost is tracked separately, see mana.execute_tap_cost_option)."""
 
 from ..cards import CardDef, CardType, EffectId
-from ..effects_common import activate_blood_sac, cast_permanent_from_hand, find_and_remove_by_name
+from ..effects_common import activate_blood_sac, cast_permanent_from_hand, discard_from_hand_to_graveyard, find_to_hand
 from ..mana import COLORS
 from ..resolution import begin_search_fetch, scry, surveil
 
@@ -72,14 +73,7 @@ def activate_expedition_map(state, permanent):
     Caller has already paid the {1} cost."""
     state.battlefield.remove(permanent)
     state.graveyard.append(permanent.card_def)
-
-    def _on_chosen(state, land_name):
-        found = find_and_remove_by_name(state, land_name)
-        state.rng.shuffle(state.library)
-        if found:
-            state.hand.append(found)
-
-    begin_search_fetch(state, lambda c: c.card_type == CardType.LAND, _on_chosen)
+    begin_search_fetch(state, lambda c: c.card_type == CardType.LAND, find_to_hand)
 
 
 def activate_bonders_ornament_draw(state, permanent):
@@ -118,13 +112,6 @@ def _basic_land(card_def):
     return card_def.extra.get("basic", False)
 
 
-def _ash_barrens_to_hand(state, name):
-    found = find_and_remove_by_name(state, name)
-    state.rng.shuffle(state.library)
-    if found:
-        state.hand.append(found)
-
-
 def cycle_ash_barrens(state, card_def):
     """Basic landcycling {1}: discard this card from hand, search library
     for a basic land, put it into hand, shuffle. No draw-a-card rider (a
@@ -134,9 +121,8 @@ def cycle_ash_barrens(state, card_def):
     shape (game.catalog.green_cards), just with a real model choice of
     WHICH basic land (this decklist runs both Forest and Plains, unlike
     Generous Ent's single fixed "Forest" target)."""
-    state.hand.remove(card_def)
-    state.graveyard.append(card_def)
-    begin_search_fetch(state, _basic_land, _ash_barrens_to_hand)
+    discard_from_hand_to_graveyard(state, card_def)
+    begin_search_fetch(state, _basic_land, find_to_hand)
 
 
 COLORLESS_EFFECT_REGISTRY = {

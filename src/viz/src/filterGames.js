@@ -2,14 +2,16 @@
 // criteria are optional; only active (non-null) ones are applied.
 import { flattenSteps } from "./flatten.js";
 
+function everStep(game, predicate) {
+  return flattenSteps(game).some(predicate);
+}
+
 function everInHand(game, cardName) {
-  return flattenSteps(game).some((step) => step.state_after.hand.includes(cardName));
+  return everStep(game, (step) => step.state_after.hand.includes(cardName));
 }
 
 function everInPlay(game, cardName) {
-  return flattenSteps(game).some((step) =>
-    step.state_after.battlefield.some((p) => p.name === cardName)
-  );
+  return everStep(game, (step) => step.state_after.battlefield.some((p) => p.name === cardName));
 }
 
 export function filterGames(games, criteria = {}) {
