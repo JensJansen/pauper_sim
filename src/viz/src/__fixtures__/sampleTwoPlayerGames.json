@@ -1,0 +1,4702 @@
+{
+  "meta": {
+    "config_name": "sample_two_player",
+    "horizon": 10,
+    "seed": 7,
+    "seats": [
+      {
+        "reward_fn": "strict_binary_reward",
+        "scoring_fns": [],
+        "win_threshold": null
+      },
+      {
+        "reward_fn": "strict_binary_reward",
+        "scoring_fns": [],
+        "win_threshold": null
+      }
+    ]
+  },
+  "games": [
+    {
+      "game_index": 0,
+      "starting_player_idx": 1,
+      "winner": null,
+      "turn_won": null,
+      "final_turn_number": 10,
+      "scores": [
+        {
+          "strict_binary_reward": 0.0
+        },
+        {
+          "strict_binary_reward": 0.0
+        }
+      ],
+      "opening_state": {
+        "players": [
+          {
+            "hand": [
+              "Lightning Bolt",
+              "Mountain",
+              "Mountain",
+              "Mountain",
+              "Lightning Bolt",
+              "Mountain",
+              "Mountain"
+            ],
+            "battlefield": [],
+            "graveyard": [],
+            "exile": [],
+            "mana_pool": {},
+            "life_total": 20,
+            "damage_dealt": 0,
+            "attackers": [],
+            "blocked_by": {}
+          },
+          {
+            "hand": [
+              "Mountain",
+              "Mountain",
+              "Mountain",
+              "Mountain",
+              "Mountain",
+              "Mountain",
+              "Mountain"
+            ],
+            "battlefield": [],
+            "graveyard": [],
+            "exile": [],
+            "mana_pool": {},
+            "life_total": 20,
+            "damage_dealt": 0,
+            "attackers": [],
+            "blocked_by": {}
+          }
+        ],
+        "stack": []
+      },
+      "steps": [
+        {
+          "turn_number": 0,
+          "turn_player_idx": 1,
+          "actor_idx": 1,
+          "phase": null,
+          "action": "Keep hand",
+          "fetched": [],
+          "left_battlefield": [],
+          "tapped_for_cost": [],
+          "decision": {
+            "kind": "mulligan_decision",
+            "options": [
+              "keep",
+              "mulligan"
+            ]
+          },
+          "fallback": false,
+          "state_after": {
+            "players": [
+              {
+                "hand": [
+                  "Lightning Bolt",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Lightning Bolt",
+                  "Mountain",
+                  "Mountain"
+                ],
+                "battlefield": [],
+                "graveyard": [],
+                "exile": [],
+                "mana_pool": {},
+                "life_total": 20,
+                "damage_dealt": 0,
+                "attackers": [],
+                "blocked_by": {}
+              },
+              {
+                "hand": [
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain"
+                ],
+                "battlefield": [],
+                "graveyard": [],
+                "exile": [],
+                "mana_pool": {},
+                "life_total": 20,
+                "damage_dealt": 0,
+                "attackers": [],
+                "blocked_by": {}
+              }
+            ],
+            "stack": []
+          }
+        },
+        {
+          "turn_number": 0,
+          "turn_player_idx": 1,
+          "actor_idx": 0,
+          "phase": null,
+          "action": "Mulligan",
+          "fetched": [
+            "Lightning Bolt",
+            "Lightning Bolt"
+          ],
+          "left_battlefield": [],
+          "tapped_for_cost": [],
+          "decision": {
+            "kind": "mulligan_decision",
+            "options": [
+              "keep",
+              "mulligan"
+            ]
+          },
+          "fallback": false,
+          "state_after": {
+            "players": [
+              {
+                "hand": [
+                  "Lightning Bolt",
+                  "Lightning Bolt",
+                  "Mountain",
+                  "Lightning Bolt",
+                  "Mountain",
+                  "Lightning Bolt",
+                  "Mountain"
+                ],
+                "battlefield": [],
+                "graveyard": [],
+                "exile": [],
+                "mana_pool": {},
+                "life_total": 20,
+                "damage_dealt": 0,
+                "attackers": [],
+                "blocked_by": {}
+              },
+              {
+                "hand": [
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain"
+                ],
+                "battlefield": [],
+                "graveyard": [],
+                "exile": [],
+                "mana_pool": {},
+                "life_total": 20,
+                "damage_dealt": 0,
+                "attackers": [],
+                "blocked_by": {}
+              }
+            ],
+            "stack": []
+          }
+        },
+        {
+          "turn_number": 0,
+          "turn_player_idx": 1,
+          "actor_idx": 0,
+          "phase": null,
+          "action": "Mulligan",
+          "fetched": [
+            "Mountain"
+          ],
+          "left_battlefield": [],
+          "tapped_for_cost": [],
+          "decision": {
+            "kind": "mulligan_decision",
+            "options": [
+              "keep",
+              "mulligan"
+            ]
+          },
+          "fallback": false,
+          "state_after": {
+            "players": [
+              {
+                "hand": [
+                  "Mountain",
+                  "Lightning Bolt",
+                  "Mountain",
+                  "Mountain",
+                  "Lightning Bolt",
+                  "Mountain",
+                  "Lightning Bolt"
+                ],
+                "battlefield": [],
+                "graveyard": [],
+                "exile": [],
+                "mana_pool": {},
+                "life_total": 20,
+                "damage_dealt": 0,
+                "attackers": [],
+                "blocked_by": {}
+              },
+              {
+                "hand": [
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain"
+                ],
+                "battlefield": [],
+                "graveyard": [],
+                "exile": [],
+                "mana_pool": {},
+                "life_total": 20,
+                "damage_dealt": 0,
+                "attackers": [],
+                "blocked_by": {}
+              }
+            ],
+            "stack": []
+          }
+        },
+        {
+          "turn_number": 0,
+          "turn_player_idx": 1,
+          "actor_idx": 0,
+          "phase": null,
+          "action": "Mulligan",
+          "fetched": [],
+          "left_battlefield": [],
+          "tapped_for_cost": [],
+          "decision": {
+            "kind": "mulligan_decision",
+            "options": [
+              "keep",
+              "mulligan"
+            ]
+          },
+          "fallback": false,
+          "state_after": {
+            "players": [
+              {
+                "hand": [
+                  "Mountain",
+                  "Mountain",
+                  "Lightning Bolt",
+                  "Lightning Bolt",
+                  "Mountain",
+                  "Lightning Bolt",
+                  "Mountain"
+                ],
+                "battlefield": [],
+                "graveyard": [],
+                "exile": [],
+                "mana_pool": {},
+                "life_total": 20,
+                "damage_dealt": 0,
+                "attackers": [],
+                "blocked_by": {}
+              },
+              {
+                "hand": [
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain"
+                ],
+                "battlefield": [],
+                "graveyard": [],
+                "exile": [],
+                "mana_pool": {},
+                "life_total": 20,
+                "damage_dealt": 0,
+                "attackers": [],
+                "blocked_by": {}
+              }
+            ],
+            "stack": []
+          }
+        },
+        {
+          "turn_number": 0,
+          "turn_player_idx": 1,
+          "actor_idx": 0,
+          "phase": null,
+          "action": "Mulligan",
+          "fetched": [
+            "Mountain",
+            "Mountain"
+          ],
+          "left_battlefield": [],
+          "tapped_for_cost": [],
+          "decision": {
+            "kind": "mulligan_decision",
+            "options": [
+              "keep",
+              "mulligan"
+            ]
+          },
+          "fallback": false,
+          "state_after": {
+            "players": [
+              {
+                "hand": [
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Lightning Bolt",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain"
+                ],
+                "battlefield": [],
+                "graveyard": [],
+                "exile": [],
+                "mana_pool": {},
+                "life_total": 20,
+                "damage_dealt": 0,
+                "attackers": [],
+                "blocked_by": {}
+              },
+              {
+                "hand": [
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain"
+                ],
+                "battlefield": [],
+                "graveyard": [],
+                "exile": [],
+                "mana_pool": {},
+                "life_total": 20,
+                "damage_dealt": 0,
+                "attackers": [],
+                "blocked_by": {}
+              }
+            ],
+            "stack": []
+          }
+        },
+        {
+          "turn_number": 0,
+          "turn_player_idx": 1,
+          "actor_idx": 0,
+          "phase": null,
+          "action": "Mulligan",
+          "fetched": [
+            "Lightning Bolt",
+            "Lightning Bolt"
+          ],
+          "left_battlefield": [],
+          "tapped_for_cost": [],
+          "decision": {
+            "kind": "mulligan_decision",
+            "options": [
+              "keep",
+              "mulligan"
+            ]
+          },
+          "fallback": false,
+          "state_after": {
+            "players": [
+              {
+                "hand": [
+                  "Mountain",
+                  "Lightning Bolt",
+                  "Lightning Bolt",
+                  "Mountain",
+                  "Lightning Bolt",
+                  "Mountain",
+                  "Mountain"
+                ],
+                "battlefield": [],
+                "graveyard": [],
+                "exile": [],
+                "mana_pool": {},
+                "life_total": 20,
+                "damage_dealt": 0,
+                "attackers": [],
+                "blocked_by": {}
+              },
+              {
+                "hand": [
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain"
+                ],
+                "battlefield": [],
+                "graveyard": [],
+                "exile": [],
+                "mana_pool": {},
+                "life_total": 20,
+                "damage_dealt": 0,
+                "attackers": [],
+                "blocked_by": {}
+              }
+            ],
+            "stack": []
+          }
+        },
+        {
+          "turn_number": 0,
+          "turn_player_idx": 1,
+          "actor_idx": 0,
+          "phase": null,
+          "action": "Mulligan",
+          "fetched": [
+            "Lightning Bolt"
+          ],
+          "left_battlefield": [],
+          "tapped_for_cost": [],
+          "decision": {
+            "kind": "mulligan_decision",
+            "options": [
+              "keep",
+              "mulligan"
+            ]
+          },
+          "fallback": false,
+          "state_after": {
+            "players": [
+              {
+                "hand": [
+                  "Lightning Bolt",
+                  "Lightning Bolt",
+                  "Lightning Bolt",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Lightning Bolt"
+                ],
+                "battlefield": [],
+                "graveyard": [],
+                "exile": [],
+                "mana_pool": {},
+                "life_total": 20,
+                "damage_dealt": 0,
+                "attackers": [],
+                "blocked_by": {}
+              },
+              {
+                "hand": [
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain"
+                ],
+                "battlefield": [],
+                "graveyard": [],
+                "exile": [],
+                "mana_pool": {},
+                "life_total": 20,
+                "damage_dealt": 0,
+                "attackers": [],
+                "blocked_by": {}
+              }
+            ],
+            "stack": []
+          }
+        },
+        {
+          "turn_number": 0,
+          "turn_player_idx": 1,
+          "actor_idx": 0,
+          "phase": null,
+          "action": "Mulligan",
+          "fetched": [
+            "Mountain",
+            "Mountain",
+            "Mountain",
+            "Mountain"
+          ],
+          "left_battlefield": [],
+          "tapped_for_cost": [],
+          "decision": {
+            "kind": "mulligan_decision",
+            "options": [
+              "keep",
+              "mulligan"
+            ]
+          },
+          "fallback": false,
+          "state_after": {
+            "players": [
+              {
+                "hand": [
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain"
+                ],
+                "battlefield": [],
+                "graveyard": [],
+                "exile": [],
+                "mana_pool": {},
+                "life_total": 20,
+                "damage_dealt": 0,
+                "attackers": [],
+                "blocked_by": {}
+              },
+              {
+                "hand": [
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain"
+                ],
+                "battlefield": [],
+                "graveyard": [],
+                "exile": [],
+                "mana_pool": {},
+                "life_total": 20,
+                "damage_dealt": 0,
+                "attackers": [],
+                "blocked_by": {}
+              }
+            ],
+            "stack": []
+          }
+        },
+        {
+          "turn_number": 0,
+          "turn_player_idx": 1,
+          "actor_idx": 0,
+          "phase": null,
+          "action": "Keep hand",
+          "fetched": [],
+          "left_battlefield": [],
+          "tapped_for_cost": [],
+          "decision": {
+            "kind": "mulligan_decision",
+            "options": [
+              "keep",
+              "mulligan"
+            ]
+          },
+          "fallback": false,
+          "state_after": {
+            "players": [
+              {
+                "hand": [
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain"
+                ],
+                "battlefield": [],
+                "graveyard": [],
+                "exile": [],
+                "mana_pool": {},
+                "life_total": 20,
+                "damage_dealt": 0,
+                "attackers": [],
+                "blocked_by": {}
+              },
+              {
+                "hand": [
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain"
+                ],
+                "battlefield": [],
+                "graveyard": [],
+                "exile": [],
+                "mana_pool": {},
+                "life_total": 20,
+                "damage_dealt": 0,
+                "attackers": [],
+                "blocked_by": {}
+              }
+            ],
+            "stack": []
+          }
+        },
+        {
+          "turn_number": 0,
+          "turn_player_idx": 1,
+          "actor_idx": 0,
+          "phase": null,
+          "action": "Choose: Mountain",
+          "fetched": [],
+          "left_battlefield": [],
+          "tapped_for_cost": [],
+          "decision": {
+            "kind": "mulligan_bottom",
+            "bottom_options": [
+              "Mountain"
+            ]
+          },
+          "fallback": false,
+          "state_after": {
+            "players": [
+              {
+                "hand": [
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain"
+                ],
+                "battlefield": [],
+                "graveyard": [],
+                "exile": [],
+                "mana_pool": {},
+                "life_total": 20,
+                "damage_dealt": 0,
+                "attackers": [],
+                "blocked_by": {}
+              },
+              {
+                "hand": [
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain"
+                ],
+                "battlefield": [],
+                "graveyard": [],
+                "exile": [],
+                "mana_pool": {},
+                "life_total": 20,
+                "damage_dealt": 0,
+                "attackers": [],
+                "blocked_by": {}
+              }
+            ],
+            "stack": []
+          }
+        },
+        {
+          "turn_number": 0,
+          "turn_player_idx": 1,
+          "actor_idx": 0,
+          "phase": null,
+          "action": "Choose: Mountain",
+          "fetched": [],
+          "left_battlefield": [],
+          "tapped_for_cost": [],
+          "decision": {
+            "kind": "mulligan_bottom",
+            "bottom_options": [
+              "Mountain"
+            ]
+          },
+          "fallback": false,
+          "state_after": {
+            "players": [
+              {
+                "hand": [
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain"
+                ],
+                "battlefield": [],
+                "graveyard": [],
+                "exile": [],
+                "mana_pool": {},
+                "life_total": 20,
+                "damage_dealt": 0,
+                "attackers": [],
+                "blocked_by": {}
+              },
+              {
+                "hand": [
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain"
+                ],
+                "battlefield": [],
+                "graveyard": [],
+                "exile": [],
+                "mana_pool": {},
+                "life_total": 20,
+                "damage_dealt": 0,
+                "attackers": [],
+                "blocked_by": {}
+              }
+            ],
+            "stack": []
+          }
+        },
+        {
+          "turn_number": 0,
+          "turn_player_idx": 1,
+          "actor_idx": 0,
+          "phase": null,
+          "action": "Choose: Mountain",
+          "fetched": [],
+          "left_battlefield": [],
+          "tapped_for_cost": [],
+          "decision": {
+            "kind": "mulligan_bottom",
+            "bottom_options": [
+              "Mountain"
+            ]
+          },
+          "fallback": false,
+          "state_after": {
+            "players": [
+              {
+                "hand": [
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain"
+                ],
+                "battlefield": [],
+                "graveyard": [],
+                "exile": [],
+                "mana_pool": {},
+                "life_total": 20,
+                "damage_dealt": 0,
+                "attackers": [],
+                "blocked_by": {}
+              },
+              {
+                "hand": [
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain"
+                ],
+                "battlefield": [],
+                "graveyard": [],
+                "exile": [],
+                "mana_pool": {},
+                "life_total": 20,
+                "damage_dealt": 0,
+                "attackers": [],
+                "blocked_by": {}
+              }
+            ],
+            "stack": []
+          }
+        },
+        {
+          "turn_number": 0,
+          "turn_player_idx": 1,
+          "actor_idx": 0,
+          "phase": null,
+          "action": "Choose: Mountain",
+          "fetched": [],
+          "left_battlefield": [],
+          "tapped_for_cost": [],
+          "decision": {
+            "kind": "mulligan_bottom",
+            "bottom_options": [
+              "Mountain"
+            ]
+          },
+          "fallback": false,
+          "state_after": {
+            "players": [
+              {
+                "hand": [
+                  "Mountain",
+                  "Mountain",
+                  "Mountain"
+                ],
+                "battlefield": [],
+                "graveyard": [],
+                "exile": [],
+                "mana_pool": {},
+                "life_total": 20,
+                "damage_dealt": 0,
+                "attackers": [],
+                "blocked_by": {}
+              },
+              {
+                "hand": [
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain"
+                ],
+                "battlefield": [],
+                "graveyard": [],
+                "exile": [],
+                "mana_pool": {},
+                "life_total": 20,
+                "damage_dealt": 0,
+                "attackers": [],
+                "blocked_by": {}
+              }
+            ],
+            "stack": []
+          }
+        },
+        {
+          "turn_number": 0,
+          "turn_player_idx": 1,
+          "actor_idx": 0,
+          "phase": null,
+          "action": "Choose: Mountain",
+          "fetched": [],
+          "left_battlefield": [],
+          "tapped_for_cost": [],
+          "decision": {
+            "kind": "mulligan_bottom",
+            "bottom_options": [
+              "Mountain"
+            ]
+          },
+          "fallback": false,
+          "state_after": {
+            "players": [
+              {
+                "hand": [
+                  "Mountain",
+                  "Mountain"
+                ],
+                "battlefield": [],
+                "graveyard": [],
+                "exile": [],
+                "mana_pool": {},
+                "life_total": 20,
+                "damage_dealt": 0,
+                "attackers": [],
+                "blocked_by": {}
+              },
+              {
+                "hand": [
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain"
+                ],
+                "battlefield": [],
+                "graveyard": [],
+                "exile": [],
+                "mana_pool": {},
+                "life_total": 20,
+                "damage_dealt": 0,
+                "attackers": [],
+                "blocked_by": {}
+              }
+            ],
+            "stack": []
+          }
+        },
+        {
+          "turn_number": 0,
+          "turn_player_idx": 1,
+          "actor_idx": 0,
+          "phase": null,
+          "action": "Choose: Mountain",
+          "fetched": [],
+          "left_battlefield": [],
+          "tapped_for_cost": [],
+          "decision": {
+            "kind": "mulligan_bottom",
+            "bottom_options": [
+              "Mountain"
+            ]
+          },
+          "fallback": false,
+          "state_after": {
+            "players": [
+              {
+                "hand": [
+                  "Mountain"
+                ],
+                "battlefield": [],
+                "graveyard": [],
+                "exile": [],
+                "mana_pool": {},
+                "life_total": 20,
+                "damage_dealt": 0,
+                "attackers": [],
+                "blocked_by": {}
+              },
+              {
+                "hand": [
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain"
+                ],
+                "battlefield": [],
+                "graveyard": [],
+                "exile": [],
+                "mana_pool": {},
+                "life_total": 20,
+                "damage_dealt": 0,
+                "attackers": [],
+                "blocked_by": {}
+              }
+            ],
+            "stack": []
+          }
+        },
+        {
+          "turn_number": 0,
+          "turn_player_idx": 1,
+          "actor_idx": 0,
+          "phase": null,
+          "action": "Choose: Mountain",
+          "fetched": [],
+          "left_battlefield": [],
+          "tapped_for_cost": [],
+          "decision": {
+            "kind": "mulligan_bottom",
+            "bottom_options": [
+              "Mountain"
+            ]
+          },
+          "fallback": false,
+          "state_after": {
+            "players": [
+              {
+                "hand": [],
+                "battlefield": [],
+                "graveyard": [],
+                "exile": [],
+                "mana_pool": {},
+                "life_total": 20,
+                "damage_dealt": 0,
+                "attackers": [],
+                "blocked_by": {}
+              },
+              {
+                "hand": [
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain"
+                ],
+                "battlefield": [],
+                "graveyard": [],
+                "exile": [],
+                "mana_pool": {},
+                "life_total": 20,
+                "damage_dealt": 0,
+                "attackers": [],
+                "blocked_by": {}
+              }
+            ],
+            "stack": []
+          }
+        },
+        {
+          "turn_number": 2,
+          "turn_player_idx": 0,
+          "actor_idx": 0,
+          "phase": "draw",
+          "action": "Draw a card",
+          "fetched": [
+            "Lightning Bolt"
+          ],
+          "left_battlefield": [],
+          "tapped_for_cost": [],
+          "decision": null,
+          "fallback": false,
+          "state_after": {
+            "players": [
+              {
+                "hand": [
+                  "Lightning Bolt"
+                ],
+                "battlefield": [],
+                "graveyard": [],
+                "exile": [],
+                "mana_pool": {},
+                "life_total": 20,
+                "damage_dealt": 0,
+                "attackers": [],
+                "blocked_by": {}
+              },
+              {
+                "hand": [
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain"
+                ],
+                "battlefield": [],
+                "graveyard": [],
+                "exile": [],
+                "mana_pool": {},
+                "life_total": 20,
+                "damage_dealt": 0,
+                "attackers": [],
+                "blocked_by": {}
+              }
+            ],
+            "stack": []
+          }
+        },
+        {
+          "turn_number": 3,
+          "turn_player_idx": 1,
+          "actor_idx": 1,
+          "phase": "draw",
+          "action": "Draw a card",
+          "fetched": [
+            "Mountain"
+          ],
+          "left_battlefield": [],
+          "tapped_for_cost": [],
+          "decision": null,
+          "fallback": false,
+          "state_after": {
+            "players": [
+              {
+                "hand": [
+                  "Lightning Bolt"
+                ],
+                "battlefield": [],
+                "graveyard": [],
+                "exile": [],
+                "mana_pool": {},
+                "life_total": 20,
+                "damage_dealt": 0,
+                "attackers": [],
+                "blocked_by": {}
+              },
+              {
+                "hand": [
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain"
+                ],
+                "battlefield": [],
+                "graveyard": [],
+                "exile": [],
+                "mana_pool": {},
+                "life_total": 20,
+                "damage_dealt": 0,
+                "attackers": [],
+                "blocked_by": {}
+              }
+            ],
+            "stack": []
+          }
+        },
+        {
+          "turn_number": 3,
+          "turn_player_idx": 1,
+          "actor_idx": 1,
+          "phase": "end",
+          "action": "Choose: Mountain",
+          "fetched": [],
+          "left_battlefield": [],
+          "tapped_for_cost": [],
+          "decision": {
+            "kind": "discard",
+            "hand_options": [
+              "Mountain"
+            ]
+          },
+          "fallback": false,
+          "state_after": {
+            "players": [
+              {
+                "hand": [
+                  "Lightning Bolt"
+                ],
+                "battlefield": [],
+                "graveyard": [],
+                "exile": [],
+                "mana_pool": {},
+                "life_total": 20,
+                "damage_dealt": 0,
+                "attackers": [],
+                "blocked_by": {}
+              },
+              {
+                "hand": [
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain"
+                ],
+                "battlefield": [],
+                "graveyard": [
+                  "Mountain"
+                ],
+                "exile": [],
+                "mana_pool": {},
+                "life_total": 20,
+                "damage_dealt": 0,
+                "attackers": [],
+                "blocked_by": {}
+              }
+            ],
+            "stack": []
+          }
+        },
+        {
+          "turn_number": 4,
+          "turn_player_idx": 0,
+          "actor_idx": 0,
+          "phase": "draw",
+          "action": "Draw a card",
+          "fetched": [
+            "Lightning Bolt"
+          ],
+          "left_battlefield": [],
+          "tapped_for_cost": [],
+          "decision": null,
+          "fallback": false,
+          "state_after": {
+            "players": [
+              {
+                "hand": [
+                  "Lightning Bolt",
+                  "Lightning Bolt"
+                ],
+                "battlefield": [],
+                "graveyard": [],
+                "exile": [],
+                "mana_pool": {},
+                "life_total": 20,
+                "damage_dealt": 0,
+                "attackers": [],
+                "blocked_by": {}
+              },
+              {
+                "hand": [
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain"
+                ],
+                "battlefield": [],
+                "graveyard": [
+                  "Mountain"
+                ],
+                "exile": [],
+                "mana_pool": {},
+                "life_total": 20,
+                "damage_dealt": 0,
+                "attackers": [],
+                "blocked_by": {}
+              }
+            ],
+            "stack": []
+          }
+        },
+        {
+          "turn_number": 5,
+          "turn_player_idx": 1,
+          "actor_idx": 1,
+          "phase": "draw",
+          "action": "Draw a card",
+          "fetched": [
+            "Mountain"
+          ],
+          "left_battlefield": [],
+          "tapped_for_cost": [],
+          "decision": null,
+          "fallback": false,
+          "state_after": {
+            "players": [
+              {
+                "hand": [
+                  "Lightning Bolt",
+                  "Lightning Bolt"
+                ],
+                "battlefield": [],
+                "graveyard": [],
+                "exile": [],
+                "mana_pool": {},
+                "life_total": 20,
+                "damage_dealt": 0,
+                "attackers": [],
+                "blocked_by": {}
+              },
+              {
+                "hand": [
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain"
+                ],
+                "battlefield": [],
+                "graveyard": [
+                  "Mountain"
+                ],
+                "exile": [],
+                "mana_pool": {},
+                "life_total": 20,
+                "damage_dealt": 0,
+                "attackers": [],
+                "blocked_by": {}
+              }
+            ],
+            "stack": []
+          }
+        },
+        {
+          "turn_number": 5,
+          "turn_player_idx": 1,
+          "actor_idx": 1,
+          "phase": "end",
+          "action": "Choose: Mountain",
+          "fetched": [],
+          "left_battlefield": [],
+          "tapped_for_cost": [],
+          "decision": {
+            "kind": "discard",
+            "hand_options": [
+              "Mountain"
+            ]
+          },
+          "fallback": false,
+          "state_after": {
+            "players": [
+              {
+                "hand": [
+                  "Lightning Bolt",
+                  "Lightning Bolt"
+                ],
+                "battlefield": [],
+                "graveyard": [],
+                "exile": [],
+                "mana_pool": {},
+                "life_total": 20,
+                "damage_dealt": 0,
+                "attackers": [],
+                "blocked_by": {}
+              },
+              {
+                "hand": [
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain"
+                ],
+                "battlefield": [],
+                "graveyard": [
+                  "Mountain",
+                  "Mountain"
+                ],
+                "exile": [],
+                "mana_pool": {},
+                "life_total": 20,
+                "damage_dealt": 0,
+                "attackers": [],
+                "blocked_by": {}
+              }
+            ],
+            "stack": []
+          }
+        },
+        {
+          "turn_number": 6,
+          "turn_player_idx": 0,
+          "actor_idx": 0,
+          "phase": "draw",
+          "action": "Draw a card",
+          "fetched": [
+            "Mountain"
+          ],
+          "left_battlefield": [],
+          "tapped_for_cost": [],
+          "decision": null,
+          "fallback": false,
+          "state_after": {
+            "players": [
+              {
+                "hand": [
+                  "Lightning Bolt",
+                  "Lightning Bolt",
+                  "Mountain"
+                ],
+                "battlefield": [],
+                "graveyard": [],
+                "exile": [],
+                "mana_pool": {},
+                "life_total": 20,
+                "damage_dealt": 0,
+                "attackers": [],
+                "blocked_by": {}
+              },
+              {
+                "hand": [
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain"
+                ],
+                "battlefield": [],
+                "graveyard": [
+                  "Mountain",
+                  "Mountain"
+                ],
+                "exile": [],
+                "mana_pool": {},
+                "life_total": 20,
+                "damage_dealt": 0,
+                "attackers": [],
+                "blocked_by": {}
+              }
+            ],
+            "stack": []
+          }
+        },
+        {
+          "turn_number": 6,
+          "turn_player_idx": 0,
+          "actor_idx": 0,
+          "phase": "main1",
+          "action": "Play land: Mountain",
+          "fetched": [],
+          "left_battlefield": [],
+          "tapped_for_cost": [],
+          "decision": null,
+          "fallback": false,
+          "state_after": {
+            "players": [
+              {
+                "hand": [
+                  "Lightning Bolt",
+                  "Lightning Bolt"
+                ],
+                "battlefield": [
+                  {
+                    "name": "Mountain",
+                    "tapped": false,
+                    "slot": 1
+                  }
+                ],
+                "graveyard": [],
+                "exile": [],
+                "mana_pool": {},
+                "life_total": 20,
+                "damage_dealt": 0,
+                "attackers": [],
+                "blocked_by": {}
+              },
+              {
+                "hand": [
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain"
+                ],
+                "battlefield": [],
+                "graveyard": [
+                  "Mountain",
+                  "Mountain"
+                ],
+                "exile": [],
+                "mana_pool": {},
+                "life_total": 20,
+                "damage_dealt": 0,
+                "attackers": [],
+                "blocked_by": {}
+              }
+            ],
+            "stack": []
+          }
+        },
+        {
+          "turn_number": 6,
+          "turn_player_idx": 0,
+          "actor_idx": 0,
+          "phase": "main1",
+          "action": "Cast Lightning Bolt",
+          "fetched": [],
+          "left_battlefield": [],
+          "tapped_for_cost": [],
+          "decision": null,
+          "fallback": false,
+          "state_after": {
+            "players": [
+              {
+                "hand": [
+                  "Lightning Bolt",
+                  "Lightning Bolt"
+                ],
+                "battlefield": [
+                  {
+                    "name": "Mountain",
+                    "tapped": false,
+                    "slot": 1
+                  }
+                ],
+                "graveyard": [],
+                "exile": [],
+                "mana_pool": {},
+                "life_total": 20,
+                "damage_dealt": 0,
+                "attackers": [],
+                "blocked_by": {}
+              },
+              {
+                "hand": [
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain"
+                ],
+                "battlefield": [],
+                "graveyard": [
+                  "Mountain",
+                  "Mountain"
+                ],
+                "exile": [],
+                "mana_pool": {},
+                "life_total": 20,
+                "damage_dealt": 0,
+                "attackers": [],
+                "blocked_by": {}
+              }
+            ],
+            "stack": []
+          }
+        },
+        {
+          "turn_number": 6,
+          "turn_player_idx": 0,
+          "actor_idx": 0,
+          "phase": "main1",
+          "action": "Choose: Mountain",
+          "fetched": [],
+          "left_battlefield": [],
+          "tapped_for_cost": [
+            "Mountain"
+          ],
+          "decision": {
+            "kind": "pay_cost"
+          },
+          "fallback": false,
+          "state_after": {
+            "players": [
+              {
+                "hand": [
+                  "Lightning Bolt",
+                  "Lightning Bolt"
+                ],
+                "battlefield": [
+                  {
+                    "name": "Mountain",
+                    "tapped": true,
+                    "slot": 1
+                  }
+                ],
+                "graveyard": [],
+                "exile": [],
+                "mana_pool": {
+                  "R": 1
+                },
+                "life_total": 20,
+                "damage_dealt": 0,
+                "attackers": [],
+                "blocked_by": {}
+              },
+              {
+                "hand": [
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain"
+                ],
+                "battlefield": [],
+                "graveyard": [
+                  "Mountain",
+                  "Mountain"
+                ],
+                "exile": [],
+                "mana_pool": {},
+                "life_total": 20,
+                "damage_dealt": 0,
+                "attackers": [],
+                "blocked_by": {}
+              }
+            ],
+            "stack": []
+          }
+        },
+        {
+          "turn_number": 6,
+          "turn_player_idx": 0,
+          "actor_idx": 0,
+          "phase": "main1",
+          "action": "Spend R from pool",
+          "fetched": [],
+          "left_battlefield": [],
+          "tapped_for_cost": [],
+          "decision": {
+            "kind": "pay_cost"
+          },
+          "fallback": false,
+          "state_after": {
+            "players": [
+              {
+                "hand": [
+                  "Lightning Bolt",
+                  "Lightning Bolt"
+                ],
+                "battlefield": [
+                  {
+                    "name": "Mountain",
+                    "tapped": true,
+                    "slot": 1
+                  }
+                ],
+                "graveyard": [],
+                "exile": [],
+                "mana_pool": {},
+                "life_total": 20,
+                "damage_dealt": 0,
+                "attackers": [],
+                "blocked_by": {}
+              },
+              {
+                "hand": [
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain"
+                ],
+                "battlefield": [],
+                "graveyard": [
+                  "Mountain",
+                  "Mountain"
+                ],
+                "exile": [],
+                "mana_pool": {},
+                "life_total": 20,
+                "damage_dealt": 0,
+                "attackers": [],
+                "blocked_by": {}
+              }
+            ],
+            "stack": [
+              "Lightning Bolt"
+            ]
+          }
+        },
+        {
+          "turn_number": 7,
+          "turn_player_idx": 1,
+          "actor_idx": 1,
+          "phase": "draw",
+          "action": "Draw a card",
+          "fetched": [
+            "Mountain"
+          ],
+          "left_battlefield": [],
+          "tapped_for_cost": [],
+          "decision": null,
+          "fallback": false,
+          "state_after": {
+            "players": [
+              {
+                "hand": [
+                  "Lightning Bolt"
+                ],
+                "battlefield": [
+                  {
+                    "name": "Mountain",
+                    "tapped": true,
+                    "slot": 1
+                  }
+                ],
+                "graveyard": [
+                  "Lightning Bolt"
+                ],
+                "exile": [],
+                "mana_pool": {},
+                "life_total": 20,
+                "damage_dealt": 3,
+                "attackers": [],
+                "blocked_by": {}
+              },
+              {
+                "hand": [
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain"
+                ],
+                "battlefield": [],
+                "graveyard": [
+                  "Mountain",
+                  "Mountain"
+                ],
+                "exile": [],
+                "mana_pool": {},
+                "life_total": 17,
+                "damage_dealt": 0,
+                "attackers": [],
+                "blocked_by": {}
+              }
+            ],
+            "stack": []
+          }
+        },
+        {
+          "turn_number": 7,
+          "turn_player_idx": 1,
+          "actor_idx": 1,
+          "phase": "end",
+          "action": "Choose: Mountain",
+          "fetched": [],
+          "left_battlefield": [],
+          "tapped_for_cost": [],
+          "decision": {
+            "kind": "discard",
+            "hand_options": [
+              "Mountain"
+            ]
+          },
+          "fallback": false,
+          "state_after": {
+            "players": [
+              {
+                "hand": [
+                  "Lightning Bolt"
+                ],
+                "battlefield": [
+                  {
+                    "name": "Mountain",
+                    "tapped": true,
+                    "slot": 1
+                  }
+                ],
+                "graveyard": [
+                  "Lightning Bolt"
+                ],
+                "exile": [],
+                "mana_pool": {},
+                "life_total": 20,
+                "damage_dealt": 3,
+                "attackers": [],
+                "blocked_by": {}
+              },
+              {
+                "hand": [
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain"
+                ],
+                "battlefield": [],
+                "graveyard": [
+                  "Mountain",
+                  "Mountain",
+                  "Mountain"
+                ],
+                "exile": [],
+                "mana_pool": {},
+                "life_total": 17,
+                "damage_dealt": 0,
+                "attackers": [],
+                "blocked_by": {}
+              }
+            ],
+            "stack": []
+          }
+        },
+        {
+          "turn_number": 8,
+          "turn_player_idx": 0,
+          "actor_idx": 0,
+          "phase": "upkeep",
+          "action": "Cast Lightning Bolt",
+          "fetched": [],
+          "left_battlefield": [],
+          "tapped_for_cost": [],
+          "decision": null,
+          "fallback": false,
+          "state_after": {
+            "players": [
+              {
+                "hand": [
+                  "Lightning Bolt"
+                ],
+                "battlefield": [
+                  {
+                    "name": "Mountain",
+                    "tapped": false,
+                    "slot": 1
+                  }
+                ],
+                "graveyard": [
+                  "Lightning Bolt"
+                ],
+                "exile": [],
+                "mana_pool": {},
+                "life_total": 20,
+                "damage_dealt": 3,
+                "attackers": [],
+                "blocked_by": {}
+              },
+              {
+                "hand": [
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain"
+                ],
+                "battlefield": [],
+                "graveyard": [
+                  "Mountain",
+                  "Mountain",
+                  "Mountain"
+                ],
+                "exile": [],
+                "mana_pool": {},
+                "life_total": 17,
+                "damage_dealt": 0,
+                "attackers": [],
+                "blocked_by": {}
+              }
+            ],
+            "stack": []
+          }
+        },
+        {
+          "turn_number": 8,
+          "turn_player_idx": 0,
+          "actor_idx": 0,
+          "phase": "upkeep",
+          "action": "Choose: Mountain",
+          "fetched": [],
+          "left_battlefield": [],
+          "tapped_for_cost": [
+            "Mountain"
+          ],
+          "decision": {
+            "kind": "pay_cost"
+          },
+          "fallback": false,
+          "state_after": {
+            "players": [
+              {
+                "hand": [
+                  "Lightning Bolt"
+                ],
+                "battlefield": [
+                  {
+                    "name": "Mountain",
+                    "tapped": true,
+                    "slot": 1
+                  }
+                ],
+                "graveyard": [
+                  "Lightning Bolt"
+                ],
+                "exile": [],
+                "mana_pool": {
+                  "R": 1
+                },
+                "life_total": 20,
+                "damage_dealt": 3,
+                "attackers": [],
+                "blocked_by": {}
+              },
+              {
+                "hand": [
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain"
+                ],
+                "battlefield": [],
+                "graveyard": [
+                  "Mountain",
+                  "Mountain",
+                  "Mountain"
+                ],
+                "exile": [],
+                "mana_pool": {},
+                "life_total": 17,
+                "damage_dealt": 0,
+                "attackers": [],
+                "blocked_by": {}
+              }
+            ],
+            "stack": []
+          }
+        },
+        {
+          "turn_number": 8,
+          "turn_player_idx": 0,
+          "actor_idx": 0,
+          "phase": "upkeep",
+          "action": "Spend R from pool",
+          "fetched": [],
+          "left_battlefield": [],
+          "tapped_for_cost": [],
+          "decision": {
+            "kind": "pay_cost"
+          },
+          "fallback": false,
+          "state_after": {
+            "players": [
+              {
+                "hand": [
+                  "Lightning Bolt"
+                ],
+                "battlefield": [
+                  {
+                    "name": "Mountain",
+                    "tapped": true,
+                    "slot": 1
+                  }
+                ],
+                "graveyard": [
+                  "Lightning Bolt"
+                ],
+                "exile": [],
+                "mana_pool": {},
+                "life_total": 20,
+                "damage_dealt": 3,
+                "attackers": [],
+                "blocked_by": {}
+              },
+              {
+                "hand": [
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain"
+                ],
+                "battlefield": [],
+                "graveyard": [
+                  "Mountain",
+                  "Mountain",
+                  "Mountain"
+                ],
+                "exile": [],
+                "mana_pool": {},
+                "life_total": 17,
+                "damage_dealt": 0,
+                "attackers": [],
+                "blocked_by": {}
+              }
+            ],
+            "stack": [
+              "Lightning Bolt"
+            ]
+          }
+        },
+        {
+          "turn_number": 8,
+          "turn_player_idx": 0,
+          "actor_idx": 0,
+          "phase": "draw",
+          "action": "Draw a card",
+          "fetched": [
+            "Lightning Bolt"
+          ],
+          "left_battlefield": [],
+          "tapped_for_cost": [],
+          "decision": null,
+          "fallback": false,
+          "state_after": {
+            "players": [
+              {
+                "hand": [
+                  "Lightning Bolt"
+                ],
+                "battlefield": [
+                  {
+                    "name": "Mountain",
+                    "tapped": true,
+                    "slot": 1
+                  }
+                ],
+                "graveyard": [
+                  "Lightning Bolt",
+                  "Lightning Bolt"
+                ],
+                "exile": [],
+                "mana_pool": {},
+                "life_total": 20,
+                "damage_dealt": 6,
+                "attackers": [],
+                "blocked_by": {}
+              },
+              {
+                "hand": [
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain"
+                ],
+                "battlefield": [],
+                "graveyard": [
+                  "Mountain",
+                  "Mountain",
+                  "Mountain"
+                ],
+                "exile": [],
+                "mana_pool": {},
+                "life_total": 14,
+                "damage_dealt": 0,
+                "attackers": [],
+                "blocked_by": {}
+              }
+            ],
+            "stack": []
+          }
+        },
+        {
+          "turn_number": 9,
+          "turn_player_idx": 1,
+          "actor_idx": 1,
+          "phase": "draw",
+          "action": "Draw a card",
+          "fetched": [
+            "Mountain"
+          ],
+          "left_battlefield": [],
+          "tapped_for_cost": [],
+          "decision": null,
+          "fallback": false,
+          "state_after": {
+            "players": [
+              {
+                "hand": [
+                  "Lightning Bolt"
+                ],
+                "battlefield": [
+                  {
+                    "name": "Mountain",
+                    "tapped": true,
+                    "slot": 1
+                  }
+                ],
+                "graveyard": [
+                  "Lightning Bolt",
+                  "Lightning Bolt"
+                ],
+                "exile": [],
+                "mana_pool": {},
+                "life_total": 20,
+                "damage_dealt": 6,
+                "attackers": [],
+                "blocked_by": {}
+              },
+              {
+                "hand": [
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain"
+                ],
+                "battlefield": [],
+                "graveyard": [
+                  "Mountain",
+                  "Mountain",
+                  "Mountain"
+                ],
+                "exile": [],
+                "mana_pool": {},
+                "life_total": 14,
+                "damage_dealt": 0,
+                "attackers": [],
+                "blocked_by": {}
+              }
+            ],
+            "stack": []
+          }
+        },
+        {
+          "turn_number": 9,
+          "turn_player_idx": 1,
+          "actor_idx": 1,
+          "phase": "end",
+          "action": "Choose: Mountain",
+          "fetched": [],
+          "left_battlefield": [],
+          "tapped_for_cost": [],
+          "decision": {
+            "kind": "discard",
+            "hand_options": [
+              "Mountain"
+            ]
+          },
+          "fallback": false,
+          "state_after": {
+            "players": [
+              {
+                "hand": [
+                  "Lightning Bolt"
+                ],
+                "battlefield": [
+                  {
+                    "name": "Mountain",
+                    "tapped": true,
+                    "slot": 1
+                  }
+                ],
+                "graveyard": [
+                  "Lightning Bolt",
+                  "Lightning Bolt"
+                ],
+                "exile": [],
+                "mana_pool": {},
+                "life_total": 20,
+                "damage_dealt": 6,
+                "attackers": [],
+                "blocked_by": {}
+              },
+              {
+                "hand": [
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain"
+                ],
+                "battlefield": [],
+                "graveyard": [
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain"
+                ],
+                "exile": [],
+                "mana_pool": {},
+                "life_total": 14,
+                "damage_dealt": 0,
+                "attackers": [],
+                "blocked_by": {}
+              }
+            ],
+            "stack": []
+          }
+        },
+        {
+          "turn_number": 10,
+          "turn_player_idx": 0,
+          "actor_idx": 0,
+          "phase": "upkeep",
+          "action": "Cast Lightning Bolt",
+          "fetched": [],
+          "left_battlefield": [],
+          "tapped_for_cost": [],
+          "decision": null,
+          "fallback": false,
+          "state_after": {
+            "players": [
+              {
+                "hand": [
+                  "Lightning Bolt"
+                ],
+                "battlefield": [
+                  {
+                    "name": "Mountain",
+                    "tapped": false,
+                    "slot": 1
+                  }
+                ],
+                "graveyard": [
+                  "Lightning Bolt",
+                  "Lightning Bolt"
+                ],
+                "exile": [],
+                "mana_pool": {},
+                "life_total": 20,
+                "damage_dealt": 6,
+                "attackers": [],
+                "blocked_by": {}
+              },
+              {
+                "hand": [
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain"
+                ],
+                "battlefield": [],
+                "graveyard": [
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain"
+                ],
+                "exile": [],
+                "mana_pool": {},
+                "life_total": 14,
+                "damage_dealt": 0,
+                "attackers": [],
+                "blocked_by": {}
+              }
+            ],
+            "stack": []
+          }
+        },
+        {
+          "turn_number": 10,
+          "turn_player_idx": 0,
+          "actor_idx": 0,
+          "phase": "upkeep",
+          "action": "Choose: Mountain",
+          "fetched": [],
+          "left_battlefield": [],
+          "tapped_for_cost": [
+            "Mountain"
+          ],
+          "decision": {
+            "kind": "pay_cost"
+          },
+          "fallback": false,
+          "state_after": {
+            "players": [
+              {
+                "hand": [
+                  "Lightning Bolt"
+                ],
+                "battlefield": [
+                  {
+                    "name": "Mountain",
+                    "tapped": true,
+                    "slot": 1
+                  }
+                ],
+                "graveyard": [
+                  "Lightning Bolt",
+                  "Lightning Bolt"
+                ],
+                "exile": [],
+                "mana_pool": {
+                  "R": 1
+                },
+                "life_total": 20,
+                "damage_dealt": 6,
+                "attackers": [],
+                "blocked_by": {}
+              },
+              {
+                "hand": [
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain"
+                ],
+                "battlefield": [],
+                "graveyard": [
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain"
+                ],
+                "exile": [],
+                "mana_pool": {},
+                "life_total": 14,
+                "damage_dealt": 0,
+                "attackers": [],
+                "blocked_by": {}
+              }
+            ],
+            "stack": []
+          }
+        },
+        {
+          "turn_number": 10,
+          "turn_player_idx": 0,
+          "actor_idx": 0,
+          "phase": "upkeep",
+          "action": "Spend R from pool",
+          "fetched": [],
+          "left_battlefield": [],
+          "tapped_for_cost": [],
+          "decision": {
+            "kind": "pay_cost"
+          },
+          "fallback": false,
+          "state_after": {
+            "players": [
+              {
+                "hand": [
+                  "Lightning Bolt"
+                ],
+                "battlefield": [
+                  {
+                    "name": "Mountain",
+                    "tapped": true,
+                    "slot": 1
+                  }
+                ],
+                "graveyard": [
+                  "Lightning Bolt",
+                  "Lightning Bolt"
+                ],
+                "exile": [],
+                "mana_pool": {},
+                "life_total": 20,
+                "damage_dealt": 6,
+                "attackers": [],
+                "blocked_by": {}
+              },
+              {
+                "hand": [
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain"
+                ],
+                "battlefield": [],
+                "graveyard": [
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain"
+                ],
+                "exile": [],
+                "mana_pool": {},
+                "life_total": 14,
+                "damage_dealt": 0,
+                "attackers": [],
+                "blocked_by": {}
+              }
+            ],
+            "stack": [
+              "Lightning Bolt"
+            ]
+          }
+        },
+        {
+          "turn_number": 10,
+          "turn_player_idx": 0,
+          "actor_idx": 0,
+          "phase": "draw",
+          "action": "Draw a card",
+          "fetched": [
+            "Mountain"
+          ],
+          "left_battlefield": [],
+          "tapped_for_cost": [],
+          "decision": null,
+          "fallback": false,
+          "state_after": {
+            "players": [
+              {
+                "hand": [
+                  "Mountain"
+                ],
+                "battlefield": [
+                  {
+                    "name": "Mountain",
+                    "tapped": true,
+                    "slot": 1
+                  }
+                ],
+                "graveyard": [
+                  "Lightning Bolt",
+                  "Lightning Bolt",
+                  "Lightning Bolt"
+                ],
+                "exile": [],
+                "mana_pool": {},
+                "life_total": 20,
+                "damage_dealt": 9,
+                "attackers": [],
+                "blocked_by": {}
+              },
+              {
+                "hand": [
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain"
+                ],
+                "battlefield": [],
+                "graveyard": [
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain"
+                ],
+                "exile": [],
+                "mana_pool": {},
+                "life_total": 11,
+                "damage_dealt": 0,
+                "attackers": [],
+                "blocked_by": {}
+              }
+            ],
+            "stack": []
+          }
+        },
+        {
+          "turn_number": 10,
+          "turn_player_idx": 0,
+          "actor_idx": 0,
+          "phase": "main1",
+          "action": "Play land: Mountain",
+          "fetched": [],
+          "left_battlefield": [],
+          "tapped_for_cost": [],
+          "decision": null,
+          "fallback": false,
+          "state_after": {
+            "players": [
+              {
+                "hand": [],
+                "battlefield": [
+                  {
+                    "name": "Mountain",
+                    "tapped": true,
+                    "slot": 1
+                  },
+                  {
+                    "name": "Mountain",
+                    "tapped": false,
+                    "slot": 2
+                  }
+                ],
+                "graveyard": [
+                  "Lightning Bolt",
+                  "Lightning Bolt",
+                  "Lightning Bolt"
+                ],
+                "exile": [],
+                "mana_pool": {},
+                "life_total": 20,
+                "damage_dealt": 9,
+                "attackers": [],
+                "blocked_by": {}
+              },
+              {
+                "hand": [
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain"
+                ],
+                "battlefield": [],
+                "graveyard": [
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain"
+                ],
+                "exile": [],
+                "mana_pool": {},
+                "life_total": 11,
+                "damage_dealt": 0,
+                "attackers": [],
+                "blocked_by": {}
+              }
+            ],
+            "stack": []
+          }
+        }
+      ],
+      "end_state": {
+        "players": [
+          {
+            "hand": [],
+            "battlefield": [
+              {
+                "name": "Mountain",
+                "tapped": true,
+                "slot": 1
+              },
+              {
+                "name": "Mountain",
+                "tapped": false,
+                "slot": 2
+              }
+            ],
+            "graveyard": [
+              "Lightning Bolt",
+              "Lightning Bolt",
+              "Lightning Bolt"
+            ],
+            "exile": [],
+            "mana_pool": {},
+            "life_total": 20,
+            "damage_dealt": 9,
+            "attackers": [],
+            "blocked_by": {}
+          },
+          {
+            "hand": [
+              "Mountain",
+              "Mountain",
+              "Mountain",
+              "Mountain",
+              "Mountain",
+              "Mountain",
+              "Mountain"
+            ],
+            "battlefield": [],
+            "graveyard": [
+              "Mountain",
+              "Mountain",
+              "Mountain",
+              "Mountain"
+            ],
+            "exile": [],
+            "mana_pool": {},
+            "life_total": 11,
+            "damage_dealt": 0,
+            "attackers": [],
+            "blocked_by": {}
+          }
+        ],
+        "stack": []
+      }
+    },
+    {
+      "game_index": 1,
+      "starting_player_idx": 0,
+      "winner": null,
+      "turn_won": null,
+      "final_turn_number": 10,
+      "scores": [
+        {
+          "strict_binary_reward": 0.0
+        },
+        {
+          "strict_binary_reward": 0.0
+        }
+      ],
+      "opening_state": {
+        "players": [
+          {
+            "hand": [
+              "Mountain",
+              "Mountain",
+              "Lightning Bolt",
+              "Mountain",
+              "Lightning Bolt",
+              "Mountain",
+              "Mountain"
+            ],
+            "battlefield": [],
+            "graveyard": [],
+            "exile": [],
+            "mana_pool": {},
+            "life_total": 20,
+            "damage_dealt": 0,
+            "attackers": [],
+            "blocked_by": {}
+          },
+          {
+            "hand": [
+              "Mountain",
+              "Mountain",
+              "Mountain",
+              "Mountain",
+              "Mountain",
+              "Mountain",
+              "Mountain"
+            ],
+            "battlefield": [],
+            "graveyard": [],
+            "exile": [],
+            "mana_pool": {},
+            "life_total": 20,
+            "damage_dealt": 0,
+            "attackers": [],
+            "blocked_by": {}
+          }
+        ],
+        "stack": []
+      },
+      "steps": [
+        {
+          "turn_number": 0,
+          "turn_player_idx": 0,
+          "actor_idx": 0,
+          "phase": null,
+          "action": "Mulligan",
+          "fetched": [
+            "Lightning Bolt",
+            "Lightning Bolt",
+            "Lightning Bolt"
+          ],
+          "left_battlefield": [],
+          "tapped_for_cost": [],
+          "decision": {
+            "kind": "mulligan_decision",
+            "options": [
+              "keep",
+              "mulligan"
+            ]
+          },
+          "fallback": false,
+          "state_after": {
+            "players": [
+              {
+                "hand": [
+                  "Mountain",
+                  "Lightning Bolt",
+                  "Lightning Bolt",
+                  "Lightning Bolt",
+                  "Lightning Bolt",
+                  "Mountain",
+                  "Lightning Bolt"
+                ],
+                "battlefield": [],
+                "graveyard": [],
+                "exile": [],
+                "mana_pool": {},
+                "life_total": 20,
+                "damage_dealt": 0,
+                "attackers": [],
+                "blocked_by": {}
+              },
+              {
+                "hand": [
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain"
+                ],
+                "battlefield": [],
+                "graveyard": [],
+                "exile": [],
+                "mana_pool": {},
+                "life_total": 20,
+                "damage_dealt": 0,
+                "attackers": [],
+                "blocked_by": {}
+              }
+            ],
+            "stack": []
+          }
+        },
+        {
+          "turn_number": 0,
+          "turn_player_idx": 0,
+          "actor_idx": 0,
+          "phase": null,
+          "action": "Mulligan",
+          "fetched": [
+            "Mountain",
+            "Mountain",
+            "Mountain"
+          ],
+          "left_battlefield": [],
+          "tapped_for_cost": [],
+          "decision": {
+            "kind": "mulligan_decision",
+            "options": [
+              "keep",
+              "mulligan"
+            ]
+          },
+          "fallback": false,
+          "state_after": {
+            "players": [
+              {
+                "hand": [
+                  "Mountain",
+                  "Lightning Bolt",
+                  "Mountain",
+                  "Lightning Bolt",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain"
+                ],
+                "battlefield": [],
+                "graveyard": [],
+                "exile": [],
+                "mana_pool": {},
+                "life_total": 20,
+                "damage_dealt": 0,
+                "attackers": [],
+                "blocked_by": {}
+              },
+              {
+                "hand": [
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain"
+                ],
+                "battlefield": [],
+                "graveyard": [],
+                "exile": [],
+                "mana_pool": {},
+                "life_total": 20,
+                "damage_dealt": 0,
+                "attackers": [],
+                "blocked_by": {}
+              }
+            ],
+            "stack": []
+          }
+        },
+        {
+          "turn_number": 0,
+          "turn_player_idx": 0,
+          "actor_idx": 0,
+          "phase": null,
+          "action": "Mulligan",
+          "fetched": [],
+          "left_battlefield": [],
+          "tapped_for_cost": [],
+          "decision": {
+            "kind": "mulligan_decision",
+            "options": [
+              "keep",
+              "mulligan"
+            ]
+          },
+          "fallback": false,
+          "state_after": {
+            "players": [
+              {
+                "hand": [
+                  "Mountain",
+                  "Mountain",
+                  "Lightning Bolt",
+                  "Lightning Bolt",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain"
+                ],
+                "battlefield": [],
+                "graveyard": [],
+                "exile": [],
+                "mana_pool": {},
+                "life_total": 20,
+                "damage_dealt": 0,
+                "attackers": [],
+                "blocked_by": {}
+              },
+              {
+                "hand": [
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain"
+                ],
+                "battlefield": [],
+                "graveyard": [],
+                "exile": [],
+                "mana_pool": {},
+                "life_total": 20,
+                "damage_dealt": 0,
+                "attackers": [],
+                "blocked_by": {}
+              }
+            ],
+            "stack": []
+          }
+        },
+        {
+          "turn_number": 0,
+          "turn_player_idx": 0,
+          "actor_idx": 0,
+          "phase": null,
+          "action": "Mulligan",
+          "fetched": [],
+          "left_battlefield": [],
+          "tapped_for_cost": [],
+          "decision": {
+            "kind": "mulligan_decision",
+            "options": [
+              "keep",
+              "mulligan"
+            ]
+          },
+          "fallback": false,
+          "state_after": {
+            "players": [
+              {
+                "hand": [
+                  "Mountain",
+                  "Lightning Bolt",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Lightning Bolt",
+                  "Mountain"
+                ],
+                "battlefield": [],
+                "graveyard": [],
+                "exile": [],
+                "mana_pool": {},
+                "life_total": 20,
+                "damage_dealt": 0,
+                "attackers": [],
+                "blocked_by": {}
+              },
+              {
+                "hand": [
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain"
+                ],
+                "battlefield": [],
+                "graveyard": [],
+                "exile": [],
+                "mana_pool": {},
+                "life_total": 20,
+                "damage_dealt": 0,
+                "attackers": [],
+                "blocked_by": {}
+              }
+            ],
+            "stack": []
+          }
+        },
+        {
+          "turn_number": 0,
+          "turn_player_idx": 0,
+          "actor_idx": 0,
+          "phase": null,
+          "action": "Mulligan",
+          "fetched": [
+            "Lightning Bolt",
+            "Lightning Bolt"
+          ],
+          "left_battlefield": [],
+          "tapped_for_cost": [],
+          "decision": {
+            "kind": "mulligan_decision",
+            "options": [
+              "keep",
+              "mulligan"
+            ]
+          },
+          "fallback": false,
+          "state_after": {
+            "players": [
+              {
+                "hand": [
+                  "Mountain",
+                  "Lightning Bolt",
+                  "Mountain",
+                  "Lightning Bolt",
+                  "Lightning Bolt",
+                  "Mountain",
+                  "Lightning Bolt"
+                ],
+                "battlefield": [],
+                "graveyard": [],
+                "exile": [],
+                "mana_pool": {},
+                "life_total": 20,
+                "damage_dealt": 0,
+                "attackers": [],
+                "blocked_by": {}
+              },
+              {
+                "hand": [
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain"
+                ],
+                "battlefield": [],
+                "graveyard": [],
+                "exile": [],
+                "mana_pool": {},
+                "life_total": 20,
+                "damage_dealt": 0,
+                "attackers": [],
+                "blocked_by": {}
+              }
+            ],
+            "stack": []
+          }
+        },
+        {
+          "turn_number": 0,
+          "turn_player_idx": 0,
+          "actor_idx": 0,
+          "phase": null,
+          "action": "Mulligan",
+          "fetched": [
+            "Mountain",
+            "Mountain"
+          ],
+          "left_battlefield": [],
+          "tapped_for_cost": [],
+          "decision": {
+            "kind": "mulligan_decision",
+            "options": [
+              "keep",
+              "mulligan"
+            ]
+          },
+          "fallback": false,
+          "state_after": {
+            "players": [
+              {
+                "hand": [
+                  "Mountain",
+                  "Lightning Bolt",
+                  "Mountain",
+                  "Mountain",
+                  "Lightning Bolt",
+                  "Mountain",
+                  "Mountain"
+                ],
+                "battlefield": [],
+                "graveyard": [],
+                "exile": [],
+                "mana_pool": {},
+                "life_total": 20,
+                "damage_dealt": 0,
+                "attackers": [],
+                "blocked_by": {}
+              },
+              {
+                "hand": [
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain"
+                ],
+                "battlefield": [],
+                "graveyard": [],
+                "exile": [],
+                "mana_pool": {},
+                "life_total": 20,
+                "damage_dealt": 0,
+                "attackers": [],
+                "blocked_by": {}
+              }
+            ],
+            "stack": []
+          }
+        },
+        {
+          "turn_number": 0,
+          "turn_player_idx": 0,
+          "actor_idx": 0,
+          "phase": null,
+          "action": "Mulligan",
+          "fetched": [],
+          "left_battlefield": [],
+          "tapped_for_cost": [],
+          "decision": {
+            "kind": "mulligan_decision",
+            "options": [
+              "keep",
+              "mulligan"
+            ]
+          },
+          "fallback": false,
+          "state_after": {
+            "players": [
+              {
+                "hand": [
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Lightning Bolt",
+                  "Lightning Bolt"
+                ],
+                "battlefield": [],
+                "graveyard": [],
+                "exile": [],
+                "mana_pool": {},
+                "life_total": 20,
+                "damage_dealt": 0,
+                "attackers": [],
+                "blocked_by": {}
+              },
+              {
+                "hand": [
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain"
+                ],
+                "battlefield": [],
+                "graveyard": [],
+                "exile": [],
+                "mana_pool": {},
+                "life_total": 20,
+                "damage_dealt": 0,
+                "attackers": [],
+                "blocked_by": {}
+              }
+            ],
+            "stack": []
+          }
+        },
+        {
+          "turn_number": 0,
+          "turn_player_idx": 0,
+          "actor_idx": 0,
+          "phase": null,
+          "action": "Keep hand",
+          "fetched": [],
+          "left_battlefield": [],
+          "tapped_for_cost": [],
+          "decision": {
+            "kind": "mulligan_decision",
+            "options": [
+              "keep",
+              "mulligan"
+            ]
+          },
+          "fallback": false,
+          "state_after": {
+            "players": [
+              {
+                "hand": [
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Lightning Bolt",
+                  "Lightning Bolt"
+                ],
+                "battlefield": [],
+                "graveyard": [],
+                "exile": [],
+                "mana_pool": {},
+                "life_total": 20,
+                "damage_dealt": 0,
+                "attackers": [],
+                "blocked_by": {}
+              },
+              {
+                "hand": [
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain"
+                ],
+                "battlefield": [],
+                "graveyard": [],
+                "exile": [],
+                "mana_pool": {},
+                "life_total": 20,
+                "damage_dealt": 0,
+                "attackers": [],
+                "blocked_by": {}
+              }
+            ],
+            "stack": []
+          }
+        },
+        {
+          "turn_number": 0,
+          "turn_player_idx": 0,
+          "actor_idx": 0,
+          "phase": null,
+          "action": "Choose: Mountain",
+          "fetched": [],
+          "left_battlefield": [],
+          "tapped_for_cost": [],
+          "decision": {
+            "kind": "mulligan_bottom",
+            "bottom_options": [
+              "Lightning Bolt",
+              "Mountain"
+            ]
+          },
+          "fallback": false,
+          "state_after": {
+            "players": [
+              {
+                "hand": [
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Lightning Bolt",
+                  "Lightning Bolt"
+                ],
+                "battlefield": [],
+                "graveyard": [],
+                "exile": [],
+                "mana_pool": {},
+                "life_total": 20,
+                "damage_dealt": 0,
+                "attackers": [],
+                "blocked_by": {}
+              },
+              {
+                "hand": [
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain"
+                ],
+                "battlefield": [],
+                "graveyard": [],
+                "exile": [],
+                "mana_pool": {},
+                "life_total": 20,
+                "damage_dealt": 0,
+                "attackers": [],
+                "blocked_by": {}
+              }
+            ],
+            "stack": []
+          }
+        },
+        {
+          "turn_number": 0,
+          "turn_player_idx": 0,
+          "actor_idx": 0,
+          "phase": null,
+          "action": "Choose: Mountain",
+          "fetched": [],
+          "left_battlefield": [],
+          "tapped_for_cost": [],
+          "decision": {
+            "kind": "mulligan_bottom",
+            "bottom_options": [
+              "Lightning Bolt",
+              "Mountain"
+            ]
+          },
+          "fallback": false,
+          "state_after": {
+            "players": [
+              {
+                "hand": [
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Lightning Bolt",
+                  "Lightning Bolt"
+                ],
+                "battlefield": [],
+                "graveyard": [],
+                "exile": [],
+                "mana_pool": {},
+                "life_total": 20,
+                "damage_dealt": 0,
+                "attackers": [],
+                "blocked_by": {}
+              },
+              {
+                "hand": [
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain"
+                ],
+                "battlefield": [],
+                "graveyard": [],
+                "exile": [],
+                "mana_pool": {},
+                "life_total": 20,
+                "damage_dealt": 0,
+                "attackers": [],
+                "blocked_by": {}
+              }
+            ],
+            "stack": []
+          }
+        },
+        {
+          "turn_number": 0,
+          "turn_player_idx": 0,
+          "actor_idx": 0,
+          "phase": null,
+          "action": "Choose: Mountain",
+          "fetched": [],
+          "left_battlefield": [],
+          "tapped_for_cost": [],
+          "decision": {
+            "kind": "mulligan_bottom",
+            "bottom_options": [
+              "Lightning Bolt",
+              "Mountain"
+            ]
+          },
+          "fallback": false,
+          "state_after": {
+            "players": [
+              {
+                "hand": [
+                  "Mountain",
+                  "Mountain",
+                  "Lightning Bolt",
+                  "Lightning Bolt"
+                ],
+                "battlefield": [],
+                "graveyard": [],
+                "exile": [],
+                "mana_pool": {},
+                "life_total": 20,
+                "damage_dealt": 0,
+                "attackers": [],
+                "blocked_by": {}
+              },
+              {
+                "hand": [
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain"
+                ],
+                "battlefield": [],
+                "graveyard": [],
+                "exile": [],
+                "mana_pool": {},
+                "life_total": 20,
+                "damage_dealt": 0,
+                "attackers": [],
+                "blocked_by": {}
+              }
+            ],
+            "stack": []
+          }
+        },
+        {
+          "turn_number": 0,
+          "turn_player_idx": 0,
+          "actor_idx": 0,
+          "phase": null,
+          "action": "Choose: Mountain",
+          "fetched": [],
+          "left_battlefield": [],
+          "tapped_for_cost": [],
+          "decision": {
+            "kind": "mulligan_bottom",
+            "bottom_options": [
+              "Lightning Bolt",
+              "Mountain"
+            ]
+          },
+          "fallback": false,
+          "state_after": {
+            "players": [
+              {
+                "hand": [
+                  "Mountain",
+                  "Lightning Bolt",
+                  "Lightning Bolt"
+                ],
+                "battlefield": [],
+                "graveyard": [],
+                "exile": [],
+                "mana_pool": {},
+                "life_total": 20,
+                "damage_dealt": 0,
+                "attackers": [],
+                "blocked_by": {}
+              },
+              {
+                "hand": [
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain"
+                ],
+                "battlefield": [],
+                "graveyard": [],
+                "exile": [],
+                "mana_pool": {},
+                "life_total": 20,
+                "damage_dealt": 0,
+                "attackers": [],
+                "blocked_by": {}
+              }
+            ],
+            "stack": []
+          }
+        },
+        {
+          "turn_number": 0,
+          "turn_player_idx": 0,
+          "actor_idx": 0,
+          "phase": null,
+          "action": "Choose: Mountain",
+          "fetched": [],
+          "left_battlefield": [],
+          "tapped_for_cost": [],
+          "decision": {
+            "kind": "mulligan_bottom",
+            "bottom_options": [
+              "Lightning Bolt",
+              "Mountain"
+            ]
+          },
+          "fallback": false,
+          "state_after": {
+            "players": [
+              {
+                "hand": [
+                  "Lightning Bolt",
+                  "Lightning Bolt"
+                ],
+                "battlefield": [],
+                "graveyard": [],
+                "exile": [],
+                "mana_pool": {},
+                "life_total": 20,
+                "damage_dealt": 0,
+                "attackers": [],
+                "blocked_by": {}
+              },
+              {
+                "hand": [
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain"
+                ],
+                "battlefield": [],
+                "graveyard": [],
+                "exile": [],
+                "mana_pool": {},
+                "life_total": 20,
+                "damage_dealt": 0,
+                "attackers": [],
+                "blocked_by": {}
+              }
+            ],
+            "stack": []
+          }
+        },
+        {
+          "turn_number": 0,
+          "turn_player_idx": 0,
+          "actor_idx": 0,
+          "phase": null,
+          "action": "Choose: Lightning Bolt",
+          "fetched": [],
+          "left_battlefield": [],
+          "tapped_for_cost": [],
+          "decision": {
+            "kind": "mulligan_bottom",
+            "bottom_options": [
+              "Lightning Bolt"
+            ]
+          },
+          "fallback": false,
+          "state_after": {
+            "players": [
+              {
+                "hand": [
+                  "Lightning Bolt"
+                ],
+                "battlefield": [],
+                "graveyard": [],
+                "exile": [],
+                "mana_pool": {},
+                "life_total": 20,
+                "damage_dealt": 0,
+                "attackers": [],
+                "blocked_by": {}
+              },
+              {
+                "hand": [
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain"
+                ],
+                "battlefield": [],
+                "graveyard": [],
+                "exile": [],
+                "mana_pool": {},
+                "life_total": 20,
+                "damage_dealt": 0,
+                "attackers": [],
+                "blocked_by": {}
+              }
+            ],
+            "stack": []
+          }
+        },
+        {
+          "turn_number": 0,
+          "turn_player_idx": 0,
+          "actor_idx": 0,
+          "phase": null,
+          "action": "Choose: Lightning Bolt",
+          "fetched": [],
+          "left_battlefield": [],
+          "tapped_for_cost": [],
+          "decision": {
+            "kind": "mulligan_bottom",
+            "bottom_options": [
+              "Lightning Bolt"
+            ]
+          },
+          "fallback": false,
+          "state_after": {
+            "players": [
+              {
+                "hand": [],
+                "battlefield": [],
+                "graveyard": [],
+                "exile": [],
+                "mana_pool": {},
+                "life_total": 20,
+                "damage_dealt": 0,
+                "attackers": [],
+                "blocked_by": {}
+              },
+              {
+                "hand": [
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain"
+                ],
+                "battlefield": [],
+                "graveyard": [],
+                "exile": [],
+                "mana_pool": {},
+                "life_total": 20,
+                "damage_dealt": 0,
+                "attackers": [],
+                "blocked_by": {}
+              }
+            ],
+            "stack": []
+          }
+        },
+        {
+          "turn_number": 0,
+          "turn_player_idx": 0,
+          "actor_idx": 1,
+          "phase": null,
+          "action": "Keep hand",
+          "fetched": [],
+          "left_battlefield": [],
+          "tapped_for_cost": [],
+          "decision": {
+            "kind": "mulligan_decision",
+            "options": [
+              "keep",
+              "mulligan"
+            ]
+          },
+          "fallback": false,
+          "state_after": {
+            "players": [
+              {
+                "hand": [],
+                "battlefield": [],
+                "graveyard": [],
+                "exile": [],
+                "mana_pool": {},
+                "life_total": 20,
+                "damage_dealt": 0,
+                "attackers": [],
+                "blocked_by": {}
+              },
+              {
+                "hand": [
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain"
+                ],
+                "battlefield": [],
+                "graveyard": [],
+                "exile": [],
+                "mana_pool": {},
+                "life_total": 20,
+                "damage_dealt": 0,
+                "attackers": [],
+                "blocked_by": {}
+              }
+            ],
+            "stack": []
+          }
+        },
+        {
+          "turn_number": 2,
+          "turn_player_idx": 1,
+          "actor_idx": 1,
+          "phase": "draw",
+          "action": "Draw a card",
+          "fetched": [
+            "Mountain"
+          ],
+          "left_battlefield": [],
+          "tapped_for_cost": [],
+          "decision": null,
+          "fallback": false,
+          "state_after": {
+            "players": [
+              {
+                "hand": [],
+                "battlefield": [],
+                "graveyard": [],
+                "exile": [],
+                "mana_pool": {},
+                "life_total": 20,
+                "damage_dealt": 0,
+                "attackers": [],
+                "blocked_by": {}
+              },
+              {
+                "hand": [
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain"
+                ],
+                "battlefield": [],
+                "graveyard": [],
+                "exile": [],
+                "mana_pool": {},
+                "life_total": 20,
+                "damage_dealt": 0,
+                "attackers": [],
+                "blocked_by": {}
+              }
+            ],
+            "stack": []
+          }
+        },
+        {
+          "turn_number": 2,
+          "turn_player_idx": 1,
+          "actor_idx": 1,
+          "phase": "end",
+          "action": "Choose: Mountain",
+          "fetched": [],
+          "left_battlefield": [],
+          "tapped_for_cost": [],
+          "decision": {
+            "kind": "discard",
+            "hand_options": [
+              "Mountain"
+            ]
+          },
+          "fallback": false,
+          "state_after": {
+            "players": [
+              {
+                "hand": [],
+                "battlefield": [],
+                "graveyard": [],
+                "exile": [],
+                "mana_pool": {},
+                "life_total": 20,
+                "damage_dealt": 0,
+                "attackers": [],
+                "blocked_by": {}
+              },
+              {
+                "hand": [
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain"
+                ],
+                "battlefield": [],
+                "graveyard": [
+                  "Mountain"
+                ],
+                "exile": [],
+                "mana_pool": {},
+                "life_total": 20,
+                "damage_dealt": 0,
+                "attackers": [],
+                "blocked_by": {}
+              }
+            ],
+            "stack": []
+          }
+        },
+        {
+          "turn_number": 3,
+          "turn_player_idx": 0,
+          "actor_idx": 0,
+          "phase": "draw",
+          "action": "Draw a card",
+          "fetched": [
+            "Lightning Bolt"
+          ],
+          "left_battlefield": [],
+          "tapped_for_cost": [],
+          "decision": null,
+          "fallback": false,
+          "state_after": {
+            "players": [
+              {
+                "hand": [
+                  "Lightning Bolt"
+                ],
+                "battlefield": [],
+                "graveyard": [],
+                "exile": [],
+                "mana_pool": {},
+                "life_total": 20,
+                "damage_dealt": 0,
+                "attackers": [],
+                "blocked_by": {}
+              },
+              {
+                "hand": [
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain"
+                ],
+                "battlefield": [],
+                "graveyard": [
+                  "Mountain"
+                ],
+                "exile": [],
+                "mana_pool": {},
+                "life_total": 20,
+                "damage_dealt": 0,
+                "attackers": [],
+                "blocked_by": {}
+              }
+            ],
+            "stack": []
+          }
+        },
+        {
+          "turn_number": 4,
+          "turn_player_idx": 1,
+          "actor_idx": 1,
+          "phase": "draw",
+          "action": "Draw a card",
+          "fetched": [
+            "Mountain"
+          ],
+          "left_battlefield": [],
+          "tapped_for_cost": [],
+          "decision": null,
+          "fallback": false,
+          "state_after": {
+            "players": [
+              {
+                "hand": [
+                  "Lightning Bolt"
+                ],
+                "battlefield": [],
+                "graveyard": [],
+                "exile": [],
+                "mana_pool": {},
+                "life_total": 20,
+                "damage_dealt": 0,
+                "attackers": [],
+                "blocked_by": {}
+              },
+              {
+                "hand": [
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain"
+                ],
+                "battlefield": [],
+                "graveyard": [
+                  "Mountain"
+                ],
+                "exile": [],
+                "mana_pool": {},
+                "life_total": 20,
+                "damage_dealt": 0,
+                "attackers": [],
+                "blocked_by": {}
+              }
+            ],
+            "stack": []
+          }
+        },
+        {
+          "turn_number": 4,
+          "turn_player_idx": 1,
+          "actor_idx": 1,
+          "phase": "end",
+          "action": "Choose: Mountain",
+          "fetched": [],
+          "left_battlefield": [],
+          "tapped_for_cost": [],
+          "decision": {
+            "kind": "discard",
+            "hand_options": [
+              "Mountain"
+            ]
+          },
+          "fallback": false,
+          "state_after": {
+            "players": [
+              {
+                "hand": [
+                  "Lightning Bolt"
+                ],
+                "battlefield": [],
+                "graveyard": [],
+                "exile": [],
+                "mana_pool": {},
+                "life_total": 20,
+                "damage_dealt": 0,
+                "attackers": [],
+                "blocked_by": {}
+              },
+              {
+                "hand": [
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain"
+                ],
+                "battlefield": [],
+                "graveyard": [
+                  "Mountain",
+                  "Mountain"
+                ],
+                "exile": [],
+                "mana_pool": {},
+                "life_total": 20,
+                "damage_dealt": 0,
+                "attackers": [],
+                "blocked_by": {}
+              }
+            ],
+            "stack": []
+          }
+        },
+        {
+          "turn_number": 5,
+          "turn_player_idx": 0,
+          "actor_idx": 0,
+          "phase": "draw",
+          "action": "Draw a card",
+          "fetched": [
+            "Lightning Bolt"
+          ],
+          "left_battlefield": [],
+          "tapped_for_cost": [],
+          "decision": null,
+          "fallback": false,
+          "state_after": {
+            "players": [
+              {
+                "hand": [
+                  "Lightning Bolt",
+                  "Lightning Bolt"
+                ],
+                "battlefield": [],
+                "graveyard": [],
+                "exile": [],
+                "mana_pool": {},
+                "life_total": 20,
+                "damage_dealt": 0,
+                "attackers": [],
+                "blocked_by": {}
+              },
+              {
+                "hand": [
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain"
+                ],
+                "battlefield": [],
+                "graveyard": [
+                  "Mountain",
+                  "Mountain"
+                ],
+                "exile": [],
+                "mana_pool": {},
+                "life_total": 20,
+                "damage_dealt": 0,
+                "attackers": [],
+                "blocked_by": {}
+              }
+            ],
+            "stack": []
+          }
+        },
+        {
+          "turn_number": 6,
+          "turn_player_idx": 1,
+          "actor_idx": 1,
+          "phase": "draw",
+          "action": "Draw a card",
+          "fetched": [
+            "Mountain"
+          ],
+          "left_battlefield": [],
+          "tapped_for_cost": [],
+          "decision": null,
+          "fallback": false,
+          "state_after": {
+            "players": [
+              {
+                "hand": [
+                  "Lightning Bolt",
+                  "Lightning Bolt"
+                ],
+                "battlefield": [],
+                "graveyard": [],
+                "exile": [],
+                "mana_pool": {},
+                "life_total": 20,
+                "damage_dealt": 0,
+                "attackers": [],
+                "blocked_by": {}
+              },
+              {
+                "hand": [
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain"
+                ],
+                "battlefield": [],
+                "graveyard": [
+                  "Mountain",
+                  "Mountain"
+                ],
+                "exile": [],
+                "mana_pool": {},
+                "life_total": 20,
+                "damage_dealt": 0,
+                "attackers": [],
+                "blocked_by": {}
+              }
+            ],
+            "stack": []
+          }
+        },
+        {
+          "turn_number": 6,
+          "turn_player_idx": 1,
+          "actor_idx": 1,
+          "phase": "end",
+          "action": "Choose: Mountain",
+          "fetched": [],
+          "left_battlefield": [],
+          "tapped_for_cost": [],
+          "decision": {
+            "kind": "discard",
+            "hand_options": [
+              "Mountain"
+            ]
+          },
+          "fallback": false,
+          "state_after": {
+            "players": [
+              {
+                "hand": [
+                  "Lightning Bolt",
+                  "Lightning Bolt"
+                ],
+                "battlefield": [],
+                "graveyard": [],
+                "exile": [],
+                "mana_pool": {},
+                "life_total": 20,
+                "damage_dealt": 0,
+                "attackers": [],
+                "blocked_by": {}
+              },
+              {
+                "hand": [
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain"
+                ],
+                "battlefield": [],
+                "graveyard": [
+                  "Mountain",
+                  "Mountain",
+                  "Mountain"
+                ],
+                "exile": [],
+                "mana_pool": {},
+                "life_total": 20,
+                "damage_dealt": 0,
+                "attackers": [],
+                "blocked_by": {}
+              }
+            ],
+            "stack": []
+          }
+        },
+        {
+          "turn_number": 7,
+          "turn_player_idx": 0,
+          "actor_idx": 0,
+          "phase": "draw",
+          "action": "Draw a card",
+          "fetched": [
+            "Lightning Bolt"
+          ],
+          "left_battlefield": [],
+          "tapped_for_cost": [],
+          "decision": null,
+          "fallback": false,
+          "state_after": {
+            "players": [
+              {
+                "hand": [
+                  "Lightning Bolt",
+                  "Lightning Bolt",
+                  "Lightning Bolt"
+                ],
+                "battlefield": [],
+                "graveyard": [],
+                "exile": [],
+                "mana_pool": {},
+                "life_total": 20,
+                "damage_dealt": 0,
+                "attackers": [],
+                "blocked_by": {}
+              },
+              {
+                "hand": [
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain"
+                ],
+                "battlefield": [],
+                "graveyard": [
+                  "Mountain",
+                  "Mountain",
+                  "Mountain"
+                ],
+                "exile": [],
+                "mana_pool": {},
+                "life_total": 20,
+                "damage_dealt": 0,
+                "attackers": [],
+                "blocked_by": {}
+              }
+            ],
+            "stack": []
+          }
+        },
+        {
+          "turn_number": 8,
+          "turn_player_idx": 1,
+          "actor_idx": 1,
+          "phase": "draw",
+          "action": "Draw a card",
+          "fetched": [
+            "Mountain"
+          ],
+          "left_battlefield": [],
+          "tapped_for_cost": [],
+          "decision": null,
+          "fallback": false,
+          "state_after": {
+            "players": [
+              {
+                "hand": [
+                  "Lightning Bolt",
+                  "Lightning Bolt",
+                  "Lightning Bolt"
+                ],
+                "battlefield": [],
+                "graveyard": [],
+                "exile": [],
+                "mana_pool": {},
+                "life_total": 20,
+                "damage_dealt": 0,
+                "attackers": [],
+                "blocked_by": {}
+              },
+              {
+                "hand": [
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain"
+                ],
+                "battlefield": [],
+                "graveyard": [
+                  "Mountain",
+                  "Mountain",
+                  "Mountain"
+                ],
+                "exile": [],
+                "mana_pool": {},
+                "life_total": 20,
+                "damage_dealt": 0,
+                "attackers": [],
+                "blocked_by": {}
+              }
+            ],
+            "stack": []
+          }
+        },
+        {
+          "turn_number": 8,
+          "turn_player_idx": 1,
+          "actor_idx": 1,
+          "phase": "end",
+          "action": "Choose: Mountain",
+          "fetched": [],
+          "left_battlefield": [],
+          "tapped_for_cost": [],
+          "decision": {
+            "kind": "discard",
+            "hand_options": [
+              "Mountain"
+            ]
+          },
+          "fallback": false,
+          "state_after": {
+            "players": [
+              {
+                "hand": [
+                  "Lightning Bolt",
+                  "Lightning Bolt",
+                  "Lightning Bolt"
+                ],
+                "battlefield": [],
+                "graveyard": [],
+                "exile": [],
+                "mana_pool": {},
+                "life_total": 20,
+                "damage_dealt": 0,
+                "attackers": [],
+                "blocked_by": {}
+              },
+              {
+                "hand": [
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain"
+                ],
+                "battlefield": [],
+                "graveyard": [
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain"
+                ],
+                "exile": [],
+                "mana_pool": {},
+                "life_total": 20,
+                "damage_dealt": 0,
+                "attackers": [],
+                "blocked_by": {}
+              }
+            ],
+            "stack": []
+          }
+        },
+        {
+          "turn_number": 9,
+          "turn_player_idx": 0,
+          "actor_idx": 0,
+          "phase": "draw",
+          "action": "Draw a card",
+          "fetched": [
+            "Mountain"
+          ],
+          "left_battlefield": [],
+          "tapped_for_cost": [],
+          "decision": null,
+          "fallback": false,
+          "state_after": {
+            "players": [
+              {
+                "hand": [
+                  "Lightning Bolt",
+                  "Lightning Bolt",
+                  "Lightning Bolt",
+                  "Mountain"
+                ],
+                "battlefield": [],
+                "graveyard": [],
+                "exile": [],
+                "mana_pool": {},
+                "life_total": 20,
+                "damage_dealt": 0,
+                "attackers": [],
+                "blocked_by": {}
+              },
+              {
+                "hand": [
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain"
+                ],
+                "battlefield": [],
+                "graveyard": [
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain"
+                ],
+                "exile": [],
+                "mana_pool": {},
+                "life_total": 20,
+                "damage_dealt": 0,
+                "attackers": [],
+                "blocked_by": {}
+              }
+            ],
+            "stack": []
+          }
+        },
+        {
+          "turn_number": 9,
+          "turn_player_idx": 0,
+          "actor_idx": 0,
+          "phase": "main1",
+          "action": "Play land: Mountain",
+          "fetched": [],
+          "left_battlefield": [],
+          "tapped_for_cost": [],
+          "decision": null,
+          "fallback": false,
+          "state_after": {
+            "players": [
+              {
+                "hand": [
+                  "Lightning Bolt",
+                  "Lightning Bolt",
+                  "Lightning Bolt"
+                ],
+                "battlefield": [
+                  {
+                    "name": "Mountain",
+                    "tapped": false,
+                    "slot": 1
+                  }
+                ],
+                "graveyard": [],
+                "exile": [],
+                "mana_pool": {},
+                "life_total": 20,
+                "damage_dealt": 0,
+                "attackers": [],
+                "blocked_by": {}
+              },
+              {
+                "hand": [
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain"
+                ],
+                "battlefield": [],
+                "graveyard": [
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain"
+                ],
+                "exile": [],
+                "mana_pool": {},
+                "life_total": 20,
+                "damage_dealt": 0,
+                "attackers": [],
+                "blocked_by": {}
+              }
+            ],
+            "stack": []
+          }
+        },
+        {
+          "turn_number": 9,
+          "turn_player_idx": 0,
+          "actor_idx": 0,
+          "phase": "main1",
+          "action": "Cast Lightning Bolt",
+          "fetched": [],
+          "left_battlefield": [],
+          "tapped_for_cost": [],
+          "decision": null,
+          "fallback": false,
+          "state_after": {
+            "players": [
+              {
+                "hand": [
+                  "Lightning Bolt",
+                  "Lightning Bolt",
+                  "Lightning Bolt"
+                ],
+                "battlefield": [
+                  {
+                    "name": "Mountain",
+                    "tapped": false,
+                    "slot": 1
+                  }
+                ],
+                "graveyard": [],
+                "exile": [],
+                "mana_pool": {},
+                "life_total": 20,
+                "damage_dealt": 0,
+                "attackers": [],
+                "blocked_by": {}
+              },
+              {
+                "hand": [
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain"
+                ],
+                "battlefield": [],
+                "graveyard": [
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain"
+                ],
+                "exile": [],
+                "mana_pool": {},
+                "life_total": 20,
+                "damage_dealt": 0,
+                "attackers": [],
+                "blocked_by": {}
+              }
+            ],
+            "stack": []
+          }
+        },
+        {
+          "turn_number": 9,
+          "turn_player_idx": 0,
+          "actor_idx": 0,
+          "phase": "main1",
+          "action": "Choose: Mountain",
+          "fetched": [],
+          "left_battlefield": [],
+          "tapped_for_cost": [
+            "Mountain"
+          ],
+          "decision": {
+            "kind": "pay_cost"
+          },
+          "fallback": false,
+          "state_after": {
+            "players": [
+              {
+                "hand": [
+                  "Lightning Bolt",
+                  "Lightning Bolt",
+                  "Lightning Bolt"
+                ],
+                "battlefield": [
+                  {
+                    "name": "Mountain",
+                    "tapped": true,
+                    "slot": 1
+                  }
+                ],
+                "graveyard": [],
+                "exile": [],
+                "mana_pool": {
+                  "R": 1
+                },
+                "life_total": 20,
+                "damage_dealt": 0,
+                "attackers": [],
+                "blocked_by": {}
+              },
+              {
+                "hand": [
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain"
+                ],
+                "battlefield": [],
+                "graveyard": [
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain"
+                ],
+                "exile": [],
+                "mana_pool": {},
+                "life_total": 20,
+                "damage_dealt": 0,
+                "attackers": [],
+                "blocked_by": {}
+              }
+            ],
+            "stack": []
+          }
+        },
+        {
+          "turn_number": 9,
+          "turn_player_idx": 0,
+          "actor_idx": 0,
+          "phase": "main1",
+          "action": "Spend R from pool",
+          "fetched": [],
+          "left_battlefield": [],
+          "tapped_for_cost": [],
+          "decision": {
+            "kind": "pay_cost"
+          },
+          "fallback": false,
+          "state_after": {
+            "players": [
+              {
+                "hand": [
+                  "Lightning Bolt",
+                  "Lightning Bolt",
+                  "Lightning Bolt"
+                ],
+                "battlefield": [
+                  {
+                    "name": "Mountain",
+                    "tapped": true,
+                    "slot": 1
+                  }
+                ],
+                "graveyard": [],
+                "exile": [],
+                "mana_pool": {},
+                "life_total": 20,
+                "damage_dealt": 0,
+                "attackers": [],
+                "blocked_by": {}
+              },
+              {
+                "hand": [
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain"
+                ],
+                "battlefield": [],
+                "graveyard": [
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain"
+                ],
+                "exile": [],
+                "mana_pool": {},
+                "life_total": 20,
+                "damage_dealt": 0,
+                "attackers": [],
+                "blocked_by": {}
+              }
+            ],
+            "stack": [
+              "Lightning Bolt"
+            ]
+          }
+        },
+        {
+          "turn_number": 10,
+          "turn_player_idx": 1,
+          "actor_idx": 1,
+          "phase": "draw",
+          "action": "Draw a card",
+          "fetched": [
+            "Mountain"
+          ],
+          "left_battlefield": [],
+          "tapped_for_cost": [],
+          "decision": null,
+          "fallback": false,
+          "state_after": {
+            "players": [
+              {
+                "hand": [
+                  "Lightning Bolt",
+                  "Lightning Bolt"
+                ],
+                "battlefield": [
+                  {
+                    "name": "Mountain",
+                    "tapped": true,
+                    "slot": 1
+                  }
+                ],
+                "graveyard": [
+                  "Lightning Bolt"
+                ],
+                "exile": [],
+                "mana_pool": {},
+                "life_total": 20,
+                "damage_dealt": 3,
+                "attackers": [],
+                "blocked_by": {}
+              },
+              {
+                "hand": [
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain"
+                ],
+                "battlefield": [],
+                "graveyard": [
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain"
+                ],
+                "exile": [],
+                "mana_pool": {},
+                "life_total": 17,
+                "damage_dealt": 0,
+                "attackers": [],
+                "blocked_by": {}
+              }
+            ],
+            "stack": []
+          }
+        },
+        {
+          "turn_number": 10,
+          "turn_player_idx": 1,
+          "actor_idx": 1,
+          "phase": "end",
+          "action": "Choose: Mountain",
+          "fetched": [],
+          "left_battlefield": [],
+          "tapped_for_cost": [],
+          "decision": {
+            "kind": "discard",
+            "hand_options": [
+              "Mountain"
+            ]
+          },
+          "fallback": false,
+          "state_after": {
+            "players": [
+              {
+                "hand": [
+                  "Lightning Bolt",
+                  "Lightning Bolt"
+                ],
+                "battlefield": [
+                  {
+                    "name": "Mountain",
+                    "tapped": true,
+                    "slot": 1
+                  }
+                ],
+                "graveyard": [
+                  "Lightning Bolt"
+                ],
+                "exile": [],
+                "mana_pool": {},
+                "life_total": 20,
+                "damage_dealt": 3,
+                "attackers": [],
+                "blocked_by": {}
+              },
+              {
+                "hand": [
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain"
+                ],
+                "battlefield": [],
+                "graveyard": [
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain",
+                  "Mountain"
+                ],
+                "exile": [],
+                "mana_pool": {},
+                "life_total": 17,
+                "damage_dealt": 0,
+                "attackers": [],
+                "blocked_by": {}
+              }
+            ],
+            "stack": []
+          }
+        }
+      ],
+      "end_state": {
+        "players": [
+          {
+            "hand": [
+              "Lightning Bolt",
+              "Lightning Bolt"
+            ],
+            "battlefield": [
+              {
+                "name": "Mountain",
+                "tapped": true,
+                "slot": 1
+              }
+            ],
+            "graveyard": [
+              "Lightning Bolt"
+            ],
+            "exile": [],
+            "mana_pool": {},
+            "life_total": 20,
+            "damage_dealt": 3,
+            "attackers": [],
+            "blocked_by": {}
+          },
+          {
+            "hand": [
+              "Mountain",
+              "Mountain",
+              "Mountain",
+              "Mountain",
+              "Mountain",
+              "Mountain",
+              "Mountain"
+            ],
+            "battlefield": [],
+            "graveyard": [
+              "Mountain",
+              "Mountain",
+              "Mountain",
+              "Mountain",
+              "Mountain"
+            ],
+            "exile": [],
+            "mana_pool": {},
+            "life_total": 17,
+            "damage_dealt": 0,
+            "attackers": [],
+            "blocked_by": {}
+          }
+        ],
+        "stack": []
+      }
+    }
+  ]
+}

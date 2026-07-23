@@ -4,6 +4,7 @@ import SearchFilters from "./components/SearchFilters.jsx";
 import Pagination from "./components/Pagination.jsx";
 import BatchList from "./components/BatchList.jsx";
 import GameView from "./components/GameView.jsx";
+import TwoPlayerGameView from "./components/TwoPlayerGameView.jsx";
 import { filterGames } from "./filterGames.js";
 import "./App.css";
 
@@ -12,14 +13,16 @@ const PAGE_SIZE = 25;
 export default function App() {
   const [games, setGames] = useState(null);
   const [meta, setMeta] = useState(null);
+  const [twoPlayer, setTwoPlayer] = useState(false);
   const [fileName, setFileName] = useState(null);
   const [criteria, setCriteria] = useState({});
   const [page, setPage] = useState(1);
   const [selectedGame, setSelectedGame] = useState(null);
 
-  const handleLoad = ({ meta: loadedMeta, games: loadedGames }, name) => {
+  const handleLoad = ({ meta: loadedMeta, games: loadedGames, twoPlayer: loadedTwoPlayer }, name) => {
     setGames(loadedGames);
     setMeta(loadedMeta);
+    setTwoPlayer(loadedTwoPlayer);
     setFileName(name);
     setCriteria({});
     setPage(1);
@@ -37,9 +40,17 @@ export default function App() {
   const pageGames = filtered.slice(startIndex, startIndex + PAGE_SIZE);
 
   if (selectedGame) {
+    // Wider container than the batch-list page below: a board view is
+    // data-dense (two full player boards side by side, at that), not
+    // reading-column text, so the same 1500px cap that suits the list
+    // just wastes screen width here.
     return (
-      <div className="app">
-        <GameView game={selectedGame} meta={meta} onBack={() => setSelectedGame(null)} />
+      <div className="app app-game">
+        {twoPlayer ? (
+          <TwoPlayerGameView game={selectedGame} onBack={() => setSelectedGame(null)} />
+        ) : (
+          <GameView game={selectedGame} meta={meta} onBack={() => setSelectedGame(null)} />
+        )}
       </div>
     );
   }
@@ -62,7 +73,15 @@ export default function App() {
               Load a different file
             </span>
           </p>
-          {meta && (
+          {meta && twoPlayer && (
+            <p className="run-meta">
+              {meta.config_name && <>Config <b>{meta.config_name}</b> &middot; </>}
+              Agent A reward <b>{meta.seats?.[0]?.reward_fn}</b> &middot; Agent B reward <b>{meta.seats?.[1]?.reward_fn}</b>
+              {meta.horizon != null && <> &middot; Horizon <b>{meta.horizon}</b></>}
+              {meta.seed != null && <> &middot; Seed <b>{meta.seed}</b></>}
+            </p>
+          )}
+          {meta && !twoPlayer && (
             <p className="run-meta">
               {meta.config_name && <>Config <b>{meta.config_name}</b> &middot; </>}
               Reward <b>{meta.reward_fn}</b>
@@ -73,7 +92,7 @@ export default function App() {
             </p>
           )}
           <SearchFilters criteria={criteria} onChange={handleCriteriaChange} />
-          <BatchList games={pageGames} startIndex={startIndex} onSelect={setSelectedGame} />
+          <BatchList games={pageGames} startIndex={startIndex} onSelect={setSelectedGame} twoPlayer={twoPlayer} />
           <Pagination page={page} pageCount={pageCount} onPageChange={setPage} />
         </>
       )}

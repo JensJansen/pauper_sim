@@ -81,3 +81,45 @@ describe("filterGames", () => {
     expect(result).toEqual([]);
   });
 });
+
+describe("filterGames -- 2-player games", () => {
+  function makeTwoPlayerGame({ gameIndex, turnWon, scoreA, scoreB, seat0Hand = [], seat1Battlefield = [] }) {
+    const openingState = {
+      players: [
+        { hand: seat0Hand, battlefield: [], graveyard: [], exile: [], mana_pool: {}, life_total: 20 },
+        { hand: [], battlefield: seat1Battlefield, graveyard: [], exile: [], mana_pool: {}, life_total: 20 },
+      ],
+      stack: [],
+    };
+    return {
+      game_index: gameIndex,
+      starting_player_idx: 0,
+      winner: null,
+      turn_won: turnWon,
+      final_turn_number: turnWon ?? 10,
+      scores: [{ reward_fn: scoreA }, { reward_fn: scoreB }],
+      opening_state: openingState,
+      steps: [],
+      end_state: openingState,
+    };
+  }
+
+  const twoPlayerGames = [
+    makeTwoPlayerGame({ gameIndex: 0, turnWon: 3, scoreA: 0.6, scoreB: 0.1, seat0Hand: ["Forest"] }),
+    makeTwoPlayerGame({ gameIndex: 1, turnWon: 5, scoreA: 0.2, scoreB: 0.9, seat1Battlefield: [{ name: "Urza's Mine", tapped: false }] }),
+  ];
+
+  it("primary score filters off seat 0 (agent_a), not seat 1", () => {
+    const result = filterGames(twoPlayerGames, { scoreMin: 0.5 });
+    expect(result.map((g) => g.game_index)).toEqual([0]); // seat 1's higher score (game 1) must not qualify it
+  });
+
+  it("card-in-hand/card-in-play check EITHER seat's own zone, not just seat 0's", () => {
+    expect(filterGames(twoPlayerGames, { cardInHand: "Forest" }).map((g) => g.game_index)).toEqual([0]);
+    expect(filterGames(twoPlayerGames, { cardInPlay: "Urza's Mine" }).map((g) => g.game_index)).toEqual([1]);
+  });
+
+  it("turn_won range works the same as the 1-player shape", () => {
+    expect(filterGames(twoPlayerGames, { turnWonMin: 4 }).map((g) => g.game_index)).toEqual([1]);
+  });
+});

@@ -26,4 +26,66 @@ describe("Card", () => {
     fireEvent.error(img);
     expect(screen.getByText("Forest")).toBeTruthy();
   });
+
+  it("shows a slot badge only when a slot is given", () => {
+    const { rerender } = render(<Card name="Forest" />);
+    expect(screen.getByAltText("Forest").closest(".card").querySelector(".card-slot-badge")).toBeNull();
+
+    rerender(<Card name="Forest" slot={2} />);
+    const badge = screen.getByAltText("Forest").closest(".card").querySelector(".card-slot-badge");
+    expect(badge).toBeTruthy();
+    expect(badge.textContent).toBe("2");
+  });
+
+  it("shows an enchant caption naming the actual linked card, not just a generic flag", () => {
+    const { rerender } = render(<Card name="Rancor" />);
+    expect(screen.getByAltText("Rancor").closest(".card").querySelector(".card-enchant-caption")).toBeNull();
+
+    rerender(<Card name="Rancor" enchanting="Slippery Bogle (slot 1)" />);
+    const auraCaption = screen.getByAltText("Rancor").closest(".card").querySelector(".card-enchant-caption");
+    expect(auraCaption.textContent).toBe("→ Slippery Bogle (slot 1)"); // the AURA names its own target
+
+    rerender(<Card name="Slippery Bogle" enchantedBy={["Rancor", "Ancestral Mask"]} />);
+    const creatureCaption = screen
+      .getByAltText("Slippery Bogle")
+      .closest(".card")
+      .querySelector(".card-enchant-caption");
+    expect(creatureCaption.textContent).toBe("✦ Rancor, Ancestral Mask"); // the CREATURE lists what's on it
+  });
+
+  it("reports the same full shape to onHover regardless of zone", () => {
+    const seen = [];
+    render(
+      <Card
+        name="Rancor"
+        slot={1}
+        enchanting="Slippery Bogle (slot 1)"
+        onHover={(detail) => seen.push(detail)}
+      />
+    );
+    fireEvent.mouseEnter(screen.getByAltText("Rancor").closest(".card"));
+    expect(seen[0]).toEqual({
+      name: "Rancor", enchanting: "Slippery Bogle (slot 1)", enchantedBy: null,
+      power: null, toughness: null, basePower: null, baseToughness: null, keywords: null,
+    });
+    fireEvent.mouseLeave(screen.getByAltText("Rancor").closest(".card"));
+    expect(seen[1]).toBeNull();
+  });
+
+  it("reports power/toughness/keywords for a creature permanent", () => {
+    const seen = [];
+    render(
+      <Card
+        name="Slippery Bogle"
+        power={3}
+        toughness={1}
+        basePower={1}
+        baseToughness={1}
+        keywords={["hexproof"]}
+        onHover={(detail) => seen.push(detail)}
+      />
+    );
+    fireEvent.mouseEnter(screen.getByAltText("Slippery Bogle").closest(".card"));
+    expect(seen[0]).toMatchObject({ power: 3, toughness: 1, basePower: 1, baseToughness: 1, keywords: ["hexproof"] });
+  });
 });

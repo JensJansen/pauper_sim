@@ -3,6 +3,11 @@
   margin: 0 auto;
   padding: 24px 20px 60px;
 }
+/* The board view itself (App.jsx swaps this class in): no reading-column
+   cap, just a little breathing room on very wide monitors. */
+.app.app-game {
+  max-width: 1900px;
+}
 
 h1 {
   font-size: 1.3rem;
@@ -165,6 +170,24 @@ h1 {
   font-weight: 600;
   font-variant-numeric: tabular-nums;
 }
+.batch-header.two-player,
+.batch-row.two-player {
+  grid-template-columns: 4rem 1fr 5rem 6rem 6rem 6rem;
+}
+.batch-row .winner {
+  text-align: right;
+  font-weight: 700;
+}
+.batch-row .winner.seat-a {
+  color: var(--seat-a);
+}
+.batch-row .winner.seat-b {
+  color: var(--seat-b);
+}
+.batch-row .winner.draw {
+  color: var(--muted);
+  font-weight: 400;
+}
 .batch-empty {
   padding: 24px;
   text-align: center;
@@ -216,18 +239,41 @@ h1 {
   flex: 1;
   min-width: 0;
 }
-/* Fixed-width column, always reserved (empty when nothing's hovered) so
-   hovering a card never shifts the rest of the layout. */
-.card-preview-panel {
+/* Left rail: back link, turn/step counter, action panel, and the large
+   art preview, all stacked in one fixed-width sticky column -- pinned as a
+   unit while the board scrolls beside it, rather than each piece fighting
+   over its own separate sticky rule (report: the turn/step counter used
+   to scroll off screen; the fix here is structural, not a patch). */
+.game-sidebar {
   position: sticky;
   top: 20px;
-  width: 260px;
+  width: 300px;
   flex-shrink: 0;
   display: flex;
-  justify-content: center;
+  flex-direction: column;
+  gap: 14px;
+}
+/* Always reserved (empty when nothing's hovered) so hovering a card never
+   shifts the rest of the sidebar. */
+.card-preview-panel {
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
 }
 .card-preview-panel .card {
   box-shadow: 0 10px 30px rgba(0, 0, 0, 0.4);
+}
+.preview-stat-line {
+  margin-top: 8px;
+  font-size: 0.95rem;
+  font-weight: 700;
+  color: var(--fg);
+}
+.preview-stat-base {
+  font-size: 0.8rem;
+  font-weight: 400;
+  color: var(--muted);
 }
 
 .back-link {
@@ -238,14 +284,18 @@ h1 {
   font-size: 0.9rem;
 }
 .step-bar {
+  /* Lives inside .game-sidebar now, which is itself sticky as a whole
+     column -- no separate sticky rule needed here (report: this used to
+     scroll out of view when it was a bare-flow element at the top of the
+     scrolling main content; moving it into the sticky sidebar fixes that
+     structurally instead). */
   display: flex;
-  align-items: center;
-  justify-content: space-between;
+  flex-direction: column;
+  gap: 2px;
   padding: 10px 14px;
   background: var(--panel);
   border: 1px solid var(--border);
   border-radius: 8px;
-  margin-bottom: 16px;
 }
 .step-bar .turn {
   font-weight: 600;
@@ -289,12 +339,126 @@ h1 {
   font-size: 0.85rem;
   color: var(--muted);
 }
+.outcome.draw {
+  background: color-mix(in srgb, var(--muted) 15%, var(--bg));
+  border-color: var(--border);
+}
+.outcome.draw .headline {
+  color: var(--muted);
+}
+.outcome-scores {
+  display: flex;
+  justify-content: center;
+  gap: 24px;
+  margin-top: 8px;
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+.outcome-scores b {
+  color: var(--fg);
+}
+
+/* -- Two-player game view -- */
+/* A bit less zoomed than the 1-player view (1.25x) -- two full boards
+   stacked need more vertical room, so this trades a little card size for
+   keeping more of a single board on screen at once. */
+.game-view.two-player {
+  zoom: 1.05;
+}
+.actor-badge {
+  display: inline-block;
+  margin-right: 8px;
+  padding: 1px 8px;
+  border-radius: 10px;
+  font-size: 0.7rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+.actor-badge.seat-a {
+  color: var(--seat-a);
+  border: 1px solid var(--seat-a);
+  background: color-mix(in srgb, var(--seat-a) 20%, var(--bg));
+}
+.actor-badge.seat-b {
+  color: var(--seat-b);
+  border: 1px solid var(--seat-b);
+  background: color-mix(in srgb, var(--seat-b) 20%, var(--bg));
+}
+.two-player-boards {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  margin-bottom: 16px;
+}
+.player-board {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 14px 16px;
+}
+.player-board.seat-a {
+  border-left: 4px solid var(--seat-a);
+}
+.player-board.seat-b {
+  border-left: 4px solid var(--seat-b);
+}
+.player-board-header {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  margin-bottom: 12px;
+  font-size: 0.9rem;
+  color: var(--muted);
+}
+.player-board-header .player-name {
+  font-weight: 700;
+  font-size: 1rem;
+  color: var(--fg);
+}
+.player-board.seat-a .player-name {
+  color: var(--seat-a);
+}
+.player-board.seat-b .player-name {
+  color: var(--seat-b);
+}
+.player-board-header .player-life {
+  color: var(--fg);
+  font-weight: 600;
+}
+.badge {
+  padding: 1px 8px;
+  border-radius: 10px;
+  font-size: 0.7rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  border: 1px solid var(--border);
+}
+.badge-turn {
+  color: var(--accent);
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 18%, var(--bg));
+}
+.badge-acting {
+  color: var(--fail);
+  border-color: var(--fail);
+  background: color-mix(in srgb, var(--fail) 18%, var(--bg));
+}
+.combat-line {
+  display: flex;
+  gap: 18px;
+  font-size: 0.85rem;
+  color: var(--muted);
+  margin: 10px 0;
+}
+.combat-line b {
+  color: var(--fg);
+}
 
 .action-panel {
   border: 1px solid var(--border);
   border-radius: 8px;
   padding: 14px 16px;
-  margin-bottom: 16px;
 }
 .action-panel .action-name {
   font-weight: 600;
@@ -363,11 +527,33 @@ h1 {
 /* A row with more than 5 cards shrinks them to still fit this fixed width,
    rather than wrapping or growing the box -- the browser's own flexbox
    shrink math, not hand-computed pixel widths in JS. min-width floors how
-   far a card can shrink so it never vanishes at extreme counts. */
-.battlefield-row .card {
-  width: auto;
+   far a card can shrink so it never vanishes at extreme counts. The
+   shrinking flex item is now .permanent-stack (a plain wrapper), not .card
+   directly, so a stacked Aura (see below) shrinks together with its
+   target instead of keeping a fixed 90px while its target shrinks. */
+.permanent-stack {
+  position: relative;
   flex: 0 1 90px;
   min-width: 20px;
+}
+.permanent-stack > .card {
+  width: 100%;
+  z-index: 1; /* paints over .stacked-aura below, which is position:absolute and would otherwise stack on top by default */
+}
+/* An Aura, offset up-and-right so it peeks out from behind its target --
+   matches the reference app's own equip/enchant stacking (offset-behind,
+   not a separate row slot). --stack-i (set inline per aura index) fans out
+   a second/third Aura on the same target further in the same direction
+   rather than exactly overlapping the first. */
+.stacked-aura {
+  position: absolute;
+  width: 78%;
+  z-index: 0;
+  top: calc(-14% - (var(--stack-i, 0) * 16%));
+  right: calc(-14% - (var(--stack-i, 0) * 8%));
+}
+.stacked-aura .card {
+  width: 100%;
 }
 .zone-hand {
   border-color: var(--accent);
@@ -404,6 +590,7 @@ h1 {
 
 /* -- Card -- */
 .card {
+  position: relative; /* anchors .card-slot-badge/.card-enchant-badge below */
   width: 90px;
   aspect-ratio: 5 / 7;
   border-radius: 6px;
@@ -411,6 +598,59 @@ h1 {
   border: 1px solid var(--border);
   flex-shrink: 0;
   transition: transform 0.15s ease;
+}
+/* Only rendered when a name is actually ambiguous (>1 copy on the same
+   battlefield) -- see GameView.jsx's own BattlefieldRow. Rotates with a
+   tapped card same as the rest of .card's contents; a minor, acceptable
+   cosmetic quirk rather than fighting the parent's own rotate transform. */
+.card-slot-badge {
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  min-width: 14px;
+  padding: 0 3px;
+  border-radius: 3px;
+  background: color-mix(in srgb, var(--bg) 70%, transparent);
+  color: var(--fg);
+  font-size: 0.65rem;
+  font-weight: 700;
+  text-align: center;
+  line-height: 1.4;
+  pointer-events: none;
+}
+/* Bottom overlay caption naming the actual linked card(s) -- always
+   visible, not hover-only, so "what's enchanting what" reads directly off
+   the board. Overlaid on the card art (position: absolute, .card's own
+   overflow: hidden clips it to the card's bounds) rather than pushing the
+   card taller, so the battlefield row's fixed height is unaffected. Long
+   text (a target's own "Name (slot k)" label) truncates with an ellipsis
+   at small card widths -- the untruncated text is always still available
+   via this element's own title tooltip and the hover side panel. */
+.card-enchant-caption {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  padding: 2px 4px;
+  font-size: 0.6rem;
+  line-height: 1.3;
+  font-weight: 600;
+  color: #fff;
+  background: color-mix(in srgb, var(--accent) 55%, black 25%);
+  text-align: center;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  pointer-events: none;
+}
+.preview-enchant-line {
+  margin-top: 8px;
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+.preview-enchant-line b {
+  color: var(--fg);
+  font-weight: 600;
 }
 .card-tapped {
   transform: rotate(90deg);

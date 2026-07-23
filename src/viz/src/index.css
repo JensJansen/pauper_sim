@@ -9,6 +9,8 @@
   --tron: #1f7a3f;
   --fail: #b23b3b;
   --success: #1f7a3f;
+  --seat-a: #2f6fb0;
+  --seat-b: #b0722f;
 
   font-family: -apple-system, "Segoe UI", Helvetica, Arial, sans-serif;
   font-synthesis: none;
@@ -28,6 +30,8 @@
     --tron: #5bd68a;
     --fail: #e06b6b;
     --success: #5bd68a;
+    --seat-a: #6ea8dc;
+    --seat-b: #dc9a5b;
   }
 }
 

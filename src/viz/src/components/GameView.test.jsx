@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { render, screen, fireEvent } from "@testing-library/react";
-import GameView, { sortedBattlefield } from "./GameView.jsx";
+import GameView, { sortedBattlefield, computeBattlefieldLinks } from "./GameView.jsx";
 import fixture from "../__fixtures__/sampleGames.json";
 
 describe("sortedBattlefield", () => {
@@ -37,6 +37,39 @@ describe("sortedBattlefield", () => {
     const original = [...battlefield];
     sortedBattlefield(battlefield);
     expect(battlefield).toEqual(original);
+  });
+});
+
+describe("computeBattlefieldLinks", () => {
+  // A real battlefield snapshot pulled from an actual boggles_mirror
+  // --log run (harness._snapshot_player_state): two Forests (ambiguous --
+  // needs a slot badge), one Slippery Bogle enchanted by one Rancor
+  // (unambiguous names, but the enchant link still needs to resolve).
+  const battlefield = [
+    { name: "Forest", tapped: true, slot: 1, enchanting: null },
+    { name: "Slippery Bogle", tapped: false, slot: 1, enchanting: null },
+    { name: "Rancor", tapped: false, slot: 1, enchanting: "Slippery Bogle (slot 1)" },
+    { name: "Forest", tapped: false, slot: 2, enchanting: null },
+  ];
+
+  it("counts same-named permanents so the viewer knows when a slot badge is needed", () => {
+    const { nameCounts } = computeBattlefieldLinks(battlefield);
+    expect(nameCounts["Forest"]).toBe(2); // ambiguous -- ends up with a slot badge
+    expect(nameCounts["Slippery Bogle"]).toBe(1); // not ambiguous -- no badge needed
+    expect(nameCounts["Rancor"]).toBe(1);
+  });
+
+  it("maps a target's own (name, slot) label to the names of whatever enchants it", () => {
+    const { enchantedBy } = computeBattlefieldLinks(battlefield);
+    expect(enchantedBy["Slippery Bogle (slot 1)"]).toEqual(["Rancor"]);
+    expect(enchantedBy["Forest (slot 1)"]).toBeUndefined(); // nothing enchants either Forest here
+  });
+
+  it("gracefully no-ops on a 1-player battlefield entry (no slot/enchanting fields at all)", () => {
+    const oneLayerBattlefield = [{ name: "Urza's Mine", tapped: false }];
+    const { nameCounts, enchantedBy } = computeBattlefieldLinks(oneLayerBattlefield);
+    expect(nameCounts["Urza's Mine"]).toBe(1);
+    expect(enchantedBy).toEqual({});
   });
 });
 
