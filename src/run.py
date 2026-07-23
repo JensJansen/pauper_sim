@@ -28,6 +28,7 @@ trained a model.
 import argparse
 import json
 import os
+import random
 import time
 
 from sb3_contrib import MaskablePPO
@@ -108,14 +109,30 @@ def _load_side(raw, suffix, primary_on_the_play=None):
     }
 
 
-def load_config(config_name):
+def load_config(config_name, for_training=False):
     path = os.path.join(CONFIGS_DIR, f"{config_name}.json")
     with open(path) as f:
         raw = json.load(f)
 
+    # A fresh random seed every training session, unless the config
+    # explicitly pins one ("seed" key present at all, not merely non-zero --
+    # absence is the trigger) -- injected into raw BEFORE _load_side reads
+    # it below, so every existing seed-derivation rule (the primary's own
+    # raw.get("seed", 0), the opponent's own default-to-"primary + 1")
+    # picks up the resolved value with zero further changes needed. Gated
+    # on for_training (False for evaluate()'s own load_config call) since
+    # an eval run's seed is meant to be stable/reproducible across repeat
+    # evaluations of the same trained model, not re-randomized on every
+    # look. cfg["seed_was_random"] records which happened, purely so
+    # train()'s own startup print can say where the seed came from.
+    seed_was_random = for_training and "seed" not in raw
+    if seed_was_random:
+        raw["seed"] = random.randint(0, 2**31 - 1)
+
     two_player = "decklist_2" in raw
     cfg = _load_side(raw, "")
     cfg["two_player"] = two_player
+    cfg["seed_was_random"] = seed_was_random
     cfg["horizon"] = raw["horizon"]
     cfg["n_envs"] = raw.get("n_envs", 1)
     # "vec_env": "subproc" opts into real OS-process parallelism across
@@ -155,6 +172,16 @@ def load_config(config_name):
         # per-deck rule.
         cfg["shaping_weight"] = raw.get("shaping_weight", 0.0)
         cfg["opponent"]["shaping_weight"] = cfg["shaping_weight"]
+        # "simultaneous" opt-in (default "alternating", today's exact
+        # behavior): both sides train from ONE shared stream of real games
+        # (lean_ppo.train_simultaneous_selfplay) instead of harness.
+        # train_two_player's alternating single-buffer bursts -- see that
+        # function's own module-level comment in lean_ppo.py. Asymmetric
+        # decks are fully supported (every deck-shaped argument is an
+        # independent per-side pair) -- lean_ppo is the only hard
+        # requirement (_train_two_player_simultaneous's own dispatch
+        # validates this, and shaping_weight, before training starts).
+        cfg["selfplay_mode"] = raw.get("selfplay_mode", "alternating")
     return cfg
 
 
@@ -179,13 +206,24 @@ def _opponent_kwargs(cfg, opponent_cfg, my_seat_idx):
 
 def _load_harness(path, config_name, cfg, opponent_cfg=None, my_seat_idx=0):
     """opponent_cfg/my_seat_idx: two-player mode only -- see cfg["opponent"]
-    (load_config)/TrainingHarness's own opponent_* constructor kwargs."""
+    (load_config)/TrainingHarness's own opponent_* constructor kwargs.
+
+    seed=cfg["seed"] always overrides whatever seed the model was
+    ORIGINALLY trained with (TrainingHarness.load()'s own metadata["train_
+    seed"] fallback) -- harmless for evaluate()'s own call here (its
+    load_config call never randomizes cfg["seed"], and evaluation never
+    touches the reloaded harness's own env's internal rng regardless, see
+    TrainingHarness.load()'s own docstring), and exactly what a continuing
+    TRAINING run needs: this session's own freshly-resolved seed
+    (load_config's "random per session unless pinned" policy), not last
+    session's, so continuing training doesn't replay the same early game
+    shuffles every time it's restarted."""
     kwargs = dict(
         reward_fn=cfg["reward_fn"], model_cls=cfg["model_cls"], decklist=cfg["decklist"],
         terminated_fn=cfg["terminated_fn"], pending_kinds=cfg["pending_kinds"],
         horizon=cfg["horizon"], on_the_play=cfg["on_the_play"], scoring_fns=cfg["scoring_fns"],
         combat_enabled=cfg["combat_enabled"], token_card_defs=cfg["token_card_defs"],
-        vec_env_cls=cfg["vec_env_cls"],
+        vec_env_cls=cfg["vec_env_cls"], seed=cfg["seed"],
         **_opponent_kwargs(cfg, opponent_cfg, my_seat_idx),
     )
     try:
@@ -221,7 +259,21 @@ def _load_harness_pair(path_a, path_b, config_name, cfg, opp):
     return harness_a, harness_b
 
 
+def _log_seed(cfg):
+    """One call site, covers every training path (1-player, 2-player
+    alternating, 2-player simultaneous) -- all three read cfg["seed"] as
+    their own starting seed, resolved once by load_config's own "random
+    per session unless the config pins one" policy. Printed regardless of
+    origin so a failure can always be retested: copy the printed value
+    into the config's own "seed" key (and "seed_2" if the opponent's
+    default-derived value ever needs pinning too) to replay this exact
+    run."""
+    origin = "randomly generated" if cfg["seed_was_random"] else "from config"
+    print(f'Training seed: {cfg["seed"]} ({origin} -- add "seed": {cfg["seed"]} to the config to reproduce this run).')
+
+
 def train(config_name, cfg, num_runs):
+    _log_seed(cfg)
     if cfg["two_player"]:
         _train_two_player(config_name, cfg, num_runs)
         return
@@ -244,15 +296,117 @@ def train(config_name, cfg, num_runs):
     print(f"Saved to {path}/ (model.zip + metadata.json).")
 
 
+def _train_two_player_simultaneous(config_name, cfg, num_runs, path_a, path_b, total_timesteps):
+    """selfplay_mode: "simultaneous" dispatch -- lean_ppo.train_simultaneous_
+    selfplay instead of harness.train_two_player's alternating bursts (see
+    that function's own module-level comment in lean_ppo.py for why).
+    Asymmetric decks are fully supported (train_simultaneous_selfplay takes
+    every deck-shaped argument as an independent _a/_b pair) -- a mirror
+    config is just cfg/opp happening to carry identical values, same as
+    everywhere else in this file. Only real constraint is lean_ppo (needs
+    direct ActorCritic access, a seam MaskablePPO's opaque .learn() doesn't
+    expose) -- validated here so a misconfigured attempt fails loudly before
+    any training work starts, not deep inside lean_ppo.py. model_cls itself
+    is never per-side (load_config always mirrors cfg["model_cls"] onto
+    cfg["opponent"]), so there's nothing to check on the opponent side."""
+    from lean_ppo import LeanMaskablePPO, train_simultaneous_selfplay
+
+    opp = cfg["opponent"]
+    if cfg["model_cls"] is not LeanMaskablePPO:
+        raise SystemExit(
+            f'configs/{config_name}.json: "selfplay_mode": "simultaneous" requires "model_cls": "lean_ppo" '
+            f'(got {cfg["model_cls"].__name__}) -- the simultaneous collector needs direct access to lean_ppo\'s '
+            f"own ActorCritic, a seam sb3_contrib.MaskablePPO's opaque .learn() doesn't expose."
+        )
+    if cfg["shaping_weight"]:
+        # train_simultaneous_selfplay has no shaping_weight/shaping_gamma
+        # parameter at all -- silently dropping a config's own shaping
+        # setting would be a correctness footgun, not just a missing
+        # feature, so this fails loudly instead. TwoPlayerDeckEnv's
+        # potential-based dense reward (MULTIPLAYER_GAPS.md) has no
+        # counterpart yet in the simultaneous collector's per-decision
+        # reward_fn call.
+        raise SystemExit(
+            f'configs/{config_name}.json: "selfplay_mode": "simultaneous" does not yet support '
+            f'"shaping_weight" (got {cfg["shaping_weight"]!r}) -- use "selfplay_mode": "alternating" '
+            f"(or omit it) for a config that relies on potential-based reward shaping."
+        )
+    # train_simultaneous_selfplay only takes ONE on_the_play (a single
+    # shared "who goes first" fact -- see its own docstring), derived here
+    # from cfg["on_the_play"] alone; opp["on_the_play"] is never read. That
+    # silently drops an explicit "on_the_play_2" override under this mode
+    # (still fully honored under "alternating", where each side's env reads
+    # its own independently) -- by DEFAULT opp["on_the_play"] is always the
+    # natural complement of cfg["on_the_play"] (_load_side's own default),
+    # so this only ever fires for a config that deliberately overrode
+    # "on_the_play_2" to something else, which has no coherent single
+    # "who goes first" reading anyway.
+    expected_opp_on_the_play = None if cfg["on_the_play"] is None else not cfg["on_the_play"]
+    if opp["on_the_play"] != expected_opp_on_the_play:
+        raise SystemExit(
+            f'configs/{config_name}.json: "selfplay_mode": "simultaneous" derives a single shared '
+            f'"who goes first" fact from "on_the_play" alone (here: {cfg["on_the_play"]!r}, so the opponent '
+            f'side should be {expected_opp_on_the_play!r}) -- but "on_the_play_2" is explicitly set to '
+            f'{opp["on_the_play"]!r}. Remove the "on_the_play_2" override (let it default) to fix this, or use '
+            f'"selfplay_mode": "alternating" if the two sides genuinely need independent on_the_play values.'
+        )
+
+    resume_path_a = os.path.join(path_a, "model.zip") if os.path.isdir(path_a) else None
+    resume_path_b = os.path.join(path_b, "model.zip") if os.path.isdir(path_b) else None
+    print(
+        f"{'Continuing' if resume_path_a else 'Training fresh'} two-player simultaneous self-play: "
+        f"{path_a}/ and {path_b}/."
+    )
+
+    t0 = time.time()
+    try:
+        _net_a, _net_b, ts_a, ts_b, games = train_simultaneous_selfplay(
+            decklist_a=cfg["decklist"], decklist_b=opp["decklist"], terminated_fn_a=cfg["terminated_fn"],
+            terminated_fn_b=opp["terminated_fn"], reward_fn_a=cfg["reward_fn"], reward_fn_b=opp["reward_fn"],
+            pending_kinds_a=cfg["pending_kinds"], pending_kinds_b=opp["pending_kinds"], horizon=cfg["horizon"],
+            token_card_defs_a=cfg["token_card_defs"], token_card_defs_b=opp["token_card_defs"],
+            on_the_play=cfg["on_the_play"],
+            net_arch_a=tuple(cfg["model_kwargs"].get("policy_kwargs", {}).get("net_arch", (64, 64))),
+            net_arch_b=tuple(opp["model_kwargs"].get("policy_kwargs", {}).get("net_arch", (64, 64))),
+            n_envs=cfg["n_envs"], vec_env_cls=cfg["vec_env_cls"],
+            device=cfg["model_kwargs"].get("device", "auto"), seed=cfg["seed"], hyperparams_a=cfg["model_kwargs"],
+            hyperparams_b=opp["model_kwargs"], total_timesteps=total_timesteps, max_episodes=num_runs,
+            resume_path_a=resume_path_a, resume_path_b=resume_path_b, save_path_a=path_a, save_path_b=path_b,
+        )
+    except ValueError as e:
+        # Same "recontextualize with the config's own name/paths" pattern
+        # _load_harness already uses for TrainingHarness.load()'s own
+        # mismatch-check -- train_simultaneous_selfplay's own ValueError
+        # (a resume shape mismatch) is equally a "config no longer matches
+        # what's saved" situation, just detected differently.
+        raise ValueError(
+            f"{e}\nconfigs/{config_name}.json no longer matches the model(s) already saved at {path_a}/ / "
+            f"{path_b}/ -- editing a config in place after it's trained a model isn't supported. Create a new "
+            f"config file (e.g. configs/{config_name}_v2.json) for the new settings instead."
+        ) from None
+    dt = time.time() - t0
+    print(
+        f"\nTrained {ts_a}/{ts_b} timesteps (agent_a/agent_b) from {games} total real games "
+        f"(target {num_runs}) in {dt:.1f}s."
+    )
+    print(f"Saved to {path_a}/ (agent_a) and {path_b}/ (agent_b) -- model.zip + metadata.json each.")
+
+
 def _train_two_player(config_name, cfg, num_runs):
     """decklist_2 present (load_config) is the whole trigger for this path
     -- each seat gets its OWN continuously-trained model slot
     (models/<config_name>/agent_a and .../agent_b), cross-wired against
     each other via harness.train_two_player's opponent-as-environment
-    design (docs/MULTIPLAYER_ENGINE_PLAN.md)."""
+    design (docs/MULTIPLAYER_ENGINE_PLAN.md), unless "selfplay_mode":
+    "simultaneous" opts into lean_ppo.train_simultaneous_selfplay instead
+    (_train_two_player_simultaneous above)."""
     opp = cfg["opponent"]
     path_a, path_b = model_path(config_name, "agent_a"), model_path(config_name, "agent_b")
     total_timesteps = num_runs * TIMESTEPS_PER_RUN
+
+    if cfg["selfplay_mode"] == "simultaneous":
+        _train_two_player_simultaneous(config_name, cfg, num_runs, path_a, path_b, total_timesteps)
+        return
 
     if os.path.isdir(path_a) and os.path.isdir(path_b):
         print(f"Continuing two-player training: {path_a}/ and {path_b}/ already exist.")
@@ -362,7 +516,7 @@ def main():
     parser.add_argument("--log", action="store_true", help="write a per-game JSON log (eval mode only)")
     args = parser.parse_args()
 
-    cfg = load_config(args.config_name)
+    cfg = load_config(args.config_name, for_training=args.train)
     if args.train:
         train(args.config_name, cfg, args.num_runs)
     else:

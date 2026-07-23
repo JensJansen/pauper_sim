@@ -5,10 +5,10 @@
   "reward_fns": ["action_count_win_reward_200"],
   "horizon": 120,
   "on_the_play": null,
-  "seed": 0,
   "n_envs": 8,
   "vec_env": "subproc",
   "model_cls": "lean_ppo",
+  "selfplay_mode": "simultaneous",
   "model_kwargs": {
     "policy_kwargs": {"net_arch": [256, 256]},
     "verbose": 1,

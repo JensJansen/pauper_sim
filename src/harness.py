@@ -963,7 +963,21 @@ class TrainingHarness:
     def load(cls, path, reward_fn, model_cls, decklist, terminated_fn, pending_kinds,
               horizon=6, on_the_play=True, scoring_fns=None, combat_enabled=False, token_card_defs=(),
               opponent_decklist=None, opponent_terminated_fn=None, opponent_pending_kinds=None,
-              opponent_token_card_defs=(), my_seat_idx=0, shaping_weight=0.0, vec_env_cls=DummyVecEnv):
+              opponent_token_card_defs=(), my_seat_idx=0, shaping_weight=0.0, vec_env_cls=DummyVecEnv,
+              seed=None):
+        """seed: overrides metadata["train_seed"] for the reloaded harness's
+        own env construction -- None (every existing caller) keeps today's
+        exact behavior of reusing whatever seed the model was originally
+        trained with. run.py's own "randomize per training session unless
+        the config pins one" policy passes its freshly-resolved cfg["seed"]
+        here on every continue, so a resumed training run doesn't replay
+        the exact same early game shuffles every time it's restarted.
+        Irrelevant to evaluation: harness.evaluate()/evaluate_two_player
+        drive games through their own independently-seeded rng, never
+        through this harness's own env's internal one (see their own
+        docstrings) -- passing a seed here has zero observable effect on
+        eval, only on any FUTURE harness.train()/harness.model.learn()
+        call against the reloaded env."""
         with open(os.path.join(path, "metadata.json")) as f:
             metadata = json.load(f)
 
@@ -1002,7 +1016,8 @@ class TrainingHarness:
         harness = cls(
             reward_fn=reward_fn, model_cls=model_cls, model_kwargs=metadata["model_kwargs"],
             decklist=decklist, terminated_fn=terminated_fn,
-            horizon=horizon, on_the_play=on_the_play, seed=metadata["train_seed"],
+            horizon=horizon, on_the_play=on_the_play,
+            seed=metadata["train_seed"] if seed is None else seed,
             scoring_fns=scoring_fns, pending_kinds=pending_kinds, combat_enabled=combat_enabled,
             token_card_defs=token_card_defs, opponent_decklist=opponent_decklist,
             opponent_terminated_fn=opponent_terminated_fn, opponent_pending_kinds=opponent_pending_kinds,
