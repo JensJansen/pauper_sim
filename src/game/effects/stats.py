@@ -51,7 +51,7 @@ def enchantment_count(state, aura):
     return sum(1 for p in owner.battlefield if p.card_def.card_type == CardType.ENCHANTMENT)
 
 
-def permanent_power(state, permanent):
+def permanent_power(state, permanent, enchanting_auras=None):
     """A creature's effective power for combat.combat_damage_step (and Ram
     Through, once it's more than a functional blank): its own base power
     (card_def.extra["power"], 0 if absent -- no creature is absent one
@@ -61,16 +61,27 @@ def permanent_power(state, permanent):
     regardless of state.active_idx). Each Aura's registry entry supplies
     its own "pt_bonus" (state, aura_permanent) -> int -- a constant for a
     static bonus (Rancor's +2), a battlefield-wide count for a dynamic one
-    (Ancestral Mask/Ethereal Armor's "for each [other] enchantment")."""
+    (Ancestral Mask/Ethereal Armor's "for each [other] enchantment").
+
+    enchanting_auras: optional pre-fetched result of _enchanting_auras(state,
+    permanent), for a caller that already needs the same list for multiple
+    creatures in one pass (drl_env._creature_slot_block, which calls this
+    AND permanent_toughness for every occupied creature slot in an
+    observation -- profiled: _enchanting_auras's own battlefield scan was a
+    real, measurable cost, repeated redundantly per call). None (every
+    existing caller) means "compute it myself," identical to before this
+    parameter existed -- purely additive, no behavior change for anyone who
+    doesn't pass it."""
     base = permanent.card_def.extra.get("power", 0)
+    auras = enchanting_auras if enchanting_auras is not None else _enchanting_auras(state, permanent)
     bonus = sum(
         registry.EFFECT_REGISTRY.get(aura.card_def.effect_id, {}).get("pt_bonus", lambda *_a: 0)(state, aura)
-        for aura in _enchanting_auras(state, permanent)
+        for aura in auras
     )
     return base + bonus
 
 
-def permanent_toughness(state, permanent):
+def permanent_toughness(state, permanent, enchanting_auras=None):
     """A creature's effective toughness -- its own base toughness
     (card_def.extra["toughness"], 0 if absent, same convention as
     permanent_power) plus every Aura currently enchanting it. Deliberately
@@ -80,11 +91,15 @@ def permanent_toughness(state, permanent):
     (defaulting to 0, same as pt_bonus's own default) covers the Auras
     that genuinely are symmetric in real Magic (Ancestral Mask/Ethereal
     Armor/Cartouche of Solidarity/Armadillo Cloak are each +X/+X) without
-    touching permanent_power's own already-tested logic at all."""
+    touching permanent_power's own already-tested logic at all.
+
+    enchanting_auras: see permanent_power's own docstring -- same optional
+    pre-fetch, same reasoning."""
     base = permanent.card_def.extra.get("toughness", 0)
+    auras = enchanting_auras if enchanting_auras is not None else _enchanting_auras(state, permanent)
     bonus = sum(
         registry.EFFECT_REGISTRY.get(aura.card_def.effect_id, {}).get("toughness_bonus", lambda *_a: 0)(state, aura)
-        for aura in _enchanting_auras(state, permanent)
+        for aura in auras
     )
     return base + bonus
 

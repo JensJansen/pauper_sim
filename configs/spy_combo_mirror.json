@@ -8,6 +8,7 @@
   "seed": 0,
   "n_envs": 8,
   "vec_env": "subproc",
+  "model_cls": "lean_ppo",
   "model_kwargs": {
     "policy_kwargs": {"net_arch": [256, 256]},
     "verbose": 1,

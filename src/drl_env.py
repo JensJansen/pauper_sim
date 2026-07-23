@@ -330,6 +330,20 @@ def _creature_slot_block(state, owner_idx, creature_names, creature_copies):
     # O(creature_names x battlefield) repeated work every observation call --
     # see docs/GPU_VECENV_INVESTIGATION.md's training-speed followup).
     by_name_slot = {(p.card_def.name, p.slot): p for p in battlefield}
+    # Same reasoning, one level down: permanent_power/permanent_toughness
+    # each independently re-scan EVERY player's battlefield via
+    # game.effects.stats._enchanting_auras to find a creature's own Auras --
+    # profiled as a real, measurable cost on its own (called far more than
+    # once per creature slot). Pre-fetch it here, once, the same "search
+    # across BOTH players' battlefields" semantics _enchanting_auras itself
+    # uses (an Aura and its target are always same-side, but which side
+    # isn't assumed here either, matching that function's own docstring).
+    enchanting_by_target = {}
+    for player in state.players:
+        for aura in player.battlefield:
+            target = aura.flags.get("enchanting")
+            if target is not None:
+                enchanting_by_target.setdefault(id(target), []).append(aura)
     i = 0
     for name in creature_names:
         for slot in range(1, creature_copies[name] + 1):
@@ -337,8 +351,9 @@ def _creature_slot_block(state, owner_idx, creature_names, creature_copies):
             if p is not None:
                 out[i] = 0.0 if p.tapped else 1.0
                 out[i + 1] = 1.0 if p.tapped else 0.0
-                out[i + 2] = min(game.permanent_power(state, p), PER_CREATURE_POWER_CAP) / PER_CREATURE_POWER_CAP
-                remaining = max(game.permanent_toughness(state, p) - p.damage_marked, 0)
+                auras = enchanting_by_target.get(id(p), ())
+                out[i + 2] = min(game.permanent_power(state, p, enchanting_auras=auras), PER_CREATURE_POWER_CAP) / PER_CREATURE_POWER_CAP
+                remaining = max(game.permanent_toughness(state, p, enchanting_auras=auras) - p.damage_marked, 0)
                 out[i + 3] = min(remaining, PER_CREATURE_TOUGHNESS_CAP) / PER_CREATURE_TOUGHNESS_CAP
                 out[i + 4] = 1.0 if p in own_blocked_by else 0.0
                 out[i + 5] = 1.0 if p in other_blocked_by_values else 0.0
