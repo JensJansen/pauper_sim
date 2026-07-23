@@ -154,7 +154,7 @@ def _observation_layout(decklist, pending_kinds):
     return cached
 
 
-def build_observation(state, decklist, horizon, pending_kinds):
+def build_observation(state, decklist, horizon, pending_kinds, enchanting_by_target=None):
     # Plain dicts, not numpy arrays -- measured (a clean same-process A/B,
     # docs/GPU_VECENV_INVESTIGATION.md's training-speed followup): numpy's
     # per-element scalar-indexing overhead (type boxing/unboxing) outweighs
@@ -282,13 +282,16 @@ def build_observation(state, decklist, horizon, pending_kinds):
     # owner_idx is state.active_idx, same active-relative convention as
     # every other zone this function reads (state.hand/state.battlefield/
     # ...).
-    obs[i:i + creature_slot_dim] = _creature_slot_block(state, state.active_idx, creature_names, card_copies)
+    obs[i:i + creature_slot_dim] = _creature_slot_block(
+        state, state.active_idx, creature_names, card_copies,
+        enchanting_by_target=enchanting_by_target, dim=creature_slot_dim,
+    )
     i += creature_slot_dim
 
     return obs
 
 
-def _creature_slot_block(state, owner_idx, creature_names, creature_copies):
+def _creature_slot_block(state, owner_idx, creature_names, creature_copies, enchanting_by_target=None, dim=None):
     """Per-(creature name, slot) block (docs/COMBAT_PLAN.md's permanent-
     identity design, extended by docs/PRIORITY_PLAN.md item 5) for
     state.players[owner_idx]'s own battlefield -- the aggregate
@@ -315,7 +318,18 @@ def _creature_slot_block(state, owner_idx, creature_names, creature_copies):
     proxies) so this works identically whether owner_idx is "my own" seat
     or the opponent's, regardless of which one currently holds priority --
     shared by build_observation (owner_idx = state.active_idx) and
-    _opponent_creature_block (owner_idx = the other seat)."""
+    _opponent_creature_block (owner_idx = the other seat).
+
+    enchanting_by_target/dim: optional pre-fetched results of this
+    function's own two internal scans below, for a caller (build_two_
+    player_observation) that already needs the SAME battlefield-wide Aura
+    map and the SAME per-side dim for more than one call in a single
+    observation build -- profiled: build_two_player_observation calls this
+    function twice (my side, opponent's side), each independently redoing
+    the identical state.players scan and the identical dim sum, on top of
+    _opponent_aggregate_features's own separate uncached board-power scan
+    over the same data. None (every other/older caller) means "compute it
+    myself," identical to before these parameters existed."""
     battlefield = state.players[owner_idx].battlefield
     own_blocked_by = state.players[owner_idx].blocked_by
     # 1-player mode (DeckEnv) has no "other" player at all to index --
@@ -323,7 +337,8 @@ def _creature_slot_block(state, owner_idx, creature_names, creature_copies):
     # assignment only ever runs in a real 2-player game), so this is
     # always empty in that case, same as own_blocked_by above.
     other_blocked_by_values = state.players[1 - owner_idx].blocked_by.values() if len(state.players) > 1 else ()
-    dim = sum(creature_copies[name] for name in creature_names) * 6
+    if dim is None:
+        dim = sum(creature_copies[name] for name in creature_names) * 6
     out = np.zeros(dim, dtype=np.float32)
     # One battlefield scan total, not one per creature NAME (profiled: this
     # was rebuilding by_slot from scratch for every distinct creature name,
@@ -338,12 +353,13 @@ def _creature_slot_block(state, owner_idx, creature_names, creature_copies):
     # across BOTH players' battlefields" semantics _enchanting_auras itself
     # uses (an Aura and its target are always same-side, but which side
     # isn't assumed here either, matching that function's own docstring).
-    enchanting_by_target = {}
-    for player in state.players:
-        for aura in player.battlefield:
-            target = aura.flags.get("enchanting")
-            if target is not None:
-                enchanting_by_target.setdefault(id(target), []).append(aura)
+    if enchanting_by_target is None:
+        enchanting_by_target = {}
+        for player in state.players:
+            for aura in player.battlefield:
+                target = aura.flags.get("enchanting")
+                if target is not None:
+                    enchanting_by_target.setdefault(id(target), []).append(aura)
     i = 0
     for name in creature_names:
         for slot in range(1, creature_copies[name] + 1):
@@ -1818,16 +1834,20 @@ def legal_action_mask(state, actions):
     always called, exactly like every closure was before this fix -- the
     fail-safe default, not an optimization gap that can go wrong.
 
-    Resets _tap_cost_options_cache and _battlefield_lookup_cache before AND
-    after the sweep itself (not just before): guarantees neither cache can
-    ever leak past this call's own scope into a later execute_fn call or an
-    unrelated sweep against a different/mutated state, even though nothing
-    in the current single-threaded, synchronous call pattern would actually
-    trigger that -- belt-and-suspenders for a module-level global, not
-    load-bearing."""
+    Resets _tap_cost_options_cache, _battlefield_lookup_cache, and
+    game.mana's own _enchanting_cache (game.reset_mana_cache) before AND
+    after the sweep itself (not just before): guarantees none of these
+    caches can ever leak past this call's own scope into a later
+    execute_fn call or an unrelated sweep against a different/mutated
+    state, even though nothing in the current single-threaded, synchronous
+    call pattern would actually trigger that -- belt-and-suspenders for a
+    module-level global, not load-bearing. mana.py's own cache is reset
+    from here, not self-invalidating there, for the same reason the other
+    two aren't: see game.mana._enchanting's own docstring."""
     global _tap_cost_options_cache, _battlefield_lookup_cache
     _tap_cost_options_cache = None
     _battlefield_lookup_cache = None
+    game.reset_mana_cache()
     pending = state.pending_resolution
     pending_kind = pending["kind"] if pending is not None else None
     try:
@@ -1844,6 +1864,7 @@ def legal_action_mask(state, actions):
     finally:
         _tap_cost_options_cache = None
         _battlefield_lookup_cache = None
+        game.reset_mana_cache()
 
 
 # ---------------------------------------------------------------------------
@@ -2183,7 +2204,7 @@ def _for_player(state, player_idx, fn):
         state.active_idx = original
 
 
-def _opponent_aggregate_features(state, seat_idx, opponent_total_cards):
+def _opponent_aggregate_features(state, seat_idx, opponent_total_cards, enchanting_by_target=None):
     """Fixed-size (OPPONENT_AGGREGATE_DIM) block, from seat_idx's own point
     of view -- see this section's own header comment for what's public vs.
     hidden here. available_mana/non_land_permanents reuse rewards.
@@ -2192,13 +2213,33 @@ def _opponent_aggregate_features(state, seat_idx, opponent_total_cards):
     variable mana sources scores correctly with zero duplicated logic.
     opponent_total_cards (the OTHER seat's own total decklist card count)
     is the library-size normalizer -- more principled than an arbitrary
-    constant cap, and self-scales for a smaller or larger opponent deck."""
+    constant cap, and self-scales for a smaller or larger opponent deck.
+
+    enchanting_by_target: optional pre-fetched Aura map (same shape/scan
+    as _creature_slot_block's own, see its docstring) for board_power's
+    own permanent_power calls below -- profiled: board_power used to call
+    permanent_power with no enchanting_auras=, so it independently re-ran
+    the full state.players Aura scan once per opponent permanent, right
+    next to _opponent_creature_block's own already-cached version of the
+    exact same scan over the exact same battlefield one call later in
+    build_two_player_observation. None (every other caller, e.g. this
+    file's own synthetic self-check below) falls back to the original
+    per-permanent lookup, identical to before this parameter existed."""
     opponent_idx = 1 - seat_idx
     opponent = state.players[opponent_idx]
     components = _for_player(state, opponent_idx, rewards.resource_quality_components)
-    board_power = _for_player(
-        state, opponent_idx, lambda s: sum(game.permanent_power(s, p) for p in opponent.battlefield),
-    )
+    if enchanting_by_target is None:
+        board_power = _for_player(
+            state, opponent_idx, lambda s: sum(game.permanent_power(s, p) for p in opponent.battlefield),
+        )
+    else:
+        board_power = _for_player(
+            state, opponent_idx,
+            lambda s: sum(
+                game.permanent_power(s, p, enchanting_auras=enchanting_by_target.get(id(p), ()))
+                for p in opponent.battlefield
+            ),
+        )
     return np.array([
         max(state.players[seat_idx].life_total, 0) / game.state.STARTING_LIFE,
         max(opponent.life_total, 0) / game.state.STARTING_LIFE,
@@ -2230,14 +2271,15 @@ def creature_names_and_copies(decklist):
     return names, copies
 
 
-def _opponent_creature_block(state, opponent_idx, creature_names, creature_copies):
+def _opponent_creature_block(state, opponent_idx, creature_names, creature_copies, enchanting_by_target=None):
     """The opponent's creatures, at the SAME per-slot fidelity as "my own"
     battlefield (docs/PRIORITY_PLAN.md item 5 -- confirmed gap: this used
     to be a 2-value-per-name aggregate, coarser than what my own side
     already got, and real Magic never hides battlefield state). Just
     _creature_slot_block pointed at the opponent's own seat -- see its
-    docstring for what each of the 6 per-slot values means."""
-    return _creature_slot_block(state, opponent_idx, creature_names, creature_copies)
+    docstring for what each of the 6 per-slot values means, and for
+    enchanting_by_target."""
+    return _creature_slot_block(state, opponent_idx, creature_names, creature_copies, enchanting_by_target=enchanting_by_target)
 
 
 def _opponent_stack_block(state, opponent_card_names, opponent_card_copies):
@@ -2301,10 +2343,28 @@ def build_two_player_observation(state, seat_idx, decklist, horizon, pending_kin
     every 2p decision is scored against exactly the observation shape its
     own model actually trained on -- model_choose_action itself is
     agnostic to which builder produced its obs argument, so getting this
-    part right is what actually matters."""
-    base = build_observation(state, decklist, horizon, pending_kinds)
-    aggregate = _opponent_aggregate_features(state, seat_idx, opponent_total_cards)
-    creatures = _opponent_creature_block(state, 1 - seat_idx, opponent_creature_names, opponent_creature_copies)
+    part right is what actually matters.
+
+    Builds the state.players-wide Aura map (see _creature_slot_block's own
+    enchanting_by_target docstring) exactly ONCE here and threads it into
+    every one of the three sub-blocks below that each independently need
+    it -- profiled: base's own creature-slot block (my side), creatures
+    (the opponent's side), and aggregate's board_power were each
+    re-deriving the identical "which Aura enchants which permanent" answer
+    from scratch, three full state.players scans per observation build
+    instead of one."""
+    enchanting_by_target = {}
+    for player in state.players:
+        for aura in player.battlefield:
+            target = aura.flags.get("enchanting")
+            if target is not None:
+                enchanting_by_target.setdefault(id(target), []).append(aura)
+    base = build_observation(state, decklist, horizon, pending_kinds, enchanting_by_target=enchanting_by_target)
+    aggregate = _opponent_aggregate_features(state, seat_idx, opponent_total_cards, enchanting_by_target=enchanting_by_target)
+    creatures = _opponent_creature_block(
+        state, 1 - seat_idx, opponent_creature_names, opponent_creature_copies,
+        enchanting_by_target=enchanting_by_target,
+    )
     stack = _opponent_stack_block(state, opponent_card_names, opponent_card_copies)
     return np.concatenate([base, aggregate, creatures, stack])
 

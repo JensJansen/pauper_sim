@@ -32,6 +32,45 @@ def controls_all_tron_types(state):
     return TRON_TYPES.issubset(present)
 
 
+_enchanting_cache = None  # (state, {id(permanent): [auras enchanting it]}) -- see _enchanting/reset_mana_cache
+
+
+def _enchanting(state, permanent):
+    """Every Aura on state.battlefield currently enchanting `permanent` --
+    the shared scan _bonus_mana_symbols/_granted_mana_colors below both
+    used to redo independently, once per call. plan_payment/
+    choose_taps_for_cost are called from up to ~20 different _X_legal
+    closures per drl_env.legal_action_mask sweep (once per candidate
+    cast/activate/forestcycle/plot/omen action), each of which calls
+    choose_taps_for_cost, which calls _granted_mana_colors and
+    mana_output (which calls _bonus_mana_symbols) once per candidate
+    permanent -- profiled: none of that battlefield scan actually depends
+    on which cost is being tested, so it was identical, wasted work
+    repeated by every one of those ~20 calls. Cached per state object,
+    same scope as _cached_battlefield_lookup/_cached_tap_cost_options in
+    drl_env.py: safe because a legal_action_mask sweep only ever calls
+    legal_fns, never an execute_fn, so state can't mutate mid-sweep.
+    Reset by drl_env.legal_action_mask before AND after its own sweep
+    (see reset_mana_cache below) -- not by watching for mutation, so it
+    must never be trusted to outlive one sweep on its own."""
+    global _enchanting_cache
+    if _enchanting_cache is None or _enchanting_cache[0] is not state:
+        by_target = {}
+        for aura in state.battlefield:
+            target = aura.flags.get("enchanting")
+            if target is not None:
+                by_target.setdefault(id(target), []).append(aura)
+        _enchanting_cache = (state, by_target)
+    return _enchanting_cache[1].get(id(permanent), ())
+
+
+def reset_mana_cache():
+    """Called by drl_env.legal_action_mask before and after each sweep --
+    see _enchanting's own docstring for why this can't self-invalidate."""
+    global _enchanting_cache
+    _enchanting_cache = None
+
+
 def _bonus_mana_symbols(state, permanent):
     """Utopia Sprawl's own mechanic: an Aura enchanting this permanent with
     a "bonus_mana_color" flag (chosen once, at cast time) adds that
@@ -42,8 +81,8 @@ def _bonus_mana_symbols(state, permanent):
     "tapped for mana" at all, not specifically its own native ability)."""
     return [
         aura.flags["bonus_mana_color"]
-        for aura in state.battlefield
-        if aura.flags.get("enchanting") is permanent and "bonus_mana_color" in aura.flags
+        for aura in _enchanting(state, permanent)
+        if "bonus_mana_color" in aura.flags
     ]
 
 
@@ -55,9 +94,8 @@ def _granted_mana_colors(state, permanent):
     across every Aura enchanting this permanent, in case more than one
     ever grants colors to the same land."""
     granted = set()
-    for aura in state.battlefield:
-        if aura.flags.get("enchanting") is permanent:
-            granted |= aura.flags.get("bonus_mana_colors", set())
+    for aura in _enchanting(state, permanent):
+        granted |= aura.flags.get("bonus_mana_colors", set())
     return granted
 
 

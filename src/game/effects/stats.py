@@ -104,7 +104,7 @@ def permanent_toughness(state, permanent, enchanting_auras=None):
     return base + bonus
 
 
-def lifelink_count(state, permanent):
+def lifelink_count(state, permanent, enchanting_auras=None):
     """How many independent "whenever this deals damage, you gain that
     much life" triggers this creature's current damage carries -- summed
     across every enchanting Aura whose own registry entry sets "lifelink":
@@ -121,9 +121,17 @@ def lifelink_count(state, permanent):
     "lifelink" in creature_keywords would silently dedup down to one
     trigger regardless of how many Cloaks are attached. See
     game.effects.combat's own call sites for how this count multiplies
-    the life gained."""
+    the life gained.
+
+    enchanting_auras: see permanent_power's own docstring -- same optional
+    pre-fetch, same reasoning. Added alongside creature_keywords' own
+    identical parameter so combat.py's per-creature stats (power,
+    toughness, keywords, lifelink_count) can all share ONE _enchanting_
+    auras fetch per creature per combat instead of each independently
+    re-scanning state.players."""
+    auras = enchanting_auras if enchanting_auras is not None else _enchanting_auras(state, permanent)
     return sum(
-        1 for aura in _enchanting_auras(state, permanent)
+        1 for aura in auras
         if registry.EFFECT_REGISTRY.get(aura.card_def.effect_id, {}).get("lifelink", False)
     )
 
@@ -141,7 +149,7 @@ def lifelink_count(state, permanent):
 # key. Armadillo Cloak's own lifegain clause is NOT here -- see
 # lifelink_count above for why a boolean keyword is the wrong model for
 # a triggered, stacking ability.
-def creature_keywords(state, permanent):
+def creature_keywords(state, permanent, enchanting_auras=None):
     """Union of this permanent's own intrinsic registry "keywords" set
     (a creature's own EFFECT_REGISTRY entry) plus every Aura currently
     enchanting it own GRANTED "keywords" set (an Aura's own EFFECT_REGISTRY
@@ -150,9 +158,13 @@ def creature_keywords(state, permanent):
     the same owner-agnostic _enchanting_auras (correct regardless of
     state.active_idx, e.g. reading a blocker's keywords from inside
     combat_damage_step, which always runs with active_idx on the
-    attacker)."""
+    attacker).
+
+    enchanting_auras: see permanent_power's own docstring -- same optional
+    pre-fetch, same reasoning."""
+    auras = enchanting_auras if enchanting_auras is not None else _enchanting_auras(state, permanent)
     keywords = set(registry.EFFECT_REGISTRY.get(permanent.card_def.effect_id, {}).get("keywords", ()))
-    for aura in _enchanting_auras(state, permanent):
+    for aura in auras:
         keywords |= set(registry.EFFECT_REGISTRY.get(aura.card_def.effect_id, {}).get("keywords", ()))
     return keywords
 

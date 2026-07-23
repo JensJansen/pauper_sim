@@ -92,7 +92,7 @@ def _is_alive(state, permanent):
     return any(permanent in player.battlefield for player in state.players)
 
 
-def _attacker_deal_damage(state, attacker, blocker):
+def _attacker_deal_damage(state, attacker, blocker, attacker_facts, blocker_facts):
     """Attacker deals its combat damage to its blocker -- trample-aware
     (Rancor, Armadillo Cloak): assigns only enough to be lethal (the
     blocker's own remaining toughness), letting any excess spill over to
@@ -113,22 +113,33 @@ def _attacker_deal_damage(state, attacker, blocker):
     player throughout combat_damage_step, so gain_life's own active-
     player-proxied state.life_total is already correct here -- total
     damage dealt is always `power` regardless of trample (lethal-to-
-    blocker + spillover-to-player always sums back to power)."""
-    power = stats.permanent_power(state, attacker)
-    if stats.has_keyword(state, attacker, "trample"):
-        lethal = min(power, max(stats.permanent_toughness(state, blocker) - blocker.damage_marked, 0))
+    blocker + spillover-to-player always sums back to power).
+
+    attacker_facts/blocker_facts: combat_damage_step's own pre-fetched
+    {power, toughness, first_strike, trample, lifelink_count} dict for
+    each creature (see that function's own docstring) -- power/trample/
+    lifelink_count read here are ALWAYS the attacker's own, toughness read
+    here is ALWAYS the blocker's own; each of these used to be its own
+    independent stats.py call (permanent_power/has_keyword("trample")/
+    permanent_toughness/lifelink_count), each independently re-scanning
+    state.players for the same creature's own Auras -- profiled: up to
+    ~8-10 of those redundant scans per blocked pair, for what's really
+    only 8 distinct facts (4 per creature)."""
+    power = attacker_facts["power"]
+    if attacker_facts["trample"]:
+        lethal = min(power, max(blocker_facts["toughness"] - blocker.damage_marked, 0))
         blocker.damage_marked += lethal
         excess = power - lethal
         if excess > 0:
             deal_damage_to_opponent(state, excess)
     else:
         blocker.damage_marked += power
-    lifelink_count = stats.lifelink_count(state, attacker)
+    lifelink_count = attacker_facts["lifelink_count"]
     if lifelink_count:
         gain_life(state, power * lifelink_count)
 
 
-def _blocker_deal_damage(state, blocker, attacker):
+def _blocker_deal_damage(state, blocker, attacker, blocker_facts):
     """Blocker deals its combat damage to the attacker it's blocking --
     never tramples through to a player: trample is an attacking-creature
     keyword only, nothing in this card pool grants a blocker-side
@@ -141,10 +152,15 @@ def _blocker_deal_damage(state, blocker, attacker):
     state.opponent.life_total directly instead of going through
     gain_life. Multiplied by stats.lifelink_count the same stacking way
     as the attacker-side case above (2 Cloaks on a blocker also trigger
-    twice)."""
-    power = stats.permanent_power(state, blocker)
+    twice).
+
+    blocker_facts: see _attacker_deal_damage's own docstring -- same
+    pre-fetched dict, just the blocker's own this time (no attacker_facts
+    needed here: a blocker never tramples, so nothing about the attacker's
+    own stats is read in this direction)."""
+    power = blocker_facts["power"]
     attacker.damage_marked += power
-    lifelink_count = stats.lifelink_count(state, blocker)
+    lifelink_count = blocker_facts["lifelink_count"]
     if lifelink_count:
         state.opponent.life_total += power * lifelink_count
 
@@ -179,30 +195,71 @@ def combat_damage_step(state):
     creature here, unblocked damage is already just `power` per attacker.
     Each attacker's own power is multiplied by its own stats.lifelink_count
     (2 Cloaks on one attacker = 2x that attacker's own contribution), not
-    just added once per lifelinking attacker."""
+    just added once per lifelinking attacker.
+
+    Every combatant's own {power, toughness, first_strike, trample,
+    lifelink_count} is fetched exactly ONCE here, up front, and reused
+    everywhere below -- profiled: this used to call stats.permanent_power
+    twice for the same unblocked attacker (unblocked_total and
+    lifelink_total, back to back), and stats.has_keyword(..., "first_
+    strike") twice per blocked pair (once per sub-step loop, even though
+    first-strike status can't change between them -- nothing runs in
+    between except a state-based-action check, which only removes dead
+    creatures). Each of those was its own independent stats.py call, each
+    independently re-scanning state.players for that creature's own Auras
+    via stats._enchanting_auras -- up to ~8-10 redundant scans per blocked
+    pair for what's really only 8 distinct facts (4 per creature). Safe to
+    prefetch once for the whole call: nothing in this function casts a new
+    spell or attaches/detaches an Aura mid-resolution, so no combatant's
+    own facts can change during it (damage_marked does change, but that's
+    read fresh off the permanent itself everywhere, never cached here)."""
     unblocked = [p for p in state.attackers if p not in state.blocked_by]
-    unblocked_total = sum(stats.permanent_power(state, p) for p in unblocked)
-    lifelink_total = sum(stats.permanent_power(state, p) * stats.lifelink_count(state, p) for p in unblocked)
+    pairs = list(state.blocked_by.items())
+    all_combatants = set(state.attackers) | {p for _a, p in pairs}
+
+    enchanting_by_target = {}
+    if all_combatants:
+        for player in state.players:
+            for aura in player.battlefield:
+                target = aura.flags.get("enchanting")
+                if target is not None:
+                    enchanting_by_target.setdefault(id(target), []).append(aura)
+
+    def _facts(permanent):
+        auras = enchanting_by_target.get(id(permanent), ())
+        keywords = stats.creature_keywords(state, permanent, enchanting_auras=auras)
+        return {
+            "power": stats.permanent_power(state, permanent, enchanting_auras=auras),
+            "toughness": stats.permanent_toughness(state, permanent, enchanting_auras=auras),
+            "first_strike": "first_strike" in keywords,
+            "trample": "trample" in keywords,
+            "lifelink_count": stats.lifelink_count(state, permanent, enchanting_auras=auras),
+        }
+
+    creature_facts = {id(p): _facts(p) for p in all_combatants}
+
+    unblocked_total = sum(creature_facts[id(p)]["power"] for p in unblocked)
+    lifelink_total = sum(
+        creature_facts[id(p)]["power"] * creature_facts[id(p)]["lifelink_count"] for p in unblocked
+    )
     state.attackers = []
     deal_damage_to_opponent(state, unblocked_total)
     if lifelink_total:
         gain_life(state, lifelink_total)
 
-    pairs = list(state.blocked_by.items())
-
     for attacker, blocker in pairs:
-        if stats.has_keyword(state, attacker, "first_strike"):
-            _attacker_deal_damage(state, attacker, blocker)
-        if stats.has_keyword(state, blocker, "first_strike"):
-            _blocker_deal_damage(state, blocker, attacker)
+        if creature_facts[id(attacker)]["first_strike"]:
+            _attacker_deal_damage(state, attacker, blocker, creature_facts[id(attacker)], creature_facts[id(blocker)])
+        if creature_facts[id(blocker)]["first_strike"]:
+            _blocker_deal_damage(state, blocker, attacker, creature_facts[id(blocker)])
     state_based.check_state_based_actions(state)
 
     for attacker, blocker in pairs:
         attacker_alive, blocker_alive = _is_alive(state, attacker), _is_alive(state, blocker)
-        if not stats.has_keyword(state, attacker, "first_strike") and attacker_alive and blocker_alive:
-            _attacker_deal_damage(state, attacker, blocker)
-        if not stats.has_keyword(state, blocker, "first_strike") and blocker_alive and attacker_alive:
-            _blocker_deal_damage(state, blocker, attacker)
+        if not creature_facts[id(attacker)]["first_strike"] and attacker_alive and blocker_alive:
+            _attacker_deal_damage(state, attacker, blocker, creature_facts[id(attacker)], creature_facts[id(blocker)])
+        if not creature_facts[id(blocker)]["first_strike"] and blocker_alive and attacker_alive:
+            _blocker_deal_damage(state, blocker, attacker, creature_facts[id(blocker)])
     state_based.check_state_based_actions(state)
 
 

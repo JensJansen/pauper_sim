@@ -97,6 +97,7 @@ from .mana import (
     pay_cost,
     plan_payment,
     pool_spend_options,
+    reset_mana_cache,
     tap_cost_options,
 )
 from .registry import CARD_DEFS, EFFECT_REGISTRY, ENTERS_TAPPED_EFFECTS, SIMPLE_MANA_SOURCE_EFFECTS, derive_pending_kinds

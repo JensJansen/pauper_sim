@@ -1,0 +1,21 @@
+{
+  "decklist": "mono_red_madness.txt",
+  "decklist_2": "spy_combo.txt",
+  "terminated_fn": "never_terminated",
+  "reward_fns": ["fast_win_reward_099"],
+  "reward_fns_2": ["action_count_win_reward_200"],
+  "horizon": 120,
+  "on_the_play": null,
+  "token_card_defs": ["Blood"],
+  "n_envs": 8,
+  "vec_env": "subproc",
+  "model_cls": "lean_ppo",
+  "selfplay_mode": "simultaneous",
+  "model_kwargs": {
+    "policy_kwargs": {"net_arch": [256, 256]},
+    "verbose": 1,
+    "device": "cuda",
+    "n_steps": 2048,
+    "batch_size": 2048
+  }
+}
