@@ -135,14 +135,28 @@ def _card_lookup(decklist):
     return cached
 
 
+_OBSERVATION_LAYOUT_CACHE = {}  # (tuple(decklist), tuple(pending_kinds)) -> (all_kinds, creature_names, creature_slot_dim, dim). Same "keyed by content, computed once" pattern as _CARD_LOOKUP_CACHE above -- decklist/pending_kinds are fixed for a harness/env's whole lifetime, so recomputing these on every single build_observation call (profiled: this function's own body, not counting sub-calls, was ~4% of total training wall-clock by itself) is pure waste.
+
+
+def _observation_layout(decklist, pending_kinds):
+    key = (tuple(decklist), tuple(pending_kinds))
+    cached = _OBSERVATION_LAYOUT_CACHE.get(key)
+    if cached is None:
+        card_names, card_copies = _card_lookup(decklist)
+        all_kinds = _all_pending_kinds(pending_kinds)
+        creature_names = [name for name in card_names if game.CARD_DEFS[name].card_type == game.CardType.CREATURE]
+        creature_slot_dim = sum(card_copies[name] * 6 for name in creature_names)
+        dim = (len(card_names) * 4 + 3 + len(all_kinds) + len(game.POOL_COLORS) + len(game.turn.Phase)
+               + len(card_names) + (len(card_names) + 1) + 1 + 1
+               + creature_slot_dim)
+        cached = (all_kinds, creature_names, creature_slot_dim, dim)
+        _OBSERVATION_LAYOUT_CACHE[key] = cached
+    return cached
+
+
 def build_observation(state, decklist, horizon, pending_kinds):
     card_names, card_copies = _card_lookup(decklist)
-    all_kinds = _all_pending_kinds(pending_kinds)
-    creature_names = [name for name in card_names if game.CARD_DEFS[name].card_type == game.CardType.CREATURE]
-    creature_slot_dim = sum(card_copies[name] * 6 for name in creature_names)
-    dim = (len(card_names) * 4 + 3 + len(all_kinds) + len(game.POOL_COLORS) + len(game.turn.Phase)
-           + len(card_names) + (len(card_names) + 1) + 1 + 1
-           + creature_slot_dim)
+    all_kinds, creature_names, creature_slot_dim, dim = _observation_layout(decklist, pending_kinds)
     obs = np.zeros(dim, dtype=np.float32)
 
     hand_counts = {name: 0 for name in card_names}
@@ -590,6 +604,16 @@ def _choose_name_options(state):
         return game.sacrifice_options(state)
     if kind == "discard":
         return game.discard_options(state)
+    if kind == "discard_or_sacrifice":
+        # Only the DISCARD half reuses this generic "Choose: X" dispatch
+        # (bare hand-card names, same as plain "discard") -- the
+        # sacrifice half gets its own distinctly-labeled actions instead
+        # (build_action_table's own "Sacrifice (cost): X" loop) precisely
+        # to avoid ambiguity if a hand card and a battlefield land ever
+        # share a name (e.g. a Mountain in hand while Mountains are also
+        # in play) -- two different action strings, never one bare name
+        # that could mean either.
+        return game.discard_or_sacrifice_discard_options(state)
     if kind == "mulligan_bottom":
         return game.bottom_options(state)
     if kind == "ancient_stirrings":
@@ -624,6 +648,8 @@ def _choose_name_execute(name):
             game.execute_sacrifice_option(state, name)
         elif kind == "discard":
             game.execute_discard_option(state, name)
+        elif kind == "discard_or_sacrifice":
+            game.execute_discard_or_sacrifice_option(state, "discard", name)
         elif kind == "mulligan_bottom":
             game.execute_bottom_option(state, name)
         elif kind == "ancient_stirrings":
@@ -682,10 +708,8 @@ def _attack_legal(name, slot):
             return False
         if state.active_idx != state.turn_player_idx:
             return False
-        return any(
-            p.card_def.name == name and p.slot == slot and game.creature_attack_eligible(state, p)
-            for p in state.battlefield
-        )
+        p = _cached_battlefield_lookup(state).get((name, slot))
+        return p is not None and game.creature_attack_eligible(state, p)
     return legal
 
 
@@ -765,10 +789,8 @@ def _assign_blocker_legal(name, slot):
         pending = state.pending_resolution
         if pending is None or pending["kind"] != "declare_blockers":
             return False
-        return any(
-            p.card_def.name == name and p.slot == slot and game.creature_block_eligible(state, p)
-            for p in state.battlefield
-        )
+        p = _cached_battlefield_lookup(state).get((name, slot))
+        return p is not None and game.creature_block_eligible(state, p)
     return legal
 
 
@@ -946,6 +968,59 @@ def _decline_discard_legal(state):
 
 def _decline_discard_execute(state):
     game.execute_discard_decline(state)
+
+
+def _target_self_legal(state):
+    pending = state.pending_resolution
+    return pending is not None and pending["kind"] == "choose_target_player"
+
+
+def _target_self_execute(state):
+    game.execute_choose_target_player_option(state, state.active_idx)
+
+
+def _target_opponent_legal(state):
+    """Legal only once a real second PlayerState exists -- "target
+    player" genuinely offers a choice the instant one does (Relic of
+    Progenitus' own repeatable exile ability), same "only legal with a
+    real opponent" gate deal_damage_to_opponent's own 2-player branch
+    already uses elsewhere."""
+    pending = state.pending_resolution
+    return pending is not None and pending["kind"] == "choose_target_player" and len(state.players) > 1
+
+
+def _target_opponent_execute(state):
+    game.execute_choose_target_player_option(state, 1 - state.active_idx)
+
+
+def _discard_or_sacrifice_sacrifice_legal(name):
+    """The SACRIFICE half of Highway Robbery's own "discard a card or
+    sacrifice a land" -- a distinctly-labeled action (build_action_table's
+    own "Sacrifice (cost): {name}"), not a reuse of the generic
+    "Choose: X" dispatch _choose_name_options/_choose_name_execute give
+    the DISCARD half: two different action strings, so a hand card and a
+    battlefield land sharing a name (e.g. a Mountain in hand while
+    Mountains are also in play) can never be ambiguous about which one a
+    single button means."""
+    def legal(state):
+        pending = state.pending_resolution
+        return pending is not None and pending["kind"] == "discard_or_sacrifice" and name in game.discard_or_sacrifice_sacrifice_options(state)
+    return legal
+
+
+def _discard_or_sacrifice_sacrifice_execute(name):
+    def execute(state):
+        game.execute_discard_or_sacrifice_option(state, "sacrifice", name)
+    return execute
+
+
+def _decline_discard_or_sacrifice_legal(state):
+    pending = state.pending_resolution
+    return pending is not None and pending["kind"] == "discard_or_sacrifice"
+
+
+def _decline_discard_or_sacrifice_execute(state):
+    game.execute_discard_or_sacrifice_decline(state)
 
 
 def _madness_cast_legal(state):
@@ -1533,11 +1608,63 @@ def build_action_table(decklist, registry, token_card_defs=(), pending_kinds=(),
     actions.append(("Mulligan", _mulligan_take_legal, _mulligan_take_execute))
     if "discard" in pending_kinds:
         actions.append(("Decline (discard)", _decline_discard_legal, _decline_discard_execute))
+    if "discard_or_sacrifice" in pending_kinds:
+        # The DISCARD half reuses the generic "Choose: X" action built
+        # above (bare hand-card names); only the SACRIFICE half needs its
+        # own distinctly-labeled actions here (see
+        # _discard_or_sacrifice_sacrifice_legal's own docstring for why).
+        for name in land_names:
+            actions.append((
+                f"Sacrifice (cost): {name}",
+                _discard_or_sacrifice_sacrifice_legal(name),
+                _discard_or_sacrifice_sacrifice_execute(name),
+            ))
+        actions.append((
+            "Decline (discard or sacrifice)",
+            _decline_discard_or_sacrifice_legal,
+            _decline_discard_or_sacrifice_execute,
+        ))
     if "madness_decision" in pending_kinds:
         actions.append(("Cast (madness)", _madness_cast_legal, _madness_cast_execute))
         actions.append(("Decline (madness)", _madness_decline_legal, _madness_decline_execute))
+    if "choose_target_player" in pending_kinds:
+        # "Target: yourself" is always legal the instant this pending
+        # kind is reached (a real Magic legality fact -- "target player"
+        # never excludes its own caster), even alone in a 1-player game;
+        # "Target: opponent" only becomes legal once a real second
+        # PlayerState exists. Two fixed actions, not a per-name loop --
+        # there are only ever at most 2 possible players, never more.
+        actions.append(("Target: yourself", _target_self_legal, _target_self_execute))
+        actions.append(("Target: opponent", _target_opponent_legal, _target_opponent_execute))
 
     return tuple(actions)
+
+
+_battlefield_lookup_cache = None  # (state, {(name, slot): Permanent}) -- valid only for the duration of one legal_action_mask sweep, same lifecycle as _tap_cost_options_cache below
+
+
+def _cached_battlefield_lookup(state):
+    """Sweep-scoped {(name, slot): Permanent} lookup for state.battlefield --
+    same "profiled, not guessed" caching pattern as _cached_tap_cost_options
+    just below (docs/PRIORITY_PLAN.md item 6): _attack_legal/
+    _assign_blocker_legal each independently scanned the WHOLE battlefield
+    with any(...) to find one specific (name, slot), once per action-table
+    entry -- for a deck with many creature copies (boggles' Auras/tokens)
+    that's O(action_table_size x battlefield_size) repeated work every
+    sweep (profiled: 2 closures alone accounted for ~3.4M calls across a
+    single 8192-step training burst). Building this dict once per sweep
+    turns each of those checks into an O(1) lookup. Safe for the same
+    reason _cached_tap_cost_options is: a legal_action_mask sweep only ever
+    calls legal_fns, never an execute_* function, so state can't change
+    mid-sweep. (name, slot) is a safe dict key here the same way
+    _creature_slot_block's own by_slot lookup already relies on it being
+    unique per name -- state.battlefield is always ONE side's own,
+    active-relative zone (see this module's other active-relative
+    docstrings), never two players' permanents mixed in one sweep."""
+    global _battlefield_lookup_cache
+    if _battlefield_lookup_cache is None or _battlefield_lookup_cache[0] is not state:
+        _battlefield_lookup_cache = (state, {(p.card_def.name, p.slot): p for p in state.battlefield})
+    return _battlefield_lookup_cache[1]
 
 
 _tap_cost_options_cache = None  # (state, result) -- valid only for the duration of one legal_action_mask sweep, see _cached_tap_cost_options
@@ -1572,18 +1699,21 @@ def legal_action_mask(state, actions):
     table, none privileged as a default (a caller with its own decklist
     always has its own table to pass, e.g. harness.py's self.actions).
 
-    Resets _tap_cost_options_cache before AND after the sweep itself
-    (not just before): guarantees the cache can never leak past this
-    call's own scope into a later execute_fn call or an unrelated sweep
-    against a different/mutated state, even though nothing in the current
-    single-threaded, synchronous call pattern would actually trigger that
-    -- belt-and-suspenders for a module-level global, not load-bearing."""
-    global _tap_cost_options_cache
+    Resets _tap_cost_options_cache and _battlefield_lookup_cache before AND
+    after the sweep itself (not just before): guarantees neither cache can
+    ever leak past this call's own scope into a later execute_fn call or an
+    unrelated sweep against a different/mutated state, even though nothing
+    in the current single-threaded, synchronous call pattern would actually
+    trigger that -- belt-and-suspenders for a module-level global, not
+    load-bearing."""
+    global _tap_cost_options_cache, _battlefield_lookup_cache
     _tap_cost_options_cache = None
+    _battlefield_lookup_cache = None
     try:
         return np.array([legal_fn(state) for _, legal_fn, _ in actions], dtype=bool)
     finally:
         _tap_cost_options_cache = None
+        _battlefield_lookup_cache = None
 
 
 # ---------------------------------------------------------------------------
@@ -2201,6 +2331,27 @@ class TwoPlayerDeckEnv(gymnasium.Env):
         self.observation_space = spaces.Box(low=0.0, high=1.0, shape=(self.observation_dim,), dtype=np.float32)
 
         self._cached_mask = None
+
+    def reload_opponent_model(self, path, model_cls):
+        """SubprocVecEnv counterpart to TrainingHarness.set_opponent_model:
+        that method hands over a LIVE model object, which only works when
+        the env and the model share one process (DummyVecEnv). Under
+        SubprocVecEnv this env instance lives in its own worker process, so
+        there's no live object to share -- train_two_player instead calls
+        this (via VecEnv.env_method, which works identically for either vec
+        env class) periodically with a freshly-saved checkpoint path,
+        exactly the periodic-snapshot self-play real large-scale systems
+        (AlphaStar, OpenAI Five) use (see docs/GPU_VECENV_INVESTIGATION.md
+        option C). device="cpu" (ponytail: inference-only here, keeps
+        subprocess loads simple regardless of the training device)."""
+        self.opponent_model = model_cls.load(path, device="cpu")
+
+    def reload_own_model(self, path, model_cls):
+        """reload_opponent_model's counterpart for own_model -- see that
+        method's docstring; own_model needs the same periodic refresh under
+        SubprocVecEnv (it's just as unreachable as a live object across the
+        process boundary)."""
+        self.own_model = model_cls.load(path, device="cpu")
 
     def _build_observation(self):
         return build_two_player_observation(

@@ -1,0 +1,19 @@
+{
+  "decklist": "boggles.txt",
+  "decklist_2": "boggles.txt",
+  "terminated_fn": "never_terminated",
+  "reward_fns": ["action_count_win_reward_200"],
+  "horizon": 120,
+  "on_the_play": null,
+  "token_card_defs": ["Eldrazi Spawn", "Warrior"],
+  "token_card_defs_2": ["Eldrazi Spawn", "Warrior"],
+  "seed": 0,
+  "n_envs": 8,
+  "vec_env": "subproc",
+  "model_kwargs": {
+    "policy_kwargs": {"net_arch": [64, 64]},
+    "verbose": 1,
+    "device": "cpu",
+    "n_steps": 256
+  }
+}

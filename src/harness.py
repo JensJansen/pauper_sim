@@ -11,10 +11,12 @@ this file.
 import json
 import os
 import random
+import shutil
+import tempfile
 from datetime import datetime
 
 from stable_baselines3.common.monitor import Monitor
-from stable_baselines3.common.vec_env import DummyVecEnv
+from stable_baselines3.common.vec_env import DummyVecEnv, SubprocVecEnv
 
 import game
 import drl_env
@@ -773,8 +775,13 @@ class TrainingHarness:
         model.learn() itself in bursts, so SB3's own StopTrainingOnMaxEpisodes
         callback -- reset at the start of every separate learn() call -- has
         no cumulative count to stop on across bursts the way a single
-        1-player .learn() call does)."""
-        return sum(len(env.episode_lengths) for env in self.model.get_env().envs)
+        1-player .learn() call does).
+
+        Goes through env_method("get_episode_rewards") rather than .envs directly:
+        .envs only exists on DummyVecEnv (the actual env objects, reachable because
+        everything's one process) -- env_method is the generic VecEnv API that works
+        identically for SubprocVecEnv too (see docs/GPU_VECENV_INVESTIGATION.md)."""
+        return sum(len(r) for r in self.model.get_env().env_method("get_episode_rewards"))
 
     # -- D5: training ---------------------------------------------------
 
@@ -1024,10 +1031,26 @@ def train_two_player(harness_a, harness_b, total_timesteps, burst_timesteps=2000
     against each other -- the confirmed "opponent-as-environment" design
     (see TwoPlayerDeckEnv's own docstring): harness_a.env auto-plays
     harness_b's CURRENT model during harness_b's turns, and vice versa.
+
+    Under DummyVecEnv (n_envs==1, or n_envs>1 with the default vec_env_cls):
     set_opponent_model stores the model OBJECT itself (not a snapshot), so
     both sides face an ever-improving live opponent with zero re-wiring
     needed between bursts -- each .learn() call mutates the very object
     the other side's env already holds a reference to.
+
+    Under SubprocVecEnv: no live object can cross the OS process boundary
+    into each worker (see TwoPlayerDeckEnv.reload_opponent_model's own
+    docstring), so instead this periodically saves both sides' current
+    weights and env_method-reloads them into every worker -- once before
+    the loop starts (replacing the live wiring's one-time set_opponent_model
+    call) and again after every burst, the same cadence burst_timesteps
+    already defines (see docs/GPU_VECENV_INVESTIGATION.md option C:
+    periodic-snapshot self-play, the same technique real large-scale
+    self-play systems like AlphaStar/OpenAI Five use). own_model gets
+    reloaded too, not just opponent_model -- it's exactly as unreachable as
+    a live object across the process boundary, and staying fresh matters
+    for the same reason opponent_model does (TwoPlayerDeckEnv._play_
+    opponent_turn's own reactive-decision simulation).
 
     burst_timesteps: how often the two sides swap training turns, not a
     tunable that changes the end result in any principled way -- small
@@ -1047,19 +1070,41 @@ def train_two_player(harness_a, harness_b, total_timesteps, burst_timesteps=2000
     .learn() call does. Checked against EITHER side reaching the target
     (both sides train the same number of bursts, so they stay close
     together regardless), same spirit as 1-player's own max_episodes."""
-    harness_a.set_opponent_model(harness_b.model)
-    harness_b.set_opponent_model(harness_a.model)
+    subproc = isinstance(harness_a.env, SubprocVecEnv)
+    snapshot_dir = tempfile.mkdtemp(prefix="selfplay_snapshots_") if subproc else None
 
-    trained = 0
-    while trained < total_timesteps:
-        if max_episodes is not None and (
-            harness_a.episode_count() >= max_episodes or harness_b.episode_count() >= max_episodes
-        ):
-            break
-        step = min(burst_timesteps, total_timesteps - trained)
-        harness_a.model.learn(total_timesteps=step, reset_num_timesteps=False)
-        harness_b.model.learn(total_timesteps=step, reset_num_timesteps=False)
-        trained += step
+    def _sync_subproc_snapshots():
+        path_a = os.path.join(snapshot_dir, "a.zip")
+        path_b = os.path.join(snapshot_dir, "b.zip")
+        harness_a.model.save(path_a)
+        harness_b.model.save(path_b)
+        harness_a.env.env_method("reload_own_model", path_a, harness_a.model_cls)
+        harness_a.env.env_method("reload_opponent_model", path_b, harness_b.model_cls)
+        harness_b.env.env_method("reload_own_model", path_b, harness_b.model_cls)
+        harness_b.env.env_method("reload_opponent_model", path_a, harness_a.model_cls)
+
+    try:
+        if subproc:
+            _sync_subproc_snapshots()
+        else:
+            harness_a.set_opponent_model(harness_b.model)
+            harness_b.set_opponent_model(harness_a.model)
+
+        trained = 0
+        while trained < total_timesteps:
+            if max_episodes is not None and (
+                harness_a.episode_count() >= max_episodes or harness_b.episode_count() >= max_episodes
+            ):
+                break
+            step = min(burst_timesteps, total_timesteps - trained)
+            harness_a.model.learn(total_timesteps=step, reset_num_timesteps=False)
+            harness_b.model.learn(total_timesteps=step, reset_num_timesteps=False)
+            trained += step
+            if subproc:
+                _sync_subproc_snapshots()
+    finally:
+        if snapshot_dir:
+            shutil.rmtree(snapshot_dir, ignore_errors=True)
 
     harness_a.total_timesteps_trained = harness_a.model.num_timesteps
     harness_b.total_timesteps_trained = harness_b.model.num_timesteps
@@ -1361,5 +1406,53 @@ if __name__ == "__main__":
         assert step["actor_idx"] in (0, 1)
         assert len(step["state_after"]["players"]) == 2
         print(f"harness.py evaluate_two_player log_path self-check: OK ({log_path})")
+
+        # SubprocVecEnv self-play (docs/GPU_VECENV_INVESTIGATION.md option C):
+        # this is the exact scenario that used to crash outright
+        # ("AttributeError: 'SubprocVecEnv' object has no attribute 'envs'")
+        # before the episode_count()/env_method fix, and would otherwise
+        # silently train against an always-Pass opponent (no live object can
+        # cross the process boundary -- see reload_opponent_model/
+        # reload_own_model's own docstrings in drl_env.py) without the
+        # periodic snapshot-sync train_two_player now does for this case.
+        # n_envs=2 so SubprocVecEnv actually spawns real worker processes,
+        # not just a size-1 no-op.
+        subproc_kwargs = {**tiny_model_kwargs, "n_steps": 16, "batch_size": 8}
+        harness_a_sp = TrainingHarness(
+            reward_fn=rewards.strict_binary_reward, model_cls=MaskablePPO, decklist=deck_a,
+            terminated_fn=lambda s: False, pending_kinds=pending_a, model_kwargs=subproc_kwargs,
+            horizon=40, on_the_play=True, seed=0, opponent_decklist=deck_b,
+            opponent_terminated_fn=lambda s: False, opponent_pending_kinds=pending_b, my_seat_idx=0,
+            n_envs=2, vec_env_cls=SubprocVecEnv,
+        )
+        harness_b_sp = TrainingHarness(
+            reward_fn=rewards.strict_binary_reward, model_cls=MaskablePPO, decklist=deck_b,
+            terminated_fn=lambda s: False, pending_kinds=pending_b, model_kwargs=subproc_kwargs,
+            horizon=40, on_the_play=False, seed=1, opponent_decklist=deck_a,
+            opponent_terminated_fn=lambda s: False, opponent_pending_kinds=pending_a, my_seat_idx=1,
+            n_envs=2, vec_env_cls=SubprocVecEnv,
+        )
+        try:
+            train_two_player(
+                harness_a_sp, harness_b_sp, total_timesteps=64, burst_timesteps=32, max_episodes=4,
+            )
+            assert harness_a_sp.total_timesteps_trained > 0 and harness_b_sp.total_timesteps_trained > 0
+            # >= 0, not necessarily > 0 -- the tiny step budget here isn't guaranteed to
+            # finish a whole episode; what this regression-tests is that episode_count()
+            # (env_method-based, see its own docstring) doesn't raise under SubprocVecEnv
+            # the way the old .envs-based version did.
+            assert harness_a_sp.episode_count() >= 0 and harness_b_sp.episode_count() >= 0
+            wins_a_sp, wins_b_sp, draws_sp, turn_counts_sp, action_counts_sp = evaluate_two_player(
+                harness_a_sp, harness_b_sp, num_games=4, horizon=40, seed=7,
+            )
+            assert wins_a_sp + wins_b_sp + draws_sp == 4
+            assert all(a > 0 for a in action_counts_sp)  # every game takes at least 1 action
+            print(
+                f"harness.py train_two_player SubprocVecEnv self-check: OK "
+                f"(wins_a={wins_a_sp}, wins_b={wins_b_sp}, draws={draws_sp})"
+            )
+        finally:
+            harness_a_sp.env.close()
+            harness_b_sp.env.close()
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)

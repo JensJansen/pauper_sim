@@ -63,11 +63,16 @@ CSV_FIELDS = [
 
 def _episodes_completed(harness):
     """Exact count of episodes finished so far by this harness's own model,
-    summed across every parallel env (n_envs>1) -- Monitor.episode_lengths
+    summed across every parallel env (n_envs>1) -- Monitor.get_episode_rewards()
     is a plain, never-truncated list for the env's whole lifetime (unlike
     SB3's own ep_info_buffer, capped to the last 100), so this stays exact
-    even across a batch of many thousands of episodes."""
-    return sum(len(env.get_episode_rewards()) for env in harness.model.get_env().envs)
+    even across a batch of many thousands of episodes.
+
+    Goes through env_method("get_episode_rewards") rather than .envs directly:
+    .envs only exists on DummyVecEnv (the actual env objects, reachable because
+    everything's one process) -- env_method is the generic VecEnv API that works
+    identically for SubprocVecEnv too (see docs/GPU_VECENV_INVESTIGATION.md)."""
+    return sum(len(r) for r in harness.model.get_env().env_method("get_episode_rewards"))
 
 
 MIN_CHUNK_TIMESTEPS = 500  # floor on each retry chunk -- keeps the tail of the loop (small "remaining" counts) from thrashing through many tiny, overhead-dominated train_two_player calls
