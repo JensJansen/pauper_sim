@@ -10,7 +10,7 @@ from .effects.combat import combat_damage_step, declare_attackers_step
 from .effects.stack import resolve_top_of_stack
 from .effects.state_based import check_state_based_actions, cleanup_step
 from .effects.triggers import promote_triggers_to_stack
-from .resolution import begin_declare_blockers, begin_mulligan
+from .resolution import begin_declare_blockers, begin_mulligan, complete_resolution
 from .state import DeckedOut, new_game_state, new_multiplayer_game_state
 
 
@@ -203,6 +203,7 @@ def _run_mulligan_gen(state):
         begin_mulligan(state, on_complete=lambda s: None)
         while state.pending_resolution is not None:
             action = yield
+            state.players[state.active_idx].actions_taken += 1
             action()  # keep/mulligan/bottom -- None (Pass) is never expected, same as _declare_blockers_gen
     state.active_idx = starting_idx
 
@@ -245,16 +246,34 @@ def _declare_blockers_gen(state):
 
     No-op (no yield at all) if there's no real opponent to consult
     (len(state.players) < 2) -- matches every 1-player caller exactly as
-    before blocking existed."""
+    before blocking existed.
+
+    Bounded at PRIORITY_ROUND_ACTION_CAP iterations, same constant and same
+    reasoning _run_priority_round_gen's own cap-exhaustion path already
+    documents (a deterministic or barely-trained policy can keep re-issuing
+    the same unproductive action forever) -- confirmed live via
+    boggles_mirror evaluation: with no cap at all here (unlike that other
+    loop), a defender stuck re-assigning the same blocker assignment spun
+    for tens of thousands of iterations, turn_number never advancing.
+    Exhausting the cap force-completes with whatever's already been
+    assigned (complete_resolution, same "can't finish, so the attempt ends
+    outright" precedent mana.abandon_pay_cost and the priority round's own
+    cap-exhaustion already use) rather than leaving declare_blockers open
+    forever."""
     if len(state.players) < 2:
         return
     attacker_idx = state.active_idx
     state.active_idx = 1 - attacker_idx
     try:
         begin_declare_blockers(state, on_complete=lambda s: None)
-        while state.pending_resolution is not None:
+        for _ in range(PRIORITY_ROUND_ACTION_CAP):
+            if state.pending_resolution is None:
+                return
             action = yield
+            state.players[state.active_idx].actions_taken += 1
             action()  # "Done" is its own explicit action here -- None (Pass) is never expected, same as before
+        if state.pending_resolution is not None:
+            complete_resolution(state)
     finally:
         state.active_idx = attacker_idx
 
@@ -299,7 +318,27 @@ def _run_priority_round_gen(state):
             if consecutive_passes >= len(state.players):
                 if state.stack:
                     resolve_top_of_stack(state)
-                    state.active_idx = state.turn_player_idx
+                    # Rule 1 (priority resets to the turn player) applies to
+                    # handing out the NEXT priority window -- it does not
+                    # apply if resolving the stack top just opened a fresh
+                    # pending_resolution (e.g. a Madness cast-or-decline
+                    # choice), which is the entry's own CONTROLLER's forced
+                    # decision, not a priority window, and stays open past
+                    # this yield. resolve_top_of_stack already restored
+                    # state.active_idx to that controller (game/effects/
+                    # stack.py); when the controller is the non-turn player
+                    # (their own instant-speed trigger, resolving during the
+                    # opponent's turn), stomping active_idx back to
+                    # turn_player_idx here reassigns the decision -- and the
+                    # zone reads (state.exile/state.hand) it makes -- to the
+                    # wrong player. Confirmed live via mono_red_madness_mirror
+                    # training: a Blood-token discard's Madness trigger,
+                    # resolving on the opponent's turn, misattributed to
+                    # turn_player_idx and crashing resolution._remove_one_
+                    # from_exile ("should be unreachable" StopIteration) once
+                    # decline was chosen against the wrong player's exile.
+                    if state.pending_resolution is None:
+                        state.active_idx = state.turn_player_idx
                     consecutive_passes = 0
                     continue
                 # Stack empty, everyone passed -- the phase/step is over.
@@ -315,6 +354,7 @@ def _run_priority_round_gen(state):
                 return
             state.active_idx = 1 - state.active_idx  # the only other player, in a 2-player game
         else:
+            state.players[state.active_idx].actions_taken += 1  # Pass itself doesn't count -- see PlayerState.actions_taken's own docstring
             action()
             consecutive_passes = 0  # the priority holder keeps priority (rule 2) -- state.active_idx unchanged
 
@@ -438,9 +478,23 @@ def _run_turn_gen(state, combat_enabled=False):
                 # anything during cleanup, so this loop always runs
                 # exactly once in practice.
                 while True:
-                    while state.pending_resolution is not None:
+                    for _ in range(PRIORITY_ROUND_ACTION_CAP):
+                        if state.pending_resolution is None:
+                            break
                         action = yield
+                        state.players[state.active_idx].actions_taken += 1
                         action()
+                    else:
+                        # Same defensive cap _declare_blockers_gen now has,
+                        # for the same reason (an uncapped yield loop here
+                        # could spin forever the same way that one did) --
+                        # naturally bounded by hand size in practice (a
+                        # discard resolution can only ask for as many cards
+                        # as are actually over the hand-size limit), so this
+                        # is defense-in-depth rather than a confirmed-live
+                        # bug like that one was.
+                        if state.pending_resolution is not None:
+                            complete_resolution(state)
                     if state.turn_won is not None:
                         return
                     if not state.trigger_queue:

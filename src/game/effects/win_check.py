@@ -31,6 +31,17 @@ def _check_end_of_game(state):
         state.winner = active_idx
 
 
+def gain_life(state, n):
+    """Every 'you gain N life' effect routes through here -- mirrors
+    deal_damage_to_opponent's own role as the choke point for the other
+    direction. state.life_total is the active-player-proxied field
+    (game.state's own _active_player_property), so this always credits
+    whoever is actually resolving the effect, in both 1- and 2-player
+    games; no _check_end_of_game call needed, since gaining life can never
+    newly satisfy a terminated_fn or drop anyone's life to 0."""
+    state.life_total += n
+
+
 def deal_damage_to_opponent(state, n):
     """Every 'deals N damage to the opponent' effect routes through here
     -- the single choke point keeping state.damage_dealt (the historical
@@ -69,5 +80,8 @@ if __name__ == "__main__":
     won_turn = state2.turn_won
     deal_damage_to_opponent(state2, 10)
     assert state2.turn_won == won_turn
+
+    gain_life(state, 3)
+    assert state.life_total == 23  # STARTING_LIFE (20) + 3
 
     print("win_check.py self-check: OK")

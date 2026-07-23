@@ -3,7 +3,11 @@ mono-red (or, for lands with no cost, whose only mana output is red).
 Every card's cost/type/oracle-text below is a direct Scryfall pull,
 except creature power/toughness, which is a design choice, not Scryfall
 data. Breath Weapon (Tron filler, real cost {2}{R}) files here rather
-than colorless_cards.py -- verified via Scryfall, not guessed."""
+than colorless_cards.py -- verified via Scryfall, not guessed; its real
+"non-Dragon" filter is dropped in cast_breath_weapon below (no card in
+this entire catalog is ever a Dragon -- a checked invariant, not a
+guess), so it's implemented as a real, symmetric "2 damage to every
+creature in play" board wipe, this deck's own creatures included."""
 
 from .. import resolution
 from ..cards import CardDef, CardType, EffectId
@@ -11,6 +15,7 @@ from ..effects.casting import cast_permanent_from_hand
 from ..effects.madness_and_plot import plot_to_exile
 from ..effects.shared import discard_from_hand_to_graveyard
 from ..effects.stack import push_to_stack
+from ..effects.state_based import check_state_based_actions
 from ..effects.tokens import BLOOD_TOKEN_CARD_DEF, ROBOT_TOKEN_CARD_DEF, create_token
 from ..effects.win_check import deal_damage_to_opponent
 
@@ -37,8 +42,7 @@ RED_CARD_CATALOG = {
     ),
     "Lava Dart": CardDef("Lava Dart", CardType.INSTANT, {"R": 1}, EffectId.LAVA_DART),
     "End the Festivities": CardDef("End the Festivities", CardType.SORCERY, {"R": 1}, EffectId.END_THE_FESTIVITIES),
-    # Real cast cost is irrelevant here: filler is never cast (Tron deck bulk).
-    "Breath Weapon": CardDef("Breath Weapon", CardType.FILLER, None, EffectId.FILLER),
+    "Breath Weapon": CardDef("Breath Weapon", CardType.INSTANT, {"generic": 2, "R": 1}, EffectId.BREATH_WEAPON),
 }
 
 
@@ -94,7 +98,7 @@ def flashback_faithless_looting(state, card_def):
     already "fully paid for" the instant Flashback is chosen and pushes
     onto the stack immediately, not gated behind any further resolution."""
     state.graveyard.remove(card_def)  # leaves the graveyard the moment Flashback is chosen -- exiled after, untracked (Dread Return's own Flashback precedent)
-    push_to_stack(state, card_def, lambda st, cd: faithless_looting_discard(st))
+    push_to_stack(state, card_def, lambda st, cd: faithless_looting_discard(st), reserves_hand_card=False)
 
 
 def _highway_robbery_effect(state):
@@ -191,7 +195,7 @@ def cast_fireblast_alt(state, card_def):
     discard_from_hand_to_graveyard(state, card_def)
     resolution.begin_sacrifice(
         state, lambda p: p.card_def.name == "Mountain", 2,
-        on_complete=lambda s, ok: push_to_stack(s, card_def, lambda st, cd: _fireblast_damage(st)),
+        on_complete=lambda s, ok: push_to_stack(s, card_def, lambda st, cd: _fireblast_damage(st), reserves_hand_card=False),
     )
 
 
@@ -211,7 +215,7 @@ def flashback_lava_dart(state, card_def):
     state.graveyard.remove(card_def)  # leaves the graveyard the moment Flashback is chosen -- exiled after, untracked (Dread Return's own Flashback precedent)
     resolution.begin_sacrifice(
         state, lambda p: p.card_def.name == "Mountain", 1,
-        on_complete=lambda s, ok: push_to_stack(s, card_def, lambda st, cd: _lava_dart_damage(st)),
+        on_complete=lambda s, ok: push_to_stack(s, card_def, lambda st, cd: _lava_dart_damage(st), reserves_hand_card=False),
     )
 
 
@@ -220,6 +224,21 @@ def cast_end_the_festivities(state, card_def):
     they control -- no opposing board modeled, so just the 1 damage."""
     discard_from_hand_to_graveyard(state, card_def)
     deal_damage_to_opponent(state, 1)
+
+
+def cast_breath_weapon(state, card_def):
+    """Real text: deals 2 damage to each NON-DRAGON creature. No card in
+    this catalog is ever a Dragon (creature subtype isn't tracked at all
+    here -- nothing needs it anywhere else), so that filter is always
+    satisfied: this hits every creature currently in play, on either
+    player's battlefield, a real symmetric board wipe (this deck's own
+    creatures included, exactly like the real card)."""
+    discard_from_hand_to_graveyard(state, card_def)
+    for player in state.players:
+        for permanent in player.battlefield:
+            if permanent.card_def.card_type == CardType.CREATURE:
+                permanent.damage_marked += 2
+    check_state_based_actions(state)
 
 
 RED_EFFECT_REGISTRY = {
@@ -303,8 +322,36 @@ RED_EFFECT_REGISTRY = {
     EffectId.END_THE_FESTIVITIES: {
         "cast": {"resolve": lambda state, card_def: cast_end_the_festivities(state, card_def)},
     },
-    # Breath Weapon (filler): no entry needed -- EffectId.FILLER's single
-    # canonical {} registry entry lives in colorless_cards.py; every
-    # reader consults it via EFFECT_REGISTRY.get(effect_id, {}), which
-    # already defaults missing keys to {} the same way.
+    EffectId.BREATH_WEAPON: {
+        "cast": {"resolve": lambda state, card_def: cast_breath_weapon(state, card_def)},
+    },
 }
+
+
+if __name__ == "__main__":
+    # ponytail self-check: run via `python -m game.catalog.red_cards` from
+    # src/. No pre-existing self-check block in this file to extend --
+    # scoped narrowly to cast_breath_weapon, the one genuinely new piece of
+    # logic added here (a symmetric board wipe across BOTH players'
+    # battlefields, unlike every other burn spell in this file, which only
+    # ever touches the opponent's life total).
+    from ..state import GameState, Permanent, PlayerState
+
+    state = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
+    breath_weapon = CardDef("Breath Weapon", CardType.INSTANT, {"generic": 2, "R": 1}, EffectId.BREATH_WEAPON)
+    state.hand = [breath_weapon]
+    mine_dies = Permanent(CardDef("Mine (dies)", CardType.CREATURE, None, EffectId.FILLER, power=1, toughness=2))
+    mine_survives = Permanent(CardDef("Mine (survives)", CardType.CREATURE, None, EffectId.FILLER, power=1, toughness=3))
+    theirs_dies = Permanent(CardDef("Theirs (dies)", CardType.CREATURE, None, EffectId.FILLER, power=1, toughness=1))
+    not_a_creature = Permanent(CardDef("Some Land", CardType.LAND, None, EffectId.FILLER))
+    state.players[0].battlefield = [mine_dies, mine_survives, not_a_creature]
+    state.players[1].battlefield = [theirs_dies]
+
+    cast_breath_weapon(state, breath_weapon)
+    assert state.hand == [] and breath_weapon in state.graveyard
+    assert mine_dies not in state.players[0].battlefield  # 2 damage >= 2 toughness -- this deck's own creature dies too
+    assert mine_survives in state.players[0].battlefield and mine_survives.damage_marked == 2
+    assert theirs_dies not in state.players[1].battlefield
+    assert not_a_creature in state.players[0].battlefield  # a land is never a valid target
+
+    print("red_cards.py Breath Weapon self-check: OK")

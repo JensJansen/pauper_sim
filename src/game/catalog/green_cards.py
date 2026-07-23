@@ -3,13 +3,19 @@ mono-green (or, for lands with no cost, whose only mana output is green).
 Every card's cost/type/oracle-text below is a direct Scryfall pull,
 except creature power/toughness, which is a design choice, not Scryfall
 data. Bramble Wurm (Tron filler, real cost {6}{G}) files here rather
-than colorless_cards.py -- verified via Scryfall, not guessed. Sagu
-Wildling is implemented as its Adventure sorcery half only ("Roost
-Seek": search a basic land to hand) -- the creature side is dropped per
-design discussion, so this entry is CardType.SORCERY, not CREATURE, even
-though it keeps the printed card's name (decklist readability + Scryfall
-art lookup). "defender" marks the four defender creatures Overgrown
-Battlement's own mana ability counts (itself included)."""
+than colorless_cards.py -- verified via Scryfall, not guessed; its real
+"{2}{G}, Exile this card from your graveyard: gain 5 life" ability is a
+new "graveyard_ability" registry spec (drl_env.build_action_table),
+generic plumbing mirroring forestcycle's own hand-zone/cost-key/card_def
+shape, just sourced from state.graveyard instead of state.hand. Sagu
+Wildling's sorcery half (Roost Seek) now shuffles itself into the
+LIBRARY, not the graveyard, on resolution (real Omen -- unlike real
+Adventure, no exile step at all), enabling its own "omen" registry spec
+(also on ROOST_SEEK, also new generic plumbing) to offer the real
+creature half as a second cast option once the same physical card is
+redrawn into hand -- see cast_roost_seek's own docstring. "defender"
+marks the four defender creatures Overgrown Battlement's own mana ability
+counts (itself included)."""
 
 from .. import resolution
 from ..cards import CardDef, CardType, EffectId
@@ -18,6 +24,7 @@ from ..effects.shared import any_creature_on_battlefield, discard_from_hand_to_g
 from ..effects.stack import push_to_stack
 from ..effects.stats import enchantment_count
 from ..effects.tokens import ELDRAZI_SPAWN_TOKEN_CARD_DEF, activate_eldrazi_spawn_sac, create_token
+from ..effects.win_check import gain_life
 from ..mana import COLORS
 
 GREEN_CARD_CATALOG = {
@@ -52,7 +59,10 @@ GREEN_CARD_CATALOG = {
     "Land Grant": CardDef("Land Grant", CardType.SORCERY, {"generic": 1, "G": 1}, EffectId.LAND_GRANT),
     "Crop Rotation": CardDef("Crop Rotation", CardType.INSTANT, {"G": 1}, EffectId.CROP_ROTATION),
     "Ancient Stirrings": CardDef("Ancient Stirrings", CardType.SORCERY, {"G": 1}, EffectId.ANCIENT_STIRRINGS),
-    "Bramble Wurm": CardDef("Bramble Wurm", CardType.FILLER, None, EffectId.FILLER),
+    "Bramble Wurm": CardDef(
+        "Bramble Wurm", CardType.CREATURE, {"generic": 6, "G": 1}, EffectId.BRAMBLE_WURM, power=7, toughness=6,
+        gy_ability_cost={"generic": 2, "G": 1},
+    ),
 
     # --- boggles deck ---
     "Gladecover Scout": CardDef(
@@ -78,6 +88,17 @@ GREEN_CARD_CATALOG = {
     # adversarial/opponent mode makes it relevant to revisit.
     "Ram Through": CardDef("Ram Through", CardType.INSTANT, {"generic": 1, "G": 1}, EffectId.RAM_THROUGH),
 }
+
+# Sagu Wildling's own creature half (Omen's real payoff) -- a distinct
+# CardDef from the "Sagu Wildling" entry above (that one is the SORCERY
+# side, EffectId.ROOST_SEEK, the only one ever in a decklist/
+# game.CARD_DEFS by that name). Never registered in GREEN_CARD_CATALOG
+# itself: it's only ever reached via ROOST_SEEK's own "omen" registry
+# spec (ROOST_SEEK's own docstring), ontology matching every other token-
+# like CardDef constant in this codebase (see game.effects.tokens).
+SAGU_WILDLING_CREATURE_CARD_DEF = CardDef(
+    "Sagu Wildling", CardType.CREATURE, {"generic": 4, "G": 1}, EffectId.SAGU_WILDLING, power=3, toughness=3,
+)
 
 
 def _is_defender(permanent):
@@ -143,12 +164,39 @@ def _wall_of_roots_on_tap_undo(state, permanent):
 
 
 def cast_roost_seek(state, card_def):
-    """Sagu Wildling's Adventure sorcery half -- the only half this
-    simulator implements. {G}: search library for a basic land. Two
-    possible names here (Forest or Swamp), a real model choice, unlike
-    Land Grant's single fixed target below."""
-    discard_from_hand_to_graveyard(state, card_def)
+    """Sagu Wildling's Omen sorcery half: {G}, search library for a basic
+    land -- two possible names here (Forest or Swamp), a real model
+    choice, unlike Land Grant's single fixed target below.
+
+    Omen's own rule, unlike every other sorcery/instant in this catalog
+    AND unlike real Adventure: this does NOT exile itself. The real
+    reminder text is "(Also shuffle this card.)", attached to this same
+    search's own shuffle -- so the resolved sorcery goes straight into the
+    LIBRARY (added here, before begin_search_fetch's own find_to_hand
+    shuffles it -- one shuffle, not two, matching the single "then
+    shuffle" the reminder text is modifying). The real creature half only
+    becomes castable again once this same physical card is redrawn into
+    hand, same as any ordinary card -- see EffectId.ROOST_SEEK's own
+    "omen" registry spec / drl_env._omen_cast_legal for that second cast
+    option, offered directly against state.hand, no exile involved."""
+    state.hand.remove(card_def)
+    state.library.append(card_def)
     resolution.begin_search_fetch(state, lambda c: c.card_type == CardType.LAND, find_to_hand)
+
+
+def cast_sagu_wildling_creature(state, card_def):
+    """Sagu Wildling's real creature half: an ordinary hand cast once the
+    same physical card has been redrawn (see cast_roost_seek above),
+    offered via the "omen" registry spec (paid for by the normal
+    begin_pay_cost path -- see drl_env._omen_cast_execute): {4}{G} 3/3
+    Flying, ETB gain 3 life (EffectId.SAGU_WILDLING's own etb_trigger).
+    `card_def` here is SAGU_WILDLING_CREATURE_CARD_DEF, a different object
+    from whatever's actually sitting in state.hand (the sorcery side's own
+    CardDef, despite sharing this display name) -- so the hand card has to
+    be found by NAME, not identity."""
+    hand_card = next(c for c in state.hand if c.name == "Sagu Wildling")
+    state.hand.remove(hand_card)
+    enters_battlefield(state, card_def)
 
 
 def gatecreeper_vine_etb(state):
@@ -350,7 +398,7 @@ def cast_crop_rotation(state, card_def):
 
             resolution.begin_search_fetch(state, lambda c: c.card_type == CardType.LAND, _on_fetch_chosen)
 
-        push_to_stack(state, card_def, _resolve)
+        push_to_stack(state, card_def, _resolve, reserves_hand_card=False)
 
     resolution.begin_sacrifice(
         state,
@@ -488,6 +536,15 @@ def cast_malevolent_rumble(state, card_def):
     begin_malevolent_rumble(state, top, _on_chosen)
 
 
+def activate_bramble_wurm_gy(state, card_def):
+    """{2}{G}, Exile this card from your graveyard: gain 5 life. Removed
+    from the graveyard only -- exile itself is untracked, same convention
+    as Relic of Progenitus' own graveyard-exile ability
+    (game.catalog.colorless_cards)."""
+    state.graveyard.remove(card_def)
+    gain_life(state, 5)
+
+
 GREEN_EFFECT_REGISTRY = {
     EffectId.FOREST: {
         "mana": ("fixed", "G"),
@@ -524,7 +581,16 @@ GREEN_EFFECT_REGISTRY = {
     },
     EffectId.ROOST_SEEK: {
         "cast": {"resolve": lambda state, card_def: cast_roost_seek(state, card_def)},
+        "omen": {
+            "card_def": SAGU_WILDLING_CREATURE_CARD_DEF,
+            "cost": {"generic": 4, "G": 1},
+            "resolve": lambda state, card_def: cast_sagu_wildling_creature(state, card_def),
+        },
         "pending_kinds": {"search_fetch"},
+    },
+    EffectId.SAGU_WILDLING: {
+        "etb_trigger": lambda state: gain_life(state, 3),
+        "keywords": {"flying"},
     },
     EffectId.GATECREEPER_VINE: {
         "cast": {"resolve": lambda state, card_def: cast_permanent_from_hand(state, card_def)},
@@ -588,8 +654,19 @@ GREEN_EFFECT_REGISTRY = {
         "cast": {"resolve": lambda state, card_def: cast_ancient_stirrings(state, card_def)},
         "pending_kinds": {"ancient_stirrings"},
     },
-    # Bramble Wurm (filler): no entry needed, same EffectId.FILLER
-    # single-canonical-entry precedent as Breath Weapon (red_cards.py).
+    EffectId.BRAMBLE_WURM: {
+        "cast": {"resolve": lambda state, card_def: cast_permanent_from_hand(state, card_def)},
+        "etb_trigger": lambda state: gain_life(state, 5),
+        # Real text also has Reach -- not modeled (stats.py's own
+        # confirmed keyword scope excludes it, only ever mattering for
+        # blocking a flier, which never happens under this deck's
+        # combat_enabled=False). Trample IS modeled -- reused unchanged.
+        "keywords": {"trample"},
+        "graveyard_ability": {
+            "cost_key": "gy_ability_cost",
+            "resolve": lambda state, card_def: activate_bramble_wurm_gy(state, card_def),
+        },
+    },
 
     # --- boggles deck ---
     EffectId.GLADECOVER_SCOUT: {
@@ -741,8 +818,55 @@ if __name__ == "__main__":
 
     print("green_cards.py Malevolent Rumble self-check: OK")
 
+    # Bramble Wurm's graveyard ability: exile from graveyard (removed,
+    # untracked), gain 5 life -- the one piece of real logic
+    # activate_bramble_wurm_gy adds beyond already-self-checked helpers
+    # (cast_permanent_from_hand, gain_life itself).
+    state = GameState(on_the_play=True)
+    wurm = CardDef(
+        "Bramble Wurm", CardType.CREATURE, {"generic": 6, "G": 1}, EffectId.BRAMBLE_WURM, power=7, toughness=6,
+        gy_ability_cost={"generic": 2, "G": 1},
+    )
+    state.graveyard = [wurm]
+    activate_bramble_wurm_gy(state, wurm)
+    assert state.graveyard == []
+    assert state.life_total == 25  # STARTING_LIFE (20) + 5
+    print("green_cards.py Bramble Wurm self-check: OK")
+
+    # Sagu Wildling's Omen: cast_roost_seek shuffles ITSELF into the
+    # library (not exile, not the graveyard) once its search resolves --
+    # real Adventure's own exile doesn't apply to Omen. Redrawing it later
+    # puts the same physical card back in hand; cast_sagu_wildling_creature
+    # then finds it there BY NAME (a different CardDef object, same
+    # display name), removes it, and puts the real creature on the
+    # battlefield with its own ETB gain-3-life.
+    from ..resolution import execute_search_fetch_option
+
+    state = GameState(on_the_play=True)
+    roost_seek = CardDef("Sagu Wildling", CardType.SORCERY, {"G": 1}, EffectId.ROOST_SEEK)
+    state.hand = [roost_seek]
+    state.library = [CardDef("Forest", CardType.LAND, None, EffectId.FOREST, basic=True)]
+    cast_roost_seek(state, roost_seek)
+    assert state.hand == []
+    assert state.exile == []  # no exile step at all -- unlike real Adventure
+    assert state.pending_resolution["kind"] == "search_fetch"
+    execute_search_fetch_option(state, "Forest")
+    assert [c.name for c in state.hand] == ["Forest"]
+    assert [c.name for c in state.library] == ["Sagu Wildling"]  # shuffled itself in, per "(Also shuffle this card.)"
+
+    # Redraw it (same physical card, ordinary draw) -- the real creature
+    # half is now just a second cast option for that same hand card.
+    state.hand.append(state.library.pop(0))
+    cast_sagu_wildling_creature(state, SAGU_WILDLING_CREATURE_CARD_DEF)
+    assert [c.name for c in state.hand] == ["Forest"]  # the redrawn "Sagu Wildling" left hand, "Forest" untouched
+    assert state.life_total == 23  # STARTING_LIFE (20) + 3
+    sagu_permanent = next(p for p in state.battlefield if p.card_def.name == "Sagu Wildling")
+    assert sagu_permanent.card_def is SAGU_WILDLING_CREATURE_CARD_DEF
+    print("green_cards.py Sagu Wildling Omen self-check: OK")
+
     # Ram Through: a documented functional blank -- no registry entry at
     # all, so it can never appear as a "Cast" action (same mechanism that
-    # makes Bramble Wurm/Breath Weapon uncastable).
+    # made Bramble Wurm/Breath Weapon uncastable before their own recent
+    # full implementations).
     assert registry.EFFECT_REGISTRY.get(EffectId.RAM_THROUGH, {}) == {}
     print("green_cards.py Ram Through self-check: OK")

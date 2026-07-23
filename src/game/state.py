@@ -184,6 +184,21 @@ class PlayerState:
         # something a source produces).
         self.mana_pool = {}
 
+        # Total REAL actions this player has personally taken over the
+        # whole game -- incremented once per non-Pass action executed in
+        # game.turn's own priority round, declare_blockers, mulligan, and
+        # end-of-turn discard loops. Pass itself never counts (declining to
+        # act isn't the "pointless action" a reward shaped by this is meant
+        # to discourage -- it's usually the correct choice); mulligan/
+        # declare_blockers/discard never offer a bare Pass at all, so every
+        # yield there already counts unconditionally. Matches harness.
+        # evaluate_two_player's own per-game step count (games' own "steps"
+        # in a --log JSON, which likewise never records a Pass), just
+        # persisted onto the player instead of a transient loop variable, so
+        # a reward_fn (rewards.py) can read it mid-game. 2-player only --
+        # unused/inert in 1-player mode (nothing there currently reads it).
+        self.actions_taken = 0
+
     def draw(self, n=1):
         """Real Magic: attempting to draw from an empty library is an
         instant loss, mid-effect -- sets decked_out, then raises DeckedOut

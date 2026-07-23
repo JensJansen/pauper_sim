@@ -73,6 +73,58 @@ def _snapshot_state(state):
     return snapshot
 
 
+def _slot_labeled(pairs):
+    """(name, slot) pairs -> "Name (slot k)" strings -- docs/MULTIPLAYER_
+    GAPS.md's "Permanent identity" convention (two same-named permanents
+    aren't interchangeable once only one might be the actual target), same
+    display format drl_env's own "Choose target: ..." action names already
+    use. Shared by every _PENDING_OPTIONS entry below that targets a
+    specific permanent rather than offering a plain name."""
+    return [f"{name} (slot {slot})" for name, slot in pairs]
+
+
+# kind -> (snapshot field name, options(state) -> list[str]). Every
+# pending_resolution kind whose entire decision detail is "the list of
+# names/labeled targets the model is currently choosing among" -- 8 of
+# game/resolution.py's 11 kinds -- dispatched uniformly through this table
+# instead of one near-identical elif branch apiece. Mirrors src/viz's own
+# SIMPLE_DECISION_FIELDS (GameView.jsx's "kind -> [label, field]"): same
+# data, same dispatch shape, both ends of this pipe. scry/surveil
+# (multiple fields, not option-list-shaped) and madness_decision (a single
+# scalar read straight off the pending dict, no state query needed) don't
+# fit this shape and stay their own branches in _snapshot_pending below.
+_PENDING_OPTIONS = {
+    "search_fetch": ("library_matches", game.search_fetch_options),
+    "choose_permanent": ("battlefield_matches", lambda s: _slot_labeled(game.choose_permanent_options(s))),
+    "choose_opponent_permanent": (
+        # 2-player combat only (blocking's own nested "which attacker"
+        # consult, game.resolution.declare_blocker_assignment) -- state.
+        # opponent already means the right thing here, since this kind is
+        # only ever entered with state.active_idx already flipped to the
+        # referencing player (see begin_choose_opponent_permanent's own
+        # docstring).
+        "opponent_battlefield_matches", lambda s: _slot_labeled(game.choose_opponent_permanent_options(s))
+    ),
+    "discard": ("hand_options", game.discard_options),
+    "sacrifice": ("sacrifice_options", game.sacrifice_options),
+    "mulligan_decision": ("options", game.mulligan_decision_options),
+    "mulligan_bottom": ("bottom_options", game.bottom_options),
+    "order_triggers": ("trigger_options", game.order_triggers_options),
+    "declare_blockers": (
+        # No dedicated *_options helper in resolution.py for this kind --
+        # the actual "which blocker" choice is drl_env's own action-table
+        # eligibility check (creature_block_eligible), not a resolution
+        # primitive. This is the complementary half: which of the
+        # attacker's declared attackers still need a blocker assigned,
+        # exactly declare_blocker_assignment's own nested predicate
+        # (state.opponent means the attacker here, from the
+        # already-flipped defender's point of view).
+        "unblocked_attackers",
+        lambda s: _slot_labeled((p.card_def.name, p.slot) for p in s.opponent.attackers if p not in s.opponent.blocked_by),
+    ),
+}
+
+
 def _snapshot_pending(state):
     """Whatever the model can currently see about an in-progress multi-step
     resolution (state.pending_resolution, game/resolution.py) -- the
@@ -93,23 +145,92 @@ def _snapshot_pending(state):
         snap["remaining"] = [c.name for c in pending["remaining"]]
         snap["kept"] = [c.name for c in pending["kept"]]
         snap["disposed"] = [c.name for c in pending["disposed"]]
-    elif kind == "search_fetch":
-        snap["library_matches"] = game.search_fetch_options(state)
-    elif kind == "choose_permanent":
-        # (name, slot) pairs now (docs/MULTIPLAYER_GAPS.md's "Permanent
-        # identity" -- two same-named permanents aren't interchangeable
-        # once only one might be the actual target). Formatted as readable
-        # "Name (slot k)" strings, same convention drl_env's own "Choose
-        # target: ..." action names use, so the existing viz frontend (a
-        # plain joined list of strings) keeps working with no changes.
-        snap["battlefield_matches"] = [f"{name} (slot {slot})" for name, slot in game.choose_permanent_options(state)]
-    elif kind == "discard":
-        snap["hand_options"] = game.discard_options(state)
-    elif kind == "sacrifice":
-        snap["sacrifice_options"] = game.sacrifice_options(state)
     elif kind == "madness_decision":
         snap["card"] = pending["card_def"].name
+    elif kind in _PENDING_OPTIONS:
+        field, options_fn = _PENDING_OPTIONS[kind]
+        snap[field] = options_fn(state)
     return snap
+
+
+def _snapshot_player_state(state, player_state):
+    """One seat's own zones + life/combat state -- the 2-player-log
+    counterpart to _snapshot_state, scoped to a single PlayerState instead
+    of reading the active-relative GameState properties (which only ever
+    expose whichever seat is currently active -- see game/state.py's own
+    "_active_player_property" docstring). Includes life_total/attackers/
+    blocked_by, which _snapshot_state never captures because they're inert
+    in 1-player mode; never includes state.stack (shared across both
+    players, captured once at the step/game level instead -- see
+    _snapshot_two_player_state). Takes the full `state` (not just
+    `player_state`) because game.permanent_power/permanent_toughness below
+    need it -- an Aura and its target are always on the same side, but
+    those helpers still search state.players themselves rather than trust
+    the caller's own active_idx (see effects/stats.py's own docstring).
+
+    Each battlefield entry's "enchanting" is the (name, slot)-addressed
+    target an Aura permanent is attached to (Permanent.flags["enchanting"],
+    set once by cast_aura/state_based.py's own orphan-check reader,
+    game/effects/casting.py's own docstring) -- None for every non-Aura
+    permanent, which never sets this flag at all. One-directional by
+    design (aura -> target, never the reverse on the target's own entry):
+    a creature can carry several Auras at once, so "what enchants me" is a
+    list computed by scanning for it, not a single field to store back on
+    the creature -- left to the viewer (src/viz) to derive from this,
+    rather than duplicating the same relationship both ways here.
+
+    CREATURE entries additionally carry power/toughness (Aura bonuses
+    already folded in, via game.permanent_power/permanent_toughness),
+    base_power/base_toughness (the card's own printed stats, no bonuses),
+    and keywords -- lets the viewer show a buffed creature's true current
+    stats rather than just its base card text. Never present on a
+    non-creature entry (base 0/no keywords for a land/artifact/enchantment
+    is meaningless, not just uninteresting)."""
+    return {
+        "hand": [c.name for c in player_state.hand],
+        "battlefield": [
+            {
+                "name": p.card_def.name, "tapped": p.tapped, "slot": p.slot,
+                "enchanting": (
+                    f"{p.flags['enchanting'].card_def.name} (slot {p.flags['enchanting'].slot})"
+                    if p.flags.get("enchanting") is not None else None
+                ),
+                **(
+                    {
+                        "power": game.permanent_power(state, p),
+                        "toughness": game.permanent_toughness(state, p),
+                        "base_power": p.card_def.extra.get("power", 0),
+                        "base_toughness": p.card_def.extra.get("toughness", 0),
+                        "keywords": sorted(game.creature_keywords(state, p)),
+                    }
+                    if p.card_def.card_type == game.CardType.CREATURE
+                    else {}
+                ),
+            }
+            for p in player_state.battlefield
+        ],
+        "graveyard": [c.name for c in player_state.graveyard],
+        "exile": [c.name for c, _plotted_turn in player_state.exile],
+        "mana_pool": dict(player_state.mana_pool),
+        "life_total": player_state.life_total,
+        "damage_dealt": player_state.damage_dealt,
+        "attackers": [f"{p.card_def.name} (slot {p.slot})" for p in player_state.attackers],
+        "blocked_by": {
+            f"{attacker.card_def.name} (slot {attacker.slot})": f"{blocker.card_def.name} (slot {blocker.slot})"
+            for attacker, blocker in player_state.blocked_by.items()
+        },
+    }
+
+
+def _snapshot_two_player_state(state):
+    """Both seats' own snapshot (index-by-seat, same convention
+    evaluate_two_player's own wins/turn_counts/action_counts already use)
+    plus the one genuinely shared zone (the stack -- see GameState.stack's
+    own docstring: one object shared by both players, not per-seat)."""
+    return {
+        "players": [_snapshot_player_state(state, p) for p in state.players],
+        "stack": [entry["card_def"].name for entry in state.stack],
+    }
 
 
 def finalize_scores(state, reward_fn, scoring_fns, horizon, seat_idx=None):
@@ -130,13 +251,27 @@ def finalize_scores(state, reward_fn, scoring_fns, horizon, seat_idx=None):
     behavior exactly). state.turn_won/turn_number alone never say WHO won
     once a real opponent exists (see drl_env._lost's own docstring), so a
     seat that lost (state.winner set to the OTHER seat) also gets every
-    score forced to 0.0, on top of the existing "never terminated" gate."""
+    score forced to 0.0, on top of the existing "never terminated" gate.
+
+    Also re-points state.active_idx at seat_idx (via drl_env._for_player)
+    before calling reward_fn/scoring_fns, then restores it -- every
+    reward/scoring function that reads board state at all (resource_
+    quality-based ones: assembled_with_resource_quality, resource_
+    quality_pct, tron_online_score) does so through state.hand/
+    state.battlefield/etc., which are active-relative properties (game/
+    state.py's own "_active_player_property" docstring) meaning "whichever
+    seat happens to be active right now," not "seat_idx specifically."
+    Without this flip, both seats would silently get whichever seat's
+    board state.active_idx happened to be pointing at when the game
+    ended -- wrong for exactly one of the two seats, every time they
+    differ."""
     names = [reward_fn.__name__] + [fn.__name__ for fn in scoring_fns]
     if state.turn_won is None:
         return {name: 0.0 for name in names}
     if seat_idx is not None and drl_env._lost(state, seat_idx):
         return {name: 0.0 for name in names}
-    values = [reward_fn(state, True, horizon)] + [fn(state) for fn in scoring_fns]
+    compute = lambda s: [reward_fn(s, True, horizon)] + [fn(s) for fn in scoring_fns]
+    values = compute(state) if seat_idx is None else drl_env._for_player(state, seat_idx, compute)
     return dict(zip(names, values))
 
 
@@ -254,6 +389,148 @@ class _GameLogger:
         }
 
 
+class _TwoPlayerGameLogger:
+    """_GameLogger's 2-player counterpart, for harness.evaluate_two_player's
+    own optional log_path -- same "observe game.GameState through the same
+    choose_action closure, never touch game.py" construction, but every
+    snapshot is BOTH seats' own zones (_snapshot_two_player_state), never
+    just whichever one happens to be state.active_idx, plus the turn/actor
+    attribution a 2-player game actually needs that 1-player never had to
+    record: state.turn_player_idx (whose turn it structurally is) and
+    state.active_idx AT THE MOMENT OF EACH DECISION (who is actually being
+    asked to act right now -- a priority consult, most visibly blocking
+    (game.turn._declare_blockers_gen), genuinely flips this away from the
+    turn owner; see game/state.py's own GameState docstring). Index-by-seat
+    throughout (self.opening_state[seat], scores[seat], ...), same
+    convention evaluate_two_player's own wins/turn_counts/action_counts
+    already use -- never a dict keyed by "agent_a"/"agent_b" or similar.
+
+    Per-seat draw detection is diffed continuously (every observe() call,
+    against that SPECIFIC seat's own last-recorded hand) rather than
+    _GameLogger's "only re-check once state.turn_number changes" -- that
+    once-per-turn-boundary approach silently drops a turn's automatic draw
+    whenever a real priority round visits a player BEFORE that turn's own
+    DRAW phase actually runs (any combat_enabled=True deck's UPKEEP phase,
+    which -- unlike a non-combat deck's phase set -- has a real priority
+    round of its own, called before DRAW's automatic draw_step; game/
+    turn.py's own FULL_PHASES/_run_priority_round_gen). Continuous per-seat
+    diffing has no such blind spot: the only way a seat's hand can grow
+    between two observe() calls for that seat with no before_action/
+    after_action pair in between (which already update the baseline
+    themselves, see after_action below) is an automatic effect -- almost
+    always that turn's own draw_step, occasionally another automatic
+    hand-return effect (e.g. an on_draw_count trigger resolving off the
+    stack) -- either way, real information nothing else in the log would
+    otherwise capture at all."""
+
+    def __init__(self, reward_fns, horizon, scoring_fns_by_seat):
+        self.reward_fns = reward_fns
+        self.horizon = horizon
+        self.scoring_fns_by_seat = scoring_fns_by_seat
+        self.opening_state = [None, None]
+        self.steps = []
+        self._last_hand_names = [None, None]  # None until that seat's first observe() -- marks "not seen yet"
+        self._pending_names = None
+        self._pending_action_name = None
+        self._pending_decision = None
+        self._pending_fallback = False
+        self._pending_battlefield_before = None
+        self._pending_tapped_ids = None
+        self._pending_actor_idx = None
+
+    def _make_step(self, state, actor_idx, action, fetched=(), left_battlefield=(), tapped_for_cost=(),
+                    decision=None, fallback=False):
+        return {
+            "turn_number": state.turn_number,
+            "turn_player_idx": state.turn_player_idx,
+            "actor_idx": actor_idx,
+            "phase": state.phase.value if state.phase is not None else None,
+            "action": action,
+            "fetched": list(fetched),
+            "left_battlefield": list(left_battlefield),
+            "tapped_for_cost": list(tapped_for_cost),
+            "decision": decision,
+            "fallback": fallback,
+            "state_after": _snapshot_two_player_state(state),
+        }
+
+    def observe(self, state):
+        """Called at the top of every choose_action call, before that
+        call's decision -- same hook point _GameLogger.observe uses, just
+        keyed by state.active_idx (whichever seat is actually being
+        consulted right now, turn owner or not) instead of assumed to
+        always be the same lone player."""
+        seat = state.active_idx
+        hand_names = [c.name for c in state.hand]
+        if self._last_hand_names[seat] is None:
+            # First time this seat has ever been consulted -- always during
+            # the pregame mulligan phase (game.turn._run_mulligan_gen visits
+            # every player index before turn 1 ever starts), so this is
+            # that seat's true opening hand, not a mid-game draw.
+            self.opening_state[seat] = _snapshot_player_state(state, state.players[seat])
+            self._last_hand_names[seat] = hand_names
+            return
+        drew = _diff_added(self._last_hand_names[seat], hand_names)
+        self._last_hand_names[seat] = hand_names
+        if drew:
+            self.steps.append(self._make_step(state, seat, "Draw a card", fetched=drew))
+
+    def before_action(self, state, action_name, fallback=False):
+        self._pending_names = [c.name for c in state.hand] + [p.card_def.name for p in state.battlefield]
+        self._pending_action_name = action_name
+        self._pending_fallback = fallback
+        self._pending_decision = _snapshot_pending(state)
+        self._pending_battlefield_before = list(state.battlefield)
+        self._pending_tapped_ids = {id(p) for p in state.battlefield if p.tapped}
+        self._pending_actor_idx = state.active_idx
+
+    def after_action(self, state):
+        after_names = [c.name for c in state.hand] + [p.card_def.name for p in state.battlefield]
+        fetched = _diff_added(self._pending_names, after_names)
+        # (name, slot)-addressed, not name-only: with two same-named
+        # permanents in play (this deck's own norm -- 4-ofs, mirror match),
+        # a bare name here can't say which specific physical copy left/got
+        # tapped, exactly the ambiguity that made a real removal (the
+        # untapped blocker, correctly, dying to combat damage) misreadable
+        # in the viewer as "the tapped one must have been removed." Same
+        # "Name (slot k)" convention _make_step's own attackers/blocked_by
+        # already use.
+        left_battlefield = [
+            f"{p.card_def.name} (slot {p.slot})" for p in self._pending_battlefield_before
+            if p not in state.battlefield
+        ]
+        tapped_for_cost = [
+            f"{p.card_def.name} (slot {p.slot})" for p in state.battlefield
+            if p.tapped and id(p) not in self._pending_tapped_ids
+        ]
+        self.steps.append(self._make_step(
+            state, self._pending_actor_idx, self._pending_action_name,
+            fetched=fetched, left_battlefield=left_battlefield, tapped_for_cost=tapped_for_cost,
+            decision=self._pending_decision, fallback=self._pending_fallback,
+        ))
+        # Keep the ACTING seat's draw-diff baseline current -- same
+        # reasoning _GameLogger.after_action's own trailing line gives,
+        # just scoped to the one seat this action actually belonged to.
+        self._last_hand_names[self._pending_actor_idx] = [c.name for c in state.hand]
+
+    def finalize(self, state, game_index, starting_player_idx):
+        return {
+            "game_index": game_index,
+            "starting_player_idx": starting_player_idx,
+            "winner": state.winner,
+            "turn_won": state.turn_won,
+            "final_turn_number": state.turn_number,
+            "scores": [
+                finalize_scores(state, self.reward_fns[seat], self.scoring_fns_by_seat[seat], self.horizon,
+                                 seat_idx=seat)
+                for seat in range(2)
+            ],
+            "opening_state": {"players": self.opening_state, "stack": []},
+            "steps": self.steps,
+            "end_state": _snapshot_two_player_state(state),
+        }
+
+
 def _make_env(reward_fn, decklist, terminated_fn, horizon, on_the_play, seed, pending_kinds, combat_enabled,
               token_card_defs=()):
     """Zero-arg factory for DummyVecEnv -- each call builds one fresh
@@ -301,7 +578,8 @@ class TrainingHarness:
     def __init__(self, reward_fn, model_cls, decklist, terminated_fn, pending_kinds, model_kwargs=None,
                  horizon=6, on_the_play=True, seed=0, scoring_fns=None, n_envs=1, combat_enabled=False,
                  token_card_defs=(), opponent_decklist=None, opponent_terminated_fn=None,
-                 opponent_pending_kinds=None, opponent_token_card_defs=(), my_seat_idx=0, shaping_weight=0.0):
+                 opponent_pending_kinds=None, opponent_token_card_defs=(), my_seat_idx=0, shaping_weight=0.0,
+                 vec_env_cls=DummyVecEnv):
         # Two-player mode (docs/MULTIPLAYER_ENGINE_PLAN.md's harness pass):
         # triggered purely by opponent_decklist being given, same "presence
         # of a second decklist is the mode switch" rule run.py applies to a
@@ -421,7 +699,7 @@ class TrainingHarness:
                     shaping_weight=self.shaping_weight, shaping_gamma=self.shaping_gamma,
                 )
             else:
-                self.env = DummyVecEnv([
+                self.env = vec_env_cls([
                     _make_two_player_env(
                         reward_fn, decklist, terminated_fn, pending_kinds, opponent_decklist,
                         opponent_terminated_fn, opponent_pending_kinds, my_seat_idx, horizon, on_the_play,
@@ -437,7 +715,7 @@ class TrainingHarness:
                 combat_enabled=combat_enabled, token_card_defs=token_card_defs,
             )
         else:
-            self.env = DummyVecEnv([
+            self.env = vec_env_cls([
                 _make_env(
                     reward_fn, decklist, terminated_fn, horizon, on_the_play, seed + i, pending_kinds,
                     combat_enabled, token_card_defs=token_card_defs,
@@ -678,7 +956,7 @@ class TrainingHarness:
     def load(cls, path, reward_fn, model_cls, decklist, terminated_fn, pending_kinds,
               horizon=6, on_the_play=True, scoring_fns=None, combat_enabled=False, token_card_defs=(),
               opponent_decklist=None, opponent_terminated_fn=None, opponent_pending_kinds=None,
-              opponent_token_card_defs=(), my_seat_idx=0, shaping_weight=0.0):
+              opponent_token_card_defs=(), my_seat_idx=0, shaping_weight=0.0, vec_env_cls=DummyVecEnv):
         with open(os.path.join(path, "metadata.json")) as f:
             metadata = json.load(f)
 
@@ -722,7 +1000,7 @@ class TrainingHarness:
             token_card_defs=token_card_defs, opponent_decklist=opponent_decklist,
             opponent_terminated_fn=opponent_terminated_fn, opponent_pending_kinds=opponent_pending_kinds,
             opponent_token_card_defs=opponent_token_card_defs, my_seat_idx=my_seat_idx,
-            shaping_weight=shaping_weight,
+            shaping_weight=shaping_weight, vec_env_cls=vec_env_cls,
         )
         harness.model = model_cls.load(os.path.join(path, "model.zip"), env=harness.env)
         if harness.two_player:
@@ -791,18 +1069,37 @@ def train_two_player(harness_a, harness_b, total_timesteps, burst_timesteps=2000
         harness_b.save(save_path_b)
 
 
-def evaluate_two_player(harness_a, harness_b, num_games, horizon=None, seed=0):
+def evaluate_two_player(harness_a, harness_b, num_games, horizon=None, seed=0, log_path=None, config_name=None):
     """Plays num_games real 2-player games (game.run_multiplayer_game)
     between harness_a's and harness_b's CURRENT models, deterministic
     (same convention 1-player evaluate() uses). Returns (wins_a, wins_b,
     draws, turn_counts, action_counts) -- action_counts is each game's
     total choose_action call count (both sides combined, one per real
-    decision including Pass -- the same granularity _GameLogger's steps
-    use in 1-player evaluate()), for efficiency metrics like
-    actions-per-turn; paired index-for-index with turn_counts. No rich
-    per-game JSON log yet: harness._snapshot_state is single-sided
-    (docs/MULTIPLAYER_ENGINE_PLAN.md's own "downstream impact" note), a
-    real 2p replay log is future work, not this pass's scope."""
+    decision including Pass -- the same granularity _TwoPlayerGameLogger's
+    steps use), for efficiency metrics like actions-per-turn; paired
+    index-for-index with turn_counts.
+
+    If log_path is given, also writes a JSON object `{"meta": ...,
+    "games": [...]}` to that path -- same top-level shape as 1-player
+    evaluate()'s own log, but every game record is 2-player-shaped
+    (_TwoPlayerGameLogger.finalize): both seats' opening hand/battlefield/
+    graveyard/exile/life_total, every substantive action attributed to the
+    seat that actually made it (not just the turn owner -- a blocking
+    consult acts through the DEFENDER), and both seats' own scores. Sorted
+    by seat 0's own primary score (agent_a's reward_fn value), descending
+    -- an arbitrary but consistent tiebreak, same "first scores entry"
+    convention 1-player evaluate() uses, picking one side since a 2-player
+    game has no single shared score to sort a pair of games by.
+
+    Building the log requires knowing which action index the model picked
+    and whether it was a fallback substitution -- drl_env.model_choose_action
+    doesn't expose either (by design: it only ever returns the zero-arg
+    callable/None the turn generator's send() protocol expects), so the
+    logging path re-implements that same predict/mask/fallback sequence
+    inline, exactly as 1-player evaluate() already does for the identical
+    reason. The far more common no-log path (training-time opponent
+    evaluation, plain CLI runs) is untouched -- still the cheaper
+    model_choose_action call, zero behavior change."""
     horizon = horizon or harness_a.horizon
     rng = random.Random(seed)
     harnesses = (harness_a, harness_b)
@@ -810,22 +1107,52 @@ def evaluate_two_player(harness_a, harness_b, num_games, horizon=None, seed=0):
     draws = 0
     turn_counts = []
     action_counts = []
+    game_logs = [] if log_path is not None else None
 
-    for _ in range(num_games):
+    for game_index in range(num_games):
         starting_idx = rng.randint(0, 1)
         action_count = [0]
+        log = _TwoPlayerGameLogger(
+            reward_fns=[harness_a.reward_fn, harness_b.reward_fn], horizon=horizon,
+            scoring_fns_by_seat=[harness_a.scoring_fns, harness_b.scoring_fns],
+        ) if log_path is not None else None
 
-        def choose_action(state, action_count=action_count):
+        def choose_action(state, action_count=action_count, log=log):
+            if log is not None:
+                log.observe(state)
             action_count[0] += 1
-            harness = harnesses[state.active_idx]
+            seat = state.active_idx
+            harness = harnesses[seat]
             obs = drl_env.build_two_player_observation(
-                state, state.active_idx, harness.decklist, horizon, harness.pending_kinds,
+                state, seat, harness.decklist, horizon, harness.pending_kinds,
                 harness.opponent_total_cards, harness.opponent_creature_names, harness.opponent_creature_copies,
                 harness.opponent_card_names, harness.opponent_card_copies,
             )
-            return drl_env.model_choose_action(
-                state, obs, harness.model, harness.actions, harness.pass_action, deterministic=True,
-            )
+            if log is None:
+                return drl_env.model_choose_action(
+                    state, obs, harness.model, harness.actions, harness.pass_action, deterministic=True,
+                )
+
+            mask = drl_env.legal_action_mask(state, harness.actions)
+            try:
+                action, _ = harness.model.predict(obs, action_masks=mask, deterministic=True)
+            except TypeError:
+                action, _ = harness.model.predict(obs, deterministic=True)
+            action = int(action)
+            fallback = not mask[action]
+            if fallback:
+                legal_indices = [i for i, ok in enumerate(mask) if ok]
+                action = legal_indices[0]
+            if action == harness.pass_action:
+                return None
+
+            name, _legal, execute_fn = harness.actions[action]
+
+            def wrapped_execute(state=state, name=name, execute_fn=execute_fn, log=log, fallback=fallback):
+                log.before_action(state, name, fallback=fallback)
+                execute_fn(state)
+                log.after_action(state)
+            return wrapped_execute
 
         state = game.run_multiplayer_game(
             decklists=[harness_a.decklist, harness_b.decklist],
@@ -839,6 +1166,31 @@ def evaluate_two_player(harness_a, harness_b, num_games, horizon=None, seed=0):
             draws += 1
         else:
             wins[state.winner] += 1
+
+        if log is not None:
+            game_logs.append(log.finalize(state, game_index, starting_idx))
+
+    if log_path is not None:
+        game_logs.sort(key=lambda g: next(iter(g["scores"][0].values())), reverse=True)
+        log_doc = {
+            "meta": {
+                "config_name": config_name,
+                "horizon": horizon,
+                "seed": seed,
+                "seats": [
+                    {
+                        "reward_fn": h.reward_fn.__name__,
+                        "scoring_fns": [fn.__name__ for fn in h.scoring_fns],
+                        "win_threshold": getattr(h.terminated_fn, "threshold", None),
+                    }
+                    for h in harnesses
+                ],
+            },
+            "games": game_logs,
+        }
+        os.makedirs(os.path.dirname(log_path) or ".", exist_ok=True)
+        with open(log_path, "w") as f:
+            json.dump(log_doc, f, indent=2)
 
     return wins[0], wins[1], draws, turn_counts, action_counts
 
@@ -862,6 +1214,49 @@ if __name__ == "__main__":
     from sb3_contrib import MaskablePPO
 
     import terminated as terminated_module  # noqa: F401 -- not used here (terminated_fn is a trivial lambda below), imported only to confirm the module still loads alongside this self-check
+
+    # finalize_scores(seat_idx=...) correctness (hand-built state, no model
+    # needed): a board-state-reading reward (assembled_with_resource_quality,
+    # via resource_quality) must score each seat off THAT seat's own
+    # battlefield, not whichever seat state.active_idx happens to be
+    # pointing at -- the bug this pass fixed (drl_env._for_player wasn't
+    # being used at all before). Seat 0 gets 2 non-land permanents, seat 1
+    # gets 0 -- if the flip weren't happening, both seats would read seat
+    # 0's board (whichever one state.active_idx pointed at) and come out
+    # identical.
+    from game.cards import CardDef, CardType
+    from game.state import GameState, PlayerState, Permanent
+
+    def _creature(name):
+        return Permanent(CardDef(name, CardType.CREATURE, None, None))
+
+    seat0 = PlayerState(on_the_play=True)
+    seat0.battlefield = [_creature("Bear"), _creature("Wolf")]
+    seat1 = PlayerState(on_the_play=False)
+    seat1.battlefield = []
+    fs_state = GameState(on_the_play=True, players=[seat0, seat1])
+    fs_state.active_idx = 0  # whoever happens to be active when the game ends -- must not leak into seat 1's score
+    fs_state.turn_number = 3
+    fs_state.turn_won = 3
+    fs_state.winner = None  # a draw (horizon/safety-cap) -- neither seat is "lost", both scored normally
+
+    score_0 = finalize_scores(fs_state, rewards.assembled_with_resource_quality, [], horizon=40, seat_idx=0)
+    score_1 = finalize_scores(fs_state, rewards.assembled_with_resource_quality, [], horizon=40, seat_idx=1)
+    assert score_0["assembled_with_resource_quality"] > score_1["assembled_with_resource_quality"], (
+        "seat 0 (2 creatures) must outscore seat 1 (0 creatures) -- if this fails, finalize_scores stopped "
+        "reading each seat's OWN board"
+    )
+    assert fs_state.active_idx == 0  # _for_player must restore it, not leave it pointed at whichever seat scored last
+
+    # _lost zeroing still applies per seat on top of the per-seat board read.
+    fs_state.winner = 1
+    assert finalize_scores(fs_state, rewards.assembled_with_resource_quality, [], horizon=40, seat_idx=0) == {
+        "assembled_with_resource_quality": 0.0
+    }
+    assert finalize_scores(fs_state, rewards.assembled_with_resource_quality, [], horizon=40, seat_idx=1)[
+        "assembled_with_resource_quality"
+    ] > 0.0
+    print("harness.py finalize_scores(seat_idx=...) self-check: OK")
 
     deck_a = [("Mountain", 20), ("Lightning Bolt", 10)]
     deck_b = [("Mountain", 20)]
@@ -938,5 +1333,33 @@ if __name__ == "__main__":
         assert all(t <= 40 for t in turn_counts)
         assert len(action_counts) == 4 and all(a > 0 for a in action_counts)  # every game takes at least 1 action
         print(f"harness.py evaluate_two_player self-check: OK (wins_a={wins_a}, wins_b={wins_b}, draws={draws})")
+
+        # Same 4 games, this time with log_path -- the actual gap this pass
+        # closed (evaluate_two_player had no per-game JSON log at all
+        # before). Re-running (not reusing the pass above) keeps this
+        # self-check independent of whether logging changes game outcomes
+        # (it doesn't, but asserting that isn't this check's job).
+        log_path = os.path.join(tmp_dir, "2p_log.json")
+        evaluate_two_player(loaded_a, loaded_b, num_games=4, horizon=40, seed=7, log_path=log_path,
+                             config_name="2p_selfcheck")
+        with open(log_path) as f:
+            log_doc = json.load(f)
+        assert log_doc["meta"]["config_name"] == "2p_selfcheck"
+        assert len(log_doc["meta"]["seats"]) == 2
+        assert len(log_doc["games"]) == 4
+        g = log_doc["games"][0]
+        assert set(["game_index", "starting_player_idx", "winner", "turn_won", "final_turn_number", "scores",
+                     "opening_state", "steps", "end_state"]) <= set(g.keys())
+        assert len(g["scores"]) == 2 and len(g["opening_state"]["players"]) == 2 and len(g["end_state"]["players"]) == 2
+        # Both seats' opening hands are real 7-card snapshots, not just one
+        # side -- exactly what _snapshot_state (1-player, active-relative)
+        # could never produce for a 2-player game.
+        assert all(len(p["hand"]) <= 7 and "life_total" in p for p in g["opening_state"]["players"])
+        assert len(g["steps"]) > 0
+        step = g["steps"][0]
+        assert set(["turn_number", "turn_player_idx", "actor_idx", "phase", "action"]) <= set(step.keys())
+        assert step["actor_idx"] in (0, 1)
+        assert len(step["state_after"]["players"]) == 2
+        print(f"harness.py evaluate_two_player log_path self-check: OK ({log_path})")
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)

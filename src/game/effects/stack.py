@@ -32,7 +32,7 @@ def on_cast_trigger(state, card_def):
             trigger(state, permanent)
 
 
-def push_to_stack(state, card_def, resolve):
+def push_to_stack(state, card_def, resolve, reserves_hand_card=True):
     """A spell is fully paid for (mana or an alternate cost) but not yet
     resolved -- defer `resolve(state, card_def)` onto state.stack instead of
     calling it now, giving the model a chance to respond (cast another
@@ -48,13 +48,30 @@ def push_to_stack(state, card_def, resolve):
     so a card sitting on the stack, paid for but unresolved, is still
     physically present in whatever zone it came from until it actually
     resolves. Two places correct for that instead of treating it as
-    "available": drl_env._hand_count_available (cast legality -- also
-    already a non-issue for every Flashback/Plot/Madness path, which each
-    remove from their own zone before ever reaching a resolution that
-    could push) and resolution.discard_options (an instant-speed activated
-    ability, e.g. Blood's sac-for-a-card, isn't blocked by a non-empty
-    stack the way a sorcery-speed cast is, so it can still be offered a
-    card that's actually already spoken for by an unresolved stack entry).
+    "available": drl_env._hand_count_available (cast legality) and
+    resolution.discard_options (an instant-speed activated ability, e.g.
+    Blood's sac-for-a-card, isn't blocked by a non-empty stack the way a
+    sorcery-speed cast is, so it can still be offered a card that's
+    actually already spoken for by an unresolved stack entry) -- both scan
+    state.stack by name and must only count entries where a same-named
+    hand card is genuinely still spoken for.
+
+    reserves_hand_card=False for any push whose card is NOT sitting in the
+    caster's hand awaiting this entry's own removal -- Flashback/reanimate
+    (already removed from graveyard before the push), Plot/Adventure/Madness
+    cast-from-exile (already removed from exile), an alt-cost path that
+    eagerly discards before paying its cost (Fireblast's sacrifice-2-
+    Mountains, Crop Rotation), or a promoted trigger (triggers.py -- an
+    automatic return never touched hand at all, and a Madness decision's
+    card already left hand the instant it was discarded, not when this
+    entry resolves). Confirmed live via mono_red_madness_mirror training:
+    Faithless Looting discarding two copies of the same Madness card
+    back-to-back left the first copy's already-promoted decision entry on
+    the stack while the second copy was still the ONLY card in hand still
+    needing to be discarded -- discard_options's default True (before this
+    parameter existed) miscounted that unrelated stack entry as "this hand
+    card is already spoken for," excluding the only legal discard and
+    leaving no action, not even Pass, legal.
 
     Records state.active_idx as this entry's own controller (docs/
     PRIORITY_PLAN.md): a real priority round can flip active_idx through
@@ -63,7 +80,10 @@ def push_to_stack(state, card_def, resolve):
     battlefield (state.py's own active_idx-proxy) must still resolve
     against the CASTER's zones, not whoever last happened to hold
     priority -- resolve_top_of_stack restores it below."""
-    state.stack.append({"card_def": card_def, "resolve": resolve, "controller": state.active_idx})
+    state.stack.append({
+        "card_def": card_def, "resolve": resolve, "controller": state.active_idx,
+        "reserves_hand_card": reserves_hand_card,
+    })
 
 
 def resolve_top_of_stack(state):

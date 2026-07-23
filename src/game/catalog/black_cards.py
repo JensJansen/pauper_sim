@@ -124,7 +124,7 @@ def flashback_dread_return(state, card_def):
     def _on_sacrificed(state, ok):
         if not ok:
             return  # the environment's own Flashback legality check guarantees this can't happen
-        push_to_stack(state, card_def, _reanimate)
+        push_to_stack(state, card_def, _reanimate, reserves_hand_card=False)
 
     resolution.begin_sacrifice(state, lambda p: p.card_def.card_type == CardType.CREATURE, 3, _on_sacrificed)
 

@@ -89,16 +89,43 @@ def permanent_toughness(state, permanent):
     return base + bonus
 
 
-# Real Magic keyword strings this engine models (docs/COMBAT_PLAN.md's
-# confirmed scope -- only these four, only on the specific cards that
-# already grant one): "vigilance" (Cartouche of Solidarity's Warrior
-# token), "flying" (Kitchen Imp's real flying; also used for Silhana
-# Ledgewalker's "can't be blocked except by creatures with flying" --
-# functionally the identical blocking restriction in a ruleset with no
-# reach, so one flag covers both rather than a second near-duplicate),
-# "trample" (Rancor, Armadillo Cloak), "first_strike" (Cartouche of
-# Solidarity, Ethereal Armor). Deathtouch/double strike/menace/reach:
-# no card grants any of them -- not modeled, not a registry key.
+def lifelink_count(state, permanent):
+    """How many independent "whenever this deals damage, you gain that
+    much life" triggers this creature's current damage carries -- summed
+    across every enchanting Aura whose own registry entry sets "lifelink":
+    True (Armadillo Cloak), same summed shape as pt_bonus/toughness_bonus
+    above, NOT creature_keywords' own set union below.
+
+    This deliberately does NOT belong in the boolean "keywords" set: real
+    lifelink is a static ability (redundant copies are genuinely
+    irrelevant -- a creature either has it or doesn't, so vigilance/
+    flying/trample/first_strike's set-union dedup is correct for those).
+    Armadillo Cloak's clause is a distinct TRIGGERED ability instead --
+    two Cloaks on the same creature really do trigger twice, each for the
+    full damage dealt (2x total life gained, not 1x), which a boolean
+    "lifelink" in creature_keywords would silently dedup down to one
+    trigger regardless of how many Cloaks are attached. See
+    game.effects.combat's own call sites for how this count multiplies
+    the life gained."""
+    return sum(
+        1 for aura in _enchanting_auras(state, permanent)
+        if registry.EFFECT_REGISTRY.get(aura.card_def.effect_id, {}).get("lifelink", False)
+    )
+
+
+# Real Magic keyword strings this engine models as a boolean set
+# (docs/COMBAT_PLAN.md's confirmed scope -- only these four, only on the
+# specific cards that already grant one): "vigilance" (Cartouche of
+# Solidarity's Warrior token), "flying" (Kitchen Imp's real flying; also
+# used for Silhana Ledgewalker's "can't be blocked except by creatures
+# with flying" -- functionally the identical blocking restriction in a
+# ruleset with no reach, so one flag covers both rather than a second
+# near-duplicate), "trample" (Rancor, Armadillo Cloak), "first_strike"
+# (Cartouche of Solidarity, Ethereal Armor). Deathtouch/double strike/
+# menace/reach: no card grants any of them -- not modeled, not a registry
+# key. Armadillo Cloak's own lifegain clause is NOT here -- see
+# lifelink_count above for why a boolean keyword is the wrong model for
+# a triggered, stacking ability.
 def creature_keywords(state, permanent):
     """Union of this permanent's own intrinsic registry "keywords" set
     (a creature's own EFFECT_REGISTRY entry) plus every Aura currently

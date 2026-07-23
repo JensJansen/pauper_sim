@@ -1,0 +1,17 @@
+{
+  "decklist": "spy_combo.txt",
+  "decklist_2": "spy_combo.txt",
+  "terminated_fn": "never_terminated",
+  "reward_fns": ["action_count_win_reward_200"],
+  "horizon": 120,
+  "on_the_play": null,
+  "seed": 0,
+  "n_envs": 8,
+  "model_kwargs": {
+    "policy_kwargs": {"net_arch": [256, 256]},
+    "verbose": 1,
+    "device": "cuda",
+    "n_steps": 2048,
+    "batch_size": 2048
+  }
+}

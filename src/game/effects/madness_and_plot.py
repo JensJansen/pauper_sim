@@ -36,7 +36,7 @@ def execute_madness_cast(state):
     resolution._remove_one_from_exile(state, card_def)
 
     def _after_pay(s):
-        push_to_stack(s, card_def, madness_spec["resolve"])
+        push_to_stack(s, card_def, madness_spec["resolve"], reserves_hand_card=False)
         outer_on_complete(s)
 
     mana.begin_pay_cost(state, madness_spec["cost"], on_complete=_after_pay)

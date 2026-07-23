@@ -31,11 +31,14 @@ import os
 import time
 
 from sb3_contrib import MaskablePPO
+from stable_baselines3.common.vec_env import DummyVecEnv, SubprocVecEnv
 
 import game
 import rewards
 import terminated
 from harness import TrainingHarness, evaluate_two_player, train_two_player
+
+VEC_ENV_CLASSES = {"dummy": DummyVecEnv, "subproc": SubprocVecEnv}
 
 SRC_DIR = os.path.dirname(os.path.abspath(__file__))
 ROOT_DIR = os.path.join(SRC_DIR, "..")
@@ -109,6 +112,13 @@ def load_config(config_name):
     cfg["two_player"] = two_player
     cfg["horizon"] = raw["horizon"]
     cfg["n_envs"] = raw.get("n_envs", 1)
+    # "vec_env": "subproc" opts into real OS-process parallelism across
+    # n_envs (stable_baselines3.common.vec_env.SubprocVecEnv) instead of the
+    # default "dummy" (DummyVecEnv, steps every env serially in this one
+    # process) -- a training-execution detail like n_envs itself, never
+    # part of TrainingHarness._metadata()'s mismatch-check (doesn't touch
+    # observation_dim/action_space_size/model weights).
+    cfg["vec_env_cls"] = VEC_ENV_CLASSES[raw.get("vec_env", "dummy")]
     # "If both appear, all steps are always enabled" -- 2 decklists present
     # is this config's own multiplayer trigger, and combat is the only
     # path to a life_total win (the other new 2-player win condition,
@@ -126,6 +136,7 @@ def load_config(config_name):
         cfg["opponent"]["horizon"] = cfg["horizon"]
         cfg["opponent"]["n_envs"] = cfg["n_envs"]
         cfg["opponent"]["combat_enabled"] = cfg["combat_enabled"]
+        cfg["opponent"]["vec_env_cls"] = cfg["vec_env_cls"]
         # Potential-based dense reward (MULTIPLAYER_GAPS.md) -- opt-in,
         # default 0.0 (no shaping, today's exact behavior). One shared
         # weight for both sides, same reasoning as horizon/n_envs/
@@ -163,6 +174,7 @@ def _load_harness(path, config_name, cfg, opponent_cfg=None, my_seat_idx=0):
         terminated_fn=cfg["terminated_fn"], pending_kinds=cfg["pending_kinds"],
         horizon=cfg["horizon"], on_the_play=cfg["on_the_play"], scoring_fns=cfg["scoring_fns"],
         combat_enabled=cfg["combat_enabled"], token_card_defs=cfg["token_card_defs"],
+        vec_env_cls=cfg["vec_env_cls"],
         **_opponent_kwargs(cfg, opponent_cfg, my_seat_idx),
     )
     try:
@@ -182,6 +194,7 @@ def _build_harness(cfg, opponent_cfg=None, my_seat_idx=0):
         model_kwargs=cfg["model_kwargs"], horizon=cfg["horizon"], on_the_play=cfg["on_the_play"],
         seed=cfg["seed"], scoring_fns=cfg["scoring_fns"], n_envs=cfg["n_envs"],
         combat_enabled=cfg["combat_enabled"], token_card_defs=cfg["token_card_defs"],
+        vec_env_cls=cfg["vec_env_cls"],
         **_opponent_kwargs(cfg, opponent_cfg, my_seat_idx),
     )
     return TrainingHarness(**kwargs)
@@ -297,12 +310,11 @@ def _evaluate_two_player(config_name, cfg, num_runs, log):
             f"No trained two-player model at {path_a}/ + {path_b}/ -- nothing to evaluate. Train it first: "
             f"python run.py {config_name} <runs> --train"
         )
+
+    log_path = None
     if log:
-        # harness.evaluate_two_player has no per-game JSON log yet
-        # (harness._snapshot_state is single-sided -- see
-        # docs/MULTIPLAYER_ENGINE_PLAN.md's own "downstream impact" note),
-        # so --log is silently a no-op here rather than a hard error.
-        print("Note: --log isn't supported for two-player configs yet -- evaluating without one.")
+        os.makedirs(LOGS_DIR, exist_ok=True)
+        log_path = os.path.join(LOGS_DIR, f"{config_name}_{int(time.time())}.json")
 
     harness_a, harness_b = _load_harness_pair(path_a, path_b, config_name, cfg, opp)
     print(
@@ -313,6 +325,7 @@ def _evaluate_two_player(config_name, cfg, num_runs, log):
     t0 = time.time()
     wins_a, wins_b, draws, turn_counts, action_counts = evaluate_two_player(
         harness_a, harness_b, num_games=num_runs, horizon=cfg["horizon"], seed=cfg["seed"] + 1,
+        log_path=log_path, config_name=config_name,
     )
     dt = time.time() - t0
     avg_turns = sum(turn_counts) / len(turn_counts) if turn_counts else 0.0
@@ -326,6 +339,8 @@ def _evaluate_two_player(config_name, cfg, num_runs, log):
     print(f"draws (safety-cap horizon reached): {draws} ({draws / num_runs:.1%})")
     print(f"average game length: {avg_turns:.1f} turns")
     print(f"average actions/turn: {avg_actions_per_turn:.1f}")
+    if log_path:
+        print(f"Wrote per-game log to {log_path}.")
 
 
 def main():

@@ -178,6 +178,51 @@ def fast_win_reward(decay=0.99):
 fast_win_reward_099 = fast_win_reward(0.99)
 
 
+def action_count_win_reward(plateau_actions=80, max_actions=200, min_reward=0.25):
+    """Win/loss reward like fast_win_reward, but the "prefer efficiency"
+    axis is the WINNING seat's own action count (PlayerState.actions_taken
+    -- real, non-Pass actions only, per-seat, never combined across both
+    seats, and never counting an automatic draw-for-turn as an "action" --
+    see actions_taken's own docstring) instead of the global turn_number --
+    request: turn-based decay lets a policy take arbitrarily many actions
+    within a single turn "for free" (nothing below turn granularity was
+    ever measured), so it can't actually discourage padding out a turn with
+    pointless actions the way a per-action metric can.
+
+    Piecewise linear, not a pure decay -- a plain decay**actions_taken (the
+    first version of this function) starts penalizing from action 1, and
+    even clamped to a floor, that floor came out at only 0.99**204 ~= 0.13:
+    too close to a loss's flat 0 to read as "still clearly a win," and
+    nothing rewarded finishing within a perfectly reasonable number of
+    actions any more than finishing in fewer. This version has three flat
+    request-driven reference points instead of one derived decay constant:
+    actions_taken <= plateau_actions (80, "sufficiently fast" -- no
+    reason to reward going even faster) -> max_reward (1.0); actions_taken
+    >= max_actions (200) -> min_reward (0.25, clearly above a loss's 0, per
+    request); linear ramp between the two. A loss or draw is still exactly
+    0.0 either way -- only a win's OWN value moves.
+
+    plateau_actions/max_actions/min_reward stamped onto the returned
+    function itself, same convention terminated.damage_threshold_
+    terminated's own threshold already uses."""
+    span = max_actions - plateau_actions
+    def reward_fn(state, done, horizon):
+        if not done or state.turn_won is None:
+            return 0.0
+        winner_actions = state.players[state.winner].actions_taken
+        over_plateau = min(max(0, winner_actions - plateau_actions), span)
+        return 1.0 - over_plateau / span * (1.0 - min_reward)
+    reward_fn.plateau_actions = plateau_actions
+    reward_fn.max_actions = max_actions
+    reward_fn.min_reward = min_reward
+    return reward_fn
+
+
+# Pre-baked named instance -- same configs/*.json-by-plain-name convention
+# as fast_win_reward_099/damage_threshold_20_terminated.
+action_count_win_reward_200 = action_count_win_reward()
+
+
 if __name__ == "__main__":
     # ponytail self-check: run via `python rewards.py` from src/.
     from game.state import GameState
@@ -209,3 +254,45 @@ if __name__ == "__main__":
     assert win_turn_109 > 0.3
 
     print("rewards.py fast_win_reward self-check: OK")
+
+    # action_count_win_reward: per-seat (state.players[winner].actions_taken),
+    # not turn_number -- a real 2-player state this time (state.winner needs
+    # a second seat to mean anything).
+    from game.state import PlayerState
+
+    assert action_count_win_reward_200.plateau_actions == 80
+    assert action_count_win_reward_200.max_actions == 200
+    assert action_count_win_reward_200.min_reward == 0.25
+
+    state2 = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
+    state2.turn_won = None
+    assert action_count_win_reward_200(state2, done=True, horizon=120) == 0.0  # no winner -> 0
+    assert action_count_win_reward_200(state2, done=False, horizon=120) == 0.0  # not done -> 0
+
+    state2.turn_won = 5
+    state2.winner = 0
+
+    # Plateau: anything at or under plateau_actions (80) scores the full
+    # 1.0, no reward at all for going even faster -- "sufficiently fast",
+    # per request.
+    state2.players[1].actions_taken = 999  # the LOSER's own count must never matter
+    state2.players[0].actions_taken = 1
+    assert action_count_win_reward_200(state2, done=True, horizon=120) == 1.0
+    state2.players[0].actions_taken = 80
+    assert action_count_win_reward_200(state2, done=True, horizon=120) == 1.0
+
+    # Linear ramp from (80, 1.0) to (200, 0.25) -- midpoint (140) should
+    # land exactly halfway between.
+    state2.players[0].actions_taken = 140
+    assert abs(action_count_win_reward_200(state2, done=True, horizon=120) - 0.625) < 1e-9
+
+    # Floor: exactly 0.25 at max_actions (200), and bottoms out there --
+    # never continues down toward 0 for a wildly long game past the cap.
+    state2.players[0].actions_taken = 200
+    win_at_cap = action_count_win_reward_200(state2, done=True, horizon=120)
+    assert abs(win_at_cap - 0.25) < 1e-9
+    state2.players[0].actions_taken = 5000
+    win_past_cap = action_count_win_reward_200(state2, done=True, horizon=120)
+    assert win_at_cap == win_past_cap  # bottomed out -- doesn't keep decaying below this
+
+    print("rewards.py action_count_win_reward self-check: OK")

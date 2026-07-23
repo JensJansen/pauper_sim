@@ -426,7 +426,7 @@ def _hand_count_available(state, name):
     correct (a no-op) to apply uniformly rather than special-casing speed
     here too."""
     hand_count = sum(1 for c in state.hand if c.name == name)
-    stacked_count = sum(1 for entry in state.stack if entry["card_def"].name == name)
+    stacked_count = sum(1 for entry in state.stack if entry["card_def"].name == name and entry["reserves_hand_card"])
     return hand_count - stacked_count
 
 
@@ -448,21 +448,28 @@ def _cast_legal(name, extra_legal, speed):
 def _cast_execute(name, resolve):
     def execute(state):
         card_def = game.CARD_DEFS[name]
-        # Fires the instant this cast is announced, before mana is even
-        # tapped -- matches real timing (a "whenever you cast" trigger
-        # goes on the stack immediately, ahead of paying the cost).
-        # MADNESS_DECKS_PLAN.md item 11 (Guttersnipe); every cast path
-        # (this one, alt_cast, flashback, plot-from-exile below) fires it
-        # identically. Deliberately NOT deferred by the spell stack below --
-        # a documented pre-existing simplification, out of this feature's
-        # scope.
-        game.on_cast_trigger(state, card_def)
-        # Once mana is fully paid, the spell is "cast" but not yet resolved
-        # -- push it onto state.stack (game.push_to_stack) instead of
-        # resolving immediately, so the model can respond with another
-        # instant-speed action first. Something (a "Pass" -- see
-        # game.turn._run_turn_gen) has to actually resolve it later.
-        game.begin_pay_cost(state, card_def.cast_cost, on_complete=lambda s: game.push_to_stack(s, card_def, resolve))
+        def _after_pay(s):
+            # Fires only once mana is actually, irreversibly paid -- NOT
+            # the instant this cast is announced. "Abandon payment" can
+            # cancel a pending pay_cost resolution outright (see
+            # game.abandon_pay_cost), so firing this any earlier let a
+            # cast be announced, the trigger collected for free, and
+            # payment then abandoned -- repeatable forever. Real MTG
+            # (601.2i): a spell isn't "cast" until its cost is paid;
+            # failing/declining to pay reverses the whole action as if it
+            # was never started, so a "whenever you cast" trigger (e.g.
+            # Guttersnipe) never fires either. Every cast path (this one,
+            # alt_cast, flashback, plot-from-exile below) fires it
+            # identically once its own cost is similarly locked in.
+            game.on_cast_trigger(s, card_def)
+            # Once mana is fully paid, the spell is "cast" but not yet
+            # resolved -- push it onto state.stack (game.push_to_stack)
+            # instead of resolving immediately, so the model can respond
+            # with another instant-speed action first. Something (a
+            # "Pass" -- see game.turn._run_turn_gen) has to actually
+            # resolve it later.
+            game.push_to_stack(s, card_def, resolve)
+        game.begin_pay_cost(state, card_def.cast_cost, on_complete=_after_pay)
     return execute
 
 
@@ -482,8 +489,10 @@ def _precast_choice_execute(name, resolve):
     "precast_choice": True flag (build_action_table)."""
     def execute(state):
         card_def = game.CARD_DEFS[name]
-        game.on_cast_trigger(state, card_def)  # same timing as _cast_execute -- see its own comment
-        game.begin_pay_cost(state, card_def.cast_cost, on_complete=lambda s: resolve(s, card_def))
+        def _after_pay(s):
+            game.on_cast_trigger(s, card_def)  # only once mana is irreversibly paid -- see _cast_execute's own comment
+            resolve(s, card_def)
+        game.begin_pay_cost(state, card_def.cast_cost, on_complete=_after_pay)
     return execute
 
 
@@ -518,6 +527,33 @@ def _forestcycle_legal(name, cost_key):
 
 
 def _forestcycle_execute(name, cost_key, resolve):
+    def execute(state):
+        card_def = game.CARD_DEFS[name]
+        game.begin_pay_cost(state, card_def.extra[cost_key], on_complete=lambda s: resolve(s, card_def))
+    return execute
+
+
+def _graveyard_ability_legal(name, cost_key):
+    """Bramble Wurm's own "{2}{G}, Exile this card from your graveyard:
+    gain 5 life" -- same hand-zone/cost-key/card_def shape as
+    _forestcycle_legal above, just sourced from state.graveyard instead of
+    state.hand (a graveyard activated ability, unlike Flashback, never
+    recasts the spell -- resolve just runs the ability directly, no
+    push_to_stack, matching every other activated ability in this engine).
+    No speed gate: every existing activated ability defaults to "any
+    time" absent an explicit override (see build_action_table's own
+    activated_abilities loop), and this one has none."""
+    def legal(state):
+        if state.pending_resolution is not None:
+            return False
+        if not any(c.name == name for c in state.graveyard):
+            return False
+        card_def = game.CARD_DEFS[name]
+        return game.plan_payment(state, card_def.extra[cost_key]) is not None
+    return legal
+
+
+def _graveyard_ability_execute(name, cost_key, resolve):
     def execute(state):
         card_def = game.CARD_DEFS[name]
         game.begin_pay_cost(state, card_def.extra[cost_key], on_complete=lambda s: resolve(s, card_def))
@@ -959,13 +995,26 @@ def _activate_no_cost_execute(name, resolve):
 
 def _alt_cast_legal(name, extra_legal, speed):
     """Land Grant's free alt-cost: no mana payment at all, just the
-    card's own extra_legal predicate (0 lands in hand)."""
+    card's own extra_legal predicate (0 lands in hand).
+
+    Availability must go through _hand_count_available, not a bare
+    "any copy in hand" check -- confirmed live via mono_red_madness_mirror
+    training: a bare existence check let Fireblast's alt-cost (sacrifice 2
+    Mountains) be cast a second time while the first cast's own copy was
+    still physically in hand but already reserved on the stack (removal
+    deferred to its own resolve, same as every cast-like path -- see
+    push_to_stack's docstring), pushing a second stack entry for the same
+    physical card. cast_fireblast_alt's own discard_from_hand_to_graveyard
+    then ate that shared copy immediately (its eager, non-deferred
+    hand-removal), so when the FIRST cast's stack entry finally resolved,
+    its own discard_from_hand_to_graveyard found no copy left -- the
+    "should be unreachable" RuntimeError."""
     def legal(state):
         if state.pending_resolution is not None:
             return False
         if not game.turn.speed_legal(state, speed):
             return False
-        if not any(c.name == name for c in state.hand):
+        if _hand_count_available(state, name) <= 0:
             return False
         return extra_legal(state)
     return legal
@@ -1081,7 +1130,52 @@ def _cast_from_exile_execute(name, resolve):
         # (when plotted) -- already "fully paid for" now, so push
         # immediately instead of resolving now (see _cast_execute's own
         # stack comment).
-        game.push_to_stack(state, card_def, resolve)
+        game.push_to_stack(state, card_def, resolve, reserves_hand_card=False)
+    return execute
+
+
+def _omen_cast_legal(hand_name, cost, speed):
+    """Sagu Wildling's Omen: real Scryfall reminder text is "(Also shuffle
+    this card.)" attached to Roost Seek's own library search -- unlike
+    real Adventure, an Omen card does NOT exile itself for a later free-
+    zone cast; the resolved sorcery is shuffled directly into the LIBRARY
+    (cast_roost_seek), and the real creature half only ever becomes
+    castable again once the same physical card is redrawn into HAND, same
+    as any ordinary card. So this is really just "the same hand card, a
+    second cast option with its own distinct cost" -- checked against
+    state.hand, not state.exile. hand_name is the SORCERY side's own
+    registered name (the only one ever physically in a zone) -- the
+    creature side is a distinct CardDef, never separately registered in
+    game.CARD_DEFS (see the "omen" registry spec's own "card_def" key)."""
+    def legal(state):
+        if state.pending_resolution is not None:
+            return False
+        if not game.turn.speed_legal(state, speed):
+            return False
+        if not any(c.name == hand_name for c in state.hand):
+            return False
+        return game.plan_payment(state, cost) is not None
+    return legal
+
+
+def _omen_cast_execute(creature_card_def, cost, resolve):
+    """Same begin_pay_cost -> push_to_stack shape as a normal hand cast
+    (_cast_execute), just for `creature_card_def` (the distinct creature
+    CardDef) instead of game.CARD_DEFS[name]. reserves_hand_card defaults
+    True here (unlike Plot/Flashback's own exile/graveyard-sourced pushes)
+    -- the physical card genuinely IS still sitting in the caster's hand,
+    unresolved, while this is paid for; _hand_count_available matches
+    stack entries by NAME, so pushing creature_card_def (same display name
+    as whatever's in hand) still correctly reserves it, blocking the
+    sorcery-mode cast of the same physical copy in the meantime. `resolve`
+    is responsible for removing the matching hand card itself (by NAME,
+    not identity -- the object actually sitting in state.hand is the
+    sorcery side's own CardDef, a different object from creature_card_def
+    despite sharing a display name), same "resolve does its own zone
+    removal" convention every other cast path here follows."""
+    def execute(state):
+        game.on_cast_trigger(state, creature_card_def)  # no-op for a CREATURE card_def (on_cast_trigger only fires for INSTANT/SORCERY) -- called anyway for the same hygiene every other cast path here has
+        game.begin_pay_cost(state, cost, on_complete=lambda s: game.push_to_stack(s, creature_card_def, resolve))
     return execute
 
 
@@ -1201,6 +1295,23 @@ def build_action_table(decklist, registry, token_card_defs=(), pending_kinds=(),
                 _cast_from_exile_legal(name, cast_spec.get("extra_legal"), plot_speed),
                 _cast_from_exile_execute(name, plot.get("cast_from_exile_resolve", cast_spec["resolve"])),
             ))
+        # Sagu Wildling: Omen -- cast_roost_seek (this same "name"'s own
+        # "cast" resolve above) shuffles the card into the LIBRARY instead
+        # of graveyarding OR exiling it (real Adventure's own exile
+        # doesn't apply to Omen -- see _omen_cast_legal's own docstring).
+        # This second action is just an ordinary-looking second cast
+        # option for the same hand card, its own real cost, offered
+        # whenever a same-named card is back in hand (redrawn after being
+        # shuffled in) -- never shares a resolve with the sorcery mode,
+        # the creature side is a wholly different spell.
+        omen = card_spec.get("omen")
+        if omen is not None:
+            omen_speed = _cast_speed(omen["card_def"], omen)
+            actions.append((
+                f"Cast {omen['card_def'].name} (omen)",
+                _omen_cast_legal(name, omen["cost"], omen_speed),
+                _omen_cast_execute(omen["card_def"], omen["cost"], omen["resolve"]),
+            ))
 
     activatable = [(name, game.CARD_DEFS[name].effect_id) for name in distinct_names]
     activatable += [(cd.name, cd.effect_id) for cd in token_card_defs]
@@ -1236,6 +1347,18 @@ def build_action_table(decklist, registry, token_card_defs=(), pending_kinds=(),
                 f"Forestcycle {name}",
                 _forestcycle_legal(name, fc_spec["cost_key"]),
                 _forestcycle_execute(name, fc_spec["cost_key"], fc_spec["resolve"]),
+            ))
+
+    # Bramble Wurm: an activated ability usable from the graveyard, not
+    # the battlefield (unlike every "activated_abilities" entry above) or
+    # hand (unlike Forestcycle) -- its own "graveyard_ability" registry key.
+    for name in distinct_names:
+        gy_spec = registry.get(game.CARD_DEFS[name].effect_id, {}).get("graveyard_ability")
+        if gy_spec is not None:
+            actions.append((
+                f"Activate {name} (graveyard)",
+                _graveyard_ability_legal(name, gy_spec["cost_key"]),
+                _graveyard_ability_execute(name, gy_spec["cost_key"], gy_spec["resolve"]),
             ))
 
     actions.append(("Pass", _pass_legal, _pass_execute))
@@ -2445,6 +2568,70 @@ if __name__ == "__main__":
         game.EFFECT_REGISTRY[EffectId.GENEROUS_ENT] = _generous_ent_backup
 
     print("drl_env.py Plot + on-cast-trigger self-check: OK")
+
+    # Regression: on_cast_trigger (Guttersnipe) must only fire once a
+    # spell's cost is actually, irreversibly paid. Casting a spell and
+    # then choosing "Abandon payment" (game.abandon_pay_cost) must NOT
+    # have collected the trigger for free -- and must be repeatable
+    # without ever firing it, since the card never actually left hand and
+    # no mana was ever spent. Before the fix, _cast_execute fired
+    # on_cast_trigger BEFORE begin_pay_cost even started, so this exact
+    # cast-then-abandon loop collected Guttersnipe's damage for free,
+    # indefinitely.
+    _card_defs_backup = dict(game.CARD_DEFS)
+    _filler_backup = game.EFFECT_REGISTRY[EffectId.FILLER]
+    _generous_ent_backup = game.EFFECT_REGISTRY[EffectId.GENEROUS_ENT]
+
+    on_cast_calls = []
+    fake_bolt = CardDef("Fake Bolt", CardType.INSTANT, {"B": 1}, EffectId.FILLER)
+    game.CARD_DEFS["Fake Bolt"] = fake_bolt
+    game.EFFECT_REGISTRY[EffectId.FILLER] = {"cast": {"resolve": lambda s, c: None}}
+    game.EFFECT_REGISTRY[EffectId.GENEROUS_ENT] = {
+        "on_cast": lambda s, permanent: on_cast_calls.append(permanent.card_def.name),
+    }
+    try:
+        state = GameState(on_the_play=True)
+        state.phase = game.turn.Phase.MAIN1
+        state.hand = [fake_bolt]
+        state.battlefield = [
+            Permanent(CardDef("Swamp", CardType.LAND, None, EffectId.SWAMP)),
+            Permanent(CardDef("Guttersnipe-ish", CardType.CREATURE, None, EffectId.GENEROUS_ENT)),
+        ]
+        cast_legal = _cast_legal("Fake Bolt", None, game.turn.Speed.INSTANT)
+        cast_execute = _cast_execute("Fake Bolt", game.EFFECT_REGISTRY[EffectId.FILLER]["cast"]["resolve"])
+
+        for _ in range(5):  # "infinitely" -- a handful of reps proves the loop, not just one
+            assert cast_legal(state)
+            cast_execute(state)
+            assert on_cast_calls == []  # not fired yet -- cost isn't paid
+            assert state.pending_resolution["kind"] == "pay_cost"
+            game.abandon_pay_cost(state)
+            assert state.pending_resolution is None
+            assert on_cast_calls == []  # declining payment must never have collected it
+            assert state.hand == [fake_bolt]  # never actually cast -- still sitting in hand
+
+        # Actually pay this time -- now, and only now, it fires (once).
+        assert cast_legal(state)
+        cast_execute(state)
+        while state.pending_resolution is not None:
+            tap_opts = game.tap_cost_options(state)
+            if tap_opts:
+                name, color, is_filter = tap_opts[0]
+                game.execute_tap_cost_option(state, name, color, is_filter)
+            else:
+                # A tap only floats mana into the pool -- never auto-spends
+                # it toward the cost (mana.py's own design, see the Plot
+                # check above) -- spend it explicitly.
+                game.execute_pool_spend(state, game.pool_spend_options(state)[0])
+        assert on_cast_calls == ["Guttersnipe-ish"]
+        assert len(state.stack) == 1
+    finally:
+        game.CARD_DEFS.clear()
+        game.CARD_DEFS.update(_card_defs_backup)
+        game.EFFECT_REGISTRY[EffectId.FILLER] = _filler_backup
+        game.EFFECT_REGISTRY[EffectId.GENEROUS_ENT] = _generous_ent_backup
+
+    print("drl_env.py abandon-payment on-cast-trigger regression: OK")
 
     # Tokens (item 8): build_action_table's token_card_defs param is what
     # actually makes "Activate Blood (sac)" exist as an action at all --

@@ -80,7 +80,7 @@ def promote_triggers_to_stack(state):
     state.trigger_queue.clear()
     if len(stack_entries) == 1:
         entry = stack_entries[0]
-        push_to_stack(state, entry["card_def"], entry["resolve"])
+        push_to_stack(state, entry["card_def"], entry["resolve"], reserves_hand_card=False)
         return
     resolution.begin_order_triggers(state, stack_entries, on_complete=lambda s: None)
 

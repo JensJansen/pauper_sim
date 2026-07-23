@@ -78,11 +78,15 @@ MULTICOLOR_EFFECT_REGISTRY = {
     EffectId.ARMADILLO_CLOAK: {
         # Real text: enchanted creature also gets trample (docs/COMBAT_
         # PLAN.md step 7 -- combat_damage_step's own trample-aware damage
-        # assignment) and "whenever enchanted creature deals damage, you
-        # gain that much life" -- the life-gain half is still a documented
-        # no-op: not wired to the new per-player life_total
-        # (docs/MULTIPLAYER_ENGINE_PLAN.md) -- fleshing out stubbed card
-        # effects is separate future work.
+        # assignment, "keywords" below) and "whenever enchanted creature
+        # deals damage, you gain that much life" -- a TRIGGERED ability,
+        # not real lifelink, so it's its OWN "lifelink": True key
+        # (stats.lifelink_count), summed across every enchanting Aura
+        # rather than deduped into the boolean "keywords" set below: two
+        # Cloaks on the same creature really do trigger twice, once each,
+        # each for the full damage dealt (see stats.lifelink_count's own
+        # docstring for why a boolean keyword would silently undercount
+        # that stacking).
         "cast": {
             "resolve": lambda state, card_def: cast_aura(
                 state, card_def, lambda p: p.card_def.card_type == CardType.CREATURE,
@@ -94,5 +98,6 @@ MULTICOLOR_EFFECT_REGISTRY = {
         "pt_bonus": lambda state, aura: 2,
         "toughness_bonus": lambda state, aura: 2,  # real text is +2/+2
         "keywords": {"trample"},
+        "lifelink": True,
     },
 }

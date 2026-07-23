@@ -26,6 +26,15 @@ class EffectId(Enum):
     GENEROUS_ENT = auto()
     FILLER = auto()
 
+    # --- monster_tron "filler" creatures, now fully implemented (real
+    # cost/stats/ETB) instead of routing through EffectId.FILLER's inert
+    # single canonical entry ---
+    ROOFTOP_PERCHER = auto()
+    BOULDERBRANCH_GOLEM = auto()
+    MAELSTROM_COLOSSUS = auto()
+    PINNACLE_KILL_SHIP = auto()
+    BRAMBLE_WURM = auto()
+
     # --- spy_combo deck ---
     SWAMP = auto()
     MASKED_VANDAL = auto()
@@ -34,7 +43,8 @@ class EffectId(Enum):
     OVERGROWN_BATTLEMENT = auto()
     WALL_OF_ROOTS = auto()
     LOTLETH_GIANT = auto()
-    ROOST_SEEK = auto()  # Sagu Wildling, implemented as its Adventure sorcery half only -- see decklist comment
+    ROOST_SEEK = auto()  # Sagu Wildling's Omen sorcery half -- see decklist comment
+    SAGU_WILDLING = auto()  # Sagu Wildling's own creature half, cast from exile via ROOST_SEEK's "adventure" spec
     GATECREEPER_VINE = auto()
     NYXBORN_HYDRA = auto()
     QUIRION_RANGER = auto()
@@ -79,6 +89,7 @@ class EffectId(Enum):
     GUTTERSNIPE = auto()
     FIREBLAST = auto()
     LAVA_DART = auto()
+    BREATH_WEAPON = auto()  # monster_tron filler, now fully implemented -- see decklist comment
 
     # --- boggles deck ---
     PLAINS = auto()

@@ -324,6 +324,8 @@ def discard_options(state):
         return []
     stacked_counts = {}
     for entry in state.stack:
+        if not entry["reserves_hand_card"]:
+            continue
         name = entry["card_def"].name
         stacked_counts[name] = stacked_counts.get(name, 0) + 1
     hand_counts = {}
@@ -511,6 +513,12 @@ def execute_order_triggers_option(state, name):
     # is the correct moment to record it, same reasoning push_to_stack's
     # own docstring gives.
     entry["controller"] = state.active_idx
+    # Every entry reaching here originates from triggers.promote_triggers_
+    # to_stack (begin_order_triggers's own docstring: queued triggers only,
+    # never a real cast) -- same "never reserves a hand card" reasoning
+    # push_to_stack(..., reserves_hand_card=False) applies for the
+    # single-trigger branch right above this function's own caller.
+    entry["reserves_hand_card"] = False
     state.stack.append(entry)  # already the stack's own native {"card_def", "resolve"} shape
     if not pending["remaining"]:
         complete_resolution(state)

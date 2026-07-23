@@ -2,7 +2,7 @@
   "decklist": "boggles.txt",
   "decklist_2": "boggles.txt",
   "terminated_fn": "never_terminated",
-  "reward_fns": ["fast_win_reward_099"],
+  "reward_fns": ["action_count_win_reward_200"],
   "horizon": 120,
   "on_the_play": null,
   "token_card_defs": ["Eldrazi Spawn", "Warrior"],
