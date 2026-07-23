@@ -28,10 +28,7 @@ import random  # noqa: F401 -- re-exported so `game.random.Random(seed)` keeps w
 from . import registry
 from .cards import CardDef, CardType, EffectId
 from .catalog.black_cards import (
-    begin_choose_graveyard_card,
     cast_dread_return,
-    choose_graveyard_card_options,
-    execute_choose_graveyard_card_option,
     flashback_dread_return,
     lotleth_giant_etb,
     mill_until_land,
@@ -40,7 +37,8 @@ from .catalog.colorless_cards import (
     activate_bonders_ornament_draw,
     activate_candy_trail_sac,
     activate_expedition_map,
-    activate_relic_of_progenitus,
+    activate_relic_of_progenitus_draw,
+    activate_relic_of_progenitus_exile,
     activate_tocasia_dig_site_surveil,
 )
 from .catalog.green_cards import (
@@ -105,10 +103,13 @@ from .registry import CARD_DEFS, EFFECT_REGISTRY, ENTERS_TAPPED_EFFECTS, SIMPLE_
 from .reporting import aggregate_results, print_report
 from .resolution import (
     begin_bottom,
+    begin_choose_graveyard_card,
     begin_choose_opponent_permanent,
     begin_choose_permanent,
+    begin_choose_target_player,
     begin_declare_blockers,
     begin_discard,
+    begin_discard_or_sacrifice,
     begin_madness_decision,
     begin_mulligan,
     begin_resolution,
@@ -117,16 +118,23 @@ from .resolution import (
     begin_scry_surveil,
     begin_search_fetch,
     bottom_options,
+    choose_graveyard_card_options,
     choose_opponent_permanent_options,
     choose_permanent_options,
     complete_resolution,
     declare_blocker_assignment,
     discard_options,
+    discard_or_sacrifice_discard_options,
+    discard_or_sacrifice_sacrifice_options,
     execute_bottom_option,
+    execute_choose_graveyard_card_option,
     execute_choose_opponent_permanent_option,
     execute_choose_permanent_option,
+    execute_choose_target_player_option,
     execute_discard_decline,
     execute_discard_option,
+    execute_discard_or_sacrifice_decline,
+    execute_discard_or_sacrifice_option,
     execute_madness_decline,
     execute_mulligan_keep,
     execute_mulligan_take,

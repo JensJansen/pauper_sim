@@ -599,8 +599,11 @@ GREEN_EFFECT_REGISTRY = {
     },
     EffectId.NYXBORN_HYDRA: {
         # Cast as a fixed 0/1 for {G} -- X permanently 0, no Bestow, no
-        # counters (a deliberate simplification per design discussion,
-        # same treatment as Candy Trail's omitted lifegain).
+        # counters (a deliberate simplification per design discussion --
+        # X-cost spells need a "choose how much to pay" primitive this
+        # engine doesn't have anywhere yet; a larger, deliberately deferred
+        # piece of work, unlike colorless_cards.py's own Candy Trail,
+        # which no longer omits its own lifegain).
         "cast": {"resolve": lambda state, card_def: cast_permanent_from_hand(state, card_def)},
     },
     EffectId.QUIRION_RANGER: {

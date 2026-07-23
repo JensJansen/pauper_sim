@@ -5,13 +5,18 @@ makes every one of these choices.
 
 This module holds the generic core (begin_resolution/complete_resolution)
 plus every deck-agnostic resolution kind: search_fetch, choose_permanent,
-scry/surveil, discard, madness_decision, sacrifice (predicate-based --
-Dread Return's creature sacrifice and Fireblast/Lava Dart/Highway
-Robbery's land sacrifice are the same primitive, different predicates;
-see MADNESS_DECKS_PLAN.md item 5). Deck-specific kinds (Ancient Stirrings'
-take-one-or-decline, Lead the Stampede's select_to_hand, Dread Return's
-choose_graveyard_card) still live with their owning deck instead, since
-nothing else currently reuses them.
+choose_graveyard_card (Dread Return's own reanimation-target pick
+originally, promoted here once Relic of Progenitus' repeatable exile
+ability needed the identical primitive too), scry/surveil, discard,
+discard_or_sacrifice (Highway Robbery's own "discard a card or sacrifice
+a land" -- two different cost shapes under one optional decision),
+madness_decision, sacrifice (predicate-based -- Dread Return's creature
+sacrifice and Fireblast/Lava Dart/Highway Robbery's land sacrifice are
+the same primitive, different predicates; see MADNESS_DECKS_PLAN.md item
+5). Deck-specific kinds (Ancient Stirrings' take-one-or-decline, Lead the
+Stampede's select_to_hand) still live with their owning deck instead,
+since nothing else currently reuses them -- the exact bar
+choose_graveyard_card/discard_or_sacrifice both just crossed.
 
 References game.registry.EFFECT_REGISTRY only from inside function
 bodies, via `registry.EFFECT_REGISTRY` -- same lazy-lookup convention
@@ -104,6 +109,63 @@ def choose_permanent_options(state):
 
 def execute_choose_permanent_option(state, name, slot):
     complete_resolution(state, (name, slot))
+
+
+def begin_choose_graveyard_card(state, predicate, on_complete, graveyard=None):
+    """Pick ONE card from a graveyard by name, among those matching
+    predicate -- Dread Return's reanimation target originally
+    (game.catalog.black_cards), promoted here once Relic of Progenitus'
+    own repeatable exile ability needed the identical primitive too (see
+    this module's own docstring: a deck-specific kind moves here the
+    moment something ELSE reuses it). Same fungible-by-name simplification,
+    same empty-options safety net as begin_search_fetch/begin_choose_
+    permanent.
+
+    graveyard=None defaults to state.graveyard (the active player's own,
+    via the active-idx proxy) -- Dread Return's reanimation target is
+    always its own controller's graveyard, never anyone else's. Pass an
+    explicit graveyard list to target a DIFFERENT player's graveyard
+    instead -- Relic of Progenitus' own ability can target either player,
+    real "choose which card" ability text notwithstanding: the target's
+    own choice is simplified to the ACTIVATING player's, same "no
+    observable difference in this solitaire sim, nothing depends on WHO
+    picks" reasoning already applied elsewhere (Grab the Prize's own
+    discard timing)."""
+    if graveyard is None:
+        graveyard = state.graveyard
+    begin_resolution(state, "choose_graveyard_card", on_complete, predicate=predicate, graveyard=graveyard)
+    if not choose_graveyard_card_options(state):
+        complete_resolution(state, None)
+
+
+def choose_graveyard_card_options(state):
+    pending = state.pending_resolution
+    return sorted({c.name for c in pending["graveyard"] if pending["predicate"](c)})
+
+
+def execute_choose_graveyard_card_option(state, name):
+    complete_resolution(state, name)
+
+
+def begin_choose_target_player(state, on_complete):
+    """"Target player" -- addressed by index into state.players, not by
+    name (unlike every other choose_* primitive here: a player isn't
+    fungible-by-name the way two same-named cards are, and there's no
+    other identifier to use). The active player themselves is ALWAYS a
+    legal target -- a real Magic legality fact, "target player" never
+    excludes its own caster -- so, unlike begin_choose_permanent/
+    begin_search_fetch's own empty-battlefield/empty-library safety nets,
+    this never auto-completes: at least one legal target (yourself)
+    always exists, even alone in a 1-player game. Real, explicit choice
+    every time, drl_env's own fixed "Target: yourself"/"Target: opponent"
+    actions (the latter only legal once a second PlayerState actually
+    exists) -- never a silently-assumed default. on_complete(state, idx)
+    runs once chosen."""
+    begin_resolution(state, "choose_target_player", on_complete)
+
+
+def execute_choose_target_player_option(state, idx):
+    complete_resolution(state, idx)
 
 
 def begin_choose_opponent_permanent(state, predicate, on_complete):
@@ -307,21 +369,19 @@ def begin_discard(state, n, optional, on_complete):
         complete_resolution(state, [])
 
 
-def discard_options(state):
-    """Distinct names in hand still available to discard -- excluding any
-    copy already reserved on state.stack (paid for, awaiting resolution;
-    see game.effects.stack.push_to_stack). That card's own resolve
-    function hasn't removed it from hand yet (deferred until it actually
-    resolves), so it's still physically present here, but offering it as a
-    discard option (from an instant-speed activated ability like Blood's
-    sac-for-a-card, which -- unlike a cast -- is never blocked by a
-    non-empty stack) would let it be discarded twice over: once here, once
-    more when its own stack entry finally tries to remove it. Same
-    fix as drl_env._hand_count_available, just for hand-count-based
-    discard legality instead of cast legality."""
-    pending = state.pending_resolution
-    if pending["remaining"] <= 0:
-        return []
+def _available_hand_names(state):
+    """Distinct names in hand still available to discard/pay as a cost --
+    excluding any copy already reserved on state.stack (paid for, awaiting
+    resolution; see game.effects.stack.push_to_stack). That card's own
+    resolve function hasn't removed it from hand yet (deferred until it
+    actually resolves), so it's still physically present here, but
+    offering it as a discard option (from an instant-speed activated
+    ability like Blood's sac-for-a-card, which -- unlike a cast -- is
+    never blocked by a non-empty stack) would let it be discarded twice
+    over: once here, once more when its own stack entry finally tries to
+    remove it. Same fix as drl_env._hand_count_available, just for
+    hand-count-based discard legality instead of cast legality. Shared by
+    discard_options and discard_or_sacrifice_discard_options below."""
     stacked_counts = {}
     for entry in state.stack:
         if not entry["reserves_hand_card"]:
@@ -334,6 +394,13 @@ def discard_options(state):
     return sorted(name for name, count in hand_counts.items() if count > stacked_counts.get(name, 0))
 
 
+def discard_options(state):
+    pending = state.pending_resolution
+    if pending["remaining"] <= 0:
+        return []
+    return _available_hand_names(state)
+
+
 def execute_discard_decline(state):
     """Only ever offered by the environment while
     state.pending_resolution['optional'] is True -- not itself enforced
@@ -341,25 +408,76 @@ def execute_discard_decline(state):
     complete_resolution(state, state.pending_resolution["discarded_cards"])
 
 
-def execute_discard_option(state, name):
-    pending = state.pending_resolution
-    card = next(c for c in state.hand if c.name == name)
+def _discard_one(state, card):
+    """Move `card` out of hand into the graveyard, EXCEPT a Madness card,
+    which goes to exile with a queued cast-or-graveyard decision instead
+    -- a real-rules replacement effect that applies to ANY discard,
+    regardless of why the card was discarded (a Madness card discarded to
+    pay Highway Robbery's own optional cost triggers exactly the same way
+    as one discarded by Faithless Looting). Queued rather than offered
+    immediately: the model only sees the cast-or-graveyard decision once
+    the enclosing action's entire effect is fully resolved (docs/
+    MADNESS_DECKS_PLAN.md items 1/3's cross-cutting rule). Shared by
+    execute_discard_option's own per-card loop and execute_discard_or_
+    sacrifice_option's single optional discard."""
     state.hand.remove(card)
     madness_spec = registry.EFFECT_REGISTRY.get(card.effect_id, {}).get("madness")
     if madness_spec is not None:
-        # Discard into exile instead of the graveyard, per Madness --
-        # queue the cast-for-madness-cost-or-graveyard decision rather
-        # than offering it immediately: the model only sees it once the
-        # enclosing action's entire effect is fully resolved (see
-        # docs/MADNESS_DECKS_PLAN.md items 1/3's cross-cutting rule).
         state.exile.append((card, None))
         state.trigger_queue.append({"type": "decision", "kind": "madness", "card_def": card})
     else:
         state.graveyard.append(card)
+
+
+def execute_discard_option(state, name):
+    pending = state.pending_resolution
+    card = next(c for c in state.hand if c.name == name)
+    _discard_one(state, card)
     pending["discarded_cards"].append(card)
     pending["remaining"] -= 1
     if pending["remaining"] <= 0 or not discard_options(state):
         complete_resolution(state, pending["discarded_cards"])
+
+
+def begin_discard_or_sacrifice(state, sac_predicate, on_complete):
+    """"You may discard a card or sacrifice a [land]. If you do, ..."
+    (Highway Robbery) -- ONE optional decision offering two different
+    cost shapes at once, unlike begin_discard's own single-cost-type
+    optionality. Kept as a single exactly-one-of-these-or-neither choice,
+    not two independent optional costs -- real text is "a card OR a
+    [land]," never both. on_complete(state, paid) -- paid is True iff
+    either a discard or a sacrifice actually happened, False if declined
+    or nothing was payable to begin with; callers that only care whether
+    anything was paid (Highway Robbery's own "if you do, draw two cards")
+    just branch on that bool, same shape begin_discard's own
+    bool(discarded_cards) contract already has."""
+    begin_resolution(state, "discard_or_sacrifice", on_complete, sac_predicate=sac_predicate)
+    if not discard_or_sacrifice_discard_options(state) and not discard_or_sacrifice_sacrifice_options(state):
+        complete_resolution(state, False)
+
+
+def discard_or_sacrifice_discard_options(state):
+    return _available_hand_names(state)
+
+
+def discard_or_sacrifice_sacrifice_options(state):
+    pending = state.pending_resolution
+    return sorted({p.card_def.name for p in state.battlefield if pending["sac_predicate"](p)})
+
+
+def execute_discard_or_sacrifice_option(state, mode, name):
+    if mode == "discard":
+        card = next(c for c in state.hand if c.name == name)
+        _discard_one(state, card)
+    else:
+        permanent = next(p for p in state.battlefield if p.card_def.name == name)
+        state.battlefield.remove(permanent)
+        state.graveyard.append(permanent.card_def)
+    complete_resolution(state, True)
+
+
+def execute_discard_or_sacrifice_decline(state):
+    complete_resolution(state, False)
 
 
 def begin_mulligan(state, on_complete):

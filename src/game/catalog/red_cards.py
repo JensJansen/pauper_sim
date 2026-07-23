@@ -103,12 +103,18 @@ def flashback_faithless_looting(state, card_def):
 
 def _highway_robbery_effect(state):
     """Oracle: "You may discard a card or sacrifice a land. If you do,
-    draw two cards." Simplified to the discard half only -- real card
-    also allows sacrificing a land as the alternative optional cost;
-    dropped rather than modeling a per-cast choice of cost type on top of
-    Plot. Genuinely optional (not an additional cost) -- unlike Grab the
-    Prize, casting this never requires a card in hand at all."""
-    resolution.begin_discard(state, 1, optional=True, on_complete=lambda s, cards: s.draw(2) if cards else None)
+    draw two cards." Both cost options offered as one optional decision
+    (resolution.begin_discard_or_sacrifice) -- genuinely optional (not an
+    additional cost, unlike Grab the Prize), so casting this never
+    requires a card in hand OR a land in play. Shared unchanged by both
+    the normal cast and Plot's cast-from-exile below: real Plot lets you
+    cast the card later "as you could normally cast it," which means this
+    same may-discard-or-sacrifice choice is made fresh at THAT time too,
+    not locked in when it was plotted."""
+    resolution.begin_discard_or_sacrifice(
+        state, lambda p: p.card_def.card_type == CardType.LAND,
+        on_complete=lambda s, paid: s.draw(2) if paid else None,
+    )
 
 
 def cast_highway_robbery(state, card_def):
@@ -268,10 +274,8 @@ RED_EFFECT_REGISTRY = {
         },
         "pending_kinds": {"discard"},
     },
-    # Real Highway Robbery also allows sacrificing a land instead of
-    # discarding; simplified to discard-only here rather than modeling a
-    # per-cast choice of cost type on top of Plot (see cast_highway_robbery).
-    # Genuinely optional, no extra_legal gate -- always castable.
+    # Genuinely optional, no extra_legal gate -- always castable, even
+    # with an empty hand and no land in play (see _highway_robbery_effect).
     EffectId.HIGHWAY_ROBBERY: {
         "cast": {"resolve": lambda state, card_def: cast_highway_robbery(state, card_def)},
         "plot": {
@@ -279,7 +283,7 @@ RED_EFFECT_REGISTRY = {
             "resolve": lambda state, card_def: plot_to_exile(state, card_def),
             "cast_from_exile_resolve": lambda state, card_def: cast_highway_robbery_from_exile(state, card_def),
         },
-        "pending_kinds": {"discard"},
+        "pending_kinds": {"discard_or_sacrifice"},
     },
     EffectId.GRAB_THE_PRIZE: {
         "cast": {
@@ -355,3 +359,53 @@ if __name__ == "__main__":
     assert not_a_creature in state.players[0].battlefield  # a land is never a valid target
 
     print("red_cards.py Breath Weapon self-check: OK")
+
+    # Highway Robbery: "discard a card or sacrifice a land. If you do,
+    # draw two cards" -- both cost options, plus decline (no draw).
+
+    # Discard path, discarding a Madness card: Madness's own
+    # exile-not-graveyard replacement effect fires regardless of WHY the
+    # card was discarded (an optional cost here, not Faithless Looting's
+    # own discard-2 effect).
+    state = GameState(on_the_play=True)
+    hr = CardDef("Highway Robbery", CardType.SORCERY, {"generic": 1, "R": 1}, EffectId.HIGHWAY_ROBBERY)
+    fiery_temper = CardDef("Fiery Temper", CardType.INSTANT, {"generic": 1, "R": 2}, EffectId.FIERY_TEMPER)
+    state.hand = [hr, fiery_temper]
+    state.library = [CardDef(f"Filler {i}", CardType.LAND, None, EffectId.MOUNTAIN) for i in range(2)]
+    cast_highway_robbery(state, hr)
+    assert state.pending_resolution["kind"] == "discard_or_sacrifice"
+    resolution.execute_discard_or_sacrifice_option(state, "discard", "Fiery Temper")
+    assert len(state.hand) == 2  # drew 2
+    assert state.exile and state.exile[0][0].name == "Fiery Temper"  # exiled, not graveyarded -- Madness
+    assert state.trigger_queue and state.trigger_queue[0]["kind"] == "madness"
+
+    # Sacrifice-a-land path -- the alternative cost the old implementation
+    # dropped entirely.
+    state2 = GameState(on_the_play=True)
+    hr2 = CardDef("Highway Robbery", CardType.SORCERY, {"generic": 1, "R": 1}, EffectId.HIGHWAY_ROBBERY)
+    mountain = Permanent(CardDef("Mountain", CardType.LAND, None, EffectId.MOUNTAIN))
+    state2.hand = [hr2]
+    state2.battlefield = [mountain]
+    state2.library = [CardDef(f"Filler {i}", CardType.LAND, None, EffectId.MOUNTAIN) for i in range(2)]
+    cast_highway_robbery(state2, hr2)
+    resolution.execute_discard_or_sacrifice_option(state2, "sacrifice", "Mountain")
+    assert state2.battlefield == []
+    assert sorted(c.name for c in state2.graveyard) == ["Highway Robbery", "Mountain"]
+    assert len(state2.hand) == 2
+
+    # Decline -- genuinely optional even with something payable on hand
+    # (a spare land AND a spare card), no draw either way.
+    state3 = GameState(on_the_play=True)
+    hr3 = CardDef("Highway Robbery", CardType.SORCERY, {"generic": 1, "R": 1}, EffectId.HIGHWAY_ROBBERY)
+    spare_card = CardDef("Lightning Bolt", CardType.INSTANT, {"R": 1}, EffectId.LIGHTNING_BOLT)
+    spare_land = Permanent(CardDef("Mountain", CardType.LAND, None, EffectId.MOUNTAIN))
+    state3.hand = [hr3, spare_card]
+    state3.battlefield = [spare_land]
+    cast_highway_robbery(state3, hr3)
+    assert state3.pending_resolution["kind"] == "discard_or_sacrifice"  # genuinely offered, not auto-completed
+    resolution.execute_discard_or_sacrifice_decline(state3)
+    assert [c.name for c in state3.hand] == ["Lightning Bolt"]  # untouched, no draw
+    assert spare_land in state3.battlefield  # untouched
+    assert state3.pending_resolution is None
+
+    print("red_cards.py Highway Robbery self-check: OK")

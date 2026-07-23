@@ -61,25 +61,6 @@ def lotleth_giant_etb(state):
     deal_damage_to_opponent(state, creature_count)
 
 
-def begin_choose_graveyard_card(state, predicate, on_complete):
-    """Dread Return: pick ONE card from the graveyard by name, among those
-    matching predicate -- the reanimation target. Same fungible-by-name
-    simplification, same empty-options safety net as
-    game.resolution.begin_search_fetch/begin_choose_permanent."""
-    resolution.begin_resolution(state, "choose_graveyard_card", on_complete, predicate=predicate)
-    if not choose_graveyard_card_options(state):
-        resolution.complete_resolution(state, None)
-
-
-def choose_graveyard_card_options(state):
-    predicate = state.pending_resolution["predicate"]
-    return sorted({c.name for c in state.graveyard if predicate(c)})
-
-
-def execute_choose_graveyard_card_option(state, name):
-    resolution.complete_resolution(state, name)
-
-
 def cast_dread_return(state, card_def):
     """{2}{B}{B}: return target creature card from your graveyard to the
     battlefield. This card is already in the graveyard by the time the
@@ -94,7 +75,7 @@ def cast_dread_return(state, card_def):
         state.graveyard.remove(found)
         enters_battlefield(state, found)
 
-    begin_choose_graveyard_card(state, lambda c: c.card_type == CardType.CREATURE, _on_chosen)
+    resolution.begin_choose_graveyard_card(state, lambda c: c.card_type == CardType.CREATURE, _on_chosen)
 
 
 def flashback_dread_return(state, card_def):
@@ -119,7 +100,7 @@ def flashback_dread_return(state, card_def):
             state.graveyard.remove(found)
             enters_battlefield(state, found)
 
-        begin_choose_graveyard_card(state, lambda c: c.card_type == CardType.CREATURE, _on_chosen)
+        resolution.begin_choose_graveyard_card(state, lambda c: c.card_type == CardType.CREATURE, _on_chosen)
 
     def _on_sacrificed(state, ok):
         if not ok:
