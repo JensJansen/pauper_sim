@@ -155,6 +155,13 @@ def _observation_layout(decklist, pending_kinds):
 
 
 def build_observation(state, decklist, horizon, pending_kinds):
+    # Plain dicts, not numpy arrays -- measured (a clean same-process A/B,
+    # docs/GPU_VECENV_INVESTIGATION.md's training-speed followup): numpy's
+    # per-element scalar-indexing overhead (type boxing/unboxing) outweighs
+    # its win at this deck's scale (~15 distinct card names), making a
+    # numpy-array version of this counting ~19% SLOWER, not faster, despite
+    # looking like the more "vectorized" choice. CPython's dict is already
+    # fast at this size.
     card_names, card_copies = _card_lookup(decklist)
     all_kinds, creature_names, creature_slot_dim, dim = _observation_layout(decklist, pending_kinds)
     obs = np.zeros(dim, dtype=np.float32)
@@ -318,11 +325,15 @@ def _creature_slot_block(state, owner_idx, creature_names, creature_copies):
     other_blocked_by_values = state.players[1 - owner_idx].blocked_by.values() if len(state.players) > 1 else ()
     dim = sum(creature_copies[name] for name in creature_names) * 6
     out = np.zeros(dim, dtype=np.float32)
+    # One battlefield scan total, not one per creature NAME (profiled: this
+    # was rebuilding by_slot from scratch for every distinct creature name,
+    # O(creature_names x battlefield) repeated work every observation call --
+    # see docs/GPU_VECENV_INVESTIGATION.md's training-speed followup).
+    by_name_slot = {(p.card_def.name, p.slot): p for p in battlefield}
     i = 0
     for name in creature_names:
-        by_slot = {p.slot: p for p in battlefield if p.card_def.name == name}
         for slot in range(1, creature_copies[name] + 1):
-            p = by_slot.get(slot)
+            p = by_name_slot.get((name, slot))
             if p is not None:
                 out[i] = 0.0 if p.tapped else 1.0
                 out[i + 1] = 1.0 if p.tapped else 0.0
@@ -400,6 +411,9 @@ def _cast_speed(card_def, spec):
     return game.turn.Speed.SORCERY
 
 
+_GATE_NO_PENDING = object()  # sentinel: this closure's own first check is "state.pending_resolution is None" -- see legal_action_mask's own docstring
+
+
 def _land_drop_legal(name):
     def legal(state):
         return (
@@ -414,6 +428,7 @@ def _land_drop_legal(name):
             and state.lands_played_this_turn == 0
             and any(c.name == name for c in state.hand)
         )
+    legal._pending_gate = _GATE_NO_PENDING
     return legal
 
 
@@ -456,6 +471,7 @@ def _cast_legal(name, extra_legal, speed):
         if game.plan_payment(state, card_def.cast_cost) is None:
             return False
         return extra_legal is None or extra_legal(state)
+    legal._pending_gate = _GATE_NO_PENDING
     return legal
 
 
@@ -518,6 +534,7 @@ def _activate_legal(name, cost_key, speed):
             return False
         p = next((p for p in state.battlefield if p.card_def.name == name and not p.tapped), None)
         return p is not None and game.plan_payment(state, p.card_def.extra[cost_key]) is not None
+    legal._pending_gate = _GATE_NO_PENDING
     return legal
 
 
@@ -537,6 +554,7 @@ def _forestcycle_legal(name, cost_key):
             return False
         card_def = game.CARD_DEFS[name]
         return game.plan_payment(state, card_def.extra[cost_key]) is not None
+    legal._pending_gate = _GATE_NO_PENDING
     return legal
 
 
@@ -564,6 +582,7 @@ def _graveyard_ability_legal(name, cost_key):
             return False
         card_def = game.CARD_DEFS[name]
         return game.plan_payment(state, card_def.extra[cost_key]) is not None
+    legal._pending_gate = _GATE_NO_PENDING
     return legal
 
 
@@ -576,6 +595,9 @@ def _graveyard_ability_execute(name, cost_key, resolve):
 
 def _pass_legal(state):
     return state.pending_resolution is None
+
+
+_pass_legal._pending_gate = _GATE_NO_PENDING
 
 
 def _pass_execute(state):
@@ -632,6 +654,13 @@ def _choose_name_options(state):
 def _choose_name_legal(name):
     def legal(state):
         return name in _choose_name_options(state)
+    # Matches _choose_name_options' own dispatch table above exactly --
+    # every pending kind that function ever returns a non-empty list for.
+    legal._pending_gate = frozenset({
+        "pay_cost", "search_fetch", "choose_graveyard_card", "sacrifice", "discard", "discard_or_sacrifice",
+        "mulligan_bottom", "ancient_stirrings", "malevolent_rumble", "scry", "surveil", "select_to_hand",
+        "order_triggers",
+    })
     return legal
 
 
@@ -678,6 +707,7 @@ def _choose_name_color_options(state):
 def _choose_name_color_legal(name, color):
     def legal(state):
         return (name, color) in _choose_name_color_options(state)
+    legal._pending_gate = frozenset({"pay_cost"})
     return legal
 
 
@@ -743,6 +773,7 @@ def _choose_permanent_legal(name, slot):
             pending is not None and pending["kind"] == "choose_permanent"
             and (name, slot) in game.choose_permanent_options(state)
         )
+    legal._pending_gate = frozenset({"choose_permanent"})
     return legal
 
 
@@ -766,6 +797,7 @@ def _choose_opponent_permanent_legal(name, slot):
             pending is not None and pending["kind"] == "choose_opponent_permanent"
             and (name, slot) in game.choose_opponent_permanent_options(state)
         )
+    legal._pending_gate = frozenset({"choose_opponent_permanent"})
     return legal
 
 
@@ -791,6 +823,7 @@ def _assign_blocker_legal(name, slot):
             return False
         p = _cached_battlefield_lookup(state).get((name, slot))
         return p is not None and game.creature_block_eligible(state, p)
+    legal._pending_gate = frozenset({"declare_blockers"})
     return legal
 
 
@@ -831,6 +864,9 @@ def _done_blocking_legal(state):
     return pending is not None and pending["kind"] == "declare_blockers"
 
 
+_done_blocking_legal._pending_gate = frozenset({"declare_blockers"})
+
+
 def _done_blocking_execute(state):
     game.complete_resolution(state)
 
@@ -842,6 +878,7 @@ def _pool_spend_legal(color):
             and state.pending_resolution["kind"] == "pay_cost"
             and color in game.pool_spend_options(state)
         )
+    legal._pending_gate = frozenset({"pay_cost"})
     return legal
 
 
@@ -854,6 +891,9 @@ def _pool_spend_execute(color):
 def _keep_dispose_legal(state):
     pending = state.pending_resolution
     return pending is not None and pending["kind"] in ("scry", "surveil") and bool(pending["remaining"])
+
+
+_keep_dispose_legal._pending_gate = frozenset({"scry", "surveil"})
 
 
 def _keep_execute(state):
@@ -869,6 +909,9 @@ def _mulligan_decision_legal(state):
     return pending is not None and pending["kind"] == "mulligan_decision"
 
 
+_mulligan_decision_legal._pending_gate = frozenset({"mulligan_decision"})
+
+
 def _mulligan_take_legal(state):
     # Caps London Mulligan at HAND_SIZE_LIMIT (7): execute_mulligan_take
     # never runs out of library to bound itself (mulliganed cards go back
@@ -880,6 +923,9 @@ def _mulligan_take_legal(state):
     # illegal-action-gets-substituted fallback every other action already
     # relies on (see model_choose_action).
     return _mulligan_decision_legal(state) and state.mulligans_taken < game.HAND_SIZE_LIMIT
+
+
+_mulligan_take_legal._pending_gate = frozenset({"mulligan_decision"})
 
 
 def _mulligan_keep_execute(state):
@@ -895,6 +941,9 @@ def _decline_legal(state):
     return pending is not None and pending["kind"] == "ancient_stirrings"
 
 
+_decline_legal._pending_gate = frozenset({"ancient_stirrings"})
+
+
 def _decline_execute(state):
     game.execute_ancient_stirrings_option(state, "decline")
 
@@ -904,6 +953,9 @@ def _decline_malevolent_rumble_legal(state):
     return pending is not None and pending["kind"] == "malevolent_rumble"
 
 
+_decline_malevolent_rumble_legal._pending_gate = frozenset({"malevolent_rumble"})
+
+
 def _decline_malevolent_rumble_execute(state):
     game.execute_malevolent_rumble_option(state, "decline")
 
@@ -911,6 +963,9 @@ def _decline_malevolent_rumble_execute(state):
 def _abandon_payment_legal(state):
     pending = state.pending_resolution
     return pending is not None and pending["kind"] == "pay_cost"
+
+
+_abandon_payment_legal._pending_gate = frozenset({"pay_cost"})
 
 
 def _abandon_payment_execute(state):
@@ -933,9 +988,15 @@ def _select_to_hand_keep_legal(state):
     )
 
 
+_select_to_hand_keep_legal._pending_gate = frozenset({"select_to_hand"})
+
+
 def _select_to_hand_bottom_legal(state):
     pending = state.pending_resolution
     return pending is not None and pending["kind"] == "select_to_hand" and bool(pending["remaining"])
+
+
+_select_to_hand_bottom_legal._pending_gate = frozenset({"select_to_hand"})
 
 
 def _select_to_hand_keep_execute(state):
@@ -954,6 +1015,9 @@ def _decline_search_legal(state):
     )
 
 
+_decline_search_legal._pending_gate = frozenset({"search_fetch"})
+
+
 def _decline_search_execute(state):
     game.execute_search_fetch_decline(state)
 
@@ -966,6 +1030,9 @@ def _decline_discard_legal(state):
     )
 
 
+_decline_discard_legal._pending_gate = frozenset({"discard"})
+
+
 def _decline_discard_execute(state):
     game.execute_discard_decline(state)
 
@@ -973,6 +1040,9 @@ def _decline_discard_execute(state):
 def _target_self_legal(state):
     pending = state.pending_resolution
     return pending is not None and pending["kind"] == "choose_target_player"
+
+
+_target_self_legal._pending_gate = frozenset({"choose_target_player"})
 
 
 def _target_self_execute(state):
@@ -987,6 +1057,9 @@ def _target_opponent_legal(state):
     already uses elsewhere."""
     pending = state.pending_resolution
     return pending is not None and pending["kind"] == "choose_target_player" and len(state.players) > 1
+
+
+_target_opponent_legal._pending_gate = frozenset({"choose_target_player"})
 
 
 def _target_opponent_execute(state):
@@ -1005,6 +1078,7 @@ def _discard_or_sacrifice_sacrifice_legal(name):
     def legal(state):
         pending = state.pending_resolution
         return pending is not None and pending["kind"] == "discard_or_sacrifice" and name in game.discard_or_sacrifice_sacrifice_options(state)
+    legal._pending_gate = frozenset({"discard_or_sacrifice"})
     return legal
 
 
@@ -1017,6 +1091,9 @@ def _discard_or_sacrifice_sacrifice_execute(name):
 def _decline_discard_or_sacrifice_legal(state):
     pending = state.pending_resolution
     return pending is not None and pending["kind"] == "discard_or_sacrifice"
+
+
+_decline_discard_or_sacrifice_legal._pending_gate = frozenset({"discard_or_sacrifice"})
 
 
 def _decline_discard_or_sacrifice_execute(state):
@@ -1034,6 +1111,9 @@ def _madness_cast_legal(state):
     return game.plan_payment(state, madness_spec["cost"]) is not None
 
 
+_madness_cast_legal._pending_gate = frozenset({"madness_decision"})
+
+
 def _madness_cast_execute(state):
     game.execute_madness_cast(state)
 
@@ -1041,6 +1121,9 @@ def _madness_cast_execute(state):
 def _madness_decline_legal(state):
     pending = state.pending_resolution
     return pending is not None and pending["kind"] == "madness_decision"
+
+
+_madness_decline_legal._pending_gate = frozenset({"madness_decision"})
 
 
 def _madness_decline_execute(state):
@@ -1058,6 +1141,7 @@ def _activate_no_cost_legal(name, ability_legal, speed):
             return False
         p = next((p for p in state.battlefield if p.card_def.name == name), None)
         return p is not None and ability_legal(state, p)
+    legal._pending_gate = _GATE_NO_PENDING
     return legal
 
 
@@ -1092,6 +1176,7 @@ def _alt_cast_legal(name, extra_legal, speed):
         if _hand_count_available(state, name) <= 0:
             return False
         return extra_legal(state)
+    legal._pending_gate = _GATE_NO_PENDING
     return legal
 
 
@@ -1126,6 +1211,7 @@ def _flashback_legal(name, ability_legal, speed):
         if not any(c.name == name for c in state.graveyard):
             return False
         return ability_legal(state)
+    legal._pending_gate = _GATE_NO_PENDING
     return legal
 
 
@@ -1152,6 +1238,7 @@ def _plot_legal(name, cost, speed):
         if not any(c.name == name for c in state.hand):
             return False
         return game.plan_payment(state, cost) is not None
+    legal._pending_gate = _GATE_NO_PENDING
     return legal
 
 
@@ -1189,6 +1276,7 @@ def _cast_from_exile_legal(name, extra_legal, speed):
         if not has_plotted:
             return False
         return extra_legal is None or extra_legal(state)
+    legal._pending_gate = _GATE_NO_PENDING
     return legal
 
 
@@ -1230,6 +1318,7 @@ def _omen_cast_legal(hand_name, cost, speed):
         if not any(c.name == hand_name for c in state.hand):
             return False
         return game.plan_payment(state, cost) is not None
+    legal._pending_gate = _GATE_NO_PENDING
     return legal
 
 
@@ -1699,6 +1788,21 @@ def legal_action_mask(state, actions):
     table, none privileged as a default (a caller with its own decklist
     always has its own table to pass, e.g. harness.py's self.actions).
 
+    Category-gating (profiled, not guessed: this table can run ~300 entries
+    long, and every single one of those closures gets called on every
+    sweep regardless of relevance -- see docs/GPU_VECENV_INVESTIGATION.md's
+    training-speed followup): most `_X_legal` closures start with a cheap,
+    static check of state.pending_resolution (either "must be None" or
+    "must be one specific kind/set of kinds") before doing any real work.
+    Each such closure is stamped with a `._pending_gate` attribute at
+    creation time -- `_GATE_NO_PENDING`, or a frozenset of the
+    pending_resolution["kind"] values it could possibly be legal under --
+    copied directly from that closure's own first-line check, changing WHEN
+    it gets called, never WHAT it returns. A closure with no `._pending_gate`
+    stamped (attack, and anything this fix's own audit didn't touch) is
+    always called, exactly like every closure was before this fix -- the
+    fail-safe default, not an optimization gap that can go wrong.
+
     Resets _tap_cost_options_cache and _battlefield_lookup_cache before AND
     after the sweep itself (not just before): guarantees neither cache can
     ever leak past this call's own scope into a later execute_fn call or an
@@ -1709,8 +1813,19 @@ def legal_action_mask(state, actions):
     global _tap_cost_options_cache, _battlefield_lookup_cache
     _tap_cost_options_cache = None
     _battlefield_lookup_cache = None
+    pending = state.pending_resolution
+    pending_kind = pending["kind"] if pending is not None else None
     try:
-        return np.array([legal_fn(state) for _, legal_fn, _ in actions], dtype=bool)
+        mask = np.zeros(len(actions), dtype=bool)
+        for idx, (_name, legal_fn, _execute) in enumerate(actions):
+            gate = getattr(legal_fn, "_pending_gate", None)
+            if gate is _GATE_NO_PENDING:
+                if pending is not None:
+                    continue
+            elif gate is not None and pending_kind not in gate:
+                continue
+            mask[idx] = legal_fn(state)
+        return mask
     finally:
         _tap_cost_options_cache = None
         _battlefield_lookup_cache = None

@@ -37,8 +37,16 @@ import game
 import rewards
 import terminated
 from harness import TrainingHarness, evaluate_two_player, train_two_player
+from lean_ppo import LeanMaskablePPO
 
 VEC_ENV_CLASSES = {"dummy": DummyVecEnv, "subproc": SubprocVecEnv}
+# "model_cls": "lean_ppo" opts into the from-scratch masked-PPO implementation
+# in lean_ppo.py (see docs/GPU_VECENV_INVESTIGATION.md's training-speed
+# followup) instead of the default "maskable_ppo" (sb3_contrib.MaskablePPO,
+# every config's behavior before this key existed) -- a drop-in swap,
+# harness.py's own self-play wiring never changes regardless of which one a
+# config picks.
+MODEL_CLASSES = {"maskable_ppo": MaskablePPO, "lean_ppo": LeanMaskablePPO}
 
 SRC_DIR = os.path.dirname(os.path.abspath(__file__))
 ROOT_DIR = os.path.join(SRC_DIR, "..")
@@ -46,8 +54,6 @@ CONFIGS_DIR = os.path.join(ROOT_DIR, "configs")
 DATA_DIR = os.path.join(ROOT_DIR, "data")
 MODELS_DIR = os.path.join(ROOT_DIR, "models")
 LOGS_DIR = os.path.join(ROOT_DIR, "logs")
-
-MODEL_CLS = MaskablePPO  # every config uses this today -- no JSON field for it, add one in this one place if that ever changes (YAGNI)
 
 # Safety-cap multiplier for total_timesteps: max_episodes (SB3's
 # StopTrainingOnMaxEpisodes) is the real stop condition, this only needs
@@ -119,6 +125,10 @@ def load_config(config_name):
     # part of TrainingHarness._metadata()'s mismatch-check (doesn't touch
     # observation_dim/action_space_size/model weights).
     cfg["vec_env_cls"] = VEC_ENV_CLASSES[raw.get("vec_env", "dummy")]
+    # Same "training-execution detail, not part of the mismatch-check"
+    # reasoning as vec_env_cls above -- swapping algorithms doesn't touch
+    # observation_dim/action_space_size/model weights either.
+    cfg["model_cls"] = MODEL_CLASSES[raw.get("model_cls", "maskable_ppo")]
     # "If both appear, all steps are always enabled" -- 2 decklists present
     # is this config's own multiplayer trigger, and combat is the only
     # path to a life_total win (the other new 2-player win condition,
@@ -137,6 +147,7 @@ def load_config(config_name):
         cfg["opponent"]["n_envs"] = cfg["n_envs"]
         cfg["opponent"]["combat_enabled"] = cfg["combat_enabled"]
         cfg["opponent"]["vec_env_cls"] = cfg["vec_env_cls"]
+        cfg["opponent"]["model_cls"] = cfg["model_cls"]
         # Potential-based dense reward (MULTIPLAYER_GAPS.md) -- opt-in,
         # default 0.0 (no shaping, today's exact behavior). One shared
         # weight for both sides, same reasoning as horizon/n_envs/
@@ -170,7 +181,7 @@ def _load_harness(path, config_name, cfg, opponent_cfg=None, my_seat_idx=0):
     """opponent_cfg/my_seat_idx: two-player mode only -- see cfg["opponent"]
     (load_config)/TrainingHarness's own opponent_* constructor kwargs."""
     kwargs = dict(
-        reward_fn=cfg["reward_fn"], model_cls=MODEL_CLS, decklist=cfg["decklist"],
+        reward_fn=cfg["reward_fn"], model_cls=cfg["model_cls"], decklist=cfg["decklist"],
         terminated_fn=cfg["terminated_fn"], pending_kinds=cfg["pending_kinds"],
         horizon=cfg["horizon"], on_the_play=cfg["on_the_play"], scoring_fns=cfg["scoring_fns"],
         combat_enabled=cfg["combat_enabled"], token_card_defs=cfg["token_card_defs"],
@@ -189,7 +200,7 @@ def _load_harness(path, config_name, cfg, opponent_cfg=None, my_seat_idx=0):
 
 def _build_harness(cfg, opponent_cfg=None, my_seat_idx=0):
     kwargs = dict(
-        reward_fn=cfg["reward_fn"], model_cls=MODEL_CLS, decklist=cfg["decklist"],
+        reward_fn=cfg["reward_fn"], model_cls=cfg["model_cls"], decklist=cfg["decklist"],
         terminated_fn=cfg["terminated_fn"], pending_kinds=cfg["pending_kinds"],
         model_kwargs=cfg["model_kwargs"], horizon=cfg["horizon"], on_the_play=cfg["on_the_play"],
         seed=cfg["seed"], scoring_fns=cfg["scoring_fns"], n_envs=cfg["n_envs"],

@@ -9,7 +9,7 @@
   "token_card_defs_2": ["Eldrazi Spawn", "Warrior"],
   "seed": 0,
   "n_envs": 8,
-  "vec_env": "subproc",
+  "model_cls": "lean_ppo",
   "model_kwargs": {
     "policy_kwargs": {"net_arch": [64, 64]},
     "verbose": 1,

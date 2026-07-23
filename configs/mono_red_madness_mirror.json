@@ -9,6 +9,7 @@
   "token_card_defs_2": ["Blood"],
   "seed": 0,
   "n_envs": 8,
+  "vec_env": "subproc",
   "model_kwargs": {
     "policy_kwargs": {"net_arch": [256, 256]},
     "verbose": 1,
