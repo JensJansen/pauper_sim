@@ -60,7 +60,7 @@ def any_creature_on_battlefield(state):
     """Shared "is there a legal Aura/targeted-effect target at all" gate --
     Rancor/Ancestral Mask/Armadillo Cloak/Cartouche of Solidarity/Ethereal
     Armor's own extra_legal all reduce to exactly this."""
-    return any(p.card_def.card_type == CardType.CREATURE for p in state.battlefield)
+    return any(p.card_type == CardType.CREATURE for p in state.battlefield)
 
 
 if __name__ == "__main__":

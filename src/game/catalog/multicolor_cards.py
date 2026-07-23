@@ -89,7 +89,7 @@ MULTICOLOR_EFFECT_REGISTRY = {
         # that stacking).
         "cast": {
             "resolve": lambda state, card_def: cast_aura(
-                state, card_def, lambda p: p.card_def.card_type == CardType.CREATURE,
+                state, card_def, lambda p: p.card_type == CardType.CREATURE,
             ),
             "extra_legal": lambda state: any_creature_on_battlefield(state),
             "precast_choice": True,  # real MTG "enchant target creature" -- must be chosen before the stack, see drl_env._precast_choice_execute

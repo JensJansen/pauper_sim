@@ -107,7 +107,7 @@ def flashback_dread_return(state, card_def):
             return  # the environment's own Flashback legality check guarantees this can't happen
         push_to_stack(state, card_def, _reanimate, reserves_hand_card=False)
 
-    resolution.begin_sacrifice(state, lambda p: p.card_def.card_type == CardType.CREATURE, 3, _on_sacrificed)
+    resolution.begin_sacrifice(state, lambda p: p.card_type == CardType.CREATURE, 3, _on_sacrificed)
 
 
 def madness_kitchen_imp(state, card_def):
@@ -169,7 +169,7 @@ BLACK_EFFECT_REGISTRY = {
             "extra_legal": lambda state: any(c.card_type == CardType.CREATURE for c in state.graveyard),
         },
         "flashback": {
-            "legal": lambda state: sum(1 for p in state.battlefield if p.card_def.card_type == CardType.CREATURE) >= 3,
+            "legal": lambda state: sum(1 for p in state.battlefield if p.card_type == CardType.CREATURE) >= 3,
             "resolve": lambda state, card_def: flashback_dread_return(state, card_def),
         },
         "pending_kinds": {"choose_graveyard_card", "sacrifice"},

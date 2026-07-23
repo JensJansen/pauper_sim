@@ -45,13 +45,23 @@ clause is a deliberate, documented drop rather than a guess:
   Colossus's own battlefield entry is chained onto that resolution's
   on_complete rather than happening immediately -- see the function's own
   docstring.
-- Pinnacle Kill-Ship: Station (tap another creature: charge counters;
-  becomes a creature with flying at 7+) is dropped entirely, along with
-  its ETB "10 damage to up to one target creature" (no beneficial target
-  exists here either, same reasoning as Rooftop Percher above) -- every
-  Tron config runs with combat_enabled=False, so becoming a creature/
-  gaining flying would be permanently unobservable regardless. Stays a
-  plain, never-a-creature Artifact.
+- Pinnacle Kill-Ship: Station and its ETB are both implemented for real
+  (unlike the three drops above) -- see this file's own
+  activate_pinnacle_kill_ship_station/pinnacle_kill_ship_etb. Station taps
+  ANOTHER creature you control (a real per-creature choice, since unlike
+  Saruli Caretaker's identical-cost tap the CHOSEN creature's own power
+  matters) and puts that many "charge" counters (Permanent.counters,
+  state.py) on this permanent; at 7+, Permanent.type_override (state.py)
+  flips to CardType.CREATURE and stats._animate_spec starts reporting its
+  real 7/7 flying in place of the Artifact's own 0/0 -- both read
+  generically by every "is this currently a creature" check (combat
+  eligibility, state-based death, Saruli/Quirion/Dread Return's own
+  "another creature" checks) with no Kill-Ship-specific code at any of
+  those call sites. The ETB reuses begin_choose_opponent_permanent
+  (resolution.py), which already auto-no-ops with zero legal targets -- so
+  it's a correct, harmless no-op in every current (1-player, no opponent)
+  Tron config, and becomes a real removal spell the instant a 2-player Tron
+  config exists to reach it.
 
 "mana" shapes: ("tron",) -- Tron's controls-all-three-doubling rule;
 ("fixed", symbol) -- always produces that one symbol; ("flexible",
@@ -66,10 +76,16 @@ from .. import registry
 from ..cards import CardDef, CardType, EffectId
 from ..effects.casting import cast_permanent_from_hand, enters_battlefield
 from ..effects.shared import discard_from_hand_to_graveyard, find_to_hand
+from ..effects.state_based import check_state_based_actions
+from ..effects.stats import permanent_power
 from ..effects.tokens import activate_blood_sac
 from ..effects.win_check import gain_life
 from ..mana import COLORS
-from ..resolution import begin_choose_graveyard_card, begin_choose_target_player, begin_search_fetch, scry, surveil
+from ..resolution import (
+    begin_choose_graveyard_card, begin_choose_opponent_permanent, begin_choose_permanent,
+    begin_choose_target_player, begin_search_fetch, scry, surveil,
+)
+from ..turn import Speed
 
 COLORLESS_CARD_CATALOG = {
     "Urza's Mine": CardDef("Urza's Mine", CardType.LAND, None, EffectId.TRON_LAND, tron_type="Mine"),
@@ -298,6 +314,75 @@ def cast_maelstrom_colossus(state, card_def):
     _enter_colossus(state)
 
 
+def pinnacle_kill_ship_etb(state):
+    """ETB: 10 damage to up to one target creature. Reuses
+    begin_choose_opponent_permanent (resolution.py) unmodified -- its own
+    empty-options safety net already auto-completes with None the instant
+    no opposing creature exists, which is every current Tron config (no
+    2-player Tron config exists yet, and state.opponent itself would raise
+    in 1-player mode -- guarded explicitly below, same convention
+    win_check.deal_damage_to_opponent already uses). "Up to one" (fully
+    optional even with a legal target) is simplified to "must choose one if
+    any exist," same "no rational reason to decline an available, harmless
+    hit" shortcut every other real-target Aura/effect in this codebase
+    already takes (Rancor/Ancestral Mask/etc. never offer a decline either).
+    Marks damage directly and calls check_state_based_actions itself --
+    same pattern cast_breath_weapon (red_cards.py) already uses for its own
+    "creature" damage sweep, not deal_damage_to_opponent (that's for a
+    PLAYER's own life total, never a creature)."""
+    if len(state.players) <= 1:
+        return
+
+    def _on_chosen(state, choice):
+        if choice is None:
+            return
+        name, slot = choice
+        target = next(p for p in state.opponent.battlefield if p.card_def.name == name and p.slot == slot)
+        target.damage_marked += 10
+        check_state_based_actions(state)
+
+    begin_choose_opponent_permanent(state, lambda p: p.card_type == CardType.CREATURE, _on_chosen)
+
+
+def _pinnacle_kill_ship_station_legal(state, permanent):
+    """Station -- tap ANOTHER creature you control (no mana cost of its
+    own, per its own real text). Unlike Saruli Caretaker's identical-shape
+    tap cost, WHICH creature gets tapped genuinely matters here (its power
+    sets how many charge counters this gets), so this can't reuse Saruli's
+    own "any untapped creature, arbitrarily" simplification -- see
+    _pinnacle_kill_ship_station_resolve's own real per-creature choice."""
+    return any(p is not permanent and not p.tapped and p.card_type == CardType.CREATURE for p in state.battlefield)
+
+
+def _pinnacle_kill_ship_station_resolve(state, permanent):
+    """Real per-creature choice (unlike Saruli Caretaker's fungible-by-name
+    auto-pick): the tapped creature's own power sets how many charge
+    counters land here, so which one gets tapped is a real decision, same
+    "genuine choice, not simplified away" treatment Quirion Ranger's own
+    untap target already gets. Charge counters alone (Permanent.counters)
+    are the whole mechanism -- stats._animate_spec reads them straight off
+    this permanent to decide power/toughness/flying/current CardType
+    (Permanent.card_type) once 7+ are reached; type_override is flipped
+    here explicitly (once, the instant the threshold is first crossed --
+    nothing in this card pool ever removes a charge counter, so there's no
+    "un-animate" path to handle)."""
+    def _on_chosen(state, choice):
+        if choice is None:
+            return
+        name, slot = choice
+        tapped_creature = next(p for p in state.battlefield if p.card_def.name == name and p.slot == slot)
+        tapped_creature.tapped = True
+        gained = permanent_power(state, tapped_creature)
+        permanent.counters["charge"] = permanent.counters.get("charge", 0) + gained
+        animate = registry.EFFECT_REGISTRY[EffectId.PINNACLE_KILL_SHIP]["animate"]
+        if permanent.counters["charge"] >= animate["threshold"]:
+            permanent.type_override = CardType.CREATURE
+
+    begin_choose_permanent(
+        state, lambda p: p is not permanent and not p.tapped and p.card_type == CardType.CREATURE, _on_chosen,
+    )
+
+
 COLORLESS_EFFECT_REGISTRY = {
     EffectId.TRON_LAND: {
         "mana": ("tron",),
@@ -406,6 +491,20 @@ COLORLESS_EFFECT_REGISTRY = {
     },
     EffectId.PINNACLE_KILL_SHIP: {
         "cast": {"resolve": lambda state, card_def: cast_permanent_from_hand(state, card_def)},
+        "etb_trigger": lambda state: pinnacle_kill_ship_etb(state),
+        "activated_abilities": {
+            "station": {
+                "speed": Speed.SORCERY,  # real text: "Station only as a sorcery"
+                "legal": lambda state, permanent: _pinnacle_kill_ship_station_legal(state, permanent),
+                "resolve": lambda state, permanent: _pinnacle_kill_ship_station_resolve(state, permanent),
+            },
+        },
+        "pending_kinds": {"choose_permanent", "choose_opponent_permanent"},
+        # Read by stats._animate_spec (power/toughness/keywords once
+        # animated) and _pinnacle_kill_ship_station_resolve (the threshold
+        # that flips Permanent.type_override to CREATURE). Real text: 7+
+        # charge counters -> an artifact creature with flying.
+        "animate": {"counter": "charge", "threshold": 7, "power": 7, "toughness": 7, "keywords": {"flying"}},
     },
 
     # --- boggles deck ---
@@ -633,3 +732,63 @@ if __name__ == "__main__":
         print("colorless_cards.py Maelstrom Colossus Cascade (whiff/extra_legal/chained-resolution) self-check: OK")
     finally:
         registry.EFFECT_REGISTRY[EffectId.FILLER] = _filler_backup
+
+    # Pinnacle Kill-Ship: Station is a REAL per-creature choice (unlike
+    # Saruli Caretaker's fungible-by-name tap) -- charge counters equal to
+    # whichever creature actually gets tapped, and the animate threshold
+    # (Permanent.type_override/stats._animate_spec) they feed once 7+ are
+    # reached.
+    from ..effects.stats import has_keyword as _has_keyword
+    from ..effects.stats import permanent_toughness as _permanent_toughness
+
+    state = GameState(on_the_play=True)
+    kill_ship = Permanent(CardDef("Pinnacle Kill-Ship", CardType.ARTIFACT, {"generic": 7}, EffectId.PINNACLE_KILL_SHIP))
+    weak = Permanent(CardDef("Weak Tapper", CardType.CREATURE, None, EffectId.FILLER, power=3, toughness=3))
+    strong = Permanent(CardDef("Strong Tapper", CardType.CREATURE, None, EffectId.FILLER, power=5, toughness=5))
+    state.battlefield = [kill_ship, weak, strong]
+
+    assert _pinnacle_kill_ship_station_legal(state, kill_ship) is True
+    assert kill_ship.card_type == CardType.ARTIFACT  # not yet animated
+    assert permanent_power(state, kill_ship) == 0 and _permanent_toughness(state, kill_ship) == 0
+
+    _pinnacle_kill_ship_station_resolve(state, kill_ship)
+    assert resolution.choose_permanent_options(state) == [("Strong Tapper", 1), ("Weak Tapper", 1)]  # Kill-Ship itself never offered -- "another creature"
+    resolution.execute_choose_permanent_option(state, "Strong Tapper", 1)
+    assert strong.tapped is True
+    assert kill_ship.counters["charge"] == 5  # the TAPPED creature's own power
+    assert kill_ship.card_type == CardType.ARTIFACT  # still below the 7-counter threshold
+
+    _pinnacle_kill_ship_station_resolve(state, kill_ship)
+    resolution.execute_choose_permanent_option(state, "Weak Tapper", 1)
+    assert kill_ship.counters["charge"] == 8  # 5 + 3, now >= 7
+    assert kill_ship.card_type == CardType.CREATURE  # animated
+    assert permanent_power(state, kill_ship) == 7 and _permanent_toughness(state, kill_ship) == 7
+    assert _has_keyword(state, kill_ship, "flying") is True
+    assert not _pinnacle_kill_ship_station_legal(state, kill_ship)  # both other creatures already tapped
+
+    print("colorless_cards.py Pinnacle Kill-Ship Station self-check: OK")
+
+    # ETB, 1-player: correctly a no-op -- state.opponent would otherwise
+    # raise IndexError (same guard win_check.deal_damage_to_opponent uses),
+    # matching every current Tron config (no opponent battlefield exists).
+    state = GameState(on_the_play=True)
+    lone_kill_ship = Permanent(CardDef("Pinnacle Kill-Ship", CardType.ARTIFACT, {"generic": 7}, EffectId.PINNACLE_KILL_SHIP))
+    state.battlefield = [lone_kill_ship]
+    pinnacle_kill_ship_etb(state)  # must not raise
+    assert state.pending_resolution is None
+
+    # ETB, 2-player: a real opposing creature -- 10 damage, lethal via the
+    # ordinary state-based-action check (not special-cased in the ETB
+    # itself).
+    from ..state import PlayerState
+
+    state2 = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
+    victim = Permanent(CardDef("Victim", CardType.CREATURE, None, EffectId.FILLER, power=1, toughness=3))
+    state2.players[1].battlefield = [victim]
+    pinnacle_kill_ship_etb(state2)
+    assert state2.pending_resolution["kind"] == "choose_opponent_permanent"
+    assert resolution.choose_opponent_permanent_options(state2) == [("Victim", 1)]
+    resolution.execute_choose_opponent_permanent_option(state2, "Victim", 1)
+    assert victim not in state2.players[1].battlefield  # 10 damage vs 3 toughness -- lethal
+
+    print("colorless_cards.py Pinnacle Kill-Ship ETB self-check: OK")

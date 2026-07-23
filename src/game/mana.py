@@ -465,13 +465,22 @@ def execute_tap_cost_option(state, name, color_choice, is_filter):
         pending["remaining"]["generic"] = pending["remaining"].get("generic", 0) + 1
         _float_produced_mana(state.mana_pool, pending["pool_delta"], [color_choice])
     else:
-        permanent.tapped = True
+        # Wall of Roots has no {T} in its own real cost at all (unlike
+        # every other mana dork here) -- "mana_no_tap": True (its own
+        # registry entry, green_cards.py) skips the tap outright instead of
+        # tapping-then-somehow-untapping. Every other source is unaffected
+        # (the registry key is absent, defaulting False).
+        no_tap = registry.EFFECT_REGISTRY.get(permanent.card_def.effect_id, {}).get("mana_no_tap", False)
+        if not no_tap:
+            permanent.tapped = True
         produced = mana_output(permanent, state, color_choice)
         _float_produced_mana(state.mana_pool, pending["pool_delta"], produced)
         # spy_combo: Lotus Petal sacrifices itself, Saruli Caretaker also
-        # taps another creature, Wall of Roots may die on its 5th use --
-        # each an optional per-effect side effect of a normal tap, mirrored
-        # by on_tap_undo in abandon_pay_cost below.
+        # taps another creature, Wall of Roots puts a real -0/-1 counter on
+        # itself (possibly lethal, via the ordinary state-based-action
+        # check, not special-cased here) -- each an optional per-effect
+        # side effect of a normal tap, mirrored by on_tap_undo in
+        # abandon_pay_cost below.
         on_tap = registry.EFFECT_REGISTRY.get(permanent.card_def.effect_id, {}).get("on_tap")
         if on_tap is not None:
             on_tap(state, permanent)

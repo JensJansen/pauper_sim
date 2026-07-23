@@ -28,14 +28,25 @@ def execute_madness_cast(state):
     before begin_pay_cost overwrites it with its own "pay_cost" one --
     same nested-callback shape flashback_dread_return
     (game.catalog.black_cards) already uses for its own multi-step
-    chain."""
+    chain.
+
+    Exile removal happens in _after_pay, NOT here before begin_pay_cost --
+    matching the same "never touch a zone until on_complete fires" contract
+    every other begin_pay_cost caller in this codebase already follows
+    (drl_env._cast_execute leaves the card in hand until _after_pay, same
+    reasoning). mana.abandon_pay_cost's own docstring says undoing taps
+    alone is a complete, correct undo BECAUSE callers keep that contract --
+    removing the card here, before payment is irreversible, broke it: a
+    model that chose Cast then Abandon payment made the card disappear
+    from every zone (not exile, not hand, not graveyard) instead of simply
+    leaving it exiled, same as if Cast had never been chosen."""
     pending = state.pending_resolution
     card_def = pending["card_def"]
     outer_on_complete = pending["on_complete"]
     madness_spec = registry.EFFECT_REGISTRY[card_def.effect_id]["madness"]
-    resolution._remove_one_from_exile(state, card_def)
 
     def _after_pay(s):
+        resolution._remove_one_from_exile(s, card_def)
         push_to_stack(s, card_def, madness_spec["resolve"], reserves_hand_card=False)
         outer_on_complete(s)
 

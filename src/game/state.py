@@ -83,6 +83,45 @@ class Permanent:
         # 0 for every non-creature permanent too -- harmless, never read.
         self.damage_marked = 0
 
+        # dict[str counter-kind -> int count], e.g. {"+1/+1": 2}. Lives
+        # directly on the permanent (unlike an enchanting Aura, which has to
+        # be found by scanning the battlefield) -- game.effects.stats folds
+        # this straight into permanent_power/permanent_toughness with no new
+        # battlefield scan of its own. Kind strings are card-text-shaped
+        # ("+1/+1", "-0/-1", Pinnacle Kill-Ship's own "charge") -- no
+        # +1/+1-vs--1/-1 annihilation (real Magic rule 122.3) is modeled,
+        # since no card in this pool ever puts both kinds on the same
+        # permanent; add it if one ever does.
+        self.counters = {}
+
+        # None (the common case) means "use card_def.card_type" -- see the
+        # card_type property below. Set for real by Pinnacle Kill-Ship's own
+        # Station ability (CardType.CREATURE, once animated -- colorless_
+        # cards.py) and Nyxborn Hydra's own Bestow (CardType.ENCHANTMENT
+        # while attached, cleared back to None -- i.e. back to card_def's
+        # own CREATURE -- once orphaned, game.effects.state_based's own
+        # "becomes_creature_when_orphaned" branch -- green_cards.py).
+        # card_def.card_type itself is fixed/shared across every physical
+        # copy of a name, so a per-permanent type change can never be
+        # expressed by mutating it directly.
+        self.type_override = None
+
+    @property
+    def card_type(self):
+        """This permanent's REAL current type -- type_override if one is
+        set, else its own card_def.card_type. Every "what type is this
+        permanent right now" check (attack/block eligibility, state-based
+        death candidacy, "target a creature/enchantment you control"
+        predicates, "how many enchantments do you control") reads this, NOT
+        card_def.card_type directly, so Pinnacle Kill-Ship's Station and
+        Nyxborn Hydra's Bestow both take effect everywhere automatically
+        once type_override is set/cleared, with no per-site special-casing.
+        A bare CardDef sitting in hand/library/graveyard (not yet a
+        Permanent) has no override concept at all -- those zones' own
+        search/discard/reanimation-target predicates correctly keep reading
+        card_def.card_type directly, unaffected by this property."""
+        return self.type_override if self.type_override is not None else self.card_def.card_type
+
     def __repr__(self):
         return f"Permanent({self.card_def.name!r}, tapped={self.tapped})"
 

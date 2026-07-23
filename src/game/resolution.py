@@ -651,7 +651,7 @@ def begin_sacrifice(state, predicate, n, on_complete):
     sacrifice costs too (Fireblast's alt-cost, Lava Dart's Flashback,
     Highway Robbery's discard-or-sac choice -- MADNESS_DECKS_PLAN.md item
     5); Dread Return's own creature-sacrifice is just
-    `begin_sacrifice(state, lambda p: p.card_def.card_type ==
+    `begin_sacrifice(state, lambda p: p.card_type ==
     CardType.CREATURE, 3, on_complete)` now, no separate function needed.
 
     Caller's own legality check guarantees n eligible permanents exist

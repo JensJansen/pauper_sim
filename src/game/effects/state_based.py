@@ -35,7 +35,7 @@ def check_state_based_actions(state):
     round, not just once per combat, since there's no single "what just
     changed" set to narrow to anymore."""
     candidates = [
-        p for player in state.players for p in player.battlefield if p.card_def.card_type == CardType.CREATURE
+        p for player in state.players for p in player.battlefield if p.card_type == CardType.CREATURE
     ]
     dead = [p for p in candidates if p.damage_marked >= stats.permanent_toughness(state, p)]
     for permanent in dead:
@@ -69,15 +69,32 @@ def _destroy_creature(state, permanent):
     appending a token's card_def would have KeyError'd the very next
     observation build, caught by a live training smoke test with real
     token-creating cards (boggles' own Malevolent Rumble/Cartouche of
-    Solidarity) rather than any narrower unit self-check."""
+    Solidarity) rather than any narrower unit self-check.
+
+    A Bestowed permanent (Nyxborn Hydra) is a third, distinct orphan
+    outcome, real Magic's own Bestow fall-off rule: instead of moving to
+    any zone at all, it just STAYS on the battlefield and becomes a
+    creature again -- flagged via "becomes_creature_when_orphaned" (a fixed
+    per-card fact, same shape as "returns_to_hand_when_orphaned"), checked
+    first since it's mutually exclusive with the graveyard/hand branches
+    below (an orphaned permanent either changes zones or doesn't). Clearing
+    type_override back to None is enough on its own -- Nyxborn Hydra's own
+    card_def.card_type is already CREATURE, so there's nothing else to
+    restore it to. Its own counters (the +1/+1s Bestow entered with) are
+    untouched, matching "maintain its own +1/+1s" -- this function never
+    touches permanent.counters at all."""
     owner = next(player for player in state.players if permanent in player.battlefield)
     owner.battlefield.remove(permanent)
     if permanent.card_def.name in registry.CARD_DEFS:
         owner.graveyard.append(permanent.card_def)
     orphaned = [p for p in owner.battlefield if p.flags.get("enchanting") is permanent]
     for aura in orphaned:
-        owner.battlefield.remove(aura)
         spec = registry.EFFECT_REGISTRY.get(aura.card_def.effect_id, {})
+        if spec.get("becomes_creature_when_orphaned", False):
+            aura.flags.pop("enchanting", None)
+            aura.type_override = None
+            continue
+        owner.battlefield.remove(aura)
         if spec.get("returns_to_hand_when_orphaned", False):
             owner.hand.append(aura.card_def)
         else:

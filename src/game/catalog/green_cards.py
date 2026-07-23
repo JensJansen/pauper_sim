@@ -118,7 +118,7 @@ def _saruli_caretaker_extra_available(state, permanent):
     you control (not itself) -- not offered as a mana source unless
     another untapped creature exists to pay that extra cost."""
     return any(
-        p is not permanent and not p.tapped and p.card_def.card_type == CardType.CREATURE
+        p is not permanent and not p.tapped and p.card_type == CardType.CREATURE
         for p in state.battlefield
     )
 
@@ -130,7 +130,7 @@ def _saruli_caretaker_on_tap(state, permanent):
     on_tap_undo can reverse exactly this tap if the payment is abandoned."""
     other = next(
         (p for p in state.battlefield
-         if p is not permanent and not p.tapped and p.card_def.card_type == CardType.CREATURE),
+         if p is not permanent and not p.tapped and p.card_type == CardType.CREATURE),
         None,
     )
     if other is not None:
@@ -144,20 +144,37 @@ def _saruli_caretaker_on_tap_undo(state, permanent):
         other.tapped = False
 
 
+def _wall_of_roots_mana_available(state, permanent):
+    """Real text has no {T} at all, just "Activate only once each turn" --
+    tap_cost_options' own mana_extra_available gate is what enforces that
+    limit here (mana.py's "mana_no_tap": True on this same registry entry
+    is what skips the tap itself), same used_this_turn flag/reset
+    (turn.untap_step) Barrels of Blasting Jelly's filter ability already
+    relies on."""
+    return not permanent.flags.get("used_this_turn", False)
+
+
 def _wall_of_roots_on_tap(state, permanent):
-    """Put a -0/-1 counter on this creature: add {G}, once each turn --
-    modeled per design discussion as a plain ("fixed", "G") source (once-
-    per-turn already falls out of tapping) plus this activation counter,
-    rather than a general counters/toughness/state-based-death system.
-    Dies on its 5th use."""
-    permanent.flags["roots_activations"] = permanent.flags.get("roots_activations", 0) + 1
-    if permanent.flags["roots_activations"] >= 5:
-        state.battlefield.remove(permanent)
-        state.graveyard.append(permanent.card_def)
+    """Put a -0/-1 counter on this creature -- a real counter now (Permanent.
+    counters, stats.py), not a private activation count: toughness reaching
+    0 (5 uses against this wall's own 5 toughness, same real number as
+    before) is left entirely to the ordinary state-based-action death check
+    (state_based.check_state_based_actions), same as any other creature's
+    lethal damage -- no bespoke removal here."""
+    permanent.flags["used_this_turn"] = True
+    permanent.counters["-0/-1"] = permanent.counters.get("-0/-1", 0) + 1
 
 
 def _wall_of_roots_on_tap_undo(state, permanent):
-    permanent.flags["roots_activations"] -= 1
+    """Reverses exactly one counter add, including the once-per-turn flag
+    (so an abandoned payment leaves this activatable again, same as any
+    other abandoned tap). If the state-based-action check already killed
+    this Wall of Roots (0 effective toughness) before the payment was
+    abandoned, restore it -- abandon_pay_cost's own contract is a COMPLETE
+    reversal of everything this tap did, even past an intervening SBA
+    death, same as the old activation-count version already had to handle."""
+    permanent.flags["used_this_turn"] = False
+    permanent.counters["-0/-1"] -= 1
     if permanent not in state.battlefield:
         state.battlefield.append(permanent)
         state.graveyard.remove(permanent.card_def)
@@ -203,6 +220,49 @@ def gatecreeper_vine_etb(state):
     """ETB: may search a basic land to hand -- optional even when a target
     exists, unlike Expedition Map/Crop Rotation's mandatory fetches."""
     resolution.begin_search_fetch(state, lambda c: c.card_type == CardType.LAND, find_to_hand, optional=True)
+
+
+NYXBORN_HYDRA_MAX_X = 10  # ponytail: the action table needs a finite X range to enumerate; plan_payment already masks out any X this player can't currently afford, so this only bounds the table size, not what's ever actually playable. Raise it if a real game ever shows it binding.
+
+
+def cast_nyxborn_hydra_creature(x):
+    """Normal cast: {X}{G}, ETB with X +1/+1 counters on top of this card's
+    own 0/1 base (a design choice, not Scryfall data -- this module's own
+    docstring). Returns the (state, card_def) resolve build_action_table's
+    own x_cast_modes loop expects, one closure per X value."""
+    def resolve(state, card_def):
+        permanent = cast_permanent_from_hand(state, card_def)
+        if x:
+            permanent.counters["+1/+1"] = x
+    return resolve
+
+
+def cast_nyxborn_hydra_bestow(x):
+    """Bestow: {G}{G}{X}, enchant target creature you control -- the SAME
+    physical card, cast as an Aura instead of a creature (cast_aura, the
+    same infra every boggles Aura already uses; real MTG "enchant target
+    creature" -- must be chosen before the stack, same "precast_choice"
+    treatment Rancor/Ancestral Mask/Ethereal Armor already get, see
+    drl_env._x_precast_choice_execute).
+
+    on_attached sets type_override=ENCHANTMENT (so every "is this currently
+    a creature" check -- combat eligibility, state-based death, Saruli
+    Caretaker/Quirion Ranger/Dread Return's own "another creature" checks --
+    correctly treats it as NOT a creature while attached, Permanent.card_type
+    in state.py) and X +1/+1 counters, which pt_bonus/toughness_bonus below
+    read back dynamically off THIS SAME permanent to size the bonus granted
+    to whatever it enchants. Falling off (the enchanted creature dying) is
+    NOT handled here -- see state_based._destroy_creature's own
+    "becomes_creature_when_orphaned" branch (this EffectId's own registry
+    flag below), real Bestow's fall-off rule: stays on the battlefield,
+    becomes a creature again, keeps its own counters."""
+    def resolve(state, card_def):
+        def _on_attached(state, aura):
+            aura.type_override = CardType.ENCHANTMENT
+            if x:
+                aura.counters["+1/+1"] = x
+        cast_aura(state, card_def, lambda p: p.card_type == CardType.CREATURE, on_attached=_on_attached)
+    return resolve
 
 
 def cast_land_grant(state, card_def):
@@ -268,7 +328,7 @@ def quirion_ranger_untap_resolve(state, permanent):
         target = next(p for p in state.battlefield if p.card_def.name == name and p.slot == slot)
         target.tapped = False
 
-    resolution.begin_choose_permanent(state, lambda p: p.card_def.card_type == CardType.CREATURE, _on_chosen)
+    resolution.begin_choose_permanent(state, lambda p: p.card_type == CardType.CREATURE, _on_chosen)
 
 
 def _cast_winding_way(state, card_def, chosen_type):
@@ -451,11 +511,11 @@ def cast_ancient_stirrings(state, card_def):
 
 
 def cast_rancor(state, card_def):
-    cast_aura(state, card_def, lambda p: p.card_def.card_type == CardType.CREATURE)
+    cast_aura(state, card_def, lambda p: p.card_type == CardType.CREATURE)
 
 
 def cast_ancestral_mask(state, card_def):
-    cast_aura(state, card_def, lambda p: p.card_def.card_type == CardType.CREATURE)
+    cast_aura(state, card_def, lambda p: p.card_type == CardType.CREATURE)
 
 
 def _utopia_sprawl_attach(color):
@@ -576,6 +636,8 @@ GREEN_EFFECT_REGISTRY = {
     EffectId.WALL_OF_ROOTS: {
         "cast": {"resolve": lambda state, card_def: cast_permanent_from_hand(state, card_def)},
         "mana": ("fixed", "G"),
+        "mana_no_tap": True,
+        "mana_extra_available": lambda state, permanent: _wall_of_roots_mana_available(state, permanent),
         "on_tap": lambda state, permanent: _wall_of_roots_on_tap(state, permanent),
         "on_tap_undo": lambda state, permanent: _wall_of_roots_on_tap_undo(state, permanent),
     },
@@ -598,13 +660,28 @@ GREEN_EFFECT_REGISTRY = {
         "pending_kinds": {"search_fetch"},
     },
     EffectId.NYXBORN_HYDRA: {
-        # Cast as a fixed 0/1 for {G} -- X permanently 0, no Bestow, no
-        # counters (a deliberate simplification per design discussion --
-        # X-cost spells need a "choose how much to pay" primitive this
-        # engine doesn't have anywhere yet; a larger, deliberately deferred
-        # piece of work, unlike colorless_cards.py's own Candy Trail,
-        # which no longer omits its own lifegain).
-        "cast": {"resolve": lambda state, card_def: cast_permanent_from_hand(state, card_def)},
+        # Two real cast modes, one action per X (0..NYXBORN_HYDRA_MAX_X)
+        # each -- drl_env.build_action_table's own "x_cast_modes" loop,
+        # generic X-cost machinery parallel to cast_modes/omen/plot.
+        "x_cast_modes": {
+            "creature": {"cost": {"G": 1}, "max_x": NYXBORN_HYDRA_MAX_X, "resolve": cast_nyxborn_hydra_creature},
+            "bestow": {
+                "cost": {"G": 2}, "max_x": NYXBORN_HYDRA_MAX_X, "precast_choice": True,
+                "extra_legal": lambda state: any_creature_on_battlefield(state),
+                "resolve": cast_nyxborn_hydra_bestow,
+            },
+        },
+        # Read back only while Bestowed (an ordinary creature-mode Hydra
+        # never has "enchanting" set on anything, so _enchanting_auras
+        # never even looks these up for it) -- the bonus IS this permanent's
+        # OWN +1/+1 counters, not a fixed constant like Rancor's +2.
+        "pt_bonus": lambda state, aura: aura.counters.get("+1/+1", 0),
+        "toughness_bonus": lambda state, aura: aura.counters.get("+1/+1", 0),
+        # Real Bestow fall-off: stays on the battlefield and becomes a
+        # creature again (not graveyarded/returned to hand like an ordinary
+        # orphaned Aura) -- state_based._destroy_creature's own third
+        # branch.
+        "becomes_creature_when_orphaned": True,
     },
     EffectId.QUIRION_RANGER: {
         "cast": {"resolve": lambda state, card_def: cast_permanent_from_hand(state, card_def)},
@@ -873,3 +950,149 @@ if __name__ == "__main__":
     # full implementations).
     assert registry.EFFECT_REGISTRY.get(EffectId.RAM_THROUGH, {}) == {}
     print("green_cards.py Ram Through self-check: OK")
+
+    # Wall of Roots: two real-rules bugs fixed together -- no {T} in the
+    # real ability's own cost at all (unlike every other mana dork here),
+    # and a real -0/-1 counter each use (not a private activation count).
+    # Drives the actual interactive tap machinery (mana.begin_pay_cost/
+    # execute_tap_cost_option/execute_pool_spend/abandon_pay_cost), since
+    # both bugs lived specifically in that interactive path.
+    from .. import mana, turn
+    from ..effects import stats as _stats
+    from ..effects.state_based import check_state_based_actions
+    from ..state import Permanent
+
+    def _wall_of_roots():
+        return Permanent(CardDef(
+            "Wall of Roots", CardType.CREATURE, {"generic": 1, "G": 1}, EffectId.WALL_OF_ROOTS,
+            defender=True, power=0, toughness=5,
+        ))
+
+    state = GameState(on_the_play=True)
+    wall = _wall_of_roots()
+    state.battlefield = [wall]
+
+    mana.begin_pay_cost(state, {"G": 1}, on_complete=lambda s: None)
+    assert ("Wall of Roots", None, False) in mana.tap_cost_options(state)
+    mana.execute_tap_cost_option(state, "Wall of Roots", None, False)
+    assert wall.tapped is False  # the real bug: no {T} in this ability's own cost
+    assert wall.counters["-0/-1"] == 1
+    mana.execute_pool_spend(state, "G")
+    assert state.pending_resolution is None
+
+    # Once each turn -- not offered again this same turn, even though it's
+    # still untapped (mana_extra_available's own used_this_turn gate; there
+    # is no tapped state here to gate on at all).
+    mana.begin_pay_cost(state, {"G": 1}, on_complete=lambda s: None)
+    assert mana.tap_cost_options(state) == []
+    mana.abandon_pay_cost(state)
+
+    # 4 more activations, one per (simulated) turn, reach the 5th counter --
+    # lethal against this wall's own 5 toughness, same real number as
+    # before, now via a genuine counter + the ordinary state-based-action
+    # check instead of a hardcoded remove-at-5.
+    for _ in range(4):
+        turn.untap_step(state)
+        mana.begin_pay_cost(state, {"G": 1}, on_complete=lambda s: None)
+        mana.execute_tap_cost_option(state, "Wall of Roots", None, False)
+        mana.execute_pool_spend(state, "G")
+
+    assert wall.counters["-0/-1"] == 5
+    assert _stats.permanent_toughness(state, wall) == 0
+    assert wall in state.battlefield  # state-based actions haven't been asked to check yet
+    check_state_based_actions(state)
+    assert wall not in state.battlefield
+    assert wall.card_def in state.graveyard
+
+    print("green_cards.py Wall of Roots self-check: OK")
+
+    # Abandon past an intervening SBA death: reversing the LETHAL activation
+    # mid-payment (before the pool spend that would complete it) must fully
+    # restore the wall -- abandon_pay_cost's own "complete reversal"
+    # contract, now genuinely exercised across a real state-based death.
+    state2 = GameState(on_the_play=True)
+    wall2 = _wall_of_roots()
+    wall2.counters["-0/-1"] = 4  # one activation away from lethal
+    state2.battlefield = [wall2]
+
+    mana.begin_pay_cost(state2, {"G": 1}, on_complete=lambda s: None)
+    mana.execute_tap_cost_option(state2, "Wall of Roots", None, False)
+    assert wall2.counters["-0/-1"] == 5
+    check_state_based_actions(state2)  # simulates the priority loop's own pre-consultation SBA check, mid-payment
+    assert wall2 not in state2.battlefield
+
+    mana.abandon_pay_cost(state2)
+    assert state2.pending_resolution is None
+    assert wall2 in state2.battlefield
+    assert wall2.card_def not in state2.graveyard
+    assert wall2.counters["-0/-1"] == 4
+    assert wall2.flags.get("used_this_turn", False) is False
+
+    print("green_cards.py Wall of Roots abandon-past-death self-check: OK")
+
+    # Nyxborn Hydra, creature mode: 0/1 base (a design choice, not Scryfall
+    # data) plus X real "+1/+1" counters.
+    from ..effects import stats as _stats
+
+    state = GameState(on_the_play=True)
+    hydra_card = CardDef("Nyxborn Hydra", CardType.CREATURE, {"G": 1}, EffectId.NYXBORN_HYDRA, power=0, toughness=1)
+    state.hand = [hydra_card]
+    cast_nyxborn_hydra_creature(3)(state, hydra_card)
+    assert state.hand == []
+    hydra_permanent = next(p for p in state.battlefield if p.card_def.name == "Nyxborn Hydra")
+    assert hydra_permanent.counters["+1/+1"] == 3
+    assert _stats.permanent_power(state, hydra_permanent) == 3
+    assert _stats.permanent_toughness(state, hydra_permanent) == 4
+
+    print("green_cards.py Nyxborn Hydra creature-mode self-check: OK")
+
+    # Nyxborn Hydra, Bestow: GGX, enchant target creature you control --
+    # drives the real cast_aura flow (choose target -> stack -> resolve),
+    # same pattern casting.py's own Rancor self-check already uses.
+    from ..effects.stack import resolve_top_of_stack
+
+    state = GameState(on_the_play=True)
+    target_creature = Permanent(CardDef("Target Creature", CardType.CREATURE, None, EffectId.FILLER, power=2, toughness=2))
+    hydra_card2 = CardDef("Nyxborn Hydra", CardType.CREATURE, {"G": 1}, EffectId.NYXBORN_HYDRA, power=0, toughness=1)
+    state.battlefield = [target_creature]
+    state.hand = [hydra_card2]
+
+    cast_nyxborn_hydra_bestow(2)(state, hydra_card2)
+    assert state.pending_resolution["kind"] == "choose_permanent"
+    resolution.execute_choose_permanent_option(state, "Target Creature", 1)
+    assert state.hand == [hydra_card2]  # still in hand -- sitting on the stack, unresolved
+    assert len(state.stack) == 1
+    resolve_top_of_stack(state)
+    assert state.hand == []
+
+    bestowed = next(p for p in state.battlefield if p.card_def.name == "Nyxborn Hydra")
+    assert bestowed.flags["enchanting"] is target_creature
+    assert bestowed.counters["+1/+1"] == 2
+    assert bestowed.card_type == CardType.ENCHANTMENT  # NOT a creature while attached
+    assert bestowed.type_override == CardType.ENCHANTMENT
+    # The enchanted creature gains +1/+1 PER counter on the Hydra itself --
+    # a dynamic pt_bonus/toughness_bonus (2 counters here), not a fixed
+    # constant like Rancor's own +2.
+    assert _stats.permanent_power(state, target_creature) == 4  # 2 base + 2
+    assert _stats.permanent_toughness(state, target_creature) == 4
+    # Correctly excluded from every "another creature"/"target creature"
+    # check while attached -- Dread Return's own sacrifice-3-creatures cost
+    # (real interaction: both cards are in spy_combo.txt together).
+    assert any_creature_on_battlefield(state) is True  # target_creature itself still qualifies
+    assert sum(1 for p in state.battlefield if p.card_type == CardType.CREATURE) == 1  # bestowed Hydra doesn't count
+
+    # Fall-off: the enchanted creature dies -- real Bestow rule, the Hydra
+    # stays on the battlefield and becomes a creature again, keeping its
+    # own counters (state_based._destroy_creature's own
+    # "becomes_creature_when_orphaned" branch).
+    target_creature.damage_marked = 4  # lethal against its OWN buffed toughness (2 base + 2 from the Bestow attached to it)
+    check_state_based_actions(state)
+    assert target_creature not in state.battlefield
+    assert bestowed in state.battlefield  # NOT graveyarded/returned to hand like an ordinary orphaned Aura
+    assert bestowed.type_override is None
+    assert bestowed.card_type == CardType.CREATURE  # card_def.card_type itself, now that the override is cleared
+    assert bestowed.flags.get("enchanting") is None
+    assert bestowed.counters["+1/+1"] == 2  # unchanged -- "maintain its own +1/+1s"
+    assert _stats.permanent_power(state, bestowed) == 2 and _stats.permanent_toughness(state, bestowed) == 3  # 0/1 base + 2, its own pt_bonus no longer applies to anything
+
+    print("green_cards.py Nyxborn Hydra Bestow self-check: OK")

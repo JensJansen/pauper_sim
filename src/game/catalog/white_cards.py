@@ -32,13 +32,13 @@ def cartouche_of_solidarity_attach(state, aura):
 
 def cast_cartouche_of_solidarity(state, card_def):
     cast_aura(
-        state, card_def, lambda p: p.card_def.card_type == CardType.CREATURE,
+        state, card_def, lambda p: p.card_type == CardType.CREATURE,
         on_attached=cartouche_of_solidarity_attach,
     )
 
 
 def cast_ethereal_armor(state, card_def):
-    cast_aura(state, card_def, lambda p: p.card_def.card_type == CardType.CREATURE)
+    cast_aura(state, card_def, lambda p: p.card_type == CardType.CREATURE)
 
 
 WHITE_EFFECT_REGISTRY = {

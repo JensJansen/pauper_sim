@@ -84,6 +84,39 @@ finally:
 
 print("integration_check.py madness chain (triggers+stack+madness_and_plot+mana+resolution): OK")
 
+# -- Madness cast, then Abandon payment (regression -- execute_madness_cast
+# used to remove the card from exile BEFORE begin_pay_cost, breaking
+# mana.abandon_pay_cost's own documented contract that no zone is touched
+# until on_complete fires; a model choosing Cast then Abandon made the card
+# vanish from every zone instead of leaving it exiled, same as if Cast had
+# never been chosen). Same discard -> exile -> decision setup as above.
+_filler_backup = registry.EFFECT_REGISTRY[EffectId.FILLER]
+registry.EFFECT_REGISTRY[EffectId.FILLER] = {"madness": {"cost": {"G": 1}, "resolve": _fake_resolve}}
+try:
+    madness_card = CardDef("Fake Madness Spell", CardType.INSTANT, {"generic": 1, "R": 1}, EffectId.FILLER)
+    state = GameState(on_the_play=True)
+    state.hand = [madness_card]
+    state.battlefield = [Permanent(CardDef("Forest", CardType.LAND, None, EffectId.FOREST))]
+
+    resolution.begin_discard(state, 1, optional=False, on_complete=lambda s, cards: None)
+    resolution.execute_discard_option(state, "Fake Madness Spell")
+    triggers.promote_triggers_to_stack(state)
+    stack.resolve_top_of_stack(state)
+    assert state.pending_resolution["kind"] == "madness_decision"
+
+    madness_and_plot.execute_madness_cast(state)
+    assert state.pending_resolution["kind"] == "pay_cost"
+    assert state.exile == [(madness_card, None)]  # still exiled -- payment not committed yet
+
+    mana.abandon_pay_cost(state)
+    assert state.pending_resolution is None
+    assert state.exile == [(madness_card, None)]  # unchanged, not vanished
+    assert state.graveyard == [] and state.hand == []
+finally:
+    registry.EFFECT_REGISTRY[EffectId.FILLER] = _filler_backup
+
+print("integration_check.py madness cast + abandon payment (no-vanish regression): OK")
+
 # -- Blocking's own mutual combat damage + creature death (docs/COMBAT_
 # PLAN.md steps 5/6): combat.py's own combat_damage_step handing off to
 # state_based.py's check_state_based_actions -- a blocked attacker deals

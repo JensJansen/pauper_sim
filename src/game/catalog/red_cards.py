@@ -242,7 +242,7 @@ def cast_breath_weapon(state, card_def):
     discard_from_hand_to_graveyard(state, card_def)
     for player in state.players:
         for permanent in player.battlefield:
-            if permanent.card_def.card_type == CardType.CREATURE:
+            if permanent.card_type == CardType.CREATURE:
                 permanent.damage_marked += 2
     check_state_based_actions(state)
 

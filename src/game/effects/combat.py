@@ -32,7 +32,7 @@ def creature_attack_eligible(state, permanent):
     explicit, tapped-independent guard creature_block_eligible already
     has for the identical reason (blocking never taps anyone either)."""
     return (
-        permanent.card_def.card_type == CardType.CREATURE and not permanent.tapped
+        permanent.card_type == CardType.CREATURE and not permanent.tapped
         and not permanent.card_def.extra.get("defender", False)
         and permanent not in state.attackers
         and (not permanent.summoning_sick or registry.EFFECT_REGISTRY.get(permanent.card_def.effect_id, {}).get("haste", False))
@@ -54,7 +54,7 @@ def creature_block_eligible(state, permanent):
     block (summoning sickness only restricts attacking and {T}
     abilities) -- so neither check belongs here."""
     return (
-        permanent.card_def.card_type == CardType.CREATURE and not permanent.tapped
+        permanent.card_type == CardType.CREATURE and not permanent.tapped
         and permanent not in state.opponent.blocked_by.values()
     )
 

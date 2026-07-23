@@ -412,12 +412,19 @@ def _creature_slot_block(state, owner_idx, creature_names, creature_copies, ench
 #      "Permanent identity").
 #
 # spy_combo deck additions: B also covers Winding Way's modal cast (2
-# actions, one per mode), Land Grant's free alt-cost, and Dread Return's
-# Flashback (cast from the graveyard); C also covers non-mana activated
-# abilities (Quirion Ranger); F/H also cover select_to_hand's own
-# Keep/Bottom pair and its ordering phase (Lead the Stampede) and an
-# optional search's Decline (Gatecreeper Vine) alongside Ancient
-# Stirrings'.
+# actions, one per mode), Land Grant's free alt-cost, Dread Return's
+# Flashback (cast from the graveyard), and Nyxborn Hydra's own
+# "x_cast_modes" (one action per (mode, X) pair -- its normal creature cast
+# and Bestow, each its own cost distinct from card_def.cast_cost, see
+# _x_cast_legal/_x_cast_execute/_x_precast_choice_execute); C also covers
+# non-mana activated abilities (Quirion Ranger, Pinnacle Kill-Ship's own
+# Station); F/H also cover select_to_hand's own Keep/Bottom pair and its
+# ordering phase (Lead the Stampede) and an optional search's Decline
+# (Gatecreeper Vine) alongside Ancient Stirrings'; K also covers Pinnacle
+# Kill-Ship's own opponent-facing ETB target (choose_opponent_permanent,
+# same category as blocking's own cross-player targeting -- correctly a
+# no-op in every current 1-player Tron config, since the underlying
+# resolution auto-completes with no legal target).
 # ---------------------------------------------------------------------------
 
 def _cast_speed(card_def, spec):
@@ -554,6 +561,53 @@ def _precast_choice_execute(name, resolve):
             game.on_cast_trigger(s, card_def)  # only once mana is irreversibly paid -- see _cast_execute's own comment
             resolve(s, card_def)
         game.begin_pay_cost(state, card_def.cast_cost, on_complete=_after_pay)
+    return execute
+
+
+def _x_cast_legal(name, cost, extra_legal, speed):
+    """Like _cast_legal, but against an explicit `cost` instead of
+    card_def.cast_cost -- one X value's own concrete cost (an
+    "x_cast_modes" registry entry's own per-mode base cost plus that X's
+    own generic, build_action_table's own loop below), same "a real cost
+    distinct from card_def.cast_cost" shape _plot_legal/_omen_cast_legal
+    already use for their own alternate costs, not a param bolted onto
+    _cast_legal itself."""
+    def legal(state):
+        if state.pending_resolution is not None:
+            return False
+        if not game.turn.speed_legal(state, speed):
+            return False
+        if _hand_count_available(state, name) <= 0:
+            return False
+        if game.plan_payment(state, cost) is None:
+            return False
+        return extra_legal is None or extra_legal(state)
+    legal._pending_gate = _GATE_NO_PENDING
+    return legal
+
+
+def _x_cast_execute(name, cost, resolve):
+    """Same shape as _cast_execute, against an explicit `cost`."""
+    def execute(state):
+        card_def = game.CARD_DEFS[name]
+        def _after_pay(s):
+            game.on_cast_trigger(s, card_def)
+            game.push_to_stack(s, card_def, resolve)
+        game.begin_pay_cost(state, cost, on_complete=_after_pay)
+    return execute
+
+
+def _x_precast_choice_execute(name, cost, resolve):
+    """Same shape as _precast_choice_execute, against an explicit `cost` --
+    Nyxborn Hydra's own Bestow mode needs both: a real target chosen before
+    the stack (cast_aura, same as Rancor/Ancestral Mask/Ethereal Armor) AND
+    its own X-dependent cost distinct from the card's normal cast_cost."""
+    def execute(state):
+        card_def = game.CARD_DEFS[name]
+        def _after_pay(s):
+            game.on_cast_trigger(s, card_def)
+            resolve(s, card_def)
+        game.begin_pay_cost(state, cost, on_complete=_after_pay)
     return execute
 
 
@@ -1446,6 +1500,33 @@ def build_action_table(decklist, registry, token_card_defs=(), pending_kinds=(),
                     _cast_legal(name, mode_spec.get("extra_legal"), _cast_speed(game.CARD_DEFS[name], mode_spec)),
                     mode_execute_fn(name, mode_spec["resolve"]),
                 ))
+        # Nyxborn Hydra: X-cost modes (its own normal creature cast AND
+        # Bestow, each with a different base cost) -- one action per (mode,
+        # X) pair, X in 0..mode_spec["max_x"]. Each mode's own "resolve" is
+        # a function OF x returning the (state, card_def) resolve itself
+        # (green_cards.cast_nyxborn_hydra_creature/cast_nyxborn_hydra_bestow),
+        # not a plain resolve like cast_modes above -- X has to be baked
+        # into a distinct closure per action, there's no other way to tell
+        # two different X actions apart once they're both just entries in
+        # this flat action table. plan_payment (inside _x_cast_legal) is
+        # what keeps an unaffordable X from ever being offered -- this loop
+        # only bounds the table's own size, not what's ever actually legal.
+        x_cast_modes = card_spec.get("x_cast_modes")
+        if x_cast_modes is not None:
+            for mode_name, mode_spec in x_cast_modes.items():
+                mode_execute_fn = _x_precast_choice_execute if mode_spec.get("precast_choice") else _x_cast_execute
+                speed = _cast_speed(game.CARD_DEFS[name], mode_spec)
+                extra_legal = mode_spec.get("extra_legal")
+                make_resolve = mode_spec["resolve"]
+                base_cost = mode_spec["cost"]
+                for x in range(mode_spec["max_x"] + 1):
+                    cost = dict(base_cost)
+                    cost["generic"] = cost.get("generic", 0) + x
+                    actions.append((
+                        f"Cast {name} ({mode_name}, X={x})",
+                        _x_cast_legal(name, cost, extra_legal, speed),
+                        mode_execute_fn(name, cost, make_resolve(x)),
+                    ))
         # Land Grant: a second, free cast path alongside the normal one.
         alt_cast = card_spec.get("alt_cast")
         if alt_cast is not None:
