@@ -158,11 +158,15 @@ PRIORITY_ROUND_ACTION_CAP = 20
 
 
 def untap_step(state):
+    untapped = [(p.card_def.name, p.slot) for p in state.battlefield if p.tapped]
+    mana_cleared = dict(state.mana_pool)
     for permanent in state.battlefield:
         permanent.tapped = False
         permanent.summoning_sick = False
         permanent.flags.pop("used_this_turn", None)  # Barrels of Blasting Jelly
     state.mana_pool.clear()  # floating mana doesn't carry across turns
+    if untapped or mana_cleared:
+        state.log_event("untap_step", untapped=untapped, mana_cleared=mana_cleared)
 
 
 def draw_step(state):
@@ -264,6 +268,7 @@ def _declare_blockers_gen(state):
         return
     attacker_idx = state.active_idx
     state.active_idx = 1 - attacker_idx
+    state.log_event("priority_flip", reason="declare_blockers", to_idx=state.active_idx)
     try:
         begin_declare_blockers(state, on_complete=lambda s: None)
         for _ in range(PRIORITY_ROUND_ACTION_CAP):
@@ -276,6 +281,7 @@ def _declare_blockers_gen(state):
             complete_resolution(state)
     finally:
         state.active_idx = attacker_idx
+        state.log_event("priority_flip", reason="declare_blockers_done", to_idx=state.active_idx)
 
 
 def _run_priority_round_gen(state):
@@ -314,6 +320,7 @@ def _run_priority_round_gen(state):
         promote_triggers_to_stack(state)
         action = yield
         if action is None:
+            state.log_event("pass")
             consecutive_passes += 1
             if consecutive_passes >= len(state.players):
                 if state.stack:
@@ -442,10 +449,13 @@ def _run_turn_gen(state, combat_enabled=False):
         state.turns_taken += 1  # this player's own turn count -- see draw_step's own note on why turn_number alone isn't enough once a second player exists
         state.lands_played_this_turn = 0
         state.cards_drawn_this_turn = 0
+        state.log_event("turn_start", turn_player_idx=state.turn_player_idx)
 
         phases = FULL_PHASES if combat_enabled else MINIMAL_PHASES
         for phase in phases:
+            from_phase = state.phase
             state.phase = phase
+            state.log_event("phase_change", from_phase=from_phase.value if from_phase is not None else None)
             auto_effect = _PHASE_AUTO_EFFECTS.get(phase)
             if auto_effect is not None:
                 auto_effect(state)
@@ -542,11 +552,14 @@ def run_turn(state, choose_action, combat_enabled=False):
         pass
 
 
-def run_game(decklist, terminated_fn, rng, on_the_play, horizon, choose_action, combat_enabled=False):
+def run_game(decklist, terminated_fn, rng, on_the_play, horizon, choose_action, combat_enabled=False,
+             event_log=None):
     """1-player entry point -- unchanged signature/behavior from before
-    MULTIPLAYER_ENGINE_PLAN.md (harness.py's evaluate(), out of scope for
-    that plan, calls this directly and must keep working unmodified)."""
-    state = new_game_state(decklist, terminated_fn, on_the_play, rng)
+    MULTIPLAYER_ENGINE_PLAN.md (drl_env.py, out of scope for that plan,
+    calls this directly and must keep working unmodified) aside from the
+    new, defaulted-off event_log param (game.state.GameState's own
+    docstring on what turning it on costs/does)."""
+    state = new_game_state(decklist, terminated_fn, on_the_play, rng, event_log=event_log)
     run_mulligan_phase(state, choose_action)
     while state.turn_number < horizon and state.turn_won is None and not state.decked_out:
         run_turn(state, choose_action, combat_enabled=combat_enabled)
@@ -554,7 +567,7 @@ def run_game(decklist, terminated_fn, rng, on_the_play, horizon, choose_action, 
 
 
 def run_multiplayer_game(decklists, terminated_fns, rng, starting_player_idx, choose_action,
-                          horizon=None, combat_enabled=False):
+                          horizon=None, combat_enabled=False, event_log=None):
     """N-player entry point (docs/MULTIPLAYER_ENGINE_PLAN.md). Full
     sequential turns -- one player's whole turn runs to completion (same
     run_turn/choose_action(state) contract as the 1-player path; a
@@ -576,7 +589,7 @@ def run_multiplayer_game(decklists, terminated_fns, rng, starting_player_idx, ch
     horizon-capped exit (an eager flip would leave it pointing at a player
     who never actually got a turn, misattributing every state.hand/
     state.decked_out/etc. read a caller does on the returned state)."""
-    state = new_multiplayer_game_state(decklists, terminated_fns, starting_player_idx, rng)
+    state = new_multiplayer_game_state(decklists, terminated_fns, starting_player_idx, rng, event_log=event_log)
     run_mulligan_phase(state, choose_action)
     first_turn = True
     while (horizon is None or state.turn_number < horizon) and state.turn_won is None and not state.decked_out:

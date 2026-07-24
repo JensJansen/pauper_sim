@@ -34,7 +34,7 @@ def _trigger_resolve(entry):
         if entry["kind"] == "on_draw_count":
             def resolve(state, card_def):
                 state.graveyard.remove(card_def)
-                casting.enters_battlefield(state, card_def, force_tapped=True)
+                casting.enters_battlefield(state, card_def, force_tapped=True, from_zone="graveyard")
             return resolve
         raise ValueError(f"unknown automatic trigger queue entry: {entry}")
     if entry["type"] == "decision":

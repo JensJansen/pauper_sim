@@ -29,6 +29,10 @@ def on_cast_trigger(state, card_def):
     for permanent in state.battlefield:
         trigger = registry.EFFECT_REGISTRY.get(permanent.card_def.effect_id, {}).get("on_cast")
         if trigger is not None:
+            state.log_event(
+                "trigger_fired", source=(permanent.card_def.name, permanent.slot), trigger_kind="on_cast",
+                triggering_card=card_def.name,
+            )
             trigger(state, permanent)
 
 
@@ -84,6 +88,7 @@ def push_to_stack(state, card_def, resolve, reserves_hand_card=True):
         "card_def": card_def, "resolve": resolve, "controller": state.active_idx,
         "reserves_hand_card": reserves_hand_card,
     })
+    state.log_event("zone_move", card=card_def.name, to_zone="stack", controller=state.active_idx)
 
 
 def resolve_top_of_stack(state):
@@ -100,6 +105,7 @@ def resolve_top_of_stack(state):
     controller's own zone perspective regardless."""
     entry = state.stack.pop()
     state.active_idx = entry["controller"]
+    state.log_event("zone_move", card=entry["card_def"].name, from_zone="stack", reason="resolve")
     entry["resolve"](state, entry["card_def"])
 
 

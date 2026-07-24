@@ -15,13 +15,13 @@ src/            All source code (flat -- see "Why flat?" below)
                   dependencies, self-contained sanity checks. Nothing else
                   in this repo modifies it.
   rewards.py      Reward function(s) for the DRL policy (pluggable).
-  tron_env.py     Gymnasium environment adapter wrapping game.py.
-  harness.py      TrainingHarness: train / evaluate / save / load a DRL
-                  model, plus optional detailed per-game JSON logging.
-  run.py          Unified train/eval runner, keyed off a JSON config under
-                  configs/ (superseded the old per-deck train_*.py/
-                  evaluate_drl.py scripts -- see
-                  docs/DECK_REGISTRY_REFRESH_PLAN.md).
+  drl_env.py      Action-table/legal-mask machinery shared by the token
+                  architecture below (no gym Env of its own anymore).
+  token_features.py, token_arch.py, token_deck.py, token_action_bridge.py,
+  token_train.py  Token/attention architecture: per-card token encoding, a
+                  shared Set Transformer + FiLM perception stack, per-deck
+                  trunk/critic/pointer-network action head, and the
+                  self-play rollout/PPO training loop that drives it.
   viz/            Game Viewer: a separate React+Vite app (its own
                   package.json, not part of the Python project) for
                   stepping through a harness.evaluate(log_path=...) log
@@ -61,9 +61,8 @@ the scripts are relative to the working directory, not the script's own
 location):
 
 ```
-python src/harness.py                        # DRL harness sanity checks (construction, train, evaluate, save/load, logging)
-python src/run.py <config> <runs> --train    # train a deck (configs/<config>.json), continuing an existing model if one exists
-python src/run.py <config> <runs> --log      # evaluate a trained deck against fresh games
+python src/drl_env.py        # action-table/legal-mask self-checks
+python src/token_train.py    # token/attention training pipeline self-check (rollout collection + PPO update)
 ```
 
 ## Game Viewer (`src/viz/`)

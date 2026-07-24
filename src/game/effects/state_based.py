@@ -84,21 +84,37 @@ def _destroy_creature(state, permanent):
     untouched, matching "maintain its own +1/+1s" -- this function never
     touches permanent.counters at all."""
     owner = next(player for player in state.players if permanent in player.battlefield)
+    owner_idx = state.players.index(owner)
     owner.battlefield.remove(permanent)
-    if permanent.card_def.name in registry.CARD_DEFS:
+    is_token = permanent.card_def.name not in registry.CARD_DEFS
+    if not is_token:
         owner.graveyard.append(permanent.card_def)
+    state.log_event(
+        "state_based_death", permanent=(permanent.card_def.name, permanent.slot), owner_idx=owner_idx,
+        to_zone=("ceases_to_exist" if is_token else "graveyard"),
+    )
     orphaned = [p for p in owner.battlefield if p.flags.get("enchanting") is permanent]
     for aura in orphaned:
         spec = registry.EFFECT_REGISTRY.get(aura.card_def.effect_id, {})
         if spec.get("becomes_creature_when_orphaned", False):
             aura.flags.pop("enchanting", None)
             aura.type_override = None
+            state.log_event(
+                "aura_orphaned", aura=(aura.card_def.name, aura.slot), target=(permanent.card_def.name, permanent.slot),
+                outcome="stays_as_creature",
+            )
             continue
         owner.battlefield.remove(aura)
         if spec.get("returns_to_hand_when_orphaned", False):
             owner.hand.append(aura.card_def)
+            outcome = "hand"
         else:
             owner.graveyard.append(aura.card_def)
+            outcome = "graveyard"
+        state.log_event(
+            "aura_orphaned", aura=(aura.card_def.name, aura.slot), target=(permanent.card_def.name, permanent.slot),
+            outcome=outcome,
+        )
 
 
 def cleanup_step(state):
@@ -118,9 +134,14 @@ def cleanup_step(state):
     Newly relevant now that 2-player games run uncapped
     (docs/MULTIPLAYER_ENGINE_PLAN.md) -- without this there was no
     ceiling on hand size in an adversarial game at all."""
+    damaged = [
+        (p.card_def.name, p.slot) for player in state.players for p in player.battlefield if p.damage_marked > 0
+    ]
     for player in state.players:
         for permanent in player.battlefield:
             permanent.damage_marked = 0
+    if damaged:
+        state.log_event("cleanup_damage_cleared", permanents=damaged)
     n = max(0, len(state.hand) - HAND_SIZE_LIMIT)
     resolution.begin_discard(state, n, optional=False, on_complete=lambda s, _cards: None)
 

@@ -30,14 +30,14 @@ from .. import resolution
 def play_land_from_hand(state, card_def):
     state.hand.remove(card_def)
     state.lands_played_this_turn += 1
-    return enters_battlefield(state, card_def)
+    return enters_battlefield(state, card_def, from_zone="hand")
 
 
 def cast_permanent_from_hand(state, card_def):
     """Artifacts/creatures with no additional cost beyond mana and no
     target choices. Mana cost is paid by the caller first."""
     state.hand.remove(card_def)
-    return enters_battlefield(state, card_def)
+    return enters_battlefield(state, card_def, from_zone="hand")
 
 
 def _log_target_fizzle(state, card_def, chosen_name_slot):
@@ -111,10 +111,14 @@ def cast_aura(state, card_def, target_predicate, on_attached=None):
             state.hand.remove(card_def)
             if target is None or target not in state.battlefield:
                 state.graveyard.append(card_def)
+                state.log_event("zone_move", card=card_def.name, from_zone="hand", to_zone="graveyard", reason="fizzle")
                 _log_target_fizzle(state, card_def, choice)
                 return
-            aura = enters_battlefield(state, card_def)
+            aura = enters_battlefield(state, card_def, from_zone="hand")
             aura.flags["enchanting"] = target
+            state.log_event(
+                "aura_attached", aura=(aura.card_def.name, aura.slot), target=(target.card_def.name, target.slot),
+            )
             if on_attached is not None:
                 on_attached(state, aura)
 
@@ -123,7 +127,7 @@ def cast_aura(state, card_def, target_predicate, on_attached=None):
     resolution.begin_choose_permanent(state, target_predicate, _on_target_chosen)
 
 
-def enters_battlefield(state, card_def, force_tapped=False):
+def enters_battlefield(state, card_def, force_tapped=False, from_zone=None):
     """Move a CardDef onto the battlefield as a new Permanent, applying its
     enters-tapped default and ETB trigger (via game.registry.EFFECT_REGISTRY),
     then check _check_end_of_game since a permanent entering is the only
@@ -152,6 +156,11 @@ def enters_battlefield(state, card_def, force_tapped=False):
         slot += 1
     permanent.slot = slot
     state.battlefield.append(permanent)
+    state.log_event(
+        "zone_move", permanent=(permanent.card_def.name, permanent.slot), from_zone=from_zone,
+        to_zone="battlefield", tapped=tapped, card_type=permanent.card_type.name,
+        power=card_def.extra.get("power"), toughness=card_def.extra.get("toughness"),
+    )
 
     etb_trigger = spec.get("etb_trigger")
     if etb_trigger is not None:
@@ -191,6 +200,10 @@ def bounce_land_etb(state):
         )
         state.battlefield.remove(permanent)
         state.hand.append(permanent.card_def)
+        state.log_event(
+            "zone_move", permanent=(permanent.card_def.name, permanent.slot), from_zone="battlefield",
+            to_zone="hand", reason="bounce",
+        )
 
     resolution.begin_choose_permanent(state, lambda p: p.card_def.card_type == CardType.LAND, _on_chosen)
 

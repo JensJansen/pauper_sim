@@ -136,12 +136,17 @@ def _saruli_caretaker_on_tap(state, permanent):
     if other is not None:
         other.tapped = True
         permanent.flags["tapped_other"] = other
+        state.log_event(
+            "tap", permanent=(other.card_def.name, other.slot), reason="saruli_caretaker",
+            source=(permanent.card_def.name, permanent.slot),
+        )
 
 
 def _saruli_caretaker_on_tap_undo(state, permanent):
     other = permanent.flags.pop("tapped_other", None)
     if other is not None:
         other.tapped = False
+        state.log_event("untap", permanent=(other.card_def.name, other.slot), reason="saruli_caretaker_undo")
 
 
 def _wall_of_roots_mana_available(state, permanent):
@@ -178,6 +183,10 @@ def _wall_of_roots_on_tap_undo(state, permanent):
     if permanent not in state.battlefield:
         state.battlefield.append(permanent)
         state.graveyard.remove(permanent.card_def)
+        state.log_event(
+            "zone_move", permanent=(permanent.card_def.name, permanent.slot), from_zone="graveyard",
+            to_zone="battlefield", reason="wall_of_roots_payment_abandoned",
+        )
 
 
 def cast_roost_seek(state, card_def):
@@ -320,6 +329,10 @@ def quirion_ranger_untap_resolve(state, permanent):
     forest = next(p for p in state.battlefield if p.card_def.name == "Forest")
     state.battlefield.remove(forest)
     state.hand.append(forest.card_def)
+    state.log_event(
+        "zone_move", permanent=(forest.card_def.name, forest.slot), from_zone="battlefield", to_zone="hand",
+        reason="quirion_ranger_bounce",
+    )
 
     def _on_chosen(state, choice):
         if choice is None:
@@ -327,6 +340,7 @@ def quirion_ranger_untap_resolve(state, permanent):
         name, slot = choice
         target = next(p for p in state.battlefield if p.card_def.name == name and p.slot == slot)
         target.tapped = False
+        state.log_event("untap", permanent=(name, slot), reason="quirion_ranger")
 
     resolution.begin_choose_permanent(state, lambda p: p.card_type == CardType.CREATURE, _on_chosen)
 

@@ -30,6 +30,7 @@ this module and mana.py. See docs/MADNESS_DECKS_PLAN.md items 1/3.
 """
 
 from . import registry
+from .cards import CardDef
 
 
 def begin_resolution(state, kind, on_complete, **fields):
@@ -39,14 +40,43 @@ def begin_resolution(state, kind, on_complete, **fields):
     effects chain naturally through nested callbacks rather than needing a
     single monolithic resolution type."""
     state.pending_resolution = {"kind": kind, "on_complete": on_complete, **fields}
+    # Generic catch-all covering every resolution kind (pay_cost, scry/
+    # surveil, choose_permanent, search_fetch, sacrifice, ...) from ONE
+    # instrumentation point -- "a decision window of this kind just
+    # opened," never the specific zone-move that eventually results from
+    # it (that's each kind's own execute_*/on_complete's job to log).
+    state.log_event("resolution_begin", resolution_kind=kind)
+
+
+def _loggable(value):
+    """complete_resolution's own *args can carry raw CardDef objects
+    directly -- e.g. execute_discard_option's own discarded_cards list
+    (appends the real card, never just its name, since _discard_one and
+    the madness trigger queue both need the actual object) -- not
+    JSON-serializable, confirmed the hard way: a real 50-game mono_red_
+    madness/rakdos_madness match (both madness decks, discarding
+    constantly) crashed run_league.py's own event-log write on exactly
+    this path. Converts a CardDef (or a list of them) to its own .name;
+    every other args shape already used elsewhere (strings, (name, slot)
+    tuples, bools, ints, None, plain lists of those) passes through
+    unchanged -- this only ever touches the LOGGED copy, never what
+    on_complete actually receives."""
+    if isinstance(value, CardDef):
+        return value.name
+    if isinstance(value, list):
+        return [_loggable(v) for v in value]
+    return value
 
 
 def complete_resolution(state, *args):
     """*args is an optional payload for kinds whose completion carries a
     result the caller needs (e.g. search_fetch's chosen card name) --
     on_complete(state) for kinds that don't (e.g. pay_cost)."""
+    kind = state.pending_resolution["kind"]
     on_complete = state.pending_resolution["on_complete"]
     state.pending_resolution = None
+    logged_result = [_loggable(a) for a in args] if args else None
+    state.log_event("resolution_complete", resolution_kind=kind, result=logged_result)
     on_complete(state, *args)
 
 
@@ -252,6 +282,9 @@ def declare_blocker_assignment(state, blocker, on_complete, extra_predicate=lamb
             name, slot = choice
             attacker = next(p for p in s.opponent.attackers if p.card_def.name == name and p.slot == slot)
             s.opponent.blocked_by[attacker] = blocker
+            s.log_event(
+                "block_assigned", blocker=(blocker.card_def.name, blocker.slot), attacker=(name, slot),
+            )
         on_complete(s)
 
     begin_choose_opponent_permanent(
@@ -297,11 +330,16 @@ def _finish_scry_surveil(state):
     kept_final = pending["ordered"] if pending["ordered"] is not None else pending["kept"]
     disposed = pending["disposed"]
     state.library[0:0] = kept_final
+    disposed_to = "library_bottom" if pending["kind"] == "scry" else "graveyard"
     if pending["kind"] == "scry":
         state.rng.shuffle(disposed)
         state.library.extend(disposed)
     else:  # surveil
         state.graveyard.extend(disposed)
+    state.log_event(
+        "zone_move", reason=pending["kind"], kept_to_library_top=[c.name for c in kept_final],
+        disposed_to=disposed_to, disposed=[c.name for c in disposed],
+    )
     complete_resolution(state)
 
 
@@ -425,8 +463,10 @@ def _discard_one(state, card):
     if madness_spec is not None:
         state.exile.append((card, None))
         state.trigger_queue.append({"type": "decision", "kind": "madness", "card_def": card})
+        state.log_event("zone_move", card=card.name, from_zone="hand", to_zone="exile", reason="discard_madness")
     else:
         state.graveyard.append(card)
+        state.log_event("zone_move", card=card.name, from_zone="hand", to_zone="graveyard", reason="discard")
 
 
 def execute_discard_option(state, name):
@@ -473,6 +513,10 @@ def execute_discard_or_sacrifice_option(state, mode, name):
         permanent = next(p for p in state.battlefield if p.card_def.name == name)
         state.battlefield.remove(permanent)
         state.graveyard.append(permanent.card_def)
+        state.log_event(
+            "zone_move", permanent=(permanent.card_def.name, permanent.slot), from_zone="battlefield",
+            to_zone="graveyard", reason="sacrifice",
+        )
     complete_resolution(state, True)
 
 
@@ -485,7 +529,21 @@ def begin_mulligan(state, on_complete):
     state.new_game_state/new_multiplayer_game_state's own eager draw(7)) --
     decide keep or mulligan (London Mulligan). Driven by
     game.turn.run_mulligan_phase/_run_mulligan_gen, once per player, before
-    turn 1 ever starts."""
+    turn 1 ever starts.
+
+    Logs a "mulligan_hand" event carrying the full hand as SEEN at this
+    decision. This is the single convergence point for every hand a player
+    looks at -- the initial deal reaches it directly, and each redraw comes
+    back through it (execute_mulligan_take draws a fresh 7 then calls here
+    again) -- so one log_event here records the first 7, then the next 7,
+    and so on until kept, in order, tagged with mulligans_taken (0 for the
+    opener, 1 after the first mulligan, ...). It's also the ONLY place the
+    kept opening hand gets logged at all: draw() itself emits nothing, so
+    without this a player who keeps immediately would leave no record of
+    what they opened. The subsequent bottoming (London Mulligan) shows up as
+    the existing per-card "mulligan_bottom" zone_move events."""
+    state.log_event("mulligan_hand", cards=[c.name for c in state.hand],
+                    mulligans_taken=state.mulligans_taken)
     begin_resolution(state, "mulligan_decision", on_complete)
 
 
@@ -515,10 +573,12 @@ def execute_mulligan_take(state):
     keep-or-mulligan decision again -- London Mulligan allows this as many
     times as the model likes, bounded only by library size like any other
     draw."""
+    mulliganed = [c.name for c in state.hand]
     state.library.extend(state.hand)
     state.hand = []
     state.rng.shuffle(state.library)
     state.mulligans_taken += 1
+    state.log_event("zone_move", cards=mulliganed, from_zone="hand", to_zone="library", reason="mulligan_take")
     on_complete = state.pending_resolution["on_complete"]
     state.pending_resolution = None
     state.draw(7)
@@ -549,6 +609,7 @@ def execute_bottom_option(state, name):
     card = next(c for c in state.hand if c.name == name)
     state.hand.remove(card)
     state.library.append(card)
+    state.log_event("zone_move", card=name, from_zone="hand", to_zone="library_bottom", reason="mulligan_bottom")
     pending["remaining"] -= 1
     if pending["remaining"] <= 0 or not bottom_options(state):
         complete_resolution(state)
@@ -582,6 +643,7 @@ def execute_madness_decline(state):
     card_def = pending["card_def"]
     _remove_one_from_exile(state, card_def)
     state.graveyard.append(card_def)
+    state.log_event("zone_move", card=card_def.name, from_zone="exile", to_zone="graveyard", reason="madness_decline")
     complete_resolution(state)
 
 
@@ -638,6 +700,7 @@ def execute_order_triggers_option(state, name):
     # single-trigger branch right above this function's own caller.
     entry["reserves_hand_card"] = False
     state.stack.append(entry)  # already the stack's own native {"card_def", "resolve"} shape
+    state.log_event("zone_move", card=entry["card_def"].name, from_zone="trigger_queue", to_zone="stack")
     if not pending["remaining"]:
         complete_resolution(state)
 
@@ -679,6 +742,10 @@ def execute_sacrifice_option(state, name):
     permanent = next(p for p in state.battlefield if p.card_def.name == name and predicate(p))
     state.battlefield.remove(permanent)
     state.graveyard.append(permanent.card_def)
+    state.log_event(
+        "zone_move", permanent=(permanent.card_def.name, permanent.slot), from_zone="battlefield",
+        to_zone="graveyard", reason="sacrifice",
+    )
     pending["remaining"] -= 1
     if pending["remaining"] <= 0:
         complete_resolution(state, True)
@@ -746,7 +813,8 @@ if __name__ == "__main__":
     # twice (redraw to 7 each time, mulligans_taken incrementing), then
     # execute_mulligan_keep bottoms exactly mulligans_taken (2) cards before
     # completing.
-    state = GameState(on_the_play=True)
+    events = []
+    state = GameState(on_the_play=True, event_log=events)
     state.library = [_card(f"L{i}") for i in range(20)]
     state.rng.shuffle(state.library)
     state.draw(7)  # new_game_state's own eager opening draw -- begin_mulligan's own precondition
@@ -777,6 +845,17 @@ if __name__ == "__main__":
     assert completed == [True]
     assert len(state.hand) == 5  # 7 - 2 bottomed
     assert [c.name for c in state.library[-2:]] == bottomed  # bottomed, in the order chosen
+
+    # Every hand SEEN was logged in order, tagged with its mulligan count
+    # (opener=0, then 1, then 2), and the two hands that were thrown back
+    # match their mulligan_take payloads exactly (same contents, same order).
+    hands = [e["cards"] for e in events if e["kind"] == "mulligan_hand"]
+    assert [(e["mulligans_taken"], len(e["cards"])) for e in events if e["kind"] == "mulligan_hand"] \
+        == [(0, 7), (1, 7), (2, 7)]
+    # mulligan_take / mulligan_bottom are zone_move events tagged by reason.
+    takes = [e["cards"] for e in events if e.get("reason") == "mulligan_take"]
+    assert hands[0] == takes[0] and hands[1] == takes[1]  # seen == thrown back
+    assert [e["card"] for e in events if e.get("reason") == "mulligan_bottom"] == bottomed
 
     # Keeping with 0 mulligans taken never opens a mulligan_bottom at all.
     state = GameState(on_the_play=True)

@@ -49,6 +49,10 @@ def activate_blood_sac(state, permanent):
     directly, which is what makes Madness-awareness automatic for
     whatever gets discarded this way), then draw."""
     state.battlefield.remove(permanent)
+    state.log_event(
+        "zone_move", permanent=(permanent.card_def.name, permanent.slot), from_zone="battlefield",
+        to_zone="ceases_to_exist", reason="sacrifice",
+    )
     resolution.begin_discard(state, 1, optional=False, on_complete=lambda s, _cards: s.draw(1))
 
 
@@ -64,7 +68,12 @@ def activate_eldrazi_spawn_sac(state, permanent):
     unchanged, since a sacrifice isn't a tap this engine's interactive
     pay_cost loop has any other way to represent."""
     state.battlefield.remove(permanent)
+    state.log_event(
+        "zone_move", permanent=(permanent.card_def.name, permanent.slot), from_zone="battlefield",
+        to_zone="ceases_to_exist", reason="sacrifice",
+    )
     state.mana_pool["C"] = state.mana_pool.get("C", 0) + 1
+    state.log_event("mana_tap", permanent=(permanent.card_def.name, permanent.slot), mode="sac_ability", produced=["C"])
 
 
 BLOOD_TOKEN_CARD_DEF = CardDef("Blood", CardType.ARTIFACT, None, EffectId.BLOOD_TOKEN, sac_ability_cost={"generic": 1})

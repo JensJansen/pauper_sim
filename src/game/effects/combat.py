@@ -73,6 +73,7 @@ def declare_attacker(state, permanent):
     if not stats.has_keyword(state, permanent, "vigilance"):
         permanent.tapped = True
     state.attackers.append(permanent)
+    state.log_event("attack_declared", attacker=(permanent.card_def.name, permanent.slot), tapped=permanent.tapped)
 
 
 def declare_attackers_step(state):
@@ -133,7 +134,13 @@ def _attacker_deal_damage(state, attacker, blocker, attacker_facts, blocker_fact
         if excess > 0:
             deal_damage_to_opponent(state, excess)
     else:
+        lethal = power
         blocker.damage_marked += power
+        excess = 0
+    state.log_event(
+        "combat_damage", source=(attacker.card_def.name, attacker.slot), target=(blocker.card_def.name, blocker.slot),
+        amount=lethal, trample_excess_to_opponent=excess,
+    )
     lifelink_count = attacker_facts["lifelink_count"]
     if lifelink_count:
         gain_life(state, power * lifelink_count)
@@ -146,13 +153,15 @@ def _blocker_deal_damage(state, blocker, attacker, blocker_facts):
     equivalent, and this engine doesn't model one.
 
     "lifelink": unlike the attacker-side case above, the blocker's
-    controller is the DEFENDING player -- state.opponent from the
-    currently-active attacker's own perspective, not state.life_total
-    (which would wrongly credit the attacker) -- so this credits
-    state.opponent.life_total directly instead of going through
-    gain_life. Multiplied by stats.lifelink_count the same stacking way
-    as the attacker-side case above (2 Cloaks on a blocker also trigger
-    twice).
+    controller is the DEFENDING player -- players[1 - active_idx]
+    (== state.opponent) from the currently-active attacker's own
+    perspective, not the active player (which would wrongly credit the
+    attacker) -- so this passes gain_life that index explicitly instead of
+    letting it default to the active player. Routing through gain_life (not
+    a raw life_total bump) is what gets this lifegain into the event log
+    like every other life change. Multiplied by stats.lifelink_count the
+    same stacking way as the attacker-side case above (2 Cloaks on a
+    blocker also trigger twice).
 
     blocker_facts: see _attacker_deal_damage's own docstring -- same
     pre-fetched dict, just the blocker's own this time (no attacker_facts
@@ -160,9 +169,13 @@ def _blocker_deal_damage(state, blocker, attacker, blocker_facts):
     own stats is read in this direction)."""
     power = blocker_facts["power"]
     attacker.damage_marked += power
+    state.log_event(
+        "combat_damage", source=(blocker.card_def.name, blocker.slot), target=(attacker.card_def.name, attacker.slot),
+        amount=power, trample_excess_to_opponent=0,
+    )
     lifelink_count = blocker_facts["lifelink_count"]
     if lifelink_count:
-        state.opponent.life_total += power * lifelink_count
+        gain_life(state, power * lifelink_count, player_idx=1 - state.active_idx)
 
 
 def combat_damage_step(state):
@@ -243,6 +256,11 @@ def combat_damage_step(state):
         creature_facts[id(p)]["power"] * creature_facts[id(p)]["lifelink_count"] for p in unblocked
     )
     state.attackers = []
+    if unblocked_total:
+        state.log_event(
+            "combat_damage", source=[(p.card_def.name, p.slot) for p in unblocked], target="opponent",
+            amount=unblocked_total,
+        )
     deal_damage_to_opponent(state, unblocked_total)
     if lifelink_total:
         gain_life(state, lifelink_total)

@@ -134,6 +134,7 @@ COLORLESS_CARD_CATALOG = {
 def activate_tocasia_dig_site_surveil(state, permanent):
     """{3}, T: Surveil 1 (shares the tap cost with its plain {T}: Add {C})."""
     permanent.tapped = True
+    state.log_event("tap", permanent=(permanent.card_def.name, permanent.slot), reason="activate")
     surveil(state, 1)
 
 
@@ -142,12 +143,17 @@ def activate_expedition_map(state, permanent):
     Caller has already paid the {1} cost."""
     state.battlefield.remove(permanent)
     state.graveyard.append(permanent.card_def)
+    state.log_event(
+        "zone_move", permanent=(permanent.card_def.name, permanent.slot), from_zone="battlefield",
+        to_zone="graveyard", reason="sacrifice",
+    )
     begin_search_fetch(state, lambda c: c.card_type == CardType.LAND, find_to_hand)
 
 
 def activate_bonders_ornament_draw(state, permanent):
     """{4}, T: draw a card (shares the tap cost with its plain mana ability)."""
     permanent.tapped = True
+    state.log_event("tap", permanent=(permanent.card_def.name, permanent.slot), reason="activate")
     state.draw(1)
 
 
@@ -155,6 +161,10 @@ def activate_candy_trail_sac(state, permanent):
     """{2}, T, Sacrifice: gain 3 life and draw a card."""
     state.battlefield.remove(permanent)
     state.graveyard.append(permanent.card_def)
+    state.log_event(
+        "zone_move", permanent=(permanent.card_def.name, permanent.slot), from_zone="battlefield",
+        to_zone="graveyard", reason="sacrifice",
+    )
     gain_life(state, 3)
     state.draw(1)
 
@@ -168,8 +178,13 @@ def activate_relic_of_progenitus_draw(state, permanent):
     artifact's own repeatable {T} ability below -- just clears each
     graveyard to nothing rather than tracking a real exile pile."""
     state.battlefield.remove(permanent)  # exiled, not graveyard; exile is untracked
+    state.log_event(
+        "zone_move", permanent=(permanent.card_def.name, permanent.slot), from_zone="battlefield",
+        to_zone="exile_untracked", reason="activate_exile_self",
+    )
     for player in state.players:
         player.graveyard.clear()
+    state.log_event("graveyards_exiled")
     state.draw(1)
 
 
@@ -190,6 +205,7 @@ def activate_relic_of_progenitus_exile(state, permanent):
     target graveyard -> nothing to choose, the same empty-options safety
     net begin_choose_graveyard_card already provides."""
     permanent.tapped = True
+    state.log_event("tap", permanent=(permanent.card_def.name, permanent.slot), reason="activate")
 
     def _on_player_chosen(state, idx):
         target_player = state.players[idx]
@@ -199,6 +215,10 @@ def activate_relic_of_progenitus_exile(state, permanent):
                 return
             found = next(c for c in target_player.graveyard if c.name == name)
             target_player.graveyard.remove(found)  # exiled, not removed-to-nowhere; exile is untracked
+            state.log_event(
+                "zone_move", card=found.name, from_zone="graveyard", to_zone="exile_untracked",
+                target_player_idx=idx,
+            )
 
         begin_choose_graveyard_card(state, lambda c: True, _on_card_chosen, graveyard=target_player.graveyard)
 
@@ -210,6 +230,10 @@ def _lotus_petal_on_tap(state, permanent):
     tapped, unlike every other mana source in this engine."""
     state.battlefield.remove(permanent)
     state.graveyard.append(permanent.card_def)
+    state.log_event(
+        "zone_move", permanent=(permanent.card_def.name, permanent.slot), from_zone="battlefield",
+        to_zone="graveyard", reason="sacrifice",
+    )
 
 
 def _lotus_petal_on_tap_undo(state, permanent):
@@ -372,11 +396,16 @@ def _pinnacle_kill_ship_station_resolve(state, permanent):
         name, slot = choice
         tapped_creature = next(p for p in state.battlefield if p.card_def.name == name and p.slot == slot)
         tapped_creature.tapped = True
+        state.log_event(
+            "tap", permanent=(name, slot), reason="pinnacle_kill_ship_station",
+            source=(permanent.card_def.name, permanent.slot),
+        )
         gained = permanent_power(state, tapped_creature)
         permanent.counters["charge"] = permanent.counters.get("charge", 0) + gained
         animate = registry.EFFECT_REGISTRY[EffectId.PINNACLE_KILL_SHIP]["animate"]
         if permanent.counters["charge"] >= animate["threshold"]:
             permanent.type_override = CardType.CREATURE
+            state.log_event("animated", permanent=(permanent.card_def.name, permanent.slot), new_type="CREATURE")
 
     begin_choose_permanent(
         state, lambda p: p is not permanent and not p.tapped and p.card_type == CardType.CREATURE, _on_chosen,

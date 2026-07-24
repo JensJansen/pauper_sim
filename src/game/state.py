@@ -295,13 +295,26 @@ class GameState:
     "your own turn," not just "the right phase," so anything gating on
     those needs turn_player_idx specifically, never active_idx."""
 
-    def __init__(self, on_the_play, rng=None, terminated_fn=None, players=None):
+    def __init__(self, on_the_play, rng=None, terminated_fn=None, players=None, event_log=None):
         # `players`, if given, replaces the single-player list this
         # constructor would otherwise build from on_the_play/terminated_fn
         # -- used by new_multiplayer_game_state below. on_the_play/
         # terminated_fn are then ignored (each player supplies their own).
         self.players = players if players is not None else [PlayerState(on_the_play, terminated_fn=terminated_fn)]
         self.active_idx = 0
+
+        # None (the default -- every existing caller) means "logging is
+        # off," checked first thing in log_event below so every
+        # instrumented call site across mana.py/turn.py/resolution.py/
+        # game/effects/*.py costs one attribute read on the hot training
+        # path, never a dict build. Pass a plain list to turn logging on
+        # for one game (e.g. `GameState(..., event_log=[])`, or via
+        # new_game_state/new_multiplayer_game_state's own event_log param)
+        # -- log_event appends one structured dict per instrumented state
+        # change, in occurrence order, which is what makes the whole game
+        # reconstructible afterward (see log_event's own docstring for the
+        # shared envelope every event gets).
+        self.event_log = event_log
 
         # Whose turn it structurally is -- distinct from active_idx (see
         # this class's own docstring) the instant a priority consult flips
@@ -381,6 +394,41 @@ class GameState:
     def draw(self, n=1):
         return self.players[self.active_idx].draw(n)
 
+    def log_event(self, kind, **fields):
+        """Appends one structured event to self.event_log, if logging is on
+        (see __init__'s own event_log docstring) -- else an immediate
+        no-op, so every instrumented call site across mana.py/turn.py/
+        resolution.py/game/effects/*.py costs exactly one attribute check
+        when logging is off (the default, and every existing bulk-training
+        path).
+
+        Every event automatically carries the same envelope -- turn,
+        phase, active_idx (who currently holds priority), turn_player_idx
+        (whose turn it structurally is -- see this class's own docstring
+        on why that's a distinct fact from active_idx) -- so an
+        instrumented call site only ever supplies `kind` plus whatever
+        fields are specific to that one event (a permanent's (name, slot),
+        a color/amount, a from/to zone, ...). This is deliberately an
+        EVENT log, not another periodic state snapshot: the previous
+        (now-removed) harness.py-based game logger snapshotted state after
+        each MODEL decision only, which made every state change that
+        happened as an automatic side effect of "Pass" (a stack
+        resolution, a state-based-action death, the once-per-turn mana
+        clear) invisible between two logged snapshots. Recording the
+        change itself, at the exact call site that makes it, has no such
+        blind spot regardless of whether a real decision or an automatic
+        engine step caused it."""
+        if self.event_log is None:
+            return
+        self.event_log.append({
+            "kind": kind,
+            "turn": self.turn_number,
+            "phase": self.phase.value if self.phase is not None else None,
+            "active_idx": self.active_idx,
+            "turn_player_idx": self.turn_player_idx,
+            **fields,
+        })
+
 
 def build_shuffled_library(decklist, rng):
     """Expand a decklist's quantities into CardDef refs and shuffle. Only
@@ -393,17 +441,18 @@ def build_shuffled_library(decklist, rng):
     return library
 
 
-def new_game_state(decklist, terminated_fn, on_the_play, rng):
+def new_game_state(decklist, terminated_fn, on_the_play, rng, event_log=None):
     """1-player entry point -- unchanged signature/behavior from before
-    MULTIPLAYER_ENGINE_PLAN.md (drl_env.py/harness.py, out of scope for
-    that plan, call this directly and must keep working unmodified)."""
-    state = GameState(on_the_play, rng=rng, terminated_fn=terminated_fn)
+    MULTIPLAYER_ENGINE_PLAN.md (drl_env.py, out of scope for that plan,
+    calls this directly and must keep working unmodified) aside from the
+    new, defaulted-off event_log param (GameState's own docstring)."""
+    state = GameState(on_the_play, rng=rng, terminated_fn=terminated_fn, event_log=event_log)
     state.library = build_shuffled_library(decklist, rng)
     state.draw(7)
     return state
 
 
-def new_multiplayer_game_state(decklists, terminated_fns, starting_player_idx, rng):
+def new_multiplayer_game_state(decklists, terminated_fns, starting_player_idx, rng, event_log=None):
     """N-player entry point (docs/MULTIPLAYER_ENGINE_PLAN.md) -- decklists/
     terminated_fns are one entry per player and may differ (nothing here
     requires a mirror match; CARD_DEFS is already deck-agnostic). Only
@@ -416,10 +465,102 @@ def new_multiplayer_game_state(decklists, terminated_fns, starting_player_idx, r
         PlayerState(on_the_play=(i == starting_player_idx), terminated_fn=terminated_fns[i])
         for i in range(len(decklists))
     ]
-    state = GameState(on_the_play=players[starting_player_idx].on_the_play, rng=rng, players=players)
+    state = GameState(
+        on_the_play=players[starting_player_idx].on_the_play, rng=rng, players=players, event_log=event_log,
+    )
     state.active_idx = starting_player_idx
     state.turn_player_idx = starting_player_idx
     for player, decklist in zip(state.players, decklists):
         player.library = build_shuffled_library(decklist, rng)
         player.draw(7)
     return state
+
+
+if __name__ == "__main__":
+    # ponytail self-check: run via `python -m game.state` from src/. Proves
+    # the event_log plumbing itself (this module's own new surface) end to
+    # end -- NOT a re-test of engine correctness (every game/*.py file
+    # already self-checks its own instrumented behavior unchanged; this
+    # only confirms logging actually happens, in the right shape, in the
+    # right order, and costs nothing when off).
+    import random
+
+    from . import mana, registry, resolution
+    from .effects.casting import play_land_from_hand
+    from .effects.stack import push_to_stack
+    from .turn import run_game
+
+    # event_log=None (the default) is a true no-op -- log_event never
+    # builds a dict, self.event_log stays None.
+    off_state = GameState(on_the_play=True)
+    assert off_state.event_log is None
+    off_state.log_event("whatever", foo="bar")
+    assert off_state.event_log is None
+    print("state.py event_log=None no-op self-check: OK")
+
+    # Direct log_event call: every event carries the same envelope
+    # (turn/phase/active_idx/turn_player_idx) automatically, on top of
+    # whatever fields the call site passed.
+    log = []
+    on_state = GameState(on_the_play=True, event_log=log)
+    on_state.turn_number = 3
+    on_state.log_event("tap", permanent=("Mountain", 1))
+    assert len(log) == 1
+    event = log[0]
+    assert event["kind"] == "tap" and event["permanent"] == ("Mountain", 1)
+    assert event["turn"] == 3 and event["active_idx"] == 0 and event["turn_player_idx"] == 0
+    print("state.py log_event envelope self-check: OK")
+
+    # End to end through a REAL game (run_game -> new_game_state -> every
+    # instrumented mutation site across mana.py/turn.py/resolution.py/
+    # game/effects/*.py) -- tap a Mountain, cast Lightning Bolt, let it
+    # resolve. This is exactly the scenario the removed harness.py-based
+    # game logger got wrong (see docs discussion): the stack push/resolve
+    # and the once-per-turn mana clear both happen as a side effect of
+    # "Pass," which that old logger silently dropped. Confirms this one
+    # doesn't.
+    bolt_def = registry.CARD_DEFS["Lightning Bolt"]
+    bolt_resolve = registry.EFFECT_REGISTRY[bolt_def.effect_id]["cast"]["resolve"]
+
+    def _burn_policy(state):
+        if state.pending_resolution is not None:
+            if state.pending_resolution["kind"] == "mulligan_decision":
+                return lambda: resolution.execute_mulligan_keep(state)
+            tap_opts = mana.tap_cost_options(state)
+            if tap_opts:
+                name, color, is_filter = tap_opts[0]
+                return lambda: mana.execute_tap_cost_option(state, name, color, is_filter)
+            color = mana.pool_spend_options(state)[0]
+            return lambda: mana.execute_pool_spend(state, color)
+        if state.lands_played_this_turn == 0 and any(c.name == "Mountain" for c in state.hand):
+            return lambda: play_land_from_hand(state, registry.CARD_DEFS["Mountain"])
+        # hand_count - stacked_count, same accounting drl_env._hand_count_available
+        # and turn.py's own self-check use: a copy already paid-for-but-
+        # unresolved on the stack is still physically in hand (push_to_stack
+        # only removes it once it actually resolves) but isn't really available.
+        hand_count = sum(1 for c in state.hand if c.name == "Lightning Bolt")
+        stacked_count = sum(1 for e in state.stack if e["card_def"].name == "Lightning Bolt")
+        if hand_count > stacked_count and mana.plan_payment(state, bolt_def.cast_cost) is not None:
+            def _cast_bolt():
+                mana.begin_pay_cost(state, bolt_def.cast_cost, on_complete=lambda s: push_to_stack(s, bolt_def, bolt_resolve))
+            return _cast_bolt
+        return None  # Pass -- resolves the stack if non-empty, else advances the phase
+
+    events = []
+    state = run_game(
+        decklist=[("Mountain", 10), ("Lightning Bolt", 5)], terminated_fn=None, rng=random.Random(0),
+        on_the_play=True, horizon=2, choose_action=_burn_policy, event_log=events,
+    )
+    assert state.damage_dealt >= 3  # at least one Bolt landed
+    kinds = [e["kind"] for e in events]
+    assert "turn_start" in kinds and "phase_change" in kinds
+    assert "zone_move" in kinds  # land entering the battlefield, and the Bolt hitting the stack then leaving it
+    assert "mana_tap" in kinds and "mana_spend" in kinds
+    assert "pass" in kinds  # the exact event class the old snapshot-based logger silently dropped
+    # Every event's envelope is well-formed regardless of kind.
+    for e in events:
+        assert set(e) >= {"kind", "turn", "phase", "active_idx", "turn_player_idx"}
+    # Order is causally sensible: the Mountain tap (mana_tap) happens before
+    # the spend (mana_spend) that actually pays for the Bolt.
+    assert kinds.index("mana_tap") < kinds.index("mana_spend")
+    print(f"state.py real-game event_log self-check: OK ({len(events)} events, kinds={sorted(set(kinds))})")

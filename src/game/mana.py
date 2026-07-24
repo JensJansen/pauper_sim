@@ -464,6 +464,10 @@ def execute_tap_cost_option(state, name, color_choice, is_filter):
         # execute_pool_spend way as everything else.
         pending["remaining"]["generic"] = pending["remaining"].get("generic", 0) + 1
         _float_produced_mana(state.mana_pool, pending["pool_delta"], [color_choice])
+        state.log_event(
+            "mana_tap", permanent=(permanent.card_def.name, permanent.slot), mode="filter",
+            produced=[color_choice],
+        )
     else:
         # Wall of Roots has no {T} in its own real cost at all (unlike
         # every other mana dork here) -- "mana_no_tap": True (its own
@@ -475,6 +479,10 @@ def execute_tap_cost_option(state, name, color_choice, is_filter):
             permanent.tapped = True
         produced = mana_output(permanent, state, color_choice)
         _float_produced_mana(state.mana_pool, pending["pool_delta"], produced)
+        state.log_event(
+            "mana_tap", permanent=(permanent.card_def.name, permanent.slot),
+            mode="no_tap" if no_tap else "normal", produced=produced,
+        )
         # spy_combo: Lotus Petal sacrifices itself, Saruli Caretaker also
         # taps another creature, Wall of Roots puts a real -0/-1 counter on
         # itself (possibly lethal, via the ordinary state-based-action
@@ -521,8 +529,11 @@ def execute_pool_spend(state, color):
     need = remaining.get(color, 0)
     if need > 0:
         remaining[color] = need - 1
+        toward = "colored"
     else:
         remaining["generic"] = max(0, remaining.get("generic", 0) - 1)
+        toward = "generic"
+    state.log_event("mana_spend", color=color, toward=toward)
 
     if _cost_satisfied(remaining):
         complete_resolution(state)
@@ -543,6 +554,7 @@ def abandon_pay_cost(state):
     until its own on_complete fires, so undoing the taps and pool_delta
     alone is a complete, correct undo."""
     pending = state.pending_resolution
+    untapped = [(p.card_def.name, p.slot) for p, _is_filter in pending["tapped"]]
     for permanent, is_filter in pending["tapped"]:
         if is_filter and permanent.card_def.effect_id == EffectId.BARRELS_OF_BLASTING_JELLY:
             permanent.flags["used_this_turn"] = False
@@ -558,6 +570,7 @@ def abandon_pay_cost(state):
             state.mana_pool[color] = remaining_amount
         else:
             state.mana_pool.pop(color, None)
+    state.log_event("payment_abandoned", untapped=untapped, pool_delta_reversed=dict(pending["pool_delta"]))
     state.pending_resolution = None
 
 

@@ -221,6 +221,11 @@ def action_count_win_reward(plateau_actions=80, max_actions=200, min_reward=0.25
 # Pre-baked named instance -- same configs/*.json-by-plain-name convention
 # as fast_win_reward_099/damage_threshold_20_terminated.
 action_count_win_reward_200 = action_count_win_reward()
+# attention-opponent-encoding branch's own per-deck training: same shape
+# (loss -> 0, win -> piecewise-linear scaled by the winning seat's own
+# action count), floor lowered to 0.2 (vs. the default 0.25) per the
+# explicit "sliding scale from 1 - 0.2" spec.
+action_count_win_reward_200_floor02 = action_count_win_reward(min_reward=0.2)
 
 
 if __name__ == "__main__":
