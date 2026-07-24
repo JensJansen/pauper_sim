@@ -1294,8 +1294,17 @@ def build_action_table(decklist, registry, token_card_defs=(), pending_kinds=(),
     # as the whole league's card universe (token_pool.build_pool), not a
     # specific opponent's deck: bounded, fixed per trained model, and still
     # runtime-masked to only-legal-when-actually-in-the-targeted-graveyard.
-    choosable_names = sorted(set(distinct_names) | {cd.name for cd in token_card_defs} | set(extra_choosable_names))
-    for name in choosable_names:
+    choosable_names = sorted(set(distinct_names) | {cd.name for cd in token_card_defs})
+    # extra_choosable_names goes into the "Choose: X" loop ONLY, never the
+    # shared choosable_names set below -- that set also drives "Choose
+    # target: X (slot k)" and "Attack: X (slot k)", which are strictly
+    # THIS side's OWN battlefield permanents (an opponent's card is never a
+    # legal choose_permanent/attack target of mine) and index a
+    # card_type_by_name map built from this deck alone. A foreign name only
+    # ever belongs to the by-name "Choose: X" resolution (choose_graveyard_
+    # card over an opponent's graveyard), nothing permanent-scoped.
+    choose_by_name = sorted(set(choosable_names) | set(extra_choosable_names))
+    for name in choose_by_name:
         actions.append((f"Choose: {name}", _choose_name_legal(name), _choose_name_execute(name)))
 
     # "Attack: X (slot k)" -- one per (creature name, slot) pair

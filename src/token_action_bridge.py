@@ -25,7 +25,7 @@ import drl_env
 _TARGETING_PREFIXES = ("Choose target: ", "Attack: ", "Assign Blocker: ", "Choose opponent's: ")
 
 
-def build_fixed_action_table(decklist, token_card_defs=(), pending_kinds=()):
+def build_fixed_action_table(decklist, token_card_defs=(), pending_kinds=(), extra_choosable_names=()):
     """Every non-targeting action for this decklist (Play land, Cast,
     Activate, Forestcycle, Pass, "Choose: X" resolution picks, "Choose: X
     as color", Keep/Dispose, Decline, Abandon payment, mulligan actions,
@@ -39,7 +39,7 @@ def build_fixed_action_table(decklist, token_card_defs=(), pending_kinds=()):
     immediately throws away."""
     full_table = drl_env.build_action_table(
         decklist, game.EFFECT_REGISTRY, token_card_defs=token_card_defs, pending_kinds=pending_kinds,
-        opponent_decklist=None,
+        opponent_decklist=None, extra_choosable_names=extra_choosable_names,
     )
     return [
         (name, legal_fn, execute_fn) for name, legal_fn, execute_fn in full_table

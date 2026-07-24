@@ -310,6 +310,18 @@ def begin_scry_surveil(state, kind, n, on_complete):
     revealed = state.library[:n]
     del state.library[:n]
     begin_resolution(state, kind, on_complete, remaining=revealed, kept=[], disposed=[], ordered=None)
+    # Empty-reveal safety net: an empty (or shorter-than-n) library reveals
+    # nothing, so there is no keep/dispose decision to make and no ordering
+    # -- the resolution would otherwise sit forever with remaining=[],
+    # kept=[], ordered=None, which scry_surveil_options returns [] for and
+    # _keep_dispose_legal refuses (remaining is falsy), i.e. ZERO legal
+    # actions -> softlock. Same immediate-complete safety net begin_choose_
+    # permanent/begin_search_fetch already apply for their own empty-options
+    # case; scry/surveil was the one begin_* missing it. Surfaced by a
+    # monster_tron game (a deck that both scries/surveils AND decks itself
+    # out in long games) via the token action mask going all-False.
+    if not revealed:
+        _finish_scry_surveil(state)
 
 
 def scry_surveil_options(state):
@@ -531,19 +543,13 @@ def begin_mulligan(state, on_complete):
     game.turn.run_mulligan_phase/_run_mulligan_gen, once per player, before
     turn 1 ever starts.
 
-    Logs a "mulligan_hand" event carrying the full hand as SEEN at this
-    decision. This is the single convergence point for every hand a player
-    looks at -- the initial deal reaches it directly, and each redraw comes
-    back through it (execute_mulligan_take draws a fresh 7 then calls here
-    again) -- so one log_event here records the first 7, then the next 7,
-    and so on until kept, in order, tagged with mulligans_taken (0 for the
-    opener, 1 after the first mulligan, ...). It's also the ONLY place the
-    kept opening hand gets logged at all: draw() itself emits nothing, so
-    without this a player who keeps immediately would leave no record of
-    what they opened. The subsequent bottoming (London Mulligan) shows up as
-    the existing per-card "mulligan_bottom" zone_move events."""
-    state.log_event("mulligan_hand", cards=[c.name for c in state.hand],
-                    mulligans_taken=state.mulligans_taken)
+    No hand-contents event of its own: the opening hand and every redraw are
+    already logged as library->hand "draw" zone_moves by GameState.draw (the
+    single generic draw hook), the mulligan itself by execute_mulligan_take's
+    "mulligan_take" zone_move, and the London bottoming by the per-card
+    "mulligan_bottom" zone_moves. Together those reconstruct exactly what
+    each player saw and did, so a separate "mulligan_hand" event would only
+    duplicate the draw events."""
     begin_resolution(state, "mulligan_decision", on_complete)
 
 
@@ -846,15 +852,16 @@ if __name__ == "__main__":
     assert len(state.hand) == 5  # 7 - 2 bottomed
     assert [c.name for c in state.library[-2:]] == bottomed  # bottomed, in the order chosen
 
-    # Every hand SEEN was logged in order, tagged with its mulligan count
-    # (opener=0, then 1, then 2), and the two hands that were thrown back
-    # match their mulligan_take payloads exactly (same contents, same order).
-    hands = [e["cards"] for e in events if e["kind"] == "mulligan_hand"]
-    assert [(e["mulligans_taken"], len(e["cards"])) for e in events if e["kind"] == "mulligan_hand"] \
-        == [(0, 7), (1, 7), (2, 7)]
-    # mulligan_take / mulligan_bottom are zone_move events tagged by reason.
+    # There is no "mulligan_hand" event any more. Every hand SEEN is a
+    # library->hand "draw" zone_move (GameState.draw, the single generic
+    # hook): three here -- the opener, then the two redraws -- 7 cards each,
+    # in order.
+    draws = [e["cards"] for e in events if e.get("reason") == "draw"]
+    assert len(draws) == 3 and all(len(d) == 7 for d in draws)
+    # Each thrown-back hand (mulligan_take) is exactly the hand drawn just
+    # before it, so draws[0] and draws[1] are the two mulliganed hands.
     takes = [e["cards"] for e in events if e.get("reason") == "mulligan_take"]
-    assert hands[0] == takes[0] and hands[1] == takes[1]  # seen == thrown back
+    assert takes == draws[:2]  # seen == thrown back
     assert [e["card"] for e in events if e.get("reason") == "mulligan_bottom"] == bottomed
 
     # Keeping with 0 mulligans taken never opens a mulligan_bottom at all.

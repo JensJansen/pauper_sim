@@ -51,10 +51,23 @@ def build_pool(manifest_path=DECK_MANIFEST, vocab_path=VOCAB_PATH):
     decklists = {name: game.parse_decklist_file(path) for name, path in deck_files.items()}
     vocab = CardVocab(list(decklists.values()), token_card_defs=TOKEN_DEFS, vocab_path=vocab_path)
 
+    # Every card name anywhere in the league -- passed to each deck's fixed
+    # action table as extra_choosable_names so a "Choose: X" action exists
+    # for an OPPONENT's graveyard card too (Relic of Progenitus' exile can
+    # target any player; without this, exiling from a cross-deck opponent's
+    # graveyard softlocks with an empty action mask -- see build_action_
+    # table's own extra_choosable_names docstring). The whole roster, not a
+    # specific opponent: a trained model's action space stays fixed across
+    # every matchup the league can produce.
+    all_league_names = sorted({name for dl in decklists.values() for name, *_rest in dl})
+
     fixed_tables, deck_ctxs = {}, {}
     for name, decklist in decklists.items():
         pending_kinds = game.derive_pending_kinds(decklist)
-        fixed_table = build_fixed_action_table(decklist, token_card_defs=TOKEN_DEFS, pending_kinds=pending_kinds)
+        fixed_table = build_fixed_action_table(
+            decklist, token_card_defs=TOKEN_DEFS, pending_kinds=pending_kinds,
+            extra_choosable_names=all_league_names,
+        )
         fixed_tables[name] = fixed_table
         deck_ctxs[name] = (vocab, fixed_table, pending_kinds)
     return decklists, vocab, deck_ctxs, fixed_tables
@@ -63,9 +76,11 @@ def build_pool(manifest_path=DECK_MANIFEST, vocab_path=VOCAB_PATH):
 if __name__ == "__main__":
     # ponytail self-check: run via `python token_pool.py` from src/.
     decklists, vocab, deck_ctxs, fixed_tables = build_pool()
-    assert set(decklists) == {"mono_red_madness", "rakdos_madness"}
+    # Roster-agnostic (reads whatever data/league_decks.json currently lists)
+    # -- must include at least the two madness decks that are always present.
+    assert {"mono_red_madness", "rakdos_madness"} <= set(decklists), "the two madness decks must always be in the roster"
     assert all(ctx[0] is vocab for ctx in deck_ctxs.values()), "every deck must share the SAME vocab instance"
-    assert len(fixed_tables["mono_red_madness"]) > 0 and len(fixed_tables["rakdos_madness"]) > 0
+    assert all(len(t) > 0 for t in fixed_tables.values()), "every deck must build a non-empty fixed action table"
 
     # Roster is data-driven: a manifest naming just ONE deck must still work
     # standalone, and must NOT reassign that deck's existing (persisted)

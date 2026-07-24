@@ -392,7 +392,27 @@ class GameState:
         return self.players[1 - self.active_idx]
 
     def draw(self, n=1):
-        return self.players[self.active_idx].draw(n)
+        # Single generic draw-logging hook: every card that enters a hand
+        # from its library -- the turn draw_step, a spell like Faithless
+        # Looting, the opening 7, a mulligan redraw -- passes through here
+        # and is recorded as one "zone_move" (library->hand, reason="draw")
+        # naming the cards. draw() is otherwise silent, so this is the ONLY
+        # record of what was drawn, in the pregame too: there is no separate
+        # "mulligan_hand" event, the opening and redrawn hands ARE these draw
+        # events (see game.resolution.begin_mulligan). try/finally so a draw
+        # that decks out partway still logs whatever reached hand before
+        # DeckedOut unwound the stack.
+        player = self.players[self.active_idx]
+        if self.event_log is None:
+            return player.draw(n)
+        before = len(player.hand)
+        try:
+            player.draw(n)
+        finally:
+            drawn = player.hand[before:]
+            if drawn:
+                self.log_event("zone_move", cards=[c.name for c in drawn],
+                               from_zone="library", to_zone="hand", reason="draw")
 
     def log_event(self, kind, **fields):
         """Appends one structured event to self.event_log, if logging is on
@@ -468,11 +488,12 @@ def new_multiplayer_game_state(decklists, terminated_fns, starting_player_idx, r
     state = GameState(
         on_the_play=players[starting_player_idx].on_the_play, rng=rng, players=players, event_log=event_log,
     )
-    state.active_idx = starting_player_idx
     state.turn_player_idx = starting_player_idx
-    for player, decklist in zip(state.players, decklists):
-        player.library = build_shuffled_library(decklist, rng)
-        player.draw(7)
+    for idx, decklist in enumerate(decklists):
+        state.players[idx].library = build_shuffled_library(decklist, rng)
+        state.active_idx = idx   # attribute each opening draw to its own drawer
+        state.draw(7)            # routed through GameState.draw so the opening hand is logged like any other draw
+    state.active_idx = starting_player_idx
     return state
 
 
@@ -557,6 +578,16 @@ if __name__ == "__main__":
     assert "zone_move" in kinds  # land entering the battlefield, and the Bolt hitting the stack then leaving it
     assert "mana_tap" in kinds and "mana_spend" in kinds
     assert "pass" in kinds  # the exact event class the old snapshot-based logger silently dropped
+    # Every draw -- the opening hand AND every in-game draw -- is recorded as
+    # one library->hand zone_move (reason="draw") naming the cards. This is
+    # the single generic hook; there is no separate pregame "mulligan_hand"
+    # event any more (the opening 7 IS a draw event, at turn 0). This is the
+    # gap that used to leave Faithless Looting's draws invisible.
+    draw_moves = [e for e in events if e.get("reason") == "draw"]
+    assert draw_moves, "expected draws to be logged"
+    assert all(e["from_zone"] == "library" and e["to_zone"] == "hand" and e["cards"] for e in draw_moves)
+    assert any(e["turn"] == 0 and len(e["cards"]) == 7 for e in draw_moves)  # the opening hand
+    assert any(e["turn"] > 0 for e in draw_moves)  # at least one in-game draw (the turn draw_step)
     # Every event's envelope is well-formed regardless of kind.
     for e in events:
         assert set(e) >= {"kind", "turn", "phase", "active_idx", "turn_player_idx"}

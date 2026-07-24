@@ -129,6 +129,24 @@ def _seat_step(state, seat, deck_ctx, net, horizon, device):
         pointer_mask = torch.as_tensor(pointer_mask_list, dtype=torch.bool, device=device).unsqueeze(0)
         full_mask = torch.cat([fixed_mask, pointer_mask], dim=-1)
 
+        if not bool(full_mask.any()):
+            # DIAGNOSTIC (temporary): an all-False mask means the engine
+            # reached a decision state the action space can't represent AT
+            # ALL -- a real gap. masked_fill(-1e8) then Categorical would
+            # otherwise sample UNIFORMLY over every (illegal) position and
+            # crash downstream (execute_pointer_choice) with a misleading
+            # error. Surface the true culprit precisely instead.
+            pend = state.pending_resolution
+            print("  *** ALL-FALSE MASK ***", flush=True)
+            print(f"    pending_kind={pend['kind'] if pend else None} phase={state.phase} seat={seat}", flush=True)
+            if pend:
+                print(f"    pending keys={list(pend.keys())}", flush=True)
+                for k in ("remaining", "ordered", "kept", "disposed"):
+                    if k in pend:
+                        v = pend[k]
+                        print(f"    pending[{k}]={[getattr(c, 'name', c) for c in v] if isinstance(v, list) else v}", flush=True)
+            raise RuntimeError(f"all-False action mask for pending kind {pend['kind'] if pend else None!r}")
+
         scalar_t = torch.as_tensor(scalar, dtype=torch.float32, device=device).unsqueeze(0)
         logits, value = net(mine_summary, theirs_summary, scalar_t, token_reps, pointer_mask)
         masked_logits = logits.masked_fill(~full_mask, -1e8)
