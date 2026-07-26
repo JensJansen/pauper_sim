@@ -12,8 +12,7 @@ discard_or_sacrifice (Highway Robbery's own "discard a card or sacrifice
 a land" -- two different cost shapes under one optional decision),
 madness_decision, sacrifice (predicate-based -- Dread Return's creature
 sacrifice and Fireblast/Lava Dart/Highway Robbery's land sacrifice are
-the same primitive, different predicates; see MADNESS_DECKS_PLAN.md item
-5). Deck-specific kinds (Ancient Stirrings' take-one-or-decline, Lead the
+the same primitive, different predicates). Deck-specific kinds (Ancient Stirrings' take-one-or-decline, Lead the
 Stampede's select_to_hand) still live with their owning deck instead,
 since nothing else currently reuses them -- the exact bar
 choose_graveyard_card/discard_or_sacrifice both just crossed.
@@ -26,8 +25,7 @@ exists). Deliberately does NOT import game.mana (mana.py imports THIS
 module at its own top level; the reverse import would cycle) -- so the
 madness "cast for its madness cost" path's cost payment lives in
 game/effects/madness_and_plot.py instead, which is free to depend on both
-this module and mana.py. See docs/MADNESS_DECKS_PLAN.md items 1/3.
-"""
+this module and mana.py.  """
 
 from . import registry
 from .cards import CardDef
@@ -117,7 +115,7 @@ def execute_search_fetch_decline(state):
 
 def begin_choose_permanent(state, predicate, on_complete):
     """The model picks ONE of its own battlefield permanents, addressed by
-    the exact (name, slot) it occupies -- docs/MULTIPLAYER_GAPS.md's
+    the exact (name, slot) it occupies
     "Permanent identity" gap, closed here: same (name, slot) addressing
     begin_choose_opponent_permanent already uses, not the old
     fungible-by-name shortcut (two same-named permanents stop being
@@ -141,7 +139,7 @@ def execute_choose_permanent_option(state, name, slot):
     complete_resolution(state, (name, slot))
 
 
-def begin_choose_graveyard_card(state, predicate, on_complete, graveyard=None):
+def begin_choose_graveyard_card(state, predicate, on_complete, graveyard=None, optional=False):
     """Pick ONE card from a graveyard by name, among those matching
     predicate -- Dread Return's reanimation target originally
     (game.catalog.black_cards), promoted here once Relic of Progenitus'
@@ -160,10 +158,18 @@ def begin_choose_graveyard_card(state, predicate, on_complete, graveyard=None):
     own choice is simplified to the ACTIVATING player's, same "no
     observable difference in this solitaire sim, nothing depends on WHO
     picks" reasoning already applied elsewhere (Grab the Prize's own
-    discard timing)."""
+    discard timing).
+
+    optional=True is a "you may exile a card from your graveyard" choice
+    (Masked Vandal's ETB): the model may decline outright even when legal
+    cards exist (execute_choose_graveyard_card_decline -> None), the same
+    dedicated-decline treatment begin_search_fetch's own optional already
+    gets. optional=False (Dread Return, Relic -- unchanged) is mandatory
+    when any card matches; either way the empty-options safety net still
+    completes with None when nothing matches at all."""
     if graveyard is None:
         graveyard = state.graveyard
-    begin_resolution(state, "choose_graveyard_card", on_complete, predicate=predicate, graveyard=graveyard)
+    begin_resolution(state, "choose_graveyard_card", on_complete, predicate=predicate, graveyard=graveyard, optional=optional)
     if not choose_graveyard_card_options(state):
         complete_resolution(state, None)
 
@@ -175,6 +181,14 @@ def choose_graveyard_card_options(state):
 
 def execute_choose_graveyard_card_option(state, name):
     complete_resolution(state, name)
+
+
+def execute_choose_graveyard_card_decline(state):
+    """Decline an OPTIONAL choose_graveyard_card (Masked Vandal's "you may
+    exile a creature card from your graveyard") -- resolve with None, exiling
+    nothing. Only ever offered by the environment while the pending was begun
+    optional=True, same convention as execute_search_fetch_decline."""
+    complete_resolution(state, None)
 
 
 def begin_choose_target_player(state, on_complete):
@@ -198,14 +212,97 @@ def execute_choose_target_player_option(state, idx):
     complete_resolution(state, idx)
 
 
+def begin_choose_any_target(state, predicate, on_complete, allow_players=True, optional=False):
+    """A single target chosen from BOTH players' battlefields at once, plus
+    (allow_players) either player -- real Magic's "any target" (a creature,
+    a player, or a planeswalker/battle; this pool has no planeswalkers or
+    battles). Burn (Lightning Bolt "3 damage to any target") uses
+    allow_players=True; "target creature" effects that still span both
+    sides (Pinnacle Kill-Ship's "up to one target creature", Quirion
+    Ranger's "untap target creature") pass allow_players=False.
+
+    Faithful targeting contract (same as casting.cast_aura, generalized to
+    span sides and players): the caller resolves the returned descriptor to
+    the EXACT object right now (cast/activation time) and captures it, then
+    rechecks that exact object's legality when the spell/ability resolves
+    off the stack -- fizzling if the chosen target is no longer legal.
+
+    on_complete(state, target) where target is one of:
+      ("player", idx)            -- a player, addressed by index
+      ("creature", side, name, slot) -- a creature, addressed by the index
+                                    of the player who controls it plus its
+                                    own (name, slot); side disambiguates two
+                                    same-named creatures on opposite battle-
+                                    fields
+      None                       -- only when allow_players=False AND no
+                                    creature matches (an empty "up to one"
+                                    or a can't-be-activated target choice);
+                                    with allow_players=True a player is
+                                    always legal, so None never happens.
+
+    predicate(permanent) filters the creature half only; players are never
+    filtered (a player is always a legal "any target").
+
+    optional=True is "up to one target" (Pinnacle Kill-Ship): the chooser may
+    decline (execute_choose_any_target_decline -> None) even when legal
+    targets exist -- so this never auto-completes (the decline action is
+    always available). optional=False auto-completes with None only when
+    there's no legal target at all (allow_players=False and no creature)."""
+    begin_resolution(
+        state, "choose_any_target", on_complete, predicate=predicate, allow_players=allow_players, optional=optional,
+    )
+    if not optional and not choose_any_target_options(state):
+        complete_resolution(state, None)  # allow_players=False and no legal creature -- nothing to target
+
+
+def choose_any_target_creature_options(state):
+    """The (side, name, slot) creature half of a choose_any_target -- every
+    matching creature on EITHER battlefield. Split out from the player half
+    so the action layer can route creatures through the identity pointer
+    scheme (token_action_bridge) and players through fixed actions."""
+    predicate = state.pending_resolution["predicate"]
+    return sorted(
+        (side, p.card_def.name, p.slot)
+        for side, player in enumerate(state.players)
+        for p in player.battlefield
+        if predicate(p)
+    )
+
+
+def choose_any_target_options(state):
+    """Both halves together -- creatures (side, name, slot) plus, when
+    allow_players, each player ("player", idx). Used for the empty-options
+    safety-net check in begin_choose_any_target; the action layer consults
+    the two halves separately."""
+    options = [("creature", side, name, slot) for side, name, slot in choose_any_target_creature_options(state)]
+    if state.pending_resolution["allow_players"]:
+        options += [("player", idx) for idx in range(len(state.players))]
+    return options
+
+
+def execute_choose_any_target_creature(state, side, name, slot):
+    complete_resolution(state, ("creature", side, name, slot))
+
+
+def execute_choose_any_target_player(state, idx):
+    complete_resolution(state, ("player", idx))
+
+
+def execute_choose_any_target_decline(state):
+    """Decline an "up to one target" (optional) choose_any_target -- resolve
+    with no target (the ability still resolves, doing nothing to a creature).
+    Only offered when the pending was begun optional=True."""
+    complete_resolution(state, None)
+
+
 def begin_choose_opponent_permanent(state, predicate, on_complete):
     """Like begin_choose_permanent, but targets the OPPONENT's battlefield
     (state.opponent -- only meaningful in a 2-player game) instead of the
     active player's own -- the general cross-player targeting primitive
-    (docs/COMBAT_PLAN.md), first used by blocking. Addressed by (name,
+   , first used by blocking. Addressed by (name,
     slot), not name alone: unlike begin_choose_permanent's own
     fungible-by-name simplification, two same-named OPPOSING permanents
-    are exactly the case docs/MULTIPLAYER_GAPS.md's "Permanent identity"
+    are exactly the case "Permanent identity"
     section flags -- an Aura-enchanted attacker and a plain one of the
     same name are not an arbitrary pick for a blocker to choose between.
     on_complete(state, (name, slot)_or_None) runs once decided. Same
@@ -235,10 +332,13 @@ def begin_declare_blockers(state, on_complete):
     time -- each pairing an "Assign Blocker: <name> (slot j)" action
     (drl_env.py, picks one of THIS player's own untapped, not-yet-used
     creatures) with a nested begin_choose_opponent_permanent picking
-    which of the attacker's declared, not-yet-blocked attackers it
-    blocks -- until the defender chooses Done (docs/COMBAT_PLAN.md). No
-    gang-blocking/menace: at most one blocker per attacker, at most one
-    attacker per blocker.
+    which of the attacker's declared attackers it blocks -- until the
+    defender chooses Done. Gang-blocking IS allowed:
+    many blockers may pile onto one attacker (each a separate "Assign
+    Blocker" action, blocked_by[attacker] is a LIST). Still at most one
+    attacker per blocker (a committed blocker isn't reassignable --
+    creature_block_eligible excludes it), and no menace (nothing forces an
+    attacker to be blocked by 2+).
 
     Only ever entered with state.active_idx already flipped to the
     defender (game.turn._declare_blockers_gen) -- state.battlefield/
@@ -260,15 +360,15 @@ def declare_blocker_assignment(state, blocker, on_complete, extra_predicate=lamb
     nests a begin_choose_opponent_permanent choosing which of the
     attacker's declared, not-yet-blocked attackers this blocker is
     assigned to (or None, if none remain -- shouldn't happen given the
-    action's own legality check, but never crashes either way), records
-    state.opponent.blocked_by[attacker] = blocker, then calls
+    action's own legality check, but never crashes either way), appends the
+    blocker to state.opponent.blocked_by[attacker] (a LIST -- gang-blocking),
+    then calls
     on_complete -- which drl_env.py uses to re-open begin_declare_blockers
     so the defender can assign another blocker or finish.
 
     extra_predicate(attacker) -> bool: an additional restriction beyond
     "is a currently-unblocked attacker" -- e.g. flying's own blocking
-    restriction (docs/COMBAT_PLAN.md step 7: a flying attacker can only be
-    blocked by a flying blocker). Supplied by the CALLER (drl_env.py)
+    restriction. Supplied by the CALLER (drl_env.py)
     rather than computed here: this module stays effect-agnostic (see its
     own module docstring) and doesn't import game.effects.stats itself, so
     it has no way to ask "does this creature have flying" on its own.
@@ -281,17 +381,80 @@ def declare_blocker_assignment(state, blocker, on_complete, extra_predicate=lamb
         if choice is not None:
             name, slot = choice
             attacker = next(p for p in s.opponent.attackers if p.card_def.name == name and p.slot == slot)
-            s.opponent.blocked_by[attacker] = blocker
+            s.opponent.blocked_by.setdefault(attacker, []).append(blocker)  # gang-blocking: one attacker, many blockers
             s.log_event(
                 "block_assigned", blocker=(blocker.card_def.name, blocker.slot), attacker=(name, slot),
             )
         on_complete(s)
 
+    # GANG-BLOCKING: an already-blocked attacker is STILL a legal choice --
+    # multiple creatures may block the same attacker (the `p not in
+    # blocked_by` exclusion that enforced 1-blocker-per-attacker is gone).
+    # A blocker still blocks exactly one attacker (enforced by
+    # creature_block_eligible, which drops a creature already committed).
     begin_choose_opponent_permanent(
         state,
-        lambda p: p in state.opponent.attackers and p not in state.opponent.blocked_by and extra_predicate(p),
+        lambda p: p in state.opponent.attackers and extra_predicate(p),
         _on_attacker_chosen,
     )
+
+
+def begin_assign_combat_damage(state, attacker, blockers, power, has_trample, on_complete):
+    """A MULTI-blocked attacker's controller freely assigns `power` points
+    of the attacker's combat damage across `blockers` -- any portion to any
+    blocker, non-lethal allowed (user spec) -- plus to the defending player
+    if the attacker has trample. One point at a time: assign_combat_damage_
+    options (pick a blocker, (name, slot)-addressed for the pointer head) /
+    execute_assign_combat_damage_option, or execute_assign_combat_damage_to_
+    player (trample only, a fixed action), until every point is spent. The
+    finished split is stashed on attacker.flags['combat_damage_split'] =
+    ({blocker: amount}, opponent_amount) for combat_damage_step to apply --
+    NOT passed through complete_resolution's own *args (which would try to
+    log a Permanent-keyed dict, not serialisable). Only ever opened for 2+
+    blockers -- a lone blocker has no choice (combat_damage_step auto-
+    assigns). Auto-finishes immediately if power is 0."""
+    begin_resolution(state, "assign_combat_damage", on_complete,
+                     attacker=attacker, blockers=list(blockers), remaining=power, amounts={}, opponent=0,
+                     has_trample=has_trample)
+    if power <= 0:
+        _finish_assign_combat_damage(state)
+
+
+def _finish_assign_combat_damage(state):
+    pending = state.pending_resolution
+    pending["attacker"].flags["combat_damage_split"] = (dict(pending["amounts"]), pending["opponent"])
+    complete_resolution(state)
+
+
+def assign_combat_damage_options(state):
+    """Every blocker is a choosable target for the next damage point (a
+    blocker may take any number of points, so all stay offered until
+    remaining hits 0), (name, slot)-addressed like choose_opponent_permanent
+    for the pointer head. The trample 'assign to the player' option is a
+    separate fixed action -- same choose-vs-fixed split blocking uses."""
+    pending = state.pending_resolution
+    if pending["remaining"] <= 0:
+        return []
+    return sorted((b.card_def.name, b.slot) for b in pending["blockers"])
+
+
+def execute_assign_combat_damage_option(state, name, slot):
+    pending = state.pending_resolution
+    blocker = next(b for b in pending["blockers"] if b.card_def.name == name and b.slot == slot)
+    pending["amounts"][blocker] = pending["amounts"].get(blocker, 0) + 1
+    pending["remaining"] -= 1
+    if pending["remaining"] <= 0:
+        _finish_assign_combat_damage(state)
+
+
+def execute_assign_combat_damage_to_player(state):
+    """Trample: assign the next damage point to the defending player instead
+    of a blocker. Only legal while has_trample (drl_env gates the action)."""
+    pending = state.pending_resolution
+    pending["opponent"] += 1
+    pending["remaining"] -= 1
+    if pending["remaining"] <= 0:
+        _finish_assign_combat_damage(state)
 
 
 def execute_choose_opponent_permanent_option(state, name, slot):
@@ -402,7 +565,7 @@ def begin_discard(state, n, optional, on_complete):
     card).
 
     Deliberately does NOT decide what happens to a discarded card beyond
-    moving it out of hand -- see docs/MADNESS_DECKS_PLAN.md items 1/3:
+    moving it out of hand:
     Madness reroutes qualifying cards to exile (plus a queued cast-or-
     graveyard decision, drained only once the enclosing action's entire
     effect is done, never mid-discard) instead of the plain graveyard trip
@@ -466,8 +629,8 @@ def _discard_one(state, card):
     pay Highway Robbery's own optional cost triggers exactly the same way
     as one discarded by Faithless Looting). Queued rather than offered
     immediately: the model only sees the cast-or-graveyard decision once
-    the enclosing action's entire effect is fully resolved (docs/
-    MADNESS_DECKS_PLAN.md items 1/3's cross-cutting rule). Shared by
+    the enclosing action's entire effect is fully resolved (the Madness
+    cast-or-graveyard cross-cutting rule). Shared by
     execute_discard_option's own per-card loop and execute_discard_or_
     sacrifice_option's single optional discard."""
     state.hand.remove(card)
@@ -659,7 +822,7 @@ def execute_madness_decline(state):
 
 
 def begin_order_triggers(state, entries, on_complete):
-    """docs/PRIORITY_PLAN.md item 1: 2+ of the active player's own
+    """2+ of the active player's own
     triggers are ready to move onto the stack at once (e.g. Faithless
     Looting's discard-2 hitting two Madness cards in the same discard, or
     two Sneaky Snackers both crossing their own draw-count trigger on the
@@ -694,7 +857,7 @@ def execute_order_triggers_option(state, name):
     idx = next(i for i, e in enumerate(pending["remaining"]) if e["card_def"].name == name)
     entry = pending["remaining"].pop(idx)
     # Same controller field push_to_stack itself stamps on every entry
-    # (docs/PRIORITY_PLAN.md) -- state.active_idx here is still the
+    # -- state.active_idx here is still the
     # trigger owner (nothing else can interleave mid-resolution), so this
     # is the correct moment to record it, same reasoning push_to_stack's
     # own docstring gives.
@@ -718,7 +881,7 @@ def begin_sacrifice(state, predicate, n, on_complete):
     own Flashback-cost-only "sacrifice_creatures" resolution
     (game.catalog.black_cards) into a predicate-based primitive reusable by land-
     sacrifice costs too (Fireblast's alt-cost, Lava Dart's Flashback,
-    Highway Robbery's discard-or-sac choice -- MADNESS_DECKS_PLAN.md item
+    Highway Robbery's discard-or-sac choice
     5); Dread Return's own creature-sacrifice is just
     `begin_sacrifice(state, lambda p: p.card_type ==
     CardType.CREATURE, 3, on_complete)` now, no separate function needed.
@@ -752,6 +915,13 @@ def execute_sacrifice_option(state, name):
         "zone_move", permanent=(permanent.card_def.name, permanent.slot), from_zone="battlefield",
         to_zone="graveyard", reason="sacrifice",
     )
+    # Leaves-the-battlefield triggered ability (Mesmeric Fiend, sacrificed --
+    # e.g. to Dread Return's Flashback). Same three lines as state_based.
+    # _queue_leave_triggers, inlined here because resolution.py can't import
+    # state_based without a cycle (state_based imports resolution).
+    ltb_spec = registry.EFFECT_REGISTRY.get(permanent.card_def.effect_id, {})
+    if ltb_spec.get("ltb_trigger") is not None:
+        state.trigger_queue.append({"type": "ltb", "card_def": permanent.card_def, "permanent": permanent})
     pending["remaining"] -= 1
     if pending["remaining"] <= 0:
         complete_resolution(state, True)
@@ -823,7 +993,7 @@ if __name__ == "__main__":
     state = GameState(on_the_play=True, event_log=events)
     state.library = [_card(f"L{i}") for i in range(20)]
     state.rng.shuffle(state.library)
-    state.draw(7)  # new_game_state's own eager opening draw -- begin_mulligan's own precondition
+    state.draw(7)  # new_multiplayer_game_state's own eager opening draw -- begin_mulligan's own precondition
     completed = []
     begin_mulligan(state, on_complete=lambda s: completed.append(True))
     assert mulligan_decision_options(state) == ["keep", "mulligan"]
@@ -899,7 +1069,7 @@ if __name__ == "__main__":
         assert state.trigger_queue == [{"type": "decision", "kind": "madness", "card_def": madness_card}]
 
         # Promoting the queue (game.effects.triggers.promote_triggers_to_
-        # stack's job in real play, docs/PRIORITY_PLAN.md item 1) and declining:
+        # stack's job in real play,) and declining:
         # back out of exile, into the graveyard.
         state.trigger_queue.clear()
         drain_completed = []
@@ -915,7 +1085,7 @@ if __name__ == "__main__":
     # begin_sacrifice: predicate-based, not hardcoded to creatures --
     # exercise both a creature predicate (Dread Return's own shape, post-
     # migration) and a land predicate (Fireblast/Lava Dart's shape,
-    # MADNESS_DECKS_PLAN.md item 5) against the same primitive.
+    #) against the same primitive.
     from .state import Permanent
 
     def _permanent(name, card_type):
@@ -948,11 +1118,10 @@ if __name__ == "__main__":
 
     print("resolution.py discard self-check: OK")
 
-    # Cross-player targeting (docs/COMBAT_PLAN.md): begin_choose_opponent_permanent
+    # Cross-player targeting: begin_choose_opponent_permanent
     # targets state.opponent's battlefield, addressed by (name, slot) --
     # not name alone, since two same-named OPPOSING permanents aren't
-    # necessarily interchangeable (docs/MULTIPLAYER_GAPS.md's "Permanent
-    # identity"). Only correct once the referencing player is already the
+    # necessarily interchangeable. Only correct once the referencing player is already the
     # active one (blocking's own defender-decision channel flips
     # active_idx before ever calling this) -- simulated here by setting
     # active_idx directly to "the defender," same as that channel would.
@@ -987,7 +1156,45 @@ if __name__ == "__main__":
 
     print("resolution.py cross-player targeting self-check: OK")
 
-    # Blocking (docs/COMBAT_PLAN.md): begin_declare_blockers/
+    # "Any target" (begin_choose_any_target): a single target spanning BOTH
+    # battlefields' creatures plus either player -- real Magic's "any
+    # target" (Lightning Bolt). Creatures addressed by (side, name, slot)
+    # so a same-named creature on each side stays distinguishable; players
+    # by index. allow_players=False narrows it to "target creature" spanning
+    # sides (Kill-Ship/Quirion), with the empty-options net if none match.
+    mine = _permanent("Grizzly Bears", CardType.CREATURE)
+    theirs = _permanent("Grizzly Bears", CardType.CREATURE)  # same name, opposite side
+    my_land = _permanent("Forest", CardType.LAND)
+    state = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
+    state.players[0].battlefield = [mine, my_land]
+    state.players[1].battlefield = [theirs]
+
+    completed = []
+    begin_choose_any_target(state, lambda p: p.card_type == CardType.CREATURE, lambda s, t: completed.append(t))
+    assert choose_any_target_creature_options(state) == [(0, "Grizzly Bears", 1), (1, "Grizzly Bears", 1)]  # both sides, Forest excluded
+    assert ("player", 0) in choose_any_target_options(state) and ("player", 1) in choose_any_target_options(state)
+    execute_choose_any_target_creature(state, 1, "Grizzly Bears", 1)  # the OPPONENT's copy specifically
+    assert completed == [("creature", 1, "Grizzly Bears", 1)]
+
+    completed = []
+    begin_choose_any_target(state, lambda p: p.card_type == CardType.CREATURE, lambda s, t: completed.append(t))
+    execute_choose_any_target_player(state, 0)  # legal to target yourself (real Magic)
+    assert completed == [("player", 0)]
+
+    # allow_players=False + no creature anywhere -> immediate None (fizzle/
+    # can't-target), same empty-options net as the other primitives.
+    empty = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
+    empty.players[0].battlefield = [_permanent("Forest", CardType.LAND)]
+    completed = []
+    begin_choose_any_target(empty, lambda p: p.card_type == CardType.CREATURE, lambda s, t: completed.append(t), allow_players=False)
+    assert completed == [None]
+    # allow_players=False WITH a creature -> creatures only, no player option offered
+    begin_choose_any_target(state, lambda p: p.card_type == CardType.CREATURE, lambda s, t: None, allow_players=False)
+    assert all(o[0] == "creature" for o in choose_any_target_options(state))
+
+    print("resolution.py any-target self-check: OK")
+
+    # Blocking: begin_declare_blockers/
     # declare_blocker_assignment, driven directly against a hand-built
     # state (bypassing game.turn._declare_blockers_gen's active_idx-flip --
     # simulated here the same way the cross-player check above does, by
@@ -1019,36 +1226,21 @@ if __name__ == "__main__":
     assert choose_opponent_permanent_options(state) == [("Bear", 1), ("Wolf", 1)]
     execute_choose_opponent_permanent_option(state, "Bear", 1)
     assert step1_done == [True]
-    assert state.players[0].blocked_by == {bear: grizzly}  # keyed by the ATTACKER, not the blocker
+    assert state.players[0].blocked_by == {bear: [grizzly]}  # attacker -> LIST of blockers (gang-blocking)
 
-    # Re-open the consult (as drl_env._assign_blocker_execute's own nested
-    # on_complete would) and assign Panther to the one remaining attacker --
-    # Bear is no longer offered, already spoken for.
+    # GANG-BLOCKING: re-open the consult and assign Panther to the SAME
+    # attacker (Bear). An already-blocked attacker is STILL offered -- the
+    # old 1:1 "already spoken for" exclusion is gone -- and multiple
+    # blockers may pile onto one attacker.
     completed = []
     begin_declare_blockers(state, on_complete=lambda s: completed.append(True))
     assert completed == []
     step2_done = []
     declare_blocker_assignment(state, panther, on_complete=lambda s: step2_done.append(True))
-    assert choose_opponent_permanent_options(state) == [("Wolf", 1)]  # Bear no longer offered -- already blocked
-    execute_choose_opponent_permanent_option(state, "Wolf", 1)
+    assert choose_opponent_permanent_options(state) == [("Bear", 1), ("Wolf", 1)]  # Bear STILL offered -- gang-block
+    execute_choose_opponent_permanent_option(state, "Bear", 1)
     assert step2_done == [True]
-    assert state.players[0].blocked_by == {bear: grizzly, wolf: panther}
-
-    # Both attackers now blocked: a further assignment attempt (only
-    # reachable here because this test bypasses drl_env's own eligibility
-    # gate, which wouldn't offer this action in real play once every
-    # attacker's spoken for) finds no remaining unblocked attacker and
-    # fizzles immediately with None, same empty-options safety net as
-    # begin_choose_opponent_permanent's own -- never crashes, blocked_by
-    # stays exactly as it was.
-    completed = []
-    begin_declare_blockers(state, on_complete=lambda s: completed.append(True))
-    assert completed == []
-    step3_done = []
-    declare_blocker_assignment(state, grizzly, on_complete=lambda s: step3_done.append(True))
-    assert step3_done == [True]  # fizzled synchronously -- no eligible attacker left to choose
-    assert state.players[0].blocked_by == {bear: grizzly, wolf: panther}  # unchanged
-    assert state.pending_resolution is None  # the fizzle already completed it -- nothing left open
+    assert state.players[0].blocked_by == {bear: [grizzly, panther]}  # two blockers on one attacker
 
     # "Done blocking" (drl_env.py's action): closes a still-open
     # declare_blockers resolution outright, no assignment required.
@@ -1067,8 +1259,7 @@ if __name__ == "__main__":
 
     print("resolution.py blocking self-check: OK")
 
-    # declare_blocker_assignment's extra_predicate (docs/COMBAT_PLAN.md
-    # step 7's flying restriction): this module stays effect-agnostic (see
+    # declare_blocker_assignment's extra_predicate: this module stays effect-agnostic (see
     # its own module docstring) and doesn't import game.effects.stats
     # itself, so the actual restriction is supplied by the CALLER
     # (drl_env._assign_blocker_execute, using game.has_keyword) -- this
@@ -1092,11 +1283,11 @@ if __name__ == "__main__":
     assert choose_opponent_permanent_options(state) == [("Grounded", 1)]  # Flyer excluded by extra_predicate
     execute_choose_opponent_permanent_option(state, "Grounded", 1)
     assert completed == [True]
-    assert state.players[0].blocked_by == {grounded: non_flying_blocker}
+    assert state.players[0].blocked_by == {grounded: [non_flying_blocker]}
 
     print("resolution.py extra_predicate (flying-restriction wiring) self-check: OK")
 
-    # begin_order_triggers (docs/PRIORITY_PLAN.md item 1): 2+ simultaneous
+    # begin_order_triggers: 2+ simultaneous
     # triggers get a real placement-order choice -- PLACEMENT order, not
     # resolution order (the stack is LIFO). Driven directly against a
     # hand-built state, bypassing game.effects.triggers.promote_triggers_

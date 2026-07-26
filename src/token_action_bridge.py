@@ -98,6 +98,40 @@ def pointer_legal_mask(state, identities_row):
                 mask[i] = True
         return mask
 
+    if pending is not None and pending["kind"] == "assign_combat_damage":
+        # The attacker assigns its next combat-damage point to one of its
+        # blockers (gang-blocking). Match by IDENTITY against the pending's
+        # own blocker list -- NOT (name, slot), which collides across sides
+        # (a same-named creature on the attacker's own board) -- so only the
+        # actual blockers are offered. "Assign to the player" (trample) is a
+        # separate FIXED action, not a pointer target.
+        blockers = pending["blockers"]
+        for i, p in enumerate(identities_row):
+            if p is not None and p in blockers:
+                mask[i] = True
+        return mask
+
+    if pending is not None and pending["kind"] == "choose_any_target":
+        # "Any target" creature half -- a creature on EITHER battlefield
+        # (Lightning Bolt). Match by (side, name, slot) where side is which
+        # player controls the permanent, so a same-named creature on each
+        # side stays distinct (the same cross-side (name,slot) collision the
+        # choose_permanent branches guard). The identity p tells us its side
+        # directly. The player half is fixed actions, not pointer targets.
+        legal_triples = set(game.choose_any_target_creature_options(state))
+        for i, p in enumerate(identities_row):
+            if p is None:
+                continue
+            if p in state.players[0].battlefield:
+                side = 0
+            elif len(state.players) > 1 and p in state.players[1].battlefield:
+                side = 1
+            else:
+                continue
+            if (side, p.card_def.name, p.slot) in legal_triples:
+                mask[i] = True
+        return mask
+
     return mask  # no targeting category applies right now -- pointer half is entirely illegal, only the fixed table matters
 
 
@@ -110,7 +144,9 @@ def any_pointer_legal(state):
     pending = state.pending_resolution
     if pending is None:
         return state.phase is game.turn.Phase.DECLARE_ATTACKERS and state.active_idx == state.turn_player_idx
-    return pending["kind"] in ("declare_blockers", "choose_permanent", "choose_opponent_permanent")
+    return pending["kind"] in (
+        "declare_blockers", "choose_permanent", "choose_opponent_permanent", "assign_combat_damage", "choose_any_target",
+    )
 
 
 def execute_pointer_choice(state, permanent):
@@ -129,6 +165,11 @@ def execute_pointer_choice(state, permanent):
         return drl_env._choose_permanent_execute(name, slot)(state)
     if pending["kind"] == "choose_opponent_permanent":
         return drl_env._choose_opponent_permanent_execute(name, slot)(state)
+    if pending["kind"] == "assign_combat_damage":
+        return game.execute_assign_combat_damage_option(state, name, slot)  # +1 damage point to this blocker
+    if pending["kind"] == "choose_any_target":
+        side = 0 if permanent in state.players[0].battlefield else 1  # which battlefield the chosen creature is on
+        return game.execute_choose_any_target_creature(state, side, name, slot)
     raise ValueError(f"execute_pointer_choice: no pointer category applies for pending kind {pending['kind']!r}")
 
 
@@ -140,7 +181,7 @@ if __name__ == "__main__":
     pending_kinds = game.derive_pending_kinds(decklist)
     # mono_red_madness creates BOTH of these mid-game (Blood from madness
     # discards, Robot from Melded Moxite's own sacrifice ability) -- note
-    # configs/mono_red_madness_mirror.json's own "token_card_defs" only
+    # the deck config's own "token_card_defs" only
     # lists "Blood", missing "Robot" (confirmed the hard way: a real game
     # creates one). Out of scope to fix that config from this branch, but
     # this module needs the complete, correct set regardless.
@@ -157,11 +198,10 @@ if __name__ == "__main__":
 
     # pointer_legal_mask / execute_pointer_choice against a REAL 2-PLAYER
     # game (build_token_set is inherently 2-player -- it always indexes an
-    # opponent seat, so a 1-player game.run_game state doesn't fit its
+    # opponent seat, so a 1-player game state doesn't fit its
     # contract at all; confirmed the hard way, see this module's own git
     # history for the IndexError that caught it). Mirror match, one shared
-    # choose_action dispatching on state.active_idx, same pattern harness.
-    # evaluate_two_player already uses. Always prefers a pointer action when
+    # choose_action dispatching on state.active_idx. Always prefers a pointer action when
     # one is legal (Attack/Assign Blocker/Choose opponent's), else falls
     # back to the fixed table's own "prefer Pass, else first legal" rule --
     # exercises attacking, blocking, AND the cross-player "Choose

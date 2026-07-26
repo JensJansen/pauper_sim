@@ -80,7 +80,7 @@ def permanent_power(state, permanent, enchanting_auras=None):
     """A creature's effective power for combat.combat_damage_step (and Ram
     Through, once it's more than a functional blank): its own base power
     (card_def.extra["power"], 0 if absent -- no creature is absent one
-    anymore, docs/COMBAT_PLAN.md's full-stats pass, but the default stays
+    anymore, full-stats pass, but the default stays
     for FILLER/synthetic self-check permanents) plus every Aura currently
     enchanting it (_enchanting_auras above -- owner-agnostic, correct
     regardless of state.active_idx). Each Aura's registry entry supplies
@@ -177,16 +177,19 @@ def lifelink_count(state, permanent, enchanting_auras=None):
 
 
 # Real Magic keyword strings this engine models as a boolean set
-# (docs/COMBAT_PLAN.md's confirmed scope -- only these four, only on the
-# specific cards that already grant one): "vigilance" (Cartouche of
+#: "vigilance" (Cartouche of
 # Solidarity's Warrior token), "flying" (Kitchen Imp's real flying; also
 # used for Silhana Ledgewalker's "can't be blocked except by creatures
 # with flying" -- functionally the identical blocking restriction in a
 # ruleset with no reach, so one flag covers both rather than a second
 # near-duplicate), "trample" (Rancor, Armadillo Cloak), "first_strike"
-# (Cartouche of Solidarity, Ethereal Armor). Deathtouch/double strike/
-# menace/reach: no card grants any of them -- not modeled, not a registry
-# key. Armadillo Cloak's own lifegain clause is NOT here -- see
+# (Cartouche of Solidarity, Ethereal Armor). "hexproof" (Slippery Bogle,
+# Gladecover Scout, Silhana Ledgewalker) and "shroud": the targeting
+# restriction (can_be_targeted below) -- once opponents can target across
+# sides (faithful burn/removal) these stop being no-ops and gate legal
+# targets. Deathtouch/double strike/
+# menace: no card grants any of them -- not modeled, not a registry
+# key. (Reach is modeled per-card for Bramble Wurm.) Armadillo Cloak's own lifegain clause is NOT here -- see
 # lifelink_count above for why a boolean keyword is the wrong model for
 # a triggered, stacking ability.
 def creature_keywords(state, permanent, enchanting_auras=None):
@@ -216,6 +219,33 @@ def creature_keywords(state, permanent, enchanting_auras=None):
 
 def has_keyword(state, permanent, keyword):
     return keyword in creature_keywords(state, permanent)
+
+
+def controller_idx(state, permanent):
+    """The index of the player whose battlefield `permanent` is on (its
+    controller), or None if it's on no battlefield (already left)."""
+    for idx, player in enumerate(state.players):
+        if permanent in player.battlefield:
+            return idx
+    return None
+
+
+def can_be_targeted(state, permanent, by_player_idx):
+    """Real Magic hexproof/shroud targeting restriction. Shroud: can't be
+    the target of ANY spell or ability. Hexproof: can't be the target of a
+    spell or ability an OPPONENT of its controller controls -- its own
+    controller may still target it. `by_player_idx` is the player choosing
+    the target (the caster/activator). Everything else is freely targetable.
+    Every targeted effect's candidate predicate ANDs this in, so the
+    restriction is enforced once, uniformly, instead of re-derived per card
+    (the whole boggles deck -- Slippery Bogle/Gladecover Scout/Silhana
+    Ledgewalker -- depends on opponents being unable to target it)."""
+    kws = creature_keywords(state, permanent)
+    if "shroud" in kws:
+        return False
+    if "hexproof" in kws and controller_idx(state, permanent) != by_player_idx:
+        return False
+    return True
 
 
 if __name__ == "__main__":
@@ -282,3 +312,29 @@ if __name__ == "__main__":
         registry.EFFECT_REGISTRY[EffectId.FILLER] = _filler_backup
 
     print("stats.py counters/animate self-check: OK")
+
+    # can_be_targeted: hexproof blocks OPPONENTS only; shroud blocks everyone;
+    # a vanilla creature is targetable by anyone. Controller = whichever
+    # battlefield the permanent sits on.
+    ct_state = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
+    vanilla = Permanent(CardDef("Vanilla", CardType.CREATURE, None, EffectId.FILLER, power=1, toughness=1))
+    ct_state.players[0].battlefield = [vanilla]
+    assert can_be_targeted(ct_state, vanilla, 0) and can_be_targeted(ct_state, vanilla, 1)
+
+    _filler_backup2 = registry.EFFECT_REGISTRY[EffectId.FILLER]
+    try:
+        registry.EFFECT_REGISTRY[EffectId.FILLER] = {"keywords": {"hexproof"}}
+        hexed = Permanent(CardDef("Hexed", CardType.CREATURE, None, EffectId.FILLER, power=1, toughness=1))
+        ct_state.players[0].battlefield = [hexed]
+        assert can_be_targeted(ct_state, hexed, 0)       # its own controller may target it
+        assert not can_be_targeted(ct_state, hexed, 1)   # an opponent may not
+
+        registry.EFFECT_REGISTRY[EffectId.FILLER] = {"keywords": {"shroud"}}
+        shrouded = Permanent(CardDef("Shrouded", CardType.CREATURE, None, EffectId.FILLER, power=1, toughness=1))
+        ct_state.players[0].battlefield = [shrouded]
+        assert not can_be_targeted(ct_state, shrouded, 0)  # nobody may target it, not even its controller
+        assert not can_be_targeted(ct_state, shrouded, 1)
+    finally:
+        registry.EFFECT_REGISTRY[EffectId.FILLER] = _filler_backup2
+
+    print("stats.py can_be_targeted (hexproof/shroud) self-check: OK")

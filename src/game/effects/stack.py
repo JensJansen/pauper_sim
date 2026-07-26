@@ -16,14 +16,22 @@ from ..cards import CardType
 
 
 def on_cast_trigger(state, card_def):
-    """Fires at cast time, before the spell's own resolve runs -- matches
-    real Magic timing (the triggered ability goes on the stack above the
-    spell it triggered off, so it happens first). Every cast path (normal
-    cast, alt_cast, Flashback, and Plot's cast-from-exile) calls this
-    identically, from inside drl_env.py's own per-path wrapper functions
-    -- so a card like Guttersnipe ("whenever you cast an instant or
-    sorcery...") fires the same regardless of which path cast the
-    triggering spell. See docs/MADNESS_DECKS_PLAN.md item 11."""
+    """A "whenever you cast an instant/sorcery" ability (Guttersnipe)
+    TRIGGERS at cast time -- but, faithfully (real Magic 603.3), a triggered
+    ability doesn't take effect the instant it triggers: it goes on the
+    stack the next time a player would receive priority, ABOVE the spell it
+    triggered off (so it resolves first), and both players get a window
+    before it does. So this only QUEUES the trigger (state.trigger_queue);
+    game.turn's own priority round promotes it onto the stack once the
+    triggering cast is fully done -- deliberately only at a priority point,
+    never mid-cast, so it lands above the spell rather than under a target
+    choice that hasn't pushed the spell yet (see game.turn's promote gate
+    and game.effects.triggers._trigger_resolve's own "cast_trigger" branch).
+
+    Every cast path (normal cast, alt_cast, Flashback, Plot's cast-from-
+    exile) calls this identically, from inside drl_env.py's own per-path
+    wrapper functions -- so Guttersnipe fires the same regardless of which
+    path cast the triggering spell.  """
     if card_def.card_type not in (CardType.INSTANT, CardType.SORCERY):
         return
     for permanent in state.battlefield:
@@ -33,7 +41,7 @@ def on_cast_trigger(state, card_def):
                 "trigger_fired", source=(permanent.card_def.name, permanent.slot), trigger_kind="on_cast",
                 triggering_card=card_def.name,
             )
-            trigger(state, permanent)
+            state.trigger_queue.append({"type": "cast_trigger", "card_def": permanent.card_def, "permanent": permanent})
 
 
 def push_to_stack(state, card_def, resolve, reserves_hand_card=True):
@@ -78,7 +86,7 @@ def push_to_stack(state, card_def, resolve, reserves_hand_card=True):
     leaving no action, not even Pass, legal.
 
     Records state.active_idx as this entry's own controller (docs/
-    PRIORITY_PLAN.md): a real priority round can flip active_idx through
+   ): a real priority round can flip active_idx through
     both players (whoever's currently deciding to act/pass) between now
     and whenever this entry actually resolves, but state.hand/graveyard/
     battlefield (state.py's own active_idx-proxy) must still resolve
@@ -91,6 +99,20 @@ def push_to_stack(state, card_def, resolve, reserves_hand_card=True):
     state.log_event("zone_move", card=card_def.name, to_zone="stack", controller=state.active_idx)
 
 
+def push_ability_to_stack(state, source_card_def, effect):
+    """Put a NON-MANA ability's effect onto the stack -- real Magic: activated
+    and triggered abilities go on the stack, get a priority window (both
+    players may respond), and resolve later; only MANA abilities skip the
+    stack (rule 605). `source_card_def` labels the entry (the ability's
+    source, for logging/observation); `effect(state)` is what happens when
+    this entry resolves. Any COSTS (mana/tap/sacrifice/discard) and any
+    TARGETS are already paid/chosen by the caller at activation/trigger time,
+    before this push -- only the effect waits here. reserves_hand_card=False:
+    an ability's source is on the battlefield (or its trigger already fired),
+    never a hand card awaiting this entry's own removal."""
+    push_to_stack(state, source_card_def, lambda st, cd: effect(st), reserves_hand_card=False)
+
+
 def resolve_top_of_stack(state):
     """Pop and resolve the most recently pushed spell -- LIFO, no
     reordering action needed (real Magic's own stack order). Called once
@@ -101,7 +123,7 @@ def resolve_top_of_stack(state):
     Restores active_idx to this entry's own controller (push_to_stack)
     before resolving: by the time all players have passed in a row,
     active_idx may be sitting on whoever passed last, not the original
-    caster (docs/PRIORITY_PLAN.md) -- resolve must run from the
+    caster -- resolve must run from the
     controller's own zone perspective regardless."""
     entry = state.stack.pop()
     state.active_idx = entry["controller"]
@@ -133,19 +155,27 @@ if __name__ == "__main__":
     resolve_top_of_stack(state2)
     assert seen_active_idx == [1] and state2.active_idx == 1
 
-    # on_cast_trigger: only fires for INSTANT/SORCERY, only for permanents
-    # whose registry entry actually has an "on_cast" hook.
+    # on_cast_trigger: only QUEUES a trigger (faithful timing -- the ability
+    # goes on the stack at the next priority point, not inline), for
+    # INSTANT/SORCERY casts, only for permanents whose registry entry
+    # actually has an "on_cast" hook. The effect fires only once that queued
+    # trigger is promoted to the stack and resolved.
     calls = []
     _filler_backup = registry.EFFECT_REGISTRY[EffectId.FILLER]
     registry.EFFECT_REGISTRY[EffectId.FILLER] = {"on_cast": lambda s, p: calls.append(p.card_def.name)}
     try:
         from ..state import Permanent
+        from .triggers import promote_triggers_to_stack
         state3 = GameState(on_the_play=True)
         state3.battlefield = [Permanent(CardDef("Guttersnipe-like", CardType.CREATURE, None, EffectId.FILLER))]
         on_cast_trigger(state3, CardDef("A Sorcery", CardType.SORCERY, {}, None))
-        assert calls == ["Guttersnipe-like"]
+        assert calls == []  # not fired inline -- only queued
+        assert [e["type"] for e in state3.trigger_queue] == ["cast_trigger"]
+        promote_triggers_to_stack(state3)  # game.turn's priority round does this at a priority point
+        resolve_top_of_stack(state3)  # a "Pass" resolves it in real play
+        assert calls == ["Guttersnipe-like"]  # effect fires only on resolution
         on_cast_trigger(state3, CardDef("A Land", CardType.LAND, None, None))
-        assert calls == ["Guttersnipe-like"]  # lands don't trigger on-cast hooks
+        assert state3.trigger_queue == [] and calls == ["Guttersnipe-like"]  # lands don't trigger on-cast hooks
     finally:
         registry.EFFECT_REGISTRY[EffectId.FILLER] = _filler_backup
 

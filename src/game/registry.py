@@ -12,7 +12,7 @@ EFFECT_REGISTRY: one EffectId->spec dict, the union of all 7 color
 catalogs' own XXX_EFFECT_REGISTRY fragments. An EffectId present here is
 "already implemented" -- this is what makes a card reusable by a future
 deck without new code. Cards are no longer deck-scoped at all
-(DECK_REGISTRY_REFRESH_PLAN.md) -- a card lives exactly once, in the one
+ -- a card lives exactly once, in the one
 catalog file matching its real color identity, regardless of how many
 decklists name it.
 
@@ -61,7 +61,7 @@ SIMPLE_MANA_SOURCE_EFFECTS = {
 }
 # _FIXED_SOURCE_COLOR used to live here (a single-symbol-per-effect_id
 # approximation mana.choose_taps_for_cost's legality solver consulted for
-# "fixed"/"count" sources). Deleted -- MADNESS_DECKS_PLAN.md item 9's
+# "fixed"/"count" sources). Deleted's
 # solver rewrite calls mana_output(p, state) directly instead, which
 # handles any real output (including a multi-symbol "fixed_multi" tap or
 # count's genuinely variable total) correctly, so the approximation (and

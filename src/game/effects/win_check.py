@@ -12,7 +12,7 @@ def _check_end_of_game(state):
     place board state can change enough to matter: casting.enters_
     battlefield, combat.combat_damage_step, deal_damage_to_opponent, and
     lose_life below. Replaces what used to be the same two lines duplicated
-    at each of those call sites (see docs/MULTIPLAYER_ENGINE_PLAN.md).
+    at each of those call sites .
 
     Three independent ways to win: the active player's own terminated_fn
     (their deck's combo-completion condition -- Tron assembly, a damage
@@ -86,40 +86,55 @@ def lose_life(state, n, reason="cost"):
     _check_end_of_game because -- unlike gaining life -- paying life CAN be
     lethal (a fetch at 1 life, Bob flipping a big drop), and that self-death
     is a real loss the engine must register (see _check_end_of_game's own
-    active-life branch). Deliberately does NOT touch state.damage_dealt:
-    life you pay yourself is not progress toward your own win condition."""
+    active-life branch)."""
     _apply_life(state, state.active_idx, -n, reason)
     _check_end_of_game(state)
 
 
 def deal_damage_to_opponent(state, n):
-    """Every 'deals N damage to the opponent' effect routes through here
-    -- the single choke point keeping state.damage_dealt (the historical
-    1-player abstraction; terminated.damage_threshold_terminated and every
-    burn deck's own win condition still reads it, unchanged) and the real
-    per-player life_total (docs/MULTIPLAYER_ENGINE_PLAN.md) in sync. In
-    1-player mode there's no second PlayerState to decrement -- the
-    damage_dealt bump alone is still the whole story there, exactly as
-    before this function existed. The opponent is players[1 - active_idx]
-    (== state.opponent, but reached by index so _apply_life can log which
-    player took the hit)."""
-    state.damage_dealt += n
+    """Every 'deals N damage to the opponent' effect routes through here --
+    the single choke point for opponent-facing damage, decrementing the
+    opponent's real per-player life_total. The opponent is players[1 -
+    active_idx] (== state.opponent, but reached by index so _apply_life can
+    log which player took the hit). A no-op in a 1-player state (no opponent
+    to damage) beyond the end-of-game check."""
     if len(state.players) > 1:
         _apply_life(state, 1 - state.active_idx, -n, "damage")
     _check_end_of_game(state)
 
 
+def deal_damage_to_player(state, player_idx, n):
+    """Real Magic's "N damage to target player" for an ARBITRARY player --
+    the opponent OR yourself (Lightning Bolt to your own face is legal, if
+    rarely wise). Damaging the opponent routes through deal_damage_to_opponent;
+    damaging yourself is pure life loss, same shape as lose_life but attributed
+    as "damage". Both go through _apply_life + _check_end_of_game, so a lethal
+    burn either way still registers the game end."""
+    if len(state.players) > 1 and player_idx == 1 - state.active_idx:
+        deal_damage_to_opponent(state, n)
+    else:
+        _apply_life(state, player_idx, -n, "damage")
+        _check_end_of_game(state)
+
+
 if __name__ == "__main__":
     # ponytail self-check: run via `python -m game.effects.win_check` from
-    # src/. Both win paths directly: 1-player terminated_fn, and 2-player
-    # life_total hitting 0 (deal_damage_to_opponent's own reason to exist).
+    # src/. Both win paths directly: the generic terminated_fn hook, and the
+    # 2-player life_total hitting 0 (deal_damage_to_opponent's reason to exist).
     from ..state import GameState, PlayerState
 
-    state = GameState(on_the_play=True, terminated_fn=lambda s: s.damage_dealt >= 5)
-    deal_damage_to_opponent(state, 3)
-    assert state.damage_dealt == 3 and state.turn_won is None
-    deal_damage_to_opponent(state, 2)
-    assert state.damage_dealt == 5 and state.turn_won == state.turn_number and state.winner == 0
+    # terminated_fn: the generic deck-win predicate still fires through
+    # _check_end_of_game (never_terminated ships as the only one now, but the
+    # hook is generic). A trivial predicate + any state change that runs the
+    # check proves the wiring, independent of life totals.
+    state = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
+    state.players[0].terminated_fn = lambda s: s.turn_number >= 5  # terminated_fn= kwarg is ignored when players= is given
+    state.turn_number = 4
+    deal_damage_to_opponent(state, 1)  # runs _check_end_of_game; predicate false at turn 4
+    assert state.turn_won is None
+    state.turn_number = 5
+    deal_damage_to_opponent(state, 1)  # predicate now true -> active player wins via terminated_fn
+    assert state.turn_won == state.turn_number and state.winner == 0
 
     state2 = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
     state2.players[1].life_total = 4

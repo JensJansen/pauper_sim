@@ -31,6 +31,7 @@ from token_features import CardVocab
 TOKEN_DEFS = (
     game.BLOOD_TOKEN_CARD_DEF, game.ROBOT_TOKEN_CARD_DEF,
     game.WARRIOR_TOKEN_CARD_DEF, game.ELDRAZI_SPAWN_TOKEN_CARD_DEF,
+    game.FOOD_TOKEN_CARD_DEF,
 )
 DECK_MANIFEST = "../data/league_decks.json"
 VOCAB_PATH = "../checkpoints/vocab.json"

@@ -7,9 +7,4 @@ reports/
 __pycache__/
 *.pyc
 
-# Node / viz app
-src/viz/node_modules/
-src/viz/dist/
-src/viz/public/card_art/
-
 graphify-out/

@@ -23,6 +23,7 @@ from .. import registry
 from ..cards import CardType
 from ..state import Permanent
 from .stack import push_to_stack
+from .stats import can_be_targeted
 from .win_check import _check_end_of_game
 from .. import resolution
 
@@ -54,12 +55,50 @@ def _log_target_fizzle(state, card_def, chosen_name_slot):
     print(f"[target fizzle] turn {state.turn_number}: {card_def.name} failed to resolve -- target was {where}, not on the battlefield anymore.")
 
 
+def capture_any_target(state, target):
+    """Cast/activation time: lock a resolution.begin_choose_any_target
+    descriptor onto a concrete, identity-stable target to carry on the
+    stack. A ("player", idx) is already stable; a ("creature", side, name,
+    slot) is resolved to the EXACT Permanent object it names right now, so
+    resolution-time legality (target_still_legal) is an object-identity
+    check, never a fungible-by-name re-lookup that could latch onto a
+    different same-named creature. Real Magic: a spell's/ability's targets
+    are chosen and locked as it is put on the stack, never re-chosen at
+    resolution. None (no target was chosen, e.g. an "up to one" declined)
+    passes straight through."""
+    if target is None or target[0] == "player":
+        return target
+    _, side, name, slot = target
+    perm = next(p for p in state.players[side].battlefield if p.card_def.name == name and p.slot == slot)
+    return ("creature", perm)
+
+
+def target_still_legal(state, captured):
+    """Resolution time: is a captured any-target still a legal target (real
+    Magic 608.2b -- a spell/ability whose targets are ALL illegal on
+    resolution is removed from the stack and does nothing)? A player is
+    always legal (no effect in this pool removes a player from the game). A
+    creature is legal only while that exact captured Permanent is still on
+    SOME battlefield -- gone (died, sacrificed, bounced, exiled) means the
+    target is illegal and its spell/ability fizzles. None (no target) is
+    treated as "nothing to fizzle" -- the caller decided 0 targets was legal
+    (an "up to one" declined), so it simply resolves with no target."""
+    if captured is None or captured[0] == "player":
+        return True
+    perm = captured[1]
+    return any(perm in player.battlefield for player in state.players)
+
+
 def cast_aura(state, card_def, target_predicate, on_attached=None):
     """Cast an Aura from hand: pick a legal target via
-    resolution.begin_choose_permanent, addressed by the EXACT (name, slot)
-    permanent chosen -- not just a name, since two same-named permanents
-    stop being interchangeable the instant an Aura attaches to only one of
-    them (docs/MULTIPLAYER_GAPS.md's "Permanent identity").
+    resolution.begin_choose_any_target -- real "Enchant creature/land"
+    targets ANY matching permanent on EITHER battlefield (not just your own),
+    hexproof/shroud aware (can_be_targeted), addressed by the EXACT (side,
+    name, slot) permanent chosen -- not just a name, since two same-named
+    permanents stop being interchangeable the instant an Aura attaches to
+    only one of them.
+    (target_predicate is the Aura's own "enchant WHAT" filter -- creature for
+    the pumps, land/Forest for Utopia Sprawl/Abundant Growth.)
 
     Real MTG targeting rule, enforced here: the target is chosen once,
     right when the spell is cast -- in this engine, the instant its cost
@@ -86,34 +125,29 @@ def cast_aura(state, card_def, target_predicate, on_attached=None):
     Real-rules note: an Aura returns to the graveyard (and, for Rancor,
     from there back to hand) when whatever it enchants leaves the
     battlefield ("orphaning") -- modeled for the one reachable case in this
-    card pool, combat death (docs/COMBAT_PLAN.md step 6, see
-    state_based._destroy_creature). Every OTHER battlefield-removal call
+    card pool, combat death. Every OTHER battlefield-removal call
     site in this codebase (sacrifice, bounce, exile -- see their own call
     sites) still doesn't orphan an enchanted permanent's Auras, since none
     of them can currently target a creature that could be enchanted
     (boggles is the only deck with Auras, and none of its own cards
     sacrifice/bounce/exile a creature). Thread the same orphaning logic
     through a removal site if a future card ever makes that reachable."""
-    def _on_target_chosen(state, choice):
-        target = None
-        if choice is not None:
-            name, slot = choice
-            target = next(
-                p for p in state.battlefield
-                if p.card_def.name == name and p.slot == slot and target_predicate(p)
-            )
+    def _on_target_chosen(state, target_descriptor):
+        captured = capture_any_target(state, target_descriptor)  # ("permanent-as-'creature'", perm) or None
 
         def _resolve(state, card_def):
             # Still-in-hand-while-on-stack convention every other cast path
             # here follows (see push_to_stack's own docstring) -- the target
-            # is already locked in via the `target`/`choice` closure above,
-            # captured at cast time, well before this ever runs.
+            # is already locked in via `captured`, captured at cast time,
+            # well before this ever runs.
             state.hand.remove(card_def)
-            if target is None or target not in state.battlefield:
+            if not target_still_legal(state, captured):
                 state.graveyard.append(card_def)
                 state.log_event("zone_move", card=card_def.name, from_zone="hand", to_zone="graveyard", reason="fizzle")
-                _log_target_fizzle(state, card_def, choice)
+                where = (captured[1].card_def.name, captured[1].slot) if captured is not None else None
+                _log_target_fizzle(state, card_def, where)
                 return
+            target = captured[1]
             aura = enters_battlefield(state, card_def, from_zone="hand")
             aura.flags["enchanting"] = target
             state.log_event(
@@ -124,26 +158,34 @@ def cast_aura(state, card_def, target_predicate, on_attached=None):
 
         push_to_stack(state, card_def, _resolve)
 
-    resolution.begin_choose_permanent(state, target_predicate, _on_target_chosen)
+    resolution.begin_choose_any_target(
+        state,
+        lambda p: target_predicate(p) and can_be_targeted(state, p, state.active_idx),
+        _on_target_chosen,
+        allow_players=False,
+    )
 
 
 def enters_battlefield(state, card_def, force_tapped=False, from_zone=None):
     """Move a CardDef onto the battlefield as a new Permanent, applying its
-    enters-tapped default and ETB trigger (via game.registry.EFFECT_REGISTRY),
-    then check _check_end_of_game since a permanent entering is the only
-    way a terminated_fn-based win condition can newly become true. Caller
-    has already removed card_def from its previous zone (hand/library).
+    enters-tapped default and QUEUING its ETB triggered ability (via
+    game.registry.EFFECT_REGISTRY) onto state.trigger_queue for the priority
+    round to put on the stack -- not running it inline (see the ETB block
+    below for why), then check _check_end_of_game since a permanent entering
+    is the only way a terminated_fn-based win condition can newly become
+    true. Caller has already removed card_def from its previous zone
+    (hand/library).
 
     force_tapped=True overrides the registry's own enters_tapped default
     to always-tapped -- a one-off per-trigger condition, not a property of
     the card itself (Sneaky Snacker enters battlefield normally untapped
     when cast, but tapped specifically when its own "third card drawn"
-    trigger returns it from the graveyard -- docs/MADNESS_DECKS_PLAN.md
+    trigger returns it from the graveyard
     item 7). Every existing caller omits it, unaffected."""
     spec = registry.EFFECT_REGISTRY.get(card_def.effect_id, {})
     tapped = force_tapped or spec.get("enters_tapped", False)
     permanent = Permanent(card_def, tapped=tapped)
-    # Pooled slot assignment (docs/COMBAT_PLAN.md): the lowest number not
+    # Pooled slot assignment: the lowest number not
     # already in use among this player's currently-live permanents of the
     # same name. Never a running/monotonic count -- a name's slot numbers
     # simply free up once whatever was using them leaves the battlefield,
@@ -162,13 +204,20 @@ def enters_battlefield(state, card_def, force_tapped=False, from_zone=None):
         power=card_def.extra.get("power"), toughness=card_def.extra.get("toughness"),
     )
 
-    etb_trigger = spec.get("etb_trigger")
-    if etb_trigger is not None:
-        etb_trigger(state)
-    # Bojuka Bog's "exile target player's graveyard" ETB is a documented
-    # no-op in both 1- and 2-player games: no card currently reaches into
-    # this graveyard-exile mechanic, so it stays unimplemented regardless
-    # of whether a real opponent graveyard now exists to target.
+    # The permanent has now physically entered (above) -- but its ETB
+    # triggered ability, faithfully (real Magic 603.3), does NOT resolve
+    # inline here: it goes on the stack the next time a player would receive
+    # priority, with a response window before it resolves. So this only
+    # QUEUES the trigger (state.trigger_queue); game.turn's own priority
+    # round promotes it onto the stack once the enclosing action is done
+    # (game.effects.triggers._trigger_resolve's own "etb" branch runs the
+    # registry hook then). The etb_trigger callable receives (state,
+    # permanent) -- the permanent that just entered, so an ETB that needs
+    # its own source can reach it (Mesmeric Fiend links its exiled card to
+    # this exact permanent for the leaves-the-battlefield return); the great
+    # majority of ETBs ignore the second arg.
+    if spec.get("etb_trigger") is not None:
+        state.trigger_queue.append({"type": "etb", "card_def": card_def, "permanent": permanent})
 
     _check_end_of_game(state)
 
@@ -177,7 +226,7 @@ def enters_battlefield(state, card_def, force_tapped=False, from_zone=None):
 
 def bounce_land_etb(state):
     """ETB: return a land you control to hand (Rakdos Carnarium --
-    docs/MADNESS_DECKS_PLAN.md item 10). resolution.begin_choose_permanent
+   ). resolution.begin_choose_permanent
     already covers "pick one of my own permanents matching a predicate, by
     exact (name, slot)" exactly -- no new resolution kind needed. Not a
     real MTG "target" (no "target" in this ability's own text -- it's an
@@ -216,10 +265,11 @@ if __name__ == "__main__":
     from ..cards import CardDef, EffectId
     from ..state import GameState
     from .stack import resolve_top_of_stack
+    from .triggers import promote_triggers_to_stack
     from . import stats
 
     _filler_backup = registry.EFFECT_REGISTRY[EffectId.FILLER]
-    registry.EFFECT_REGISTRY[EffectId.FILLER] = {"etb_trigger": bounce_land_etb}
+    registry.EFFECT_REGISTRY[EffectId.FILLER] = {"etb_trigger": lambda state, permanent: bounce_land_etb(state)}
     try:
         carnarium = CardDef("Fake Carnarium", CardType.LAND, None, EffectId.FILLER)
         state = GameState(on_the_play=True)
@@ -231,6 +281,13 @@ if __name__ == "__main__":
 
         state.hand.remove(carnarium)
         enters_battlefield(state, carnarium)  # normal ETB path, exactly like play_land_from_hand would drive it
+        # The ETB is QUEUED now (faithful timing), not run inline -- it opens
+        # its choose_permanent only once promoted to the stack and resolved,
+        # exactly as game.turn's priority round drives it in real play.
+        assert state.pending_resolution is None
+        assert [e["type"] for e in state.trigger_queue] == ["etb"]
+        promote_triggers_to_stack(state)
+        resolve_top_of_stack(state)
         assert state.pending_resolution["kind"] == "choose_permanent"
         assert resolution.choose_permanent_options(state) == [
             ("Fake Carnarium", 1), ("Forest", 1), ("Swamp", 1),
@@ -253,8 +310,8 @@ if __name__ == "__main__":
     rancor = CardDef("Rancor", CardType.ENCHANTMENT, {"G": 1}, EffectId.RANCOR)
     state.hand = [rancor]
     cast_aura(state, rancor, lambda p: p.card_def.card_type == CardType.CREATURE)
-    assert resolution.choose_permanent_options(state) == [("Slippery Bogle", 1)]
-    resolution.execute_choose_permanent_option(state, "Slippery Bogle", 1)
+    assert resolution.choose_any_target_creature_options(state) == [(0, "Slippery Bogle", 1)]  # own creature, side 0
+    resolution.execute_choose_any_target_creature(state, 0, "Slippery Bogle", 1)
     assert state.pending_resolution is None
     assert state.hand == [rancor] and len(state.stack) == 1  # still in hand, sitting on the stack
     resolve_top_of_stack(state)
@@ -281,8 +338,8 @@ if __name__ == "__main__":
     ethereal_armor = CardDef("Ethereal Armor", CardType.ENCHANTMENT, {"W": 1}, EffectId.ETHEREAL_ARMOR)
     state.hand = [ethereal_armor]
     cast_aura(state, ethereal_armor, lambda p: p.card_def.card_type == CardType.CREATURE)
-    assert ("Slippery Bogle", 2) in resolution.choose_permanent_options(state)
-    resolution.execute_choose_permanent_option(state, "Slippery Bogle", 2)  # targets other_bogle specifically
+    assert (0, "Slippery Bogle", 2) in resolution.choose_any_target_creature_options(state)
+    resolution.execute_choose_any_target_creature(state, 0, "Slippery Bogle", 2)  # targets other_bogle specifically
     state.battlefield.remove(other_bogle)  # dies before the cast resolves
 
     fizzle_log = io.StringIO()
@@ -295,3 +352,28 @@ if __name__ == "__main__":
     assert stats.permanent_power(state, bogle) == 3  # unaffected -- the fizzled Aura was never targeting bogle
 
     print("casting.py Aura target-fizzle self-check: OK")
+
+    # capture_any_target / target_still_legal: the shared cast-time lock +
+    # resolution-time legality for begin_choose_any_target. Two same-named
+    # creatures on opposite sides -- capture must lock the EXACT one named
+    # by (side, name, slot), and legality must flip only when that specific
+    # object leaves, not when its same-named twin does.
+    from ..state import PlayerState, Permanent
+    mine = Permanent(CardDef("Grizzly Bears", CardType.CREATURE, {"G": 1}, EffectId.FILLER, power=2, toughness=2))
+    theirs = Permanent(CardDef("Grizzly Bears", CardType.CREATURE, {"G": 1}, EffectId.FILLER, power=2, toughness=2))
+    mine.slot = theirs.slot = 1
+    tstate = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
+    tstate.players[0].battlefield = [mine]
+    tstate.players[1].battlefield = [theirs]
+    captured = capture_any_target(tstate, ("creature", 1, "Grizzly Bears", 1))
+    assert captured == ("creature", theirs)  # the opponent's copy, by identity -- not mine
+    assert target_still_legal(tstate, captured)
+    tstate.players[0].battlefield = []  # MY copy leaves -- the captured target (theirs) is untouched
+    assert target_still_legal(tstate, captured)
+    tstate.players[1].battlefield = []  # the captured copy leaves -> now illegal (fizzle)
+    assert not target_still_legal(tstate, captured)
+    assert capture_any_target(tstate, ("player", 0)) == ("player", 0)  # players pass through, always legal
+    assert target_still_legal(tstate, ("player", 0))
+    assert capture_any_target(tstate, None) is None and target_still_legal(tstate, None)  # no target -> no fizzle
+
+    print("casting.py any-target capture/legality self-check: OK")

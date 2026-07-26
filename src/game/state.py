@@ -2,17 +2,17 @@
 graveyard/mana pool/life total) plus GameState (the shared turn/stack/
 pending-resolution bookkeeping and a list of PlayerStates).
 
-See docs/MULTIPLAYER_ENGINE_PLAN.md for the full design. GameState exposes
+GameState exposes
 every zone (hand/battlefield/library/graveyard/exile/mana_pool/
 trigger_queue/lands_played_this_turn/cards_drawn_this_turn/decked_out/
-damage_dealt/attackers/terminated_fn/on_the_play/life_total) as a property
+attackers/terminated_fn/on_the_play/life_total) as a property
 that reads/writes state.players[state.active_idx] -- the player whose turn
 it currently is. This is what lets every existing card-effect function and
 all of mana.py/resolution.py/game/effects/*.py keep working completely
 unchanged: they only ever meant "my own board" to begin with, and the
 proxy makes that automatically correct for whichever player has priority,
-in both 1-player (today's only mode -- active_idx never leaves 0) and
-2-player games. state.opponent is the one new accessor genuinely-
+in both 1-player (a single PlayerState, active_idx never leaves 0) and
+2-player games. state.opponent is the one accessor genuinely-
 opponent-facing code (game.effects.win_check.deal_damage_to_opponent) needs.
 
 mana_pool holds mana tapped-but-not-yet-spent (e.g. a tap that produces more
@@ -61,8 +61,7 @@ class Permanent:
         # for Barrels of Blasting Jelly's once-per-turn ability.
         self.flags = {}
         # Which numbered copy of this exact card name this is, among this
-        # player's currently-live permanents of that name (docs/COMBAT_PLAN.md's
-        # "permanent identity" design) -- lets drl_env address a SPECIFIC
+        # player's currently-live permanents of that name -- lets drl_env address a SPECIFIC
         # physical creature ("Attack: Slippery Bogle (slot 2)") instead of
         # picking an arbitrary same-named match, since two copies stop being
         # interchangeable the moment an Aura attaches to only one of them.
@@ -75,8 +74,7 @@ class Permanent:
         # -- always exactly one instance of a given name -- gets a sensible
         # value for free; a real game always overwrites this on entry.
         self.slot = 1
-        # Combat damage marked on this creature this turn (docs/COMBAT_PLAN.md
-        # step 6) -- compared against game.effects.stats.permanent_toughness by
+        # Combat damage marked on this creature this turn -- compared against game.effects.stats.permanent_toughness by
         # check_state_based_actions to decide creature death. Cleared for
         # every permanent, both players, each turn's cleanup_step (real
         # Magic: damage clears at cleanup regardless of whose turn it is).
@@ -128,7 +126,7 @@ class Permanent:
 
 class PlayerState:
     """One player's zones, turn-scoped counters, and life total -- what
-    used to be the entirety of GameState before MULTIPLAYER_ENGINE_PLAN.md.
+    used to be the entirety of GameState before the multiplayer refactor.
     A 1-player game is just a GameState with a single PlayerState in it;
     nothing in this class itself knows or cares how many other
     PlayerStates, if any, exist alongside it."""
@@ -152,7 +150,7 @@ class PlayerState:
         # acted on until the enclosing action's entire effect is fully
         # done. Promoted onto state.stack by game.effects.triggers.
         # promote_triggers_to_stack, called once per priority round
-        # (docs/PRIORITY_PLAN.md item 1) -- never mutated directly by any
+        # -- never mutated directly by any
         # card's own resolve function.
         self.trigger_queue = []
 
@@ -161,18 +159,9 @@ class PlayerState:
         # once per card actually drawn (see draw() below).
         self.cards_drawn_this_turn = 0
 
-        # spy_combo deck: damage this player has dealt via non-combat
-        # damage effects and combat (see game.effects.win_check.
-        # deal_damage_to_opponent) -- kept exactly as before
-        # MULTIPLAYER_ENGINE_PLAN.md for 1-player back-compat
-        # (terminated.damage_threshold_terminated reads this, unchanged).
-        # In a 2-player game the same call also decrements the opponent's
-        # real life_total below; in 1-player there is no opponent to
-        # decrement, this counter is the whole story, same as always.
-        self.damage_dealt = 0
         self.decked_out = False
 
-        # Real per-player life total (MULTIPLAYER_ENGINE_PLAN.md) -- only
+        # Real per-player life total -- only
         # ever decremented by game.effects.win_check.deal_damage_to_opponent acting
         # on the *other* player's PlayerState. Unused/inert in 1-player
         # mode (nothing ever reads a lone player's own life_total there).
@@ -184,7 +173,7 @@ class PlayerState:
         self.attackers = []
 
         # dict[Permanent (one of this player's own attackers) -> Permanent
-        # (the OPPONENT's creature blocking it)] -- docs/COMBAT_PLAN.md's
+        # (the OPPONENT's creature blocking it)]
         # blocking mechanics. An attacker absent from this dict is
         # unblocked. At most one blocker per attacker, at most one
         # attacker per blocker (no gang-blocking/menace modeled -- nothing
@@ -230,9 +219,9 @@ class PlayerState:
         # act isn't the "pointless action" a reward shaped by this is meant
         # to discourage -- it's usually the correct choice); mulligan/
         # declare_blockers/discard never offer a bare Pass at all, so every
-        # yield there already counts unconditionally. Matches harness.
-        # evaluate_two_player's own per-game step count (games' own "steps"
-        # in a --log JSON, which likewise never records a Pass), just
+        # yield there already counts unconditionally -- matching the per-game
+        # step count a --log JSON records (which likewise never records a
+        # Pass), just
         # persisted onto the player instead of a transient loop variable, so
         # a reward_fn (rewards.py) can read it mid-game. 2-player only --
         # unused/inert in 1-player mode (nothing there currently reads it).
@@ -283,12 +272,12 @@ def _active_player_property(attr):
 class GameState:
     """Shared turn/stack/pending-resolution bookkeeping, plus a list of
     PlayerStates (length 1 today for every existing config; 2 for a
-    multiplayer game -- see docs/MULTIPLAYER_ENGINE_PLAN.md). Every zone
+    multiplayer game). Every zone
     accessor below (state.hand, state.battlefield, ...) is a property
     proxying to state.players[state.active_idx] -- "whoever currently
     holds priority," which game.turn._declare_blockers_gen already
     temporarily flips away from the turn owner for its own narrow consult,
-    and which docs/PRIORITY_PLAN.md's general priority round flips far
+    and which general priority round flips far
     more broadly. state.turn_player_idx (below) is the OTHER, distinct
     fact -- whose turn it structurally is -- needed the instant those two
     can genuinely differ: real Magic's land-drop/sorcery-speed rules are
@@ -336,11 +325,10 @@ class GameState:
 
         # The turn the game ended on, and which player (index into
         # state.players) won it -- None/None while the game is still in
-        # progress. turn_won's meaning is unchanged from before
-        # MULTIPLAYER_ENGINE_PLAN.md (every existing 1-player reader --
-        # game/effects/*.py, drl_env.py, harness.py, rewards.py,
-        # generate_regression_snapshot.py -- keeps working unmodified);
-        # winner is the new field 2-player games need to say *who*.
+        # progress. turn_won's meaning is unchanged from before the
+        # multiplayer refactor (every existing reader -- game/effects/*.py,
+        # drl_env.py, rewards.py -- keeps working unmodified); winner is the
+        # new field 2-player games need to say *who*.
         # winner stays None for a bare failure (horizon reached in
         # 1-player, or -- 1-player only -- decking out with no opponent to
         # award the win to).
@@ -375,7 +363,6 @@ class GameState:
     cards_drawn_this_turn = _active_player_property("cards_drawn_this_turn")
     mana_pool = _active_player_property("mana_pool")
     decked_out = _active_player_property("decked_out")
-    damage_dealt = _active_player_property("damage_dealt")
     life_total = _active_player_property("life_total")
     attackers = _active_player_property("attackers")
     blocked_by = _active_player_property("blocked_by")
@@ -430,7 +417,7 @@ class GameState:
         fields are specific to that one event (a permanent's (name, slot),
         a color/amount, a from/to zone, ...). This is deliberately an
         EVENT log, not another periodic state snapshot: the previous
-        (now-removed) harness.py-based game logger snapshotted state after
+        (now-removed) earlier snapshot-based game logger snapshotted state after
         each MODEL decision only, which made every state change that
         happened as an automatic side effect of "Pass" (a stack
         resolution, a state-based-action death, the once-per-turn mana
@@ -461,25 +448,14 @@ def build_shuffled_library(decklist, rng):
     return library
 
 
-def new_game_state(decklist, terminated_fn, on_the_play, rng, event_log=None):
-    """1-player entry point -- unchanged signature/behavior from before
-    MULTIPLAYER_ENGINE_PLAN.md (drl_env.py, out of scope for that plan,
-    calls this directly and must keep working unmodified) aside from the
-    new, defaulted-off event_log param (GameState's own docstring)."""
-    state = GameState(on_the_play, rng=rng, terminated_fn=terminated_fn, event_log=event_log)
-    state.library = build_shuffled_library(decklist, rng)
-    state.draw(7)
-    return state
-
-
 def new_multiplayer_game_state(decklists, terminated_fns, starting_player_idx, rng, event_log=None):
-    """N-player entry point (docs/MULTIPLAYER_ENGINE_PLAN.md) -- decklists/
+    """N-player entry point -- decklists/
     terminated_fns are one entry per player and may differ (nothing here
     requires a mirror match; CARD_DEFS is already deck-agnostic). Only
     starting_player_idx is "on the play" (skips their own first draw --
     see turn.draw_step) and takes the first turn; every other player
     starts with on_the_play=False. Every player draws their own opening 7,
-    same as new_game_state's single-player opening hand, regardless of who
+    same as a single-player opening hand, regardless of who
     goes first."""
     players = [
         PlayerState(on_the_play=(i == starting_player_idx), terminated_fn=terminated_fns[i])
@@ -509,7 +485,7 @@ if __name__ == "__main__":
     from . import mana, registry, resolution
     from .effects.casting import play_land_from_hand
     from .effects.stack import push_to_stack
-    from .turn import run_game
+    from .turn import run_multiplayer_game
 
     # event_log=None (the default) is a true no-op -- log_event never
     # builds a dict, self.event_log stays None.
@@ -532,21 +508,39 @@ if __name__ == "__main__":
     assert event["turn"] == 3 and event["active_idx"] == 0 and event["turn_player_idx"] == 0
     print("state.py log_event envelope self-check: OK")
 
-    # End to end through a REAL game (run_game -> new_game_state -> every
+    # End to end through a REAL 2-player game (run_multiplayer_game -> every
     # instrumented mutation site across mana.py/turn.py/resolution.py/
-    # game/effects/*.py) -- tap a Mountain, cast Lightning Bolt, let it
-    # resolve. This is exactly the scenario the removed harness.py-based
-    # game logger got wrong (see docs discussion): the stack push/resolve
-    # and the once-per-turn mana clear both happen as a side effect of
-    # "Pass," which that old logger silently dropped. Confirms this one
-    # doesn't.
+    # game/effects/*.py) -- player 0 taps a Mountain, casts Lightning Bolt at
+    # player 1, and lets it resolve; player 1 only ever passes. This is
+    # exactly the scenario the removed earlier snapshot-based game logger got wrong:
+    # the stack push/resolve and the once-per-turn mana clear both happen as a
+    # side effect of "Pass," which that old logger silently dropped. Confirms
+    # this one doesn't.
     bolt_def = registry.CARD_DEFS["Lightning Bolt"]
-    bolt_resolve = registry.EFFECT_REGISTRY[bolt_def.effect_id]["cast"]["resolve"]
+
+    # Lightning Bolt's production "cast" resolve is a precast "any target"
+    # choice (game.catalog.red_cards) that would open a choose_any_target
+    # pending this toy logging policy doesn't model -- same reason turn.py's
+    # own real-game self-check uses a local direct-to-opponent resolve. This
+    # test is about the event_log plumbing, not targeting, so decouple it the
+    # same way.
+    from .effects.win_check import deal_damage_to_opponent
+
+    def bolt_resolve(s, cd):
+        if cd in s.hand:
+            s.hand.remove(cd)
+        s.graveyard.append(cd)
+        deal_damage_to_opponent(s, 3)
 
     def _burn_policy(state):
-        if state.pending_resolution is not None:
-            if state.pending_resolution["kind"] == "mulligan_decision":
-                return lambda: resolution.execute_mulligan_keep(state)
+        if state.pending_resolution is not None and state.pending_resolution["kind"] == "mulligan_decision":
+            return lambda: resolution.execute_mulligan_keep(state)  # both players always keep
+        if state.pending_resolution is not None and state.pending_resolution["kind"] == "discard":
+            name = resolution.discard_options(state)[0]  # cleanup hand-size discard, either player
+            return lambda: resolution.execute_discard_option(state, name)
+        if state.active_idx != 0:
+            return None  # player 1 never acts otherwise
+        if state.pending_resolution is not None:  # paying the Bolt's {R}
             tap_opts = mana.tap_cost_options(state)
             if tap_opts:
                 name, color, is_filter = tap_opts[0]
@@ -568,30 +562,30 @@ if __name__ == "__main__":
         return None  # Pass -- resolves the stack if non-empty, else advances the phase
 
     events = []
-    state = run_game(
-        decklist=[("Mountain", 10), ("Lightning Bolt", 5)], terminated_fn=None, rng=random.Random(0),
-        on_the_play=True, horizon=2, choose_action=_burn_policy, event_log=events,
+    state = run_multiplayer_game(
+        decklists=[[("Mountain", 10), ("Lightning Bolt", 5)], [("Mountain", 20)]],
+        terminated_fns=[None, None], rng=random.Random(0), starting_player_idx=0,
+        choose_action=_burn_policy, horizon=12, event_log=events,
     )
-    assert state.damage_dealt >= 3  # at least one Bolt landed
+    assert state.players[1].life_total < 20  # at least one Bolt landed on the opponent
     kinds = [e["kind"] for e in events]
     assert "turn_start" in kinds and "phase_change" in kinds
     assert "zone_move" in kinds  # land entering the battlefield, and the Bolt hitting the stack then leaving it
     assert "mana_tap" in kinds and "mana_spend" in kinds
     assert "pass" in kinds  # the exact event class the old snapshot-based logger silently dropped
-    # Every draw -- the opening hand AND every in-game draw -- is recorded as
-    # one library->hand zone_move (reason="draw") naming the cards. This is
-    # the single generic hook; there is no separate pregame "mulligan_hand"
-    # event any more (the opening 7 IS a draw event, at turn 0). This is the
-    # gap that used to leave Faithless Looting's draws invisible.
+    assert "life_change" in kinds  # the Bolt's own damage to the opponent's life_total
+    # Every draw -- both opening hands AND every in-game draw -- is recorded as
+    # one library->hand zone_move (reason="draw") naming the cards, via the
+    # single generic hook; each opening 7 IS a draw event at turn 0.
     draw_moves = [e for e in events if e.get("reason") == "draw"]
     assert draw_moves, "expected draws to be logged"
     assert all(e["from_zone"] == "library" and e["to_zone"] == "hand" and e["cards"] for e in draw_moves)
-    assert any(e["turn"] == 0 and len(e["cards"]) == 7 for e in draw_moves)  # the opening hand
-    assert any(e["turn"] > 0 for e in draw_moves)  # at least one in-game draw (the turn draw_step)
+    assert any(e["turn"] == 0 and len(e["cards"]) == 7 for e in draw_moves)  # an opening hand
+    assert any(e["turn"] > 0 for e in draw_moves)  # at least one in-game draw (a turn's draw_step)
     # Every event's envelope is well-formed regardless of kind.
     for e in events:
         assert set(e) >= {"kind", "turn", "phase", "active_idx", "turn_player_idx"}
-    # Order is causally sensible: the Mountain tap (mana_tap) happens before
-    # the spend (mana_spend) that actually pays for the Bolt.
+    # Order is causally sensible: a Mountain tap (mana_tap) happens before the
+    # spend (mana_spend) that actually pays for the Bolt.
     assert kinds.index("mana_tap") < kinds.index("mana_spend")
     print(f"state.py real-game event_log self-check: OK ({len(events)} events, kinds={sorted(set(kinds))})")

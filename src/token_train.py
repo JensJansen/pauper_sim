@@ -14,19 +14,17 @@ this architecture needs:
   shared stack).
 - Cross-matchup (net_a is not net_b): each net keeps its own buffer and gets
   its own independent ppo_update call, both learning from every game -- the
-  same "both models learn from every game" mechanism lean_ppo.py's
+  same "both models learn from every game" mechanism the prior flat-MLP trainer's
   train_simultaneous_selfplay already validated for the flat-MLP
   architecture (Effort A), now over the token/pointer representation. Used
   for Stage 2.
 
-Reward attribution mirrors lean_ppo.py's _SelfPlayWorker._reward_for
-EXACTLY (0.0 if drl_env._lost(state, seat) else reward_fn(state, done,
-horizon), _for_player-flipped at the true end) -- NOT harness.
-finalize_scores, for the identical reason that fix already applies here:
-finalize_scores adds an extra "state.turn_won is None -> 0" gate on top of
-whatever reward_fn already decides, which would silently diverge from
-TwoPlayerDeckEnv.step()'s own semantics for any reward function that isn't
-already win/loss-gated."""
+Reward attribution is computed directly: 0.0 if drl_env._lost(state, seat)
+else reward_fn(state, done, horizon), _for_player-flipped at the true end.
+Deliberately NOT gated by an extra "state.turn_won is None -> 0" check on top
+of whatever reward_fn already decides, which would silently diverge from the
+game loop's own semantics for any reward function that isn't already
+win/loss-gated."""
 
 import random
 
@@ -67,9 +65,9 @@ class RolloutBuffer:
 
 
 def _reward_for(state, seat, reward_fn, horizon, done):
-    """Mirrors lean_ppo.py's _SelfPlayWorker._reward_for exactly -- see this
-    module's own docstring for why finalize_scores is deliberately NOT used
-    here."""
+    """Per-seat reward -- see this module's own docstring for why the reward
+    is taken directly from reward_fn (0.0 if the seat lost, else reward_fn's
+    value), never gated by an extra turn_won check."""
     if drl_env._lost(state, seat):
         return 0.0
     if done:
@@ -173,7 +171,7 @@ def collect_rollout(seat_nets, decklists, reward_fns, terminated_fns, deck_ctxs,
     """Plays n_games real self-play games (game.run_multiplayer_game),
     recording a transition into whichever seat's own buffer made each
     decision -- 100% utilization, same core mechanism validated for the
-    flat-MLP architecture (lean_ppo.py), now over the token/pointer
+    flat-MLP architecture (the prior flat-MLP trainer), now over the token/pointer
     representation. seat_nets[i]/deck_ctxs[i]: seat i's own DeckNetwork and
     (vocab, fixed_table, pending_kinds) -- may be the SAME object for both
     seats (mirror self-play, Stage 1) or different (Stage 2).
@@ -184,7 +182,7 @@ def collect_rollout(seat_nets, decklists, reward_fns, terminated_fns, deck_ctxs,
     GameState.log_event -- already-instrumented across mana.py/turn.py/
     resolution.py/game/effects/*.py). No new logging: this only wires the
     engine's own existing, zero-cost-when-off event log into the training
-    rollout path, exactly as it already works for game.run_game/
+    rollout path, exactly as it already works for the game loop/
     run_multiplayer_game's other callers."""
     buffers = [RolloutBuffer(), RolloutBuffer()]
     pending = [None, None]
@@ -384,10 +382,9 @@ def collect_rollout_league_parallel(training_deck_name, live_nets, reward_fn_nam
 
 
 def _compute_gae(rewards_, values_, dones_, gamma, gae_lambda):
-    """Same math as lean_ppo._selfplay_gae -- see that function's own
-    docstring for why concatenating multiple games' worth of a buffer is
-    safe (every game's own end is flushed with done=True, so a reverse GAE
-    pass never bootstraps across a game boundary)."""
+    """Standard GAE. Concatenating multiple games' worth of a buffer is safe:
+    every game's own end is flushed with done=True, so a reverse GAE pass
+    never bootstraps across a game boundary."""
     n = len(rewards_)
     adv = np.zeros(n, dtype=np.float32)
     last_gae = 0.0
@@ -557,7 +554,7 @@ def train_selfplay(net_a, deck_ctx_a, decklist_a, reward_fn_a, net_b, deck_ctx_b
     LISTS of optimizers (see ppo_update's own docstring for why -- a net's
     shared_stack may need its own separate optimizer from the net's own
     head). Returns nothing -- both nets and all optimizers are updated in
-    place, same convention lean_ppo.py's train_simultaneous_selfplay
+    place, same convention the prior flat-MLP trainer's train_simultaneous_selfplay
     already uses. game_logs: forwarded straight to collect_rollout (see its
     own docstring) -- one entry appended per game, across every iteration."""
     mirror = net_a is net_b

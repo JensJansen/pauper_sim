@@ -131,7 +131,7 @@ def mana_output(permanent, state, color_choice=None):
     elif kind == "fixed_multi":
         # ("fixed_multi", (symbol, symbol, ...)): Rakdos Carnarium's
         # {T}: Add {B}{R} -- both symbols from one tap, not a choice of
-        # one (docs/MADNESS_DECKS_PLAN.md item 9).
+        # one.
         if color_choice is not None:
             raise ValueError(f"{permanent.card_def.name} has no color choice")
         output = list(spec[1])
@@ -217,7 +217,7 @@ def choose_taps_for_cost(state, cost):
          both count (Rakdos Carnarium's {B}{R}), and, as a side effect,
          also correctly credits "count" sources' full variable total
          (Overgrown Battlement) instead of the old fixed-at-1 undercount
-         (docs/MADNESS_DECKS_PLAN.md item 9).
+        .
       2. Flexible sources tap one at a time, each choosing whichever
          color is still live (falling back to an arbitrary choice once
          only generic remains), same preference order the original
@@ -329,7 +329,7 @@ def _float_produced_mana(pool, pool_delta, produced_symbols):
     """Every tap's output floats into the mana pool, unconditionally -- a
     tap never directly pays any part of a cost, including generic. Paying
     a cost, generic included, is always a separate explicit
-    execute_pool_spend action from here on (MANA_POOL_PLAN.md)."""
+    execute_pool_spend action from here on."""
     for symbol in produced_symbols:
         pool[symbol] = pool.get(symbol, 0) + 1
         pool_delta[symbol] = pool_delta.get(symbol, 0) + 1
@@ -653,8 +653,7 @@ def execute_payment(state, plan):
 if __name__ == "__main__":
     # ponytail self-check: no pytest in this project, mirrors the
     # assert-based demo convention -- run via `python -m game.mana` from
-    # src/. Exercises choose_taps_for_cost's rewrite (MADNESS_DECKS_PLAN.md
-    # item 9): a fake fixed_multi source (no real dual-symbol card exists
+    # src/. Exercises choose_taps_for_cost's rewrite: a fake fixed_multi source (no real dual-symbol card exists
     # yet -- deck assembly out of scope), plus the REAL Overgrown
     # Battlement card to prove the pre-existing count-source undercount is
     # actually fixed, not just theoretically.
@@ -735,7 +734,7 @@ if __name__ == "__main__":
     begin_pay_cost(state, {"W": 1}, on_complete=lambda s: None)
     assert tap_cost_options(state) == [("Forest", None, False)]  # no color choice needed -- the bonus is automatic
     execute_tap_cost_option(state, "Forest", None, False)
-    # Pool-only model (MANA_POOL_PLAN.md): a tap only ever floats its
+    # Pool-only model: a tap only ever floats its
     # output -- both G and W here -- into the pool; it never directly
     # pays a cost, even a color that happens to match. The resolution
     # stays pending until an explicit pool spend actually pays the {W: 1}.
@@ -790,7 +789,7 @@ if __name__ == "__main__":
 
     print("mana.py Aura self-check: OK")
 
-    # Pool-only model, filter mana (MANA_POOL_PLAN.md): Conduit Pylons'
+    # Pool-only model, filter mana: Conduit Pylons'
     # colored-pip filter mode used to be offered only for the single
     # color matching exactly one outstanding pip of quantity 1. Now that
     # every tap only ever floats to the pool (never wasted by tapping

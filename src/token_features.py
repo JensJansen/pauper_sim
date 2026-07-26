@@ -52,7 +52,7 @@ class CardVocab:
     and distinguishable from every real card.
 
     token_card_defs: real CardDef objects (e.g. game.BLOOD_TOKEN_CARD_DEF),
-    same objects run.py's own TOKEN_CARD_DEFS_BY_NAME resolves configs
+    same objects the runner's own TOKEN_CARD_DEFS_BY_NAME resolves configs
     through -- required because a token (Blood, Robot, ...) can appear on
     the battlefield mid-game but is NEVER a game.CARD_DEFS entry (confirmed
     the hard way: the first version of this module assumed every
@@ -183,14 +183,16 @@ def _token_row(name, zone, is_mine, vocab, permanent=None, owner_idx=None, encha
         untapped = 0.0 if permanent.tapped else 1.0
         tapped = 1.0 if permanent.tapped else 0.0
         own_blocked_by = state.players[owner_idx].blocked_by
-        other_blocked_by_values = state.players[1 - owner_idx].blocked_by.values()
+        # gang-blocking: blocked_by VALUES are lists of blockers now, so
+        # flatten to the flat set of committed-blocker permanents.
+        other_committed_blockers = {b for bs in state.players[1 - owner_idx].blocked_by.values() for b in bs}
         eff_power = min(game.permanent_power(state, permanent, enchanting_auras=enchanting_auras),
                          PER_CREATURE_POWER_CAP) / PER_CREATURE_POWER_CAP
         remaining_t = max(game.permanent_toughness(state, permanent, enchanting_auras=enchanting_auras)
                            - permanent.damage_marked, 0)
         eff_toughness = min(remaining_t, PER_CREATURE_TOUGHNESS_CAP) / PER_CREATURE_TOUGHNESS_CAP
         blocked_attacker = 1.0 if permanent in own_blocked_by else 0.0
-        committed_blocker = 1.0 if permanent in other_blocked_by_values else 0.0
+        committed_blocker = 1.0 if permanent in other_committed_blockers else 0.0
     row += [untapped, tapped, eff_power, eff_toughness, blocked_attacker, committed_blocker]
     row += [1.0 if zone == z else 0.0 for z in ZONES]
     row.append(1.0 if is_mine else 0.0)
@@ -257,7 +259,7 @@ def build_token_set(state, my_seat_idx, vocab):
 
 if __name__ == "__main__":
     # ponytail self-check: run via `python token_features.py` from src/.
-    import terminated  # noqa: F401 -- confirms the module still loads alongside this self-check, same convention harness.py's own self-check uses
+    import terminated  # noqa: F401 -- confirms the module still loads alongside this self-check, same convention the other self-checks here use
     from game.state import GameState, PlayerState, Permanent
 
     decklist_a = game.parse_decklist_file("../data/mono_red_madness.txt")
@@ -331,7 +333,7 @@ if __name__ == "__main__":
     # blocked_as_attacker/committed_as_blocker dynamic features on both sides.
     attacker, blocker = seat1.battlefield[0], seat0.battlefield[0]
     seat1.attackers = [attacker]
-    seat1.blocked_by = {attacker: blocker}
+    seat1.blocked_by = {attacker: [blocker]}
 
     for my_seat in (0, 1):
         tokens = build_token_set(fs_state, my_seat, vocab)

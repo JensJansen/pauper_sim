@@ -31,6 +31,7 @@ class EffectId(Enum):
     # single canonical entry ---
     ROOFTOP_PERCHER = auto()
     BOULDERBRANCH_GOLEM = auto()
+    BOULDERBRANCH_GOLEM_PROTOTYPE = auto()  # Prototype {3}{G} 3/3 mode -- own ETB gain amount (3, = its power)
     MAELSTROM_COLOSSUS = auto()
     PINNACLE_KILL_SHIP = auto()
     BRAMBLE_WURM = auto()
@@ -56,12 +57,13 @@ class EffectId(Enum):
     DREAD_RETURN = auto()
 
     # --- shared tokens (mono_red_madness / rakdos_madness engine work,
-    # docs/MADNESS_DECKS_PLAN.md item 8) -- not decklist cards, never in
+    #) -- not decklist cards, never in
     # CARD_DEFS/any decklist quantity; see game.effects.tokens.create_token.
     BLOOD_TOKEN = auto()
     ROBOT_TOKEN = auto()
     WARRIOR_TOKEN = auto()  # Cartouche of Solidarity
     ELDRAZI_SPAWN_TOKEN = auto()  # Malevolent Rumble
+    FOOD_TOKEN = auto()  # Generous Ent
 
     # --- shared between rakdos_madness and mono_red_madness (both decklists
     # play these) -- registry entries live in game.catalog.red_cards

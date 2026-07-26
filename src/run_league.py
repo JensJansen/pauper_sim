@@ -80,6 +80,24 @@ def load_frozen_stack(vocab_size):
     return shared
 
 
+def _save_live_checkpoints(live_nets, optimizers, deck_names, session, session_path):
+    """Persist every deck's current live net + optimizer + the session
+    counter. Called at each snapshot point AND at session end -- NOT only
+    at the end: a mid-session crash (a rare card-interaction bug ~2500
+    games into a 3000-game batch is exactly how this was learned) would
+    otherwise discard the whole session's live-net training, since only the
+    periodic snapshots (historical opponents) get written incrementally.
+    With this, a crash loses at most snapshot_every iterations."""
+    os.makedirs(LEAGUE_DIR, exist_ok=True)
+    for name in deck_names:
+        deck_dir = f"{LEAGUE_DIR}/{name}"
+        os.makedirs(deck_dir, exist_ok=True)
+        torch.save({"net": live_nets[name].state_dict(), "optimizer": optimizers[name].state_dict()},
+                   f"{deck_dir}/live.pt")
+    with open(session_path, "w") as f:
+        f.write(str(session))
+
+
 def _run_session(n_iterations, games_per_iteration, snapshot_every, executor, n_workers,
                   gpu_threshold=None, batch_size_start=32, batch_size_cap=2048, batch_size_steps=6):
     decklists, vocab, deck_ctxs, fixed_tables = build_pool()
@@ -162,7 +180,8 @@ def _run_session(n_iterations, games_per_iteration, snapshot_every, executor, n_
         if (iteration + 1) % snapshot_every == 0:
             for name in deck_names:
                 pool.register_snapshot(name, live_nets[name])
-            print(f"  iter {iteration}: snapshotted all decks "
+            _save_live_checkpoints(live_nets, optimizers, deck_names, session, session_path)
+            print(f"  iter {iteration}: snapshotted all decks + saved live checkpoints "
                   f"(counts now: { {n: len(pool.snapshots[n]) for n in deck_names} })", flush=True)
 
     elapsed = time.time() - t0
@@ -170,14 +189,7 @@ def _run_session(n_iterations, games_per_iteration, snapshot_every, executor, n_
           f"collect={collect_time_total:.1f}s ({100 * collect_time_total / elapsed:.0f}%), "
           f"update={update_time_total:.1f}s ({100 * update_time_total / elapsed:.0f}%)")
 
-    os.makedirs(LEAGUE_DIR, exist_ok=True)
-    for name in deck_names:
-        deck_dir = f"{LEAGUE_DIR}/{name}"
-        os.makedirs(deck_dir, exist_ok=True)
-        torch.save({"net": live_nets[name].state_dict(), "optimizer": optimizers[name].state_dict()},
-                   f"{deck_dir}/live.pt")
-    with open(session_path, "w") as f:
-        f.write(str(session))
+    _save_live_checkpoints(live_nets, optimizers, deck_names, session, session_path)
     print("live checkpoints saved for all decks")
 
 

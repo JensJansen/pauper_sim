@@ -39,30 +39,68 @@ def creature_attack_eligible(state, permanent):
     )
 
 
-def creature_block_eligible(state, permanent):
-    """Untapped and not already assigned to block something else this
-    combat -- no gang-blocking/menace modeled, docs/COMBAT_PLAN.md. Reads
-    state.opponent.blocked_by, NOT state.blocked_by: this is only ever
-    called with state.active_idx already flipped to the defender
-    (game.turn._declare_blockers_gen), and PlayerState.blocked_by is keyed
-    by the ATTACKING player's own attacker permanents (see its own
-    docstring) -- from the flipped-to-defender perspective, that dict
-    lives on state.opponent, not on the (active, defending) player
-    state.blocked_by itself would read. Deliberately NOT the same
-    eligibility as creature_attack_eligible: real Magic lets a Defender
-    block (that's its whole point) and lets a summoning-sick creature
-    block (summoning sickness only restricts attacking and {T}
-    abilities) -- so neither check belongs here."""
-    return (
-        permanent.card_type == CardType.CREATURE and not permanent.tapped
-        and permanent not in state.opponent.blocked_by.values()
+def _blocked_by_creatures(blocked_by):
+    """Flatten a blocked_by dict ({attacker: [blockers]}) to the flat set of
+    creatures currently committed as blockers. Gang-blocking (multiple
+    blockers per one attacker) makes blocked_by's VALUES lists, so a
+    membership test can no longer be `in blocked_by.values()` -- each
+    blocker still blocks exactly ONE attacker (no creature blocks twice),
+    so the flat union is the right 'already committed' set."""
+    return {b for blockers in blocked_by.values() for b in blockers}
+
+
+def can_block(state, blocker, attacker):
+    """Whether `blocker` is allowed to block `attacker`. Two real evasion/blocking rules modeled:
+    - An attacker that can only be blocked by flying -- real flying (Kitchen
+      Imp) OR Silhana Ledgewalker's "can't be blocked except by creatures
+      with flying" (which is NOT itself flying) -- may be blocked only by a
+      creature with flying or reach.
+    - Reach lets a non-flying creature block a flier (Bramble Wurm).
+    Menace/other restrictions aren't modeled (no card grants them). Shared by
+    creature_block_eligible and drl_env's per-attacker choice predicate, so
+    the rule lives in one place."""
+    attacker_needs_flying_blocker = (
+        stats.has_keyword(state, attacker, "flying")
+        or stats.has_keyword(state, attacker, "cant_be_blocked_except_by_flying")
     )
+    if not attacker_needs_flying_blocker:
+        return True
+    return stats.has_keyword(state, blocker, "flying") or stats.has_keyword(state, blocker, "reach")
+
+
+def creature_block_eligible(state, permanent):
+    """A creature untapped, not already committed as a blocker, AND with at
+    least one attacker it's actually allowed to block right now. Reads
+    state.opponent.blocked_by / state.opponent.attackers, NOT the active
+    (defending) player's own: this is only ever called with state.active_idx
+    already flipped to the defender (game.turn._declare_blockers_gen), and
+    PlayerState.blocked_by/attackers are keyed by the ATTACKING player's own
+    permanents (see their own docstrings). Deliberately NOT the same
+    eligibility as creature_attack_eligible: real Magic lets a Defender
+    block and lets a summoning-sick creature block -- neither check belongs
+    here.
+
+    The "has at least one legal target" clause (added with gang-blocking)
+    is what stops a blocker with nothing it can legally block -- every
+    attacker already blocked, or the only unblocked... no: WITH gang-
+    blocking an already-blocked attacker can still take more blockers, so
+    the only genuine no-target case is a non-flying blocker when every
+    attacker has flying -- from being offered as a legal 'Assign Blocker'.
+    That action was a no-op (nested attacker-choice finds no target, auto-
+    completes, re-opens blocking, blocker still uncommitted) that a
+    stochastic policy could loop on until the declare-blockers action cap
+    fired; removing it at the source shrinks the action space and demotes
+    that cap to a pure backstop."""
+    if not (permanent.card_type == CardType.CREATURE and not permanent.tapped
+            and permanent not in _blocked_by_creatures(state.opponent.blocked_by)):
+        return False
+    return any(can_block(state, permanent, attacker) for attacker in state.opponent.attackers)
 
 
 def declare_attacker(state, permanent):
     """Model chose to attack with this specific creature -- addressed by
     (name, slot) at the drl_env.py action-table layer
-    (docs/COMBAT_PLAN.md's permanent-identity design), so the caller has
+   , so the caller has
     already picked the exact physical copy it means, not an arbitrary
     same-named match. Tapped here, at declaration, same as real Magic --
     an attacking creature is unavailable for a mana ability etc. for the
@@ -93,57 +131,54 @@ def _is_alive(state, permanent):
     return any(permanent in player.battlefield for player in state.players)
 
 
-def _attacker_deal_damage(state, attacker, blocker, attacker_facts, blocker_facts):
-    """Attacker deals its combat damage to its blocker -- trample-aware
-    (Rancor, Armadillo Cloak): assigns only enough to be lethal (the
-    blocker's own remaining toughness), letting any excess spill over to
-    the DEFENDING player via deal_damage_to_opponent (state.opponent, from
-    the attacker's own active perspective, IS the defender throughout
-    combat_damage_step) instead of being wasted on an already-dead
-    blocker. Real Magic lets the attacker choose to overkill the blocker
-    instead -- never correct without deathtouch (not modeled in this card
-    pool), so this always assigns the minimum lethal, no extra decision or
-    action needed.
+def _attacker_deal_damage(state, attacker, blockers, amounts, opponent_amount, attacker_facts):
+    """Attacker deals its combat damage across a LIST of `blockers` per the
+    parallel `amounts` list (amounts[i] -> blockers[i]), plus `opponent_amount`
+    trample-spilled to the defending player. state.opponent, from the
+    attacker's own active perspective, IS the defender throughout
+    combat_damage_step.
 
-    "lifelink" (Armadillo Cloak's own "whenever enchanted creature deals
-    damage, you gain that much life" -- a TRIGGERED ability, unlike real
-    lifelink: stats.lifelink_count returns however many Cloaks are
-    attached, each an independent trigger for the FULL damage dealt, so
-    two Cloaks means 2x life gained, not 1x -- see that function's own
-    docstring): the attacker's controller is always the currently ACTIVE
-    player throughout combat_damage_step, so gain_life's own active-
-    player-proxied state.life_total is already correct here -- total
-    damage dealt is always `power` regardless of trample (lethal-to-
-    blocker + spillover-to-player always sums back to power).
+    "lifelink" (Armadillo Cloak's "whenever enchanted creature deals damage,
+    you gain that much life" -- a TRIGGERED ability, unlike real lifelink:
+    stats.lifelink_count returns however many Cloaks are attached, each an
+    independent trigger for the FULL damage dealt, so two Cloaks means 2x life
+    gained). The attacker's controller is always the currently ACTIVE player
+    throughout combat_damage_step, so gain_life's active-player default is
+    already correct; damage ACTUALLY dealt is assigned-to-blockers +
+    trample-to-player.
 
-    attacker_facts/blocker_facts: combat_damage_step's own pre-fetched
-    {power, toughness, first_strike, trample, lifelink_count} dict for
-    each creature (see that function's own docstring) -- power/trample/
-    lifelink_count read here are ALWAYS the attacker's own, toughness read
-    here is ALWAYS the blocker's own; each of these used to be its own
-    independent stats.py call (permanent_power/has_keyword("trample")/
-    permanent_toughness/lifelink_count), each independently re-scanning
-    state.players for the same creature's own Auras -- profiled: up to
-    ~8-10 of those redundant scans per blocked pair, for what's really
-    only 8 distinct facts (4 per creature)."""
-    power = attacker_facts["power"]
-    if attacker_facts["trample"]:
-        lethal = min(power, max(blocker_facts["toughness"] - blocker.damage_marked, 0))
-        blocker.damage_marked += lethal
-        excess = power - lethal
-        if excess > 0:
-            deal_damage_to_opponent(state, excess)
-    else:
-        lethal = power
-        blocker.damage_marked += power
-        excess = 0
-    state.log_event(
-        "combat_damage", source=(attacker.card_def.name, attacker.slot), target=(blocker.card_def.name, blocker.slot),
-        amount=lethal, trample_excess_to_opponent=excess,
-    )
+    attacker_facts: combat_damage_step's pre-fetched {power, toughness,
+    first_strike, trample, lifelink_count} dict for this attacker -- power/
+    trample/lifelink_count read here are ALWAYS the attacker's own; the dict
+    exists to avoid re-scanning state.players for its Auras on every blocked
+    pair (profiled at ~8-10 redundant stats.py scans per pair otherwise)."""
+    # `amounts` is parallel to `blockers`: amounts[i] is the damage assigned to
+    # blockers[i] -- the attacking player's own free choice for a multi-blocked
+    # attacker (Stage B: any portion to any blocker, not forced lethal -- user
+    # spec), or _default_damage_assignment's lethal-in-order split for a single
+    # blocker / the auto path. `opponent_amount` is the trample share spilled
+    # to the defending player. Lifelink counts damage ACTUALLY dealt (to
+    # blockers + to the player), which for a full-power assignment (the default
+    # / old 1:1 path) is exactly power.
+    assigned = 0
+    for blocker, amount in zip(blockers, amounts):
+        if amount <= 0:
+            continue
+        blocker.damage_marked += amount
+        assigned += amount
+        state.log_event(
+            "combat_damage", source=(attacker.card_def.name, attacker.slot),
+            target=(blocker.card_def.name, blocker.slot), amount=amount, trample_excess_to_opponent=0,
+        )
+    if opponent_amount > 0:  # trample (attacker's controller assigned this share to the defending player)
+        deal_damage_to_opponent(state, opponent_amount)
+        state.log_event(
+            "combat_damage", source=(attacker.card_def.name, attacker.slot),
+            target="opponent", amount=opponent_amount, trample_excess_to_opponent=opponent_amount,
+        )
     lifelink_count = attacker_facts["lifelink_count"]
     if lifelink_count:
-        gain_life(state, power * lifelink_count)
+        gain_life(state, (assigned + opponent_amount) * lifelink_count)
 
 
 def _blocker_deal_damage(state, blocker, attacker, blocker_facts):
@@ -178,13 +213,77 @@ def _blocker_deal_damage(state, blocker, attacker, blocker_facts):
         gain_life(state, power * lifelink_count, player_idx=1 - state.active_idx)
 
 
+def _default_damage_assignment(attacker_facts, blockers, facts_by_id):
+    """Auto split of an attacker's combat damage across its (living)
+    blockers -- used for a SINGLE blocker (no choice to make) and as the
+    fallback when no explicit model assignment exists. Lethal-in-order to
+    maximize kills; a trampler's leftover goes to the player, a non-
+    trampler's leftover piles onto the last blocker so all power lands
+    (matching the old 1:1 behaviour). Returns (amounts parallel to
+    `blockers`, opponent_amount). For a MULTI-blocked attacker the attacking
+    player's OWN freely-chosen split (assign_combat_damage resolution)
+    replaces this -- any portion to any blocker, non-lethal allowed."""
+    remaining = attacker_facts["power"]
+    amounts = [0] * len(blockers)
+    for i, blocker in enumerate(blockers):
+        if remaining <= 0:
+            break
+        lethal = max(facts_by_id[id(blocker)]["toughness"] - blocker.damage_marked, 0)
+        assign = min(remaining, lethal)
+        amounts[i] = assign
+        remaining -= assign
+    opponent_amount = 0
+    if remaining > 0:
+        if attacker_facts["trample"]:
+            opponent_amount = remaining
+        elif blockers:
+            amounts[-1] += remaining
+    return amounts, opponent_amount
+
+
+def _damage_assignment_for(attacker, living, attacker_facts, facts_by_id):
+    """The (amounts-parallel-to-living, opponent_amount) split this attacker
+    deals right now: the attacking player's OWN choice if one was recorded
+    (resolution.begin_assign_combat_damage stashes it on
+    attacker.flags['combat_damage_split'] for a 2+-blocked attacker --
+    popped here, consumed once), else the lethal-in-order default (a single
+    blocker, or the model-less path). A model split keyed by blocker maps
+    onto `living` (every blocker is alive when its own attacker deals, so
+    this is the full assignment)."""
+    split = attacker.flags.pop("combat_damage_split", None)
+    if split is not None:
+        amounts_by_blocker, opponent_amount = split
+        return [amounts_by_blocker.get(b, 0) for b in living], opponent_amount
+    return _default_damage_assignment(attacker_facts, living, facts_by_id)
+
+
+def attackers_needing_damage_assignment(state):
+    """The (attacker, blockers, power, has_trample) tuples for attackers
+    blocked by 2+ creatures with nonzero power -- the ones whose controller
+    must freely assign combat damage (resolution.begin_assign_combat_damage,
+    driven by turn._assign_combat_damage_gen). A lone blocker or a 0-power
+    attacker has no choice, so it's skipped and combat_damage_step auto-
+    assigns via _default_damage_assignment. Lives here (not in turn.py) so
+    the power/keyword lookups stay in the effects layer that owns stats."""
+    out = []
+    for attacker in state.attackers:
+        blockers = state.blocked_by.get(attacker, [])
+        if len(blockers) < 2:
+            continue
+        power = stats.permanent_power(state, attacker)
+        if power <= 0:
+            continue
+        out.append((attacker, blockers, power, stats.has_keyword(state, attacker, "trample")))
+    return out
+
+
 def combat_damage_step(state):
     """game.turn.Phase.COMBAT_DAMAGE: total power (stats.permanent_power(
     state, p) -- base card_def.extra["power"] plus any attached Auras' own
     "pt_bonus") of state.attackers NOT present in state.blocked_by
     (declared in DECLARE_ATTACKERS via declare_attacker; assigned a
     blocker, if any, during the defending player's own consult --
-    docs/COMBAT_PLAN.md) hits the opponent via deal_damage_to_opponent
+   ) hits the opponent via deal_damage_to_opponent
     once; a creature with neither power nor an Aura set (e.g. an
     untracked-stats vanilla from another deck) contributes 0.
 
@@ -227,8 +326,8 @@ def combat_damage_step(state):
     own facts can change during it (damage_marked does change, but that's
     read fresh off the permanent itself everywhere, never cached here)."""
     unblocked = [p for p in state.attackers if p not in state.blocked_by]
-    pairs = list(state.blocked_by.items())
-    all_combatants = set(state.attackers) | {p for _a, p in pairs}
+    groups = list(state.blocked_by.items())  # [(attacker, [blockers, ...])] -- gang-blocking (list-valued)
+    all_combatants = set(state.attackers) | {b for _a, blockers in groups for b in blockers}
 
     enchanting_by_target = {}
     if all_combatants:
@@ -265,19 +364,31 @@ def combat_damage_step(state):
     if lifelink_total:
         gain_life(state, lifelink_total)
 
-    for attacker, blocker in pairs:
+    # First-strike sub-step: first-strikers on each side deal now, then an
+    # SBA check clears the dead before the regular sub-step. Gang-blocking:
+    # the attacker splits its damage across its LIVING blockers (Stage-A
+    # default split; Stage B swaps in the model's own choice), and every
+    # blocker deals its own power back to the attacker.
+    for attacker, blockers in groups:
         if creature_facts[id(attacker)]["first_strike"]:
-            _attacker_deal_damage(state, attacker, blocker, creature_facts[id(attacker)], creature_facts[id(blocker)])
-        if creature_facts[id(blocker)]["first_strike"]:
-            _blocker_deal_damage(state, blocker, attacker, creature_facts[id(blocker)])
+            living = [b for b in blockers if _is_alive(state, b)]
+            amounts, opp = _damage_assignment_for(attacker, living, creature_facts[id(attacker)], creature_facts)
+            _attacker_deal_damage(state, attacker, living, amounts, opp, creature_facts[id(attacker)])
+        for blocker in blockers:
+            if creature_facts[id(blocker)]["first_strike"]:
+                _blocker_deal_damage(state, blocker, attacker, creature_facts[id(blocker)])
     state_based.check_state_based_actions(state)
 
-    for attacker, blocker in pairs:
-        attacker_alive, blocker_alive = _is_alive(state, attacker), _is_alive(state, blocker)
-        if not creature_facts[id(attacker)]["first_strike"] and attacker_alive and blocker_alive:
-            _attacker_deal_damage(state, attacker, blocker, creature_facts[id(attacker)], creature_facts[id(blocker)])
-        if not creature_facts[id(blocker)]["first_strike"] and blocker_alive and attacker_alive:
-            _blocker_deal_damage(state, blocker, attacker, creature_facts[id(blocker)])
+    for attacker, blockers in groups:
+        attacker_alive = _is_alive(state, attacker)
+        if not creature_facts[id(attacker)]["first_strike"] and attacker_alive:
+            living = [b for b in blockers if _is_alive(state, b)]  # a first-strike attacker's kills are already gone
+            if living:
+                amounts, opp = _damage_assignment_for(attacker, living, creature_facts[id(attacker)], creature_facts)
+                _attacker_deal_damage(state, attacker, living, amounts, opp, creature_facts[id(attacker)])
+        for blocker in blockers:
+            if not creature_facts[id(blocker)]["first_strike"] and _is_alive(state, blocker) and attacker_alive:
+                _blocker_deal_damage(state, blocker, attacker, creature_facts[id(blocker)])
     state_based.check_state_based_actions(state)
 
 
@@ -289,9 +400,9 @@ if __name__ == "__main__":
     # effects/integration_check.py instead (it exercises state_based.py
     # just as much as this module).
     from ..cards import CardDef, EffectId
-    from ..state import GameState, Permanent
+    from ..state import GameState, Permanent, PlayerState
 
-    state = GameState(on_the_play=True, terminated_fn=lambda s: s.damage_dealt >= 5)
+    state = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
     attacker = Permanent(CardDef("Attacker", CardType.CREATURE, None, EffectId.FILLER, power=3))
     attacker.summoning_sick = False
     sick = Permanent(CardDef("Sick", CardType.CREATURE, None, EffectId.FILLER, power=10))  # summoning_sick=True by construction -- never cleared here (that's untap_step's job)
@@ -318,7 +429,7 @@ if __name__ == "__main__":
     assert attacker.tapped and attacker in state.attackers
     assert not vanilla.tapped and vanilla not in state.attackers  # partial declaration -- vanilla deliberately left back
     combat_damage_step(state)
-    assert state.damage_dealt == 3
+    assert state.players[1].life_total == 17  # 20 - the lone eligible attacker's power (3)
     assert state.attackers == []
     assert state.turn_won is None
 
@@ -327,7 +438,7 @@ if __name__ == "__main__":
     # Haste (Kitchen Imp): a "haste": True registry spec lets a summoning-
     # sick creature be attack-eligible anyway -- the only place that spec
     # is ever read.
-    state = GameState(on_the_play=True)
+    state = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
     _filler_backup = registry.EFFECT_REGISTRY[EffectId.FILLER]
     registry.EFFECT_REGISTRY[EffectId.FILLER] = {"haste": True}
     try:
@@ -338,17 +449,17 @@ if __name__ == "__main__":
         assert creature_attack_eligible(state, hasty)
         declare_attacker(state, hasty)
         combat_damage_step(state)
-        assert state.damage_dealt == 2 and hasty.tapped
+        assert state.players[1].life_total == 18 and hasty.tapped  # 20 - hasty's power (2)
     finally:
         registry.EFFECT_REGISTRY[EffectId.FILLER] = _filler_backup
 
     print("combat.py haste self-check: OK")
 
-    # Vigilance (docs/COMBAT_PLAN.md step 7): attacking a vigilant
+    # Vigilance: attacking a vigilant
     # creature never taps it, unlike an ordinary attacker.
     from .tokens import WARRIOR_TOKEN_CARD_DEF  # the real EffectId.WARRIOR_TOKEN registry entry (white_cards.py) grants vigilance
 
-    state = GameState(on_the_play=True)
+    state = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
     vigilant = Permanent(WARRIOR_TOKEN_CARD_DEF)
     vigilant.summoning_sick = False
     ordinary = Permanent(CardDef("Ordinary Attacker", CardType.CREATURE, None, EffectId.FILLER, power=1, toughness=1))
@@ -370,7 +481,7 @@ if __name__ == "__main__":
     assert not creature_attack_eligible(state, vigilant)
     assert state.attackers.count(vigilant) == 1
     combat_damage_step(state)
-    assert state.damage_dealt == 1 + 1  # vigilant's own power once, ordinary's power once -- not doubled
+    assert state.players[1].life_total == 18  # 20 - (vigilant's power once + ordinary's power once) -- not doubled
 
     print("combat.py vigilance self-check: OK")
 
@@ -394,13 +505,13 @@ if __name__ == "__main__":
 
         declare_attackers_step(state)
         declare_attacker(state, trampler)
-        state.blocked_by[trampler] = weak_blocker
+        state.blocked_by[trampler] = [weak_blocker]
         combat_damage_step(state)
 
         # Effective power 7 (5 base + Rancor's +2): 2 assigned as lethal
         # (weak_blocker's own toughness), 5 tramples through.
         assert weak_blocker not in state.players[1].battlefield
-        assert state.damage_dealt == 5
+        assert state.players[1].life_total == 15  # 20 - the 5 that trampled through
         assert trampler in state.players[0].battlefield and trampler.damage_marked == 1
     finally:
         registry.CARD_DEFS.clear()
@@ -426,7 +537,7 @@ if __name__ == "__main__":
 
         declare_attackers_step(state)
         declare_attacker(state, fs_attacker)
-        state.blocked_by[fs_attacker] = lethal_blocker
+        state.blocked_by[fs_attacker] = [lethal_blocker]
         combat_damage_step(state)
 
         # Effective power 5 (4 base + Cartouche's +1) >= lethal_blocker's
@@ -462,7 +573,7 @@ if __name__ == "__main__":
         # Effective power 5 (3 base + Cloak's own +2, same Aura bonus
         # permanent_power always applies) -- both the damage AND the
         # lifelink gain use this effective total, not the base 3.
-        assert state.damage_dealt == 5
+        assert state.players[1].life_total == 15  # 20 - the unblocked lifelinker's power (5)
         assert state.players[0].life_total == 25  # STARTING_LIFE (20) + 5, unblocked lifelink
 
         # STACKING: two Armadillo Cloaks on the SAME creature -- two
@@ -487,7 +598,7 @@ if __name__ == "__main__":
         # Effective power 7 (3 base + 2+2 from both Cloaks). Life gained:
         # 7 * 2 (one trigger per Cloak) = 14, NOT just 7 (what a boolean
         # "lifelink" keyword would wrongly give, deduped to one trigger).
-        assert state.damage_dealt == 7
+        assert state.players[1].life_total == 13  # 20 - the double-cloaked lifelinker's power (7)
         assert state.players[0].life_total == 34  # STARTING_LIFE (20) + 14
 
         # A blocked lifelinker with trample: effective power 5 (3 base +
@@ -508,10 +619,10 @@ if __name__ == "__main__":
 
         declare_attackers_step(state)
         declare_attacker(state, lifelinker2)
-        state.blocked_by[lifelinker2] = blocker
+        state.blocked_by[lifelinker2] = [blocker]
         combat_damage_step(state)
 
-        assert state.damage_dealt == 3  # trampled-through excess (5 power - 2 lethal)
+        assert state.players[1].life_total == 17  # 20 - the trampled-through excess (5 power - 2 lethal)
         assert state.players[0].life_total == 25  # +5, the FULL effective power, not just the excess
 
         # A BLOCKING lifelinker: life goes to the DEFENDING player (index
@@ -531,13 +642,60 @@ if __name__ == "__main__":
 
         declare_attackers_step(state)
         declare_attacker(state, attacker3)
-        state.blocked_by[attacker3] = blocker_lifelinker
+        state.blocked_by[attacker3] = [blocker_lifelinker]
         combat_damage_step(state)
 
         assert state.players[1].life_total == 24  # +4 (2 base + Cloak's +2) -- the DEFENDING player
         assert state.players[0].life_total == 20  # unaffected -- attacker3 itself has no lifelink
+
+        # --- GANG-BLOCKING: one attacker, two blockers, model-decided split ---
+        # A 3/3 attacker gang-blocked by two 2/2s. The attacker's controller
+        # assigns 2 damage to the first blocker (lethal -> dies) and only 1 to
+        # the second (survives) -- an ARBITRARY, non-lethal-to-all split, the
+        # whole point of the model decision. Both blockers deal 2 back, so the
+        # attacker takes 4 >= 3 and dies. The split is stashed on the
+        # attacker's own flags exactly as resolution.begin_assign_combat_damage
+        # records it, and must be consumed (popped) by the damage step.
+        gang_state = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
+        gb_atk = Permanent(CardDef("GBAttacker", CardType.CREATURE, None, EffectId.FILLER, power=3, toughness=3))
+        gb_atk.summoning_sick = False
+        gb_b1 = Permanent(CardDef("GBBlocker1", CardType.CREATURE, None, EffectId.FILLER, power=2, toughness=2))
+        gb_b2 = Permanent(CardDef("GBBlocker2", CardType.CREATURE, None, EffectId.FILLER, power=2, toughness=2))
+        for _p in (gb_atk, gb_b1, gb_b2):
+            registry.CARD_DEFS[_p.card_def.name] = _p.card_def
+        gang_state.players[0].battlefield = [gb_atk]
+        gang_state.players[1].battlefield = [gb_b1, gb_b2]
+        declare_attackers_step(gang_state)
+        declare_attacker(gang_state, gb_atk)
+        gang_state.blocked_by[gb_atk] = [gb_b1, gb_b2]
+        gb_atk.flags["combat_damage_split"] = ({gb_b1: 2, gb_b2: 1}, 0)  # attacker's own arbitrary choice
+        combat_damage_step(gang_state)
+        assert gb_b1 not in gang_state.players[1].battlefield  # took 2 (lethal) -> dead
+        assert gb_b2 in gang_state.players[1].battlefield       # took only 1 -> survives
+        assert gb_atk not in gang_state.players[0].battlefield  # took 2+2=4 >= 3 -> dead
+        assert "combat_damage_split" not in gb_atk.flags        # consumed (popped) by the damage step
     finally:
         registry.CARD_DEFS.clear()
         registry.CARD_DEFS.update(_card_defs_backup)
 
     print("combat.py lifelink self-check: OK")
+    print("combat.py gang-blocking damage-split self-check: OK")
+
+    # can_block: evasion + reach (C8/C9). A real flier (Kitchen Imp) and
+    # Silhana's "can't be blocked except by flying" both demand a flying or
+    # reach blocker; reach (Bramble Wurm) satisfies that, a vanilla creature
+    # doesn't, and -- crucially -- Silhana itself (evasion, NOT real flying)
+    # can NOT block a flier.
+    kb_state = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
+    imp = Permanent(CardDef("Imp", CardType.CREATURE, None, EffectId.KITCHEN_IMP, power=2, toughness=2))
+    silhana = Permanent(CardDef("Silhana", CardType.CREATURE, None, EffectId.SILHANA_LEDGEWALKER, power=1, toughness=1))
+    wurm = Permanent(CardDef("Wurm", CardType.CREATURE, None, EffectId.BRAMBLE_WURM, power=7, toughness=6))
+    vanilla_c = Permanent(CardDef("Vanilla", CardType.CREATURE, None, EffectId.FILLER, power=2, toughness=2))
+    assert not can_block(kb_state, vanilla_c, imp)      # vanilla can't block a flier
+    assert can_block(kb_state, wurm, imp)               # reach blocks a flier
+    assert can_block(kb_state, imp, imp)                # flying blocks flying
+    assert not can_block(kb_state, vanilla_c, silhana)  # Silhana's evasion needs a flying/reach blocker
+    assert can_block(kb_state, wurm, silhana)           # reach satisfies Silhana's evasion too
+    assert not can_block(kb_state, silhana, imp)        # Silhana is NOT flying -> can't block a flier (the C8 fix)
+    assert can_block(kb_state, vanilla_c, vanilla_c)    # no restriction -> anyone blocks
+    print("combat.py can_block evasion/reach self-check: OK")

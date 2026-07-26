@@ -106,7 +106,7 @@ src/
 data/                      Decklists (*.txt) + league_decks.json roster.
 docs/                      Design/plan documents.
 checkpoints/               Trained weights (gitignored; see below).
-models/ logs/ reports/     Older/aggregate outputs (gitignored).
+logs/                      Game event logs from --log runs (gitignored).
 ```
 
 **Why the flat `src/` for the token modules?** They import each other
@@ -305,10 +305,11 @@ parallelism and the PPO batch-size/device crossover;
 
 ## Generated artifacts (gitignored)
 
-`checkpoints/` (trained weights + `vocab.json`), `models/`, `logs/`,
-`reports/`, and `graphify-out/` are all gitignored — regenerable by rerunning
-training/evaluation. Old 2-deck weights are archived under
-`checkpoints/archive_2deck/`.
+`checkpoints/` (trained weights + `vocab.json`) and `logs/` (event logs from
+`--log` runs) are gitignored — regenerable by rerunning training. Old 2-deck
+weights are archived under `checkpoints/archive_2deck/`. (`.gitignore` also
+still lists `models/`/`reports/`/`graphify-out/` from earlier tooling; those
+reappear only if that tooling runs again.)
 
 ---
 

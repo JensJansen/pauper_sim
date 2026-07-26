@@ -3,7 +3,7 @@ exile instead of resolving" path -- these need game.mana.begin_pay_cost,
 which game.resolution can't import (mana.py imports resolution.py at its
 own top level; the reverse would cycle). This module is free to depend on
 both resolution.py and mana.py, so it's where that orchestration lives
-instead. See docs/MADNESS_DECKS_PLAN.md items 1/3/4/7. This is the one
+instead.  This is the one
 piece of the old effects_common.py that module's own docstring was
 actually about -- everything else that used to share the file with it
 (combat, casting, the stack, ...) has moved to its own module."""
@@ -15,7 +15,7 @@ from .stack import push_to_stack
 def execute_madness_cast(state):
     """Model chose "cast" for a pending madness_decision (itself now only
     ever offered from inside the madness trigger's own stack resolve, see
-    triggers._trigger_resolve -- docs/PRIORITY_PLAN.md item 1): pay the
+    triggers._trigger_resolve): pay the
     card's madness cost, then push its effect onto the stack (see
     stack.push_to_stack) instead of resolving it immediately -- a real,
     independent stack entry that gets its own priority round before it
@@ -47,14 +47,21 @@ def execute_madness_cast(state):
 
     def _after_pay(s):
         resolution._remove_one_from_exile(s, card_def)
-        push_to_stack(s, card_def, madness_spec["resolve"], reserves_hand_card=False)
+        if madness_spec.get("precast_choice"):
+            # A madness spell that targets (Fiery Temper) locks its target
+            # AS it's put on the stack, real Magic -- its resolve chooses the
+            # target and does its own push_to_stack, same precast_choice
+            # contract the normal cast path uses (drl_env._precast_choice_execute).
+            madness_spec["resolve"](s, card_def)
+        else:
+            push_to_stack(s, card_def, madness_spec["resolve"], reserves_hand_card=False)
         outer_on_complete(s)
 
     mana.begin_pay_cost(state, madness_spec["cost"], on_complete=_after_pay)
 
 
 def plot_to_exile(state, card_def):
-    """Plot's own resolve shape (MADNESS_DECKS_PLAN.md item 4): pay the
+    """Plot's own resolve shape: pay the
     plot cost, move hand -> exile with this turn's stamp instead of
     running the card's real effect. Generic Plot-mechanic plumbing (any
     future "plot" card reuses this unchanged, same precedent as

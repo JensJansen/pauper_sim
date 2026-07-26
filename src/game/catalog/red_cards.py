@@ -11,13 +11,14 @@ creature in play" board wipe, this deck's own creatures included."""
 
 from .. import resolution
 from ..cards import CardDef, CardType, EffectId
-from ..effects.casting import cast_permanent_from_hand
+from ..effects.casting import _log_target_fizzle, capture_any_target, cast_permanent_from_hand, target_still_legal
 from ..effects.madness_and_plot import plot_to_exile
 from ..effects.shared import discard_from_hand_to_graveyard
-from ..effects.stack import push_to_stack
+from ..effects.stack import push_ability_to_stack, push_to_stack
 from ..effects.state_based import check_state_based_actions
+from ..effects.stats import can_be_targeted
 from ..effects.tokens import BLOOD_TOKEN_CARD_DEF, ROBOT_TOKEN_CARD_DEF, create_token
-from ..effects.win_check import deal_damage_to_opponent
+from ..effects.win_check import deal_damage_to_opponent, deal_damage_to_player
 
 RED_CARD_CATALOG = {
     "Mountain": CardDef("Mountain", CardType.LAND, None, EffectId.MOUNTAIN),
@@ -36,7 +37,7 @@ RED_CARD_CATALOG = {
     "Fireblast": CardDef("Fireblast", CardType.INSTANT, {"generic": 4, "R": 2}, EffectId.FIREBLAST),
     # power was previously 0 (an unexplained placeholder from before combat
     # was real) -- corrected to Guttersnipe's real printed 2/2
-    # (docs/COMBAT_PLAN.md's full-stats pass).
+    #.
     "Guttersnipe": CardDef(
         "Guttersnipe", CardType.CREATURE, {"generic": 2, "R": 1}, EffectId.GUTTERSNIPE, power=2, toughness=2,
     ),
@@ -53,30 +54,78 @@ def voldaren_epicure_etb(state):
     create_token(state, BLOOD_TOKEN_CARD_DEF)
 
 
+def _resolve_burn_damage(state, captured, amount, card_def):
+    """Apply a burn spell's `amount` damage to its locked any-target when it
+    resolves off the stack. Real Magic 608.2b: if the target is now illegal
+    (a creature that has left the battlefield) the spell fizzles -- no
+    damage, already in the graveyard. A player target never becomes illegal.
+    Shared by every "N damage to any target" burn below; the card is already
+    hand->graveyard by the time this runs (its own resolve did that first,
+    same as any resolving spell)."""
+    if not target_still_legal(state, captured):
+        perm = captured[1]  # a creature target that's gone -- (name, slot) for the fizzle log
+        _log_target_fizzle(state, card_def, (perm.card_def.name, perm.slot))
+        return
+    if captured[0] == "player":
+        deal_damage_to_player(state, captured[1], amount)
+    else:  # ("creature", permanent)
+        captured[1].damage_marked += amount
+        check_state_based_actions(state)
+
+
+def _burn_choose_target_and_push(state, card_def, amount, to_graveyard, reserves_hand_card=True):
+    """Shared faithful-burn cast tail for every "deal `amount` damage to any
+    target" spell (Lightning Bolt, Fiery Temper, Fireblast, Lava Dart). The
+    target (any creature on either battlefield -- hexproof/shroud aware -- or
+    either player, yourself legal) is chosen AS THE SPELL IS CAST and locked
+    onto the stack via capture_any_target; the effect waits on the stack and,
+    on resolution, hits that exact target or fizzles (a creature target gone
+    by then, rule 608.2b). Each cast MODE supplies how its card reaches the
+    graveyard on resolution -- `to_graveyard(state, card_def)` -- and whether
+    a same-named hand copy is still spoken for (`reserves_hand_card`): a
+    normal hand cast discards from hand and reserves; madness/flashback/alt
+    have already moved the card out of its prior zone by cast time."""
+    def _on_target(state, target):
+        captured = capture_any_target(state, target)
+
+        def _resolve(state, card_def):
+            to_graveyard(state, card_def)
+            _resolve_burn_damage(state, captured, amount, card_def)
+
+        push_to_stack(state, card_def, _resolve, reserves_hand_card=reserves_hand_card)
+
+    # "any target" creature candidates exclude what the caster can't legally
+    # target: shroud (anyone) and opponent-controlled hexproof (can_be_targeted).
+    resolution.begin_choose_any_target(
+        state,
+        lambda p: p.card_type == CardType.CREATURE and can_be_targeted(state, p, state.active_idx),
+        _on_target,
+    )
+
+
+def _cast_burn_any_target(state, card_def, amount):
+    """Normal hand-cast of an 'any target' burn: card goes hand -> graveyard
+    on resolution (the 'still in hand while on the stack' convention)."""
+    _burn_choose_target_and_push(state, card_def, amount, discard_from_hand_to_graveyard)
+
+
 def cast_lightning_bolt(state, card_def):
-    """{R}: deals 3 damage to any target -- targeting is simplified to
-    "the opponent" (every other burn effect's own precedent; see
-    deal_damage_to_opponent)."""
-    discard_from_hand_to_graveyard(state, card_def)
-    deal_damage_to_opponent(state, 3)
-
-
-def _fiery_temper_damage(state):
-    deal_damage_to_opponent(state, 3)
+    """{R}: Lightning Bolt deals 3 damage to any target."""
+    _cast_burn_any_target(state, card_def, 3)
 
 
 def cast_fiery_temper(state, card_def):
-    discard_from_hand_to_graveyard(state, card_def)
-    _fiery_temper_damage(state)
+    """{1}{R}{R}: Fiery Temper deals 3 damage to any target."""
+    _cast_burn_any_target(state, card_def, 3)
 
 
 def madness_fiery_temper(state, card_def):
-    """Madness resolve: by the time this runs, execute_madness_cast has
-    already pulled the card out of exile -- never touch hand here (it
-    isn't there), just the effect, then to the graveyard like any
-    resolved spell."""
-    state.graveyard.append(card_def)
-    _fiery_temper_damage(state)
+    """Madness {R}: same "3 damage to any target", cast from exile. By the
+    time this runs (precast_choice, so execute_madness_cast calls it directly
+    rather than pushing it) the card is already out of exile -- it appends
+    itself to the graveyard on resolution, never touches hand. Target is
+    locked here as the spell is put on the stack, same as a hard cast."""
+    _burn_choose_target_and_push(state, card_def, 3, lambda s, c: s.graveyard.append(c), reserves_hand_card=False)
 
 
 def faithless_looting_discard(state):
@@ -167,9 +216,22 @@ def melded_moxite_etb(state):
 
 def activate_melded_moxite_sac(state, permanent):
     """{3}, Sacrifice this artifact: create a tapped 2/2 colorless Robot
-    artifact creature token (the same shared ROBOT_TOKEN_CARD_DEF)."""
+    artifact creature token (the same shared ROBOT_TOKEN_CARD_DEF).
+
+    Faithful timing: the sacrifice is a COST, paid
+    now on activation; creating the token is the effect, so it goes on the
+    stack (push_ability_to_stack) and resolves after a priority window.
+
+    Melded Moxite is a real (nontoken) card, so sacrificing it puts it in
+    the graveyard (real Magic 701.17 -- unlike Blood/Eldrazi Spawn tokens,
+    which cease to exist), same as Candy Trail's own sac ability."""
     state.battlefield.remove(permanent)
-    create_token(state, ROBOT_TOKEN_CARD_DEF, tapped=True)
+    state.graveyard.append(permanent.card_def)
+    state.log_event(
+        "zone_move", permanent=(permanent.card_def.name, permanent.slot), from_zone="battlefield",
+        to_zone="graveyard", reason="sacrifice",
+    )
+    push_ability_to_stack(state, permanent.card_def, lambda st: create_token(st, ROBOT_TOKEN_CARD_DEF, tapped=True))
 
 
 def guttersnipe_on_cast(state, permanent):
@@ -180,13 +242,9 @@ def guttersnipe_on_cast(state, permanent):
     deal_damage_to_opponent(state, 2)
 
 
-def _fireblast_damage(state):
-    deal_damage_to_opponent(state, 4)
-
-
 def cast_fireblast(state, card_def):
-    discard_from_hand_to_graveyard(state, card_def)
-    _fireblast_damage(state)
+    """{4}{R}{R}: Fireblast deals 4 damage to any target."""
+    _cast_burn_any_target(state, card_def, 4)
 
 
 def _fireblast_alt_extra_legal(state):
@@ -195,41 +253,48 @@ def _fireblast_alt_extra_legal(state):
 
 def cast_fireblast_alt(state, card_def):
     """You may sacrifice two Mountains rather than pay this spell's mana
-    cost. Same effect as the hard-cast above, deferred onto the stack
-    (push_to_stack) only once the sacrifice -- this alt cost -- is
-    actually paid; the damage itself waits for the stack to resolve."""
+    cost. Same "4 damage to any target" as the hard-cast; once the sacrifice
+    -- this alt cost -- is paid, the target is chosen and the effect pushed
+    onto the stack. The card goes to the graveyard as it's cast (eager, kept
+    from before this became targeted -- see drl_env's hand-count note), so
+    its stack resolve does no further zone move."""
     discard_from_hand_to_graveyard(state, card_def)
     resolution.begin_sacrifice(
         state, lambda p: p.card_def.name == "Mountain", 2,
-        on_complete=lambda s, ok: push_to_stack(s, card_def, lambda st, cd: _fireblast_damage(st), reserves_hand_card=False),
+        on_complete=lambda s, ok: _burn_choose_target_and_push(s, card_def, 4, lambda st, cd: None, reserves_hand_card=False),
     )
 
 
-def _lava_dart_damage(state):
-    deal_damage_to_opponent(state, 1)
-
-
 def cast_lava_dart(state, card_def):
-    discard_from_hand_to_graveyard(state, card_def)
-    _lava_dart_damage(state)
+    """{R}: Lava Dart deals 1 damage to any target."""
+    _cast_burn_any_target(state, card_def, 1)
 
 
 def flashback_lava_dart(state, card_def):
-    """Flashback -- Sacrifice a Mountain: no mana component at all, same
-    shape as Dread Return's Flashback but a land instead of 3 creatures --
-    same deferred-onto-the-stack treatment as Fireblast's alt cost above."""
+    """Flashback -- Sacrifice a Mountain: no mana component at all. Same "1
+    damage to any target"; once the sacrifice is paid, the target is chosen
+    and the effect pushed onto the stack. The card left the graveyard when
+    Flashback was chosen and is exiled after (untracked) -- so its stack
+    resolve does no zone move."""
     state.graveyard.remove(card_def)  # leaves the graveyard the moment Flashback is chosen -- exiled after, untracked (Dread Return's own Flashback precedent)
     resolution.begin_sacrifice(
         state, lambda p: p.card_def.name == "Mountain", 1,
-        on_complete=lambda s, ok: push_to_stack(s, card_def, lambda st, cd: _lava_dart_damage(st), reserves_hand_card=False),
+        on_complete=lambda s, ok: _burn_choose_target_and_push(s, card_def, 1, lambda st, cd: None, reserves_hand_card=False),
     )
 
 
 def cast_end_the_festivities(state, card_def):
-    """Deals 1 damage to each opponent and each creature and planeswalker
-    they control -- no opposing board modeled, so just the 1 damage."""
+    """Real text: End the Festivities deals 1 damage to EACH CREATURE -- a
+    symmetric 1-damage board sweep hitting every creature on either
+    battlefield (this deck's own included), same shape as cast_breath_weapon's
+    2-damage wipe. It does NOT hit players (the prior "1 to the opponent's
+    face" was a misread of the card)."""
     discard_from_hand_to_graveyard(state, card_def)
-    deal_damage_to_opponent(state, 1)
+    for player in state.players:
+        for permanent in player.battlefield:
+            if permanent.card_type == CardType.CREATURE:
+                permanent.damage_marked += 1
+    check_state_based_actions(state)
 
 
 def cast_breath_weapon(state, card_def):
@@ -253,18 +318,27 @@ RED_EFFECT_REGISTRY = {
     },
     EffectId.VOLDAREN_EPICURE: {
         "cast": {"resolve": lambda state, card_def: cast_permanent_from_hand(state, card_def)},
-        "etb_trigger": lambda state: voldaren_epicure_etb(state),
+        "etb_trigger": lambda state, permanent: voldaren_epicure_etb(state),
     },
     EffectId.LIGHTNING_BOLT: {
-        "cast": {"resolve": lambda state, card_def: cast_lightning_bolt(state, card_def)},
+        # precast_choice: "any target" is locked in as the spell is cast
+        # (drl_env._precast_choice_execute), not at resolution -- real Magic.
+        "cast": {"resolve": lambda state, card_def: cast_lightning_bolt(state, card_def), "precast_choice": True},
+        "pending_kinds": {"choose_any_target"},
     },
     EffectId.FIERY_TEMPER: {
-        "cast": {"resolve": lambda state, card_def: cast_fiery_temper(state, card_def)},
-        "madness": {"cost": {"R": 1}, "resolve": lambda state, card_def: madness_fiery_temper(state, card_def)},
-        # order_triggers (docs/PRIORITY_PLAN.md item 1): reachable the
+        # precast_choice on BOTH modes: "any target" is locked as the spell
+        # is put on the stack (madness routes through execute_madness_cast's
+        # own precast_choice branch), never at resolution.
+        "cast": {"resolve": lambda state, card_def: cast_fiery_temper(state, card_def), "precast_choice": True},
+        "madness": {
+            "cost": {"R": 1}, "resolve": lambda state, card_def: madness_fiery_temper(state, card_def),
+            "precast_choice": True,
+        },
+        # order_triggers: reachable the
         # instant 2+ Madness cards get discarded at once -- Faithless
         # Looting's own discard-2, right below, is exactly that source.
-        "pending_kinds": {"madness_decision", "order_triggers"},
+        "pending_kinds": {"madness_decision", "order_triggers", "choose_any_target"},
     },
     EffectId.FAITHLESS_LOOTING: {
         "cast": {"resolve": lambda state, card_def: cast_faithless_looting(state, card_def)},
@@ -294,7 +368,7 @@ RED_EFFECT_REGISTRY = {
     },
     EffectId.MELDED_MOXITE: {
         "cast": {"resolve": lambda state, card_def: cast_permanent_from_hand(state, card_def)},
-        "etb_trigger": lambda state: melded_moxite_etb(state),
+        "etb_trigger": lambda state, permanent: melded_moxite_etb(state),
         "activated_abilities": {
             "sac": {
                 "cost_key": "sac_ability_cost",
@@ -308,20 +382,23 @@ RED_EFFECT_REGISTRY = {
         "on_cast": lambda state, permanent: guttersnipe_on_cast(state, permanent),
     },
     EffectId.FIREBLAST: {
-        "cast": {"resolve": lambda state, card_def: cast_fireblast(state, card_def)},
+        # Hard cast is precast_choice (target locked at cast); the alt_cast
+        # resolve chooses its own target after the sacrifice cost and pushes
+        # itself, so it needs no precast flag -- just the pending kind.
+        "cast": {"resolve": lambda state, card_def: cast_fireblast(state, card_def), "precast_choice": True},
         "alt_cast": {
             "extra_legal": lambda state: _fireblast_alt_extra_legal(state),
             "resolve": lambda state, card_def: cast_fireblast_alt(state, card_def),
         },
-        "pending_kinds": {"sacrifice"},
+        "pending_kinds": {"sacrifice", "choose_any_target"},
     },
     EffectId.LAVA_DART: {
-        "cast": {"resolve": lambda state, card_def: cast_lava_dart(state, card_def)},
+        "cast": {"resolve": lambda state, card_def: cast_lava_dart(state, card_def), "precast_choice": True},
         "flashback": {
             "legal": lambda state: any(p.card_def.name == "Mountain" for p in state.battlefield),
             "resolve": lambda state, card_def: flashback_lava_dart(state, card_def),
         },
-        "pending_kinds": {"sacrifice"},
+        "pending_kinds": {"sacrifice", "choose_any_target"},
     },
     EffectId.END_THE_FESTIVITIES: {
         "cast": {"resolve": lambda state, card_def: cast_end_the_festivities(state, card_def)},
@@ -409,3 +486,81 @@ if __name__ == "__main__":
     assert state3.pending_resolution is None
 
     print("red_cards.py Highway Robbery self-check: OK")
+
+    # Lightning Bolt: faithful "3 damage to any target" -- target locked at
+    # cast (capture_any_target), applied or fizzled at resolution. Creature
+    # on either side, either player (self is legal), and the 608.2b fizzle
+    # when the chosen creature leaves the battlefield before it resolves.
+    import contextlib
+    import io
+
+    from .. import resolution as _res
+    from ..effects.stack import resolve_top_of_stack
+
+    bolt = CardDef("Lightning Bolt", CardType.INSTANT, {"R": 1}, EffectId.LIGHTNING_BOLT)
+
+    def _fresh_bolt_state():
+        s = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
+        s.hand = [bolt]
+        return s
+
+    # (a) opponent creature -> 3 damage marked on that exact creature
+    state = _fresh_bolt_state()
+    opp_creature = Permanent(CardDef("Grizzly Bears", CardType.CREATURE, None, EffectId.FILLER, power=2, toughness=4))
+    opp_creature.slot = 1
+    state.players[1].battlefield = [opp_creature]
+    cast_lightning_bolt(state, bolt)  # begins choose_any_target (precast)
+    _res.execute_choose_any_target_creature(state, 1, "Grizzly Bears", 1)  # lock the opponent's creature
+    assert state.hand == [bolt]  # still in hand while paid-but-unresolved on the stack
+    resolve_top_of_stack(state)
+    assert opp_creature.damage_marked == 3 and bolt in state.graveyard
+
+    # (b) opponent player -> 3 to the face (20 -> 17)
+    state = _fresh_bolt_state()
+    cast_lightning_bolt(state, bolt)
+    _res.execute_choose_any_target_player(state, 1)
+    resolve_top_of_stack(state)
+    assert state.players[1].life_total == 17  # 20 - 3 to the opponent's face
+
+    # (c) yourself -> legal, 3 to own face (20 -> 17), pure self-damage
+    state = _fresh_bolt_state()
+    cast_lightning_bolt(state, bolt)
+    _res.execute_choose_any_target_player(state, 0)
+    resolve_top_of_stack(state)
+    assert state.players[0].life_total == 17  # 3 to your OWN face -- pure self-damage, never opponent
+
+    # (d) FIZZLE: chosen creature gone before resolution -> no effect
+    state = _fresh_bolt_state()
+    doomed = Permanent(CardDef("Grizzly Bears", CardType.CREATURE, None, EffectId.FILLER, power=2, toughness=4))
+    doomed.slot = 1
+    state.players[1].battlefield = [doomed]
+    cast_lightning_bolt(state, bolt)
+    _res.execute_choose_any_target_creature(state, 1, "Grizzly Bears", 1)
+    state.players[1].battlefield = []  # target leaves before the bolt resolves
+    fizzle_log = io.StringIO()
+    with contextlib.redirect_stdout(fizzle_log):
+        resolve_top_of_stack(state)
+    assert "fizzle" in fizzle_log.getvalue().lower()
+    assert bolt in state.graveyard and state.players[1].life_total == 20  # nothing happened
+
+    # (e) hexproof: an OPPONENT'S hexproof creature is NOT a legal Bolt
+    # target, but the caster's OWN hexproof creature still is (boggles' whole
+    # point -- opponents can't burn its bogles).
+    from .. import registry as _reg
+    _fb = _reg.EFFECT_REGISTRY[EffectId.FILLER]
+    try:
+        _reg.EFFECT_REGISTRY[EffectId.FILLER] = {"keywords": {"hexproof"}}
+        state = _fresh_bolt_state()
+        opp_hex = Permanent(CardDef("Hex Bear", CardType.CREATURE, None, EffectId.FILLER, power=1, toughness=1))
+        mine_hex = Permanent(CardDef("Hex Bear", CardType.CREATURE, None, EffectId.FILLER, power=1, toughness=1))
+        opp_hex.slot = mine_hex.slot = 1
+        state.players[1].battlefield = [opp_hex]  # opponent's -- untargetable by me
+        state.players[0].battlefield = [mine_hex]  # my own -- still targetable by me
+        cast_lightning_bolt(state, bolt)
+        creature_opts = _res.choose_any_target_creature_options(state)
+        assert (0, "Hex Bear", 1) in creature_opts  # my own hexproof creature is fair game to me
+        assert (1, "Hex Bear", 1) not in creature_opts  # the opponent's is not
+    finally:
+        _reg.EFFECT_REGISTRY[EffectId.FILLER] = _fb
+
+    print("red_cards.py Lightning Bolt any-target self-check: OK")

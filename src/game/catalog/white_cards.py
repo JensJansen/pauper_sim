@@ -24,9 +24,8 @@ WHITE_CARD_CATALOG = {
 
 def cartouche_of_solidarity_attach(state, aura):
     """ETB: create a 1/1 white Warrior creature token with vigilance --
-    see EffectId.WARRIOR_TOKEN's own registry entry below (docs/
-    COMBAT_PLAN.md step 7: attacking no longer taps it, combat.
-    declare_attacker)."""
+    see EffectId.WARRIOR_TOKEN's own registry entry below (vigilance means
+    attacking no longer taps it, combat.declare_attacker)."""
     create_token(state, WARRIOR_TOKEN_CARD_DEF)
 
 
@@ -47,15 +46,14 @@ WHITE_EFFECT_REGISTRY = {
     },
     EffectId.CARTOUCHE_OF_SOLIDARITY: {
         # Real text: enchanted creature also gets +1/+1 (both pt_bonus and
-        # toughness_bonus below -- docs/COMBAT_PLAN.md's full-stats pass)
-        # and has first strike (docs/COMBAT_PLAN.md step 7 -- combat_
-        # damage_step's own first-strike sub-step).
+        # toughness_bonus below -- full-stats pass)
+        # and has first strike.
         "cast": {
             "resolve": lambda state, card_def: cast_cartouche_of_solidarity(state, card_def),
             "extra_legal": lambda state: any_creature_on_battlefield(state),
             "precast_choice": True,  # real MTG "enchant target creature" -- must be chosen before the stack, see drl_env._precast_choice_execute
         },
-        "pending_kinds": {"choose_permanent"},
+        "pending_kinds": {"choose_any_target"},  # Aura: cast_aura targets any creature (either side), hexproof-aware
         "pt_bonus": lambda state, aura: 1,
         "toughness_bonus": lambda state, aura: 1,
         "keywords": {"first_strike"},
@@ -64,14 +62,13 @@ WHITE_EFFECT_REGISTRY = {
         # Real text: +1/+1 for each enchantment you control -- INCLUDING
         # itself (unlike Ancestral Mask's "each OTHER enchantment";
         # verified via Scryfall, not guessed) -- and has first strike
-        # (docs/COMBAT_PLAN.md step 7, same as Cartouche of Solidarity
-        # above).
+        #.
         "cast": {
             "resolve": lambda state, card_def: cast_ethereal_armor(state, card_def),
             "extra_legal": lambda state: any_creature_on_battlefield(state),
             "precast_choice": True,  # real MTG "enchant target creature" -- must be chosen before the stack, see drl_env._precast_choice_execute
         },
-        "pending_kinds": {"choose_permanent"},
+        "pending_kinds": {"choose_any_target"},  # Aura: cast_aura targets any creature (either side), hexproof-aware
         "pt_bonus": lambda state, aura: enchantment_count(state, aura),
         "toughness_bonus": lambda state, aura: enchantment_count(state, aura),
         "keywords": {"first_strike"},

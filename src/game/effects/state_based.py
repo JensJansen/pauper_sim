@@ -12,10 +12,7 @@ HAND_SIZE_LIMIT = 7  # real Magic's own rule -- not a per-config tunable, no car
 
 
 def check_state_based_actions(state):
-    """Creature-death check (docs/COMBAT_PLAN.md step 6, generalized by
-    docs/PRIORITY_PLAN.md item 2 to run before every priority
-    consultation, not just after combat damage -- real Magic 704.3: SBAs
-    are checked every time a player would receive priority): every
+    """Creature-death check: every
     creature on EITHER player's battlefield with damage_marked >= its own
     effective permanent_toughness dies -- removed to the graveyard, its
     own attached Aura(s) orphaned along with it (Aura-orphaning:
@@ -40,6 +37,28 @@ def check_state_based_actions(state):
     dead = [p for p in candidates if p.damage_marked >= stats.permanent_toughness(state, p)]
     for permanent in dead:
         _destroy_creature(state, permanent)
+
+
+def _queue_leave_triggers(state, permanent):
+    """Queue a leaves-the-battlefield triggered ability (Mesmeric Fiend's
+    exiled-card return) for a permanent that JUST left the battlefield, so
+    game.turn's priority round puts it on the stack (real Magic 603.3 -- an
+    LTB trigger goes on the stack, doesn't take effect the instant it fires).
+    `permanent` is already off the battlefield but still carries whatever the
+    trigger needs on its flags (the linked exiled card). No-op unless the
+    card's effect_id has an "ltb_trigger" spec.
+
+    Called from the two -- and, in this card pool, only -- ways a creature
+    (the sole card type with an LTB trigger here) leaves: death (below) and
+    being sacrificed (resolution.execute_sacrifice_option inlines the identical
+    three lines, since it can't import this module without a cycle). No other
+    removal path in this pool takes a creature off the battlefield (bounce is
+    lands-only; every sacrifice/exile ability sacrifices its own non-creature
+    source), so this is complete, not a simplification -- thread it through a
+    new removal site if a future card ever makes one reachable."""
+    spec = registry.EFFECT_REGISTRY.get(permanent.card_def.effect_id, {})
+    if spec.get("ltb_trigger") is not None:
+        state.trigger_queue.append({"type": "ltb", "card_def": permanent.card_def, "permanent": permanent})
 
 
 def _destroy_creature(state, permanent):
@@ -93,6 +112,7 @@ def _destroy_creature(state, permanent):
         "state_based_death", permanent=(permanent.card_def.name, permanent.slot), owner_idx=owner_idx,
         to_zone=("ceases_to_exist" if is_token else "graveyard"),
     )
+    _queue_leave_triggers(state, permanent)
     orphaned = [p for p in owner.battlefield if p.flags.get("enchanting") is permanent]
     for aura in orphaned:
         spec = registry.EFFECT_REGISTRY.get(aura.card_def.effect_id, {})
@@ -132,7 +152,7 @@ def cleanup_step(state):
     n<=0 short-circuit handles that for free, no guard needed here).
 
     Newly relevant now that 2-player games run uncapped
-    (docs/MULTIPLAYER_ENGINE_PLAN.md) -- without this there was no
+    -- without this there was no
     ceiling on hand size in an adversarial game at all."""
     damaged = [
         (p.card_def.name, p.slot) for player in state.players for p in player.battlefield if p.damage_marked > 0
@@ -148,7 +168,7 @@ def cleanup_step(state):
 
 if __name__ == "__main__":
     # ponytail self-check: run via `python -m game.effects.state_based`
-    # from src/. Aura-orphaning (docs/COMBAT_PLAN.md step 6) and
+    # from src/. Aura-orphaning and
     # token-death -- the two scenarios that are specific to THIS module
     # (check_state_based_actions/_destroy_creature), as opposed to the
     # combat+SBA handoff exercised together in effects/integration_check.py.

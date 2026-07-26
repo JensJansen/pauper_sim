@@ -19,12 +19,17 @@ counts (itself included)."""
 
 from .. import resolution
 from ..cards import CardDef, CardType, EffectId
-from ..effects.casting import cast_aura, cast_permanent_from_hand, enters_battlefield
+from ..effects.casting import (
+    _log_target_fizzle, capture_any_target, cast_aura, cast_permanent_from_hand, enters_battlefield, target_still_legal,
+)
 from ..effects.shared import any_creature_on_battlefield, discard_from_hand_to_graveyard, find_and_remove_by_name, find_to_hand
-from ..effects.stack import push_to_stack
-from ..effects.stats import enchantment_count
-from ..effects.tokens import ELDRAZI_SPAWN_TOKEN_CARD_DEF, activate_eldrazi_spawn_sac, create_token
-from ..effects.win_check import gain_life
+from ..effects.stack import push_ability_to_stack, push_to_stack
+from ..effects.state_based import check_state_based_actions
+from ..effects.stats import can_be_targeted, enchantment_count, has_keyword, permanent_power, permanent_toughness
+from ..effects.tokens import (
+    ELDRAZI_SPAWN_TOKEN_CARD_DEF, FOOD_TOKEN_CARD_DEF, activate_eldrazi_spawn_sac, activate_food_sac, create_token,
+)
+from ..effects.win_check import deal_damage_to_opponent, gain_life
 from ..mana import COLORS
 
 GREEN_CARD_CATALOG = {
@@ -79,13 +84,13 @@ GREEN_CARD_CATALOG = {
     "Malevolent Rumble": CardDef(
         "Malevolent Rumble", CardType.SORCERY, {"generic": 1, "G": 1}, EffectId.MALEVOLENT_RUMBLE,
     ),
-    # Functional blank for now: real text needs an opposing creature and a
-    # life total, neither modeled in this solitaire simulator (no other
-    # card here has ever needed either). No registry entry below -- same
-    # mechanism that makes Bramble Wurm/Breath Weapon uncastable -- so
-    # this never appears as a legal action. Cost/type kept accurate
-    # (verified via Scryfall) for card art and for whenever an
-    # adversarial/opponent mode makes it relevant to revisit.
+    # Real one-sided fight (cast_ram_through): target creature you control
+    # deals its power to target creature you don't control, trample overflow
+    # to that creature's controller. Both targets locked at cast, resolved
+    # via the shared combat damage-marking + state-based death machinery.
+    # Needs a real opponent creature to target, so it's only castable in a
+    # 2-player game (_ram_through_extra_legal) -- a documented no-op in any
+    # 1-player config, like every other opponent-requiring effect here.
     "Ram Through": CardDef("Ram Through", CardType.INSTANT, {"generic": 1, "G": 1}, EffectId.RAM_THROUGH),
 }
 
@@ -317,14 +322,13 @@ def quirion_ranger_untap_legal(state, permanent):
 
 
 def quirion_ranger_untap_resolve(state, permanent):
-    """Real text says "untap TARGET creature" -- genuinely a target, same
-    as cast_aura's own Auras. Doesn't need cast_aura's cast-time-selection/
-    resolve-time-fizzle treatment though: activated abilities in this
-    engine resolve immediately once paid (_activate_execute, no
-    push_to_stack, no stack step at all), so there's no cast/resolve gap
-    for the target to become illegal across -- the (name, slot) addressing
-    below still applies (same "disambiguate identical copies" reason as
-    everywhere else), it just never needs a fizzle path to go with it."""
+    """"Return a Forest you control to hand: Untap target creature." Faithful
+    now: the Forest bounce is the COST (paid immediately on activation), and
+    the untap is a real activated ability that goes ON THE STACK -- its
+    target (any creature on either battlefield, hexproof-aware) is locked
+    here at activation, then the creature is untapped when the ability
+    resolves off the stack, or the ability fizzles if that exact creature
+    has left the battlefield by then (608.2b) or is illegal."""
     permanent.flags["used_this_turn"] = True
     forest = next(p for p in state.battlefield if p.card_def.name == "Forest")
     state.battlefield.remove(forest)
@@ -334,15 +338,26 @@ def quirion_ranger_untap_resolve(state, permanent):
         reason="quirion_ranger_bounce",
     )
 
-    def _on_chosen(state, choice):
-        if choice is None:
-            return
-        name, slot = choice
-        target = next(p for p in state.battlefield if p.card_def.name == name and p.slot == slot)
-        target.tapped = False
-        state.log_event("untap", permanent=(name, slot), reason="quirion_ranger")
+    def _on_target(state, target_descriptor):
+        captured = capture_any_target(state, target_descriptor)
 
-    resolution.begin_choose_permanent(state, lambda p: p.card_type == CardType.CREATURE, _on_chosen)
+        def _resolve(state, card_def):
+            if not target_still_legal(state, captured):
+                where = (captured[1].card_def.name, captured[1].slot) if captured is not None else None
+                _log_target_fizzle(state, card_def, where)
+                return
+            target = captured[1]
+            target.tapped = False
+            state.log_event("untap", permanent=(target.card_def.name, target.slot), reason="quirion_ranger")
+
+        push_to_stack(state, permanent.card_def, _resolve, reserves_hand_card=False)
+
+    resolution.begin_choose_any_target(
+        state,
+        lambda p: p.card_type == CardType.CREATURE and can_be_targeted(state, p, state.active_idx),
+        _on_target,
+        allow_players=False,
+    )
 
 
 def _cast_winding_way(state, card_def, chosen_type):
@@ -551,11 +566,9 @@ def cast_utopia_sprawl(state, card_def, color):
 
 def abundant_growth_attach(state, aura):
     state.draw(1)
-    # Real card grants any of 5 colors; scoped to this deck's own two
-    # colors as a documented simplification (a design choice, not
-    # Scryfall data, same category as every creature's own P/T here) --
-    # flag if full 5-color flexibility is ever wanted.
-    aura.flags["bonus_mana_colors"] = {"G", "W"}
+    # Real card: enchanted land taps for one mana of ANY color -- all 5
+    # (WUBRG), not colorless. mana.py reads bonus_mana_colors as the choice.
+    aura.flags["bonus_mana_colors"] = set(COLORS)
 
 
 def cast_abundant_growth(state, card_def):
@@ -614,9 +627,146 @@ def activate_bramble_wurm_gy(state, card_def):
     """{2}{G}, Exile this card from your graveyard: gain 5 life. Removed
     from the graveyard only -- exile itself is untracked, same convention
     as Relic of Progenitus' own graveyard-exile ability
-    (game.catalog.colorless_cards)."""
+    (game.catalog.colorless_cards).
+
+    Faithful timing: exiling from the graveyard is
+    a COST, paid now on activation; gaining 5 life is the effect, so it
+    goes on the stack (push_ability_to_stack) and resolves after a priority
+    window."""
     state.graveyard.remove(card_def)
-    gain_life(state, 5)
+    push_ability_to_stack(state, card_def, lambda st: gain_life(st, 5))
+
+
+def _ram_through_extra_legal(state):
+    """Castable only with BOTH a legal "creature you control" and a legal
+    "creature you don't control" available to target -- real Magic won't let
+    you cast a spell without a legal choice for each of its targets. A
+    1-player config has no opponent creature, so Ram Through is simply never
+    castable there (documented no-op, same as every other opponent-requiring
+    effect in this engine)."""
+    if len(state.players) < 2:
+        return False
+    idx = state.active_idx
+    mine = any(p.card_type == CardType.CREATURE and can_be_targeted(state, p, idx) for p in state.battlefield)
+    theirs = any(p.card_type == CardType.CREATURE and can_be_targeted(state, p, idx) for p in state.opponent.battlefield)
+    return mine and theirs
+
+
+def cast_ram_through(state, card_def):
+    """{1}{G} Instant: target creature you control deals damage equal to its
+    power to target creature you don't control; if your creature has trample,
+    the excess (beyond lethal) is dealt to that creature's controller instead.
+
+    Two targets, both chosen and locked as the spell is cast (real Magic --
+    precast_choice), then rechecked by object identity on resolution: if
+    EITHER the source or the target creature has left the battlefield (or
+    otherwise become illegal) by then, the spell fizzles (608.2c -- source
+    gone means nothing to deal damage, target gone means nothing to deal it
+    to; either way, no damage). The damage is marked like combat damage and
+    lethality is resolved by the shared state-based-action check, so the
+    target dies exactly when combat would kill it; trample overflow spills to
+    its controller through the same deal_damage_to_opponent path combat
+    uses."""
+    idx = state.active_idx
+
+    def _on_source_chosen(state, source_descriptor):
+        cap_source = capture_any_target(state, source_descriptor)
+
+        def _on_target_chosen(state, target_descriptor):
+            cap_target = capture_any_target(state, target_descriptor)
+
+            def _resolve(state, card_def):
+                discard_from_hand_to_graveyard(state, card_def)  # Ram Through itself -> graveyard
+                if not target_still_legal(state, cap_source) or not target_still_legal(state, cap_target):
+                    where = (cap_target[1].card_def.name, cap_target[1].slot) if cap_target is not None else None
+                    _log_target_fizzle(state, card_def, where)
+                    return
+                source, target = cap_source[1], cap_target[1]
+                power = permanent_power(state, source)
+                if power <= 0:
+                    return  # deals 0 damage -- nothing happens
+                if has_keyword(state, source, "trample"):
+                    lethal = max(permanent_toughness(state, target) - target.damage_marked, 0)
+                    to_creature = min(power, lethal)
+                    to_controller = power - to_creature
+                else:
+                    to_creature, to_controller = power, 0
+                target.damage_marked += to_creature
+                state.log_event(
+                    "fight_damage", source=(source.card_def.name, source.slot),
+                    target=(target.card_def.name, target.slot), amount=to_creature,
+                    trample_excess_to_controller=to_controller,
+                )
+                if to_controller > 0:
+                    deal_damage_to_opponent(state, to_controller)  # "that creature's controller" == the opponent
+                check_state_based_actions(state)  # kills the target if the damage was lethal
+
+            push_to_stack(state, card_def, _resolve)
+
+        # Second target: a creature you DON'T control (opponent's side),
+        # hexproof/shroud-aware.
+        resolution.begin_choose_any_target(
+            state,
+            lambda p: p not in state.battlefield and p.card_type == CardType.CREATURE and can_be_targeted(state, p, idx),
+            _on_target_chosen,
+            allow_players=False,
+        )
+
+    # First target: a creature you control (your own side). Shroud-aware
+    # (your own shroud creature can't be targeted even by you); hexproof only
+    # stops opponents, so your own hexproof creature stays a legal choice.
+    resolution.begin_choose_any_target(
+        state,
+        lambda p: p in state.battlefield and p.card_type == CardType.CREATURE and can_be_targeted(state, p, idx),
+        _on_source_chosen,
+        allow_players=False,
+    )
+
+
+def masked_vandal_etb(state):
+    """When Masked Vandal enters, you may exile a creature card from your
+    graveyard. If you do, exile target artifact or enchantment an opponent
+    controls. (Changeling is a no-op -- no tribal-synergy card exists in this
+    pool, same documented drop as Rooftop Percher's Changeling.)
+
+    "target artifact or enchantment an opponent controls" needs a real
+    opponent with a legal such permanent -- with none (a 1-player config, or
+    an opponent with only hexproof/shroud artifacts/enchantments), the ability
+    has no legal target and does nothing at all (real Magic: a targeted
+    ability with no legal target is removed from the stack), so the may-exile
+    isn't even offered. Runs as this ETB resolves off the stack (the trigger
+    queue), choosing its target at resolution -- the same ETB-targets-at-
+    resolution convention Pinnacle Kill-Ship's own ETB already follows."""
+    if len(state.players) < 2:
+        return
+
+    def _targetable(p):
+        return p.card_type in (CardType.ARTIFACT, CardType.ENCHANTMENT) and can_be_targeted(state, p, state.active_idx)
+
+    if not any(_targetable(p) for p in state.opponent.battlefield):
+        return
+
+    def _after_gy(state, name):
+        if name is None:
+            return  # declined the "you may", or no creature card in the graveyard
+        found = next(c for c in state.graveyard if c.name == name)
+        state.graveyard.remove(found)  # exiled (untracked) -- paying the "if you do"
+        state.log_event("zone_move", card=found.name, from_zone="graveyard", to_zone="exile_untracked", reason="masked_vandal")
+
+        def _on_target(state, choice):
+            if choice is None:
+                return  # no legal target left -- graceful no-op
+            tname, tslot = choice
+            perm = next(p for p in state.opponent.battlefield if p.card_def.name == tname and p.slot == tslot)
+            state.opponent.battlefield.remove(perm)  # exiled, untracked
+            state.log_event(
+                "zone_move", permanent=(tname, tslot), from_zone="battlefield", to_zone="exile_untracked",
+                reason="masked_vandal",
+            )
+
+        resolution.begin_choose_opponent_permanent(state, _targetable, _on_target)
+
+    resolution.begin_choose_graveyard_card(state, lambda c: c.card_type == CardType.CREATURE, _after_gy, optional=True)
 
 
 GREEN_EFFECT_REGISTRY = {
@@ -624,17 +774,37 @@ GREEN_EFFECT_REGISTRY = {
         "mana": ("fixed", "G"),
     },
     EffectId.GENEROUS_ENT: {
-        # Never hard-cast -- only forestcycled.
+        # Reach + ETB "create a Food token" -- the real hard-cast, alongside
+        # its Forestcycling {1}. Reach lets it block fliers (combat.can_block);
+        # the Food token has its own "{2},{T},Sacrifice: gain 3 life" ability
+        # (FOOD_TOKEN registry below). Power/toughness stays this catalog's own
+        # design-choice value (not Scryfall's 5/7).
+        "cast": {"resolve": lambda state, card_def: cast_permanent_from_hand(state, card_def)},
+        "keywords": {"reach"},
+        "etb_trigger": lambda state, permanent: create_token(state, FOOD_TOKEN_CARD_DEF),
         "forestcycle": {
             "cost_key": "forestcycling_cost",
             "resolve": lambda state, card_def: forestcycle_generous_ent(state, card_def),
         },
     },
+    EffectId.FOOD_TOKEN: {
+        # "{2}, {T}, Sacrifice this token: You gain 3 life." Never a decklist
+        # card -- only ever created by Generous Ent's ETB (create_token). Its
+        # {2} + untapped precondition come from the generic cost_key wiring,
+        # same as Blood/Candy Trail.
+        "activated_abilities": {
+            "sac": {
+                "cost_key": "sac_ability_cost",
+                "resolve": lambda state, permanent: activate_food_sac(state, permanent),
+            },
+        },
+    },
     EffectId.MASKED_VANDAL: {
-        # No ability -- functionally a vanilla 1/3 for {1}{G} (real
-        # ability, "exile a creature card from graveyard: exile target
-        # artifact/enchantment," unimplemented -- see design discussion).
         "cast": {"resolve": lambda state, card_def: cast_permanent_from_hand(state, card_def)},
+        # "you may exile a creature card from your graveyard. If you do,
+        # exile target artifact or enchantment an opponent controls."
+        "etb_trigger": lambda state, permanent: masked_vandal_etb(state),
+        "pending_kinds": {"choose_graveyard_card", "choose_opponent_permanent"},
     },
     EffectId.SARULI_CARETAKER: {
         "cast": {"resolve": lambda state, card_def: cast_permanent_from_hand(state, card_def)},
@@ -665,12 +835,12 @@ GREEN_EFFECT_REGISTRY = {
         "pending_kinds": {"search_fetch"},
     },
     EffectId.SAGU_WILDLING: {
-        "etb_trigger": lambda state: gain_life(state, 3),
+        "etb_trigger": lambda state, permanent: gain_life(state, 3),
         "keywords": {"flying"},
     },
     EffectId.GATECREEPER_VINE: {
         "cast": {"resolve": lambda state, card_def: cast_permanent_from_hand(state, card_def)},
-        "etb_trigger": lambda state: gatecreeper_vine_etb(state),
+        "etb_trigger": lambda state, permanent: gatecreeper_vine_etb(state),
         "pending_kinds": {"search_fetch"},
     },
     EffectId.NYXBORN_HYDRA: {
@@ -705,7 +875,17 @@ GREEN_EFFECT_REGISTRY = {
                 "resolve": lambda state, permanent: quirion_ranger_untap_resolve(state, permanent),
             },
         },
-        "pending_kinds": {"choose_permanent"},
+        # untap target creature is now a real ability on the stack, any creature
+        # either side (quirion_ranger_untap_resolve) -- hence choose_any_target.
+        "pending_kinds": {"choose_any_target"},
+    },
+    EffectId.RAM_THROUGH: {
+        "cast": {
+            "resolve": lambda state, card_def: cast_ram_through(state, card_def),
+            "extra_legal": lambda state: _ram_through_extra_legal(state),
+            "precast_choice": True,  # both targets locked at cast; the one-sided fight waits on the stack
+        },
+        "pending_kinds": {"choose_any_target"},
     },
     EffectId.WINDING_WAY: {
         "cast_modes": {
@@ -750,12 +930,10 @@ GREEN_EFFECT_REGISTRY = {
     },
     EffectId.BRAMBLE_WURM: {
         "cast": {"resolve": lambda state, card_def: cast_permanent_from_hand(state, card_def)},
-        "etb_trigger": lambda state: gain_life(state, 5),
-        # Real text also has Reach -- not modeled (stats.py's own
-        # confirmed keyword scope excludes it, only ever mattering for
-        # blocking a flier, which never happens under this deck's
-        # combat_enabled=False). Trample IS modeled -- reused unchanged.
-        "keywords": {"trample"},
+        "etb_trigger": lambda state, permanent: gain_life(state, 5),
+        # Real text: Trample + Reach. Reach lets it block flyers
+        # (combat.can_block) -- e.g. an opposing Kitchen Imp.
+        "keywords": {"trample", "reach"},
         "graveyard_ability": {
             "cost_key": "gy_ability_cost",
             "resolve": lambda state, card_def: activate_bramble_wurm_gy(state, card_def),
@@ -764,24 +942,23 @@ GREEN_EFFECT_REGISTRY = {
 
     # --- boggles deck ---
     EffectId.GLADECOVER_SCOUT: {
-        # No ability -- functionally a vanilla 1/1 hexproof for {G}.
-        # Hexproof is a documented no-op: no opposing spells/abilities
-        # exist in this solitaire simulator to be hexproof against.
+        # Vanilla 1/1 with hexproof for {G} -- now a REAL targeting
+        # restriction (stats.can_be_targeted), same as Slippery Bogle.
         "cast": {"resolve": lambda state, card_def: cast_permanent_from_hand(state, card_def)},
+        "keywords": {"hexproof"},
     },
     EffectId.SILHANA_LEDGEWALKER: {
-        # Real text: "can't be blocked except by creatures with flying" --
-        # modeled as the "flying" keyword (docs/COMBAT_PLAN.md step 7):
-        # functionally identical blocking restriction in a ruleset with no
-        # reach (not modeled -- no card grants it), so one flag covers
-        # both this and real flying (Kitchen Imp) rather than a second,
-        # near-duplicate keyword.
+        # Real text: Hexproof + "can't be blocked except by creatures with
+        # flying". The evasion is its OWN attacker-side restriction
+        # ("cant_be_blocked_except_by_flying", combat.can_block) -- distinct
+        # from real flying, so unlike a true flier (Kitchen Imp) Silhana can
+        # NOT itself block flyers. Hexproof is the targeting restriction
+        # (stats.can_be_targeted).
         "cast": {"resolve": lambda state, card_def: cast_permanent_from_hand(state, card_def)},
-        "keywords": {"flying"},
+        "keywords": {"cant_be_blocked_except_by_flying", "hexproof"},
     },
     EffectId.RANCOR: {
-        # Real text also grants trample (docs/COMBAT_PLAN.md step 7 --
-        # combat_damage_step's own trample-aware damage assignment) and
+        # Real text also grants trample and
         # returns Rancor to hand instead of the graveyard when it's put
         # there from the battlefield -- modeled via
         # returns_to_hand_when_orphaned now that combat death (step 6)
@@ -794,7 +971,7 @@ GREEN_EFFECT_REGISTRY = {
             "extra_legal": lambda state: any_creature_on_battlefield(state),
             "precast_choice": True,  # real MTG "enchant target creature" -- must be chosen before the stack, see drl_env._precast_choice_execute
         },
-        "pending_kinds": {"choose_permanent"},
+        "pending_kinds": {"choose_any_target"},  # Aura: cast_aura now targets any creature (either side), hexproof-aware
         "pt_bonus": lambda state, aura: 2,
         "returns_to_hand_when_orphaned": True,
         "keywords": {"trample"},
@@ -808,11 +985,14 @@ GREEN_EFFECT_REGISTRY = {
             "extra_legal": lambda state: any_creature_on_battlefield(state),
             "precast_choice": True,  # real MTG "enchant target creature" -- must be chosen before the stack, see drl_env._precast_choice_execute
         },
-        "pending_kinds": {"choose_permanent"},
+        "pending_kinds": {"choose_any_target"},  # Aura: cast_aura now targets any creature (either side), hexproof-aware
         "pt_bonus": lambda state, aura: 2 * (enchantment_count(state, aura) - 1),
         "toughness_bonus": lambda state, aura: 2 * (enchantment_count(state, aura) - 1),
     },
     EffectId.UTOPIA_SPRAWL: {
+        # Real "As ~ enters, choose a color" -- one cast mode per color of
+        # the five (WUBRG); the chosen color is the bonus mana the enchanted
+        # Forest adds. precast_choice: the Forest target is chosen at cast.
         "cast_modes": {
             "green": {
                 "resolve": lambda state, card_def: cast_utopia_sprawl(state, card_def, "G"),
@@ -824,8 +1004,23 @@ GREEN_EFFECT_REGISTRY = {
                 "extra_legal": lambda state: any(p.card_def.name == "Forest" for p in state.battlefield),
                 "precast_choice": True,
             },
+            "blue": {
+                "resolve": lambda state, card_def: cast_utopia_sprawl(state, card_def, "U"),
+                "extra_legal": lambda state: any(p.card_def.name == "Forest" for p in state.battlefield),
+                "precast_choice": True,
+            },
+            "black": {
+                "resolve": lambda state, card_def: cast_utopia_sprawl(state, card_def, "B"),
+                "extra_legal": lambda state: any(p.card_def.name == "Forest" for p in state.battlefield),
+                "precast_choice": True,
+            },
+            "red": {
+                "resolve": lambda state, card_def: cast_utopia_sprawl(state, card_def, "R"),
+                "extra_legal": lambda state: any(p.card_def.name == "Forest" for p in state.battlefield),
+                "precast_choice": True,
+            },
         },
-        "pending_kinds": {"choose_permanent"},
+        "pending_kinds": {"choose_any_target"},  # Aura: cast_aura targets any Forest (either side), hexproof/shroud aware
     },
     EffectId.ABUNDANT_GROWTH: {
         "cast": {
@@ -833,7 +1028,7 @@ GREEN_EFFECT_REGISTRY = {
             "extra_legal": lambda state: any(p.card_def.card_type == CardType.LAND for p in state.battlefield),
             "precast_choice": True,  # real MTG "enchant target land" -- must be chosen before the stack, see drl_env._precast_choice_execute
         },
-        "pending_kinds": {"choose_permanent"},
+        "pending_kinds": {"choose_any_target"},  # Aura: cast_aura targets any land (either side), hexproof/shroud aware
         # Static fact for drl_env.build_action_table's own action-table
         # pre-registration (which land x color "Choose" actions need to
         # exist at all, before any game state does) -- kept in sync by
@@ -923,8 +1118,13 @@ if __name__ == "__main__":
     )
     state.graveyard = [wurm]
     activate_bramble_wurm_gy(state, wurm)
-    assert state.graveyard == []
-    assert state.life_total == 25  # STARTING_LIFE (20) + 5
+    assert state.graveyard == []  # exiled -- a cost, paid immediately on activation
+    # The life gain is the ability's EFFECT -- now on the stack (faithful
+    # timing), not applied the instant the cost was paid.
+    from ..effects.stack import resolve_top_of_stack
+    assert len(state.stack) == 1 and state.life_total == 20
+    resolve_top_of_stack(state)
+    assert state.life_total == 25  # STARTING_LIFE (20) + 5, once the effect resolves
     print("green_cards.py Bramble Wurm self-check: OK")
 
     # Sagu Wildling's Omen: cast_roost_seek shuffles ITSELF into the
@@ -953,17 +1153,167 @@ if __name__ == "__main__":
     state.hand.append(state.library.pop(0))
     cast_sagu_wildling_creature(state, SAGU_WILDLING_CREATURE_CARD_DEF)
     assert [c.name for c in state.hand] == ["Forest"]  # the redrawn "Sagu Wildling" left hand, "Forest" untouched
-    assert state.life_total == 23  # STARTING_LIFE (20) + 3
+    # The ETB gain-3 is queued now (faithful timing) -- resolve it off the
+    # stack, exactly as game.turn's priority round would.
+    from ..effects.triggers import promote_triggers_to_stack
+    assert state.life_total == 20
+    promote_triggers_to_stack(state)
+    resolve_top_of_stack(state)
+    assert state.life_total == 23  # STARTING_LIFE (20) + 3, once the ETB resolves
     sagu_permanent = next(p for p in state.battlefield if p.card_def.name == "Sagu Wildling")
     assert sagu_permanent.card_def is SAGU_WILDLING_CREATURE_CARD_DEF
     print("green_cards.py Sagu Wildling Omen self-check: OK")
 
-    # Ram Through: a documented functional blank -- no registry entry at
-    # all, so it can never appear as a "Cast" action (same mechanism that
-    # made Bramble Wurm/Breath Weapon uncastable before their own recent
-    # full implementations).
-    assert registry.EFFECT_REGISTRY.get(EffectId.RAM_THROUGH, {}) == {}
+    # Ram Through ({1}{G} Instant): one-sided fight -- target creature you
+    # control deals its power to target creature you don't control, trample
+    # overflow to that creature's controller. Two targets locked at cast,
+    # resolved via the shared combat damage-marking + state-based death.
+    import contextlib as _ctx
+    import io as _io
+
+    from ..resolution import execute_choose_any_target_creature
+    from ..state import GameState as _GS, Permanent as _P, PlayerState as _PS
+
+    ram = CardDef("Ram Through", CardType.INSTANT, {"generic": 1, "G": 1}, EffectId.RAM_THROUGH)
+
+    # (a) plain: my 3/3 kills the opponent's 2/2, taking nothing back.
+    state = _GS(on_the_play=True, players=[_PS(True), _PS(False)])
+    mine = _P(CardDef("My Beater", CardType.CREATURE, {"G": 1}, EffectId.FILLER, power=3, toughness=3))
+    theirs = _P(CardDef("Their Bear", CardType.CREATURE, {"G": 1}, EffectId.FILLER, power=2, toughness=2))
+    state.players[0].battlefield = [mine]
+    state.players[1].battlefield = [theirs]
+    state.hand = [ram]
+    assert _ram_through_extra_legal(state)
+    cast_ram_through(state, ram)
+    assert state.pending_resolution["kind"] == "choose_any_target"
+    execute_choose_any_target_creature(state, 0, "My Beater", 1)  # source: creature I control
+    assert state.pending_resolution["kind"] == "choose_any_target"
+    execute_choose_any_target_creature(state, 1, "Their Bear", 1)  # target: creature I don't control
+    assert state.hand == [ram] and len(state.stack) == 1  # still in hand, on the stack
+    resolve_top_of_stack(state)
+    assert ram in state.graveyard
+    assert theirs not in state.players[1].battlefield  # 3 >= 2 toughness -> dead
+    assert mine in state.players[0].battlefield  # one-sided: my creature takes nothing
+
+    # (b) trample overflow: Rancor grants trample; excess (power - lethal)
+    # hits the opponent PLAYER.
+    state = _GS(on_the_play=True, players=[_PS(True), _PS(False)])
+    trampler = _P(CardDef("Trampler", CardType.CREATURE, {"G": 1}, EffectId.FILLER, power=5, toughness=5))
+    rancor = _P(CardDef("Rancor", CardType.ENCHANTMENT, {"G": 1}, EffectId.RANCOR))
+    rancor.flags["enchanting"] = trampler
+    victim = _P(CardDef("Victim", CardType.CREATURE, {"G": 1}, EffectId.FILLER, power=1, toughness=2))
+    state.players[0].battlefield = [trampler, rancor]
+    state.players[1].battlefield = [victim]
+    state.hand = [ram]
+    cast_ram_through(state, ram)
+    execute_choose_any_target_creature(state, 0, "Trampler", 1)
+    execute_choose_any_target_creature(state, 1, "Victim", 1)
+    resolve_top_of_stack(state)
+    # Effective power 7 (5 + Rancor's +2): 2 lethal to Victim, 5 tramples through.
+    assert victim not in state.players[1].battlefield
+    assert state.players[1].life_total == 15  # 20 - 5 trampled
+
+    # (c) fizzle: the target creature leaves before resolution (608.2c).
+    state = _GS(on_the_play=True, players=[_PS(True), _PS(False)])
+    mine2 = _P(CardDef("Mine2", CardType.CREATURE, {"G": 1}, EffectId.FILLER, power=3, toughness=3))
+    theirs2 = _P(CardDef("Theirs2", CardType.CREATURE, {"G": 1}, EffectId.FILLER, power=2, toughness=2))
+    state.players[0].battlefield = [mine2]
+    state.players[1].battlefield = [theirs2]
+    state.hand = [ram]
+    cast_ram_through(state, ram)
+    execute_choose_any_target_creature(state, 0, "Mine2", 1)
+    execute_choose_any_target_creature(state, 1, "Theirs2", 1)
+    state.players[1].battlefield.remove(theirs2)  # removed in response, before resolution
+    _flog = _io.StringIO()
+    with _ctx.redirect_stdout(_flog):
+        resolve_top_of_stack(state)
+    assert "fizzle" in _flog.getvalue().lower()
+    assert ram in state.graveyard and mine2 in state.players[0].battlefield  # my creature unaffected
+
+    # (d) never castable in 1-player (no "creature you don't control").
+    solo = _GS(on_the_play=True)
+    solo.battlefield = [_P(CardDef("Lonely", CardType.CREATURE, {"G": 1}, EffectId.FILLER, power=3, toughness=3))]
+    assert not _ram_through_extra_legal(solo)
+
     print("green_cards.py Ram Through self-check: OK")
+
+    # Masked Vandal ETB: "you may exile a creature card from your graveyard.
+    # If you do, exile target artifact or enchantment an opponent controls."
+    # Resolved off the stack (ETB queue), target chosen at resolution.
+    from ..resolution import (
+        choose_graveyard_card_options, execute_choose_graveyard_card_decline,
+        execute_choose_graveyard_card_option, execute_choose_opponent_permanent_option,
+    )
+    vandal = CardDef("Masked Vandal", CardType.CREATURE, {"generic": 1, "G": 1}, EffectId.MASKED_VANDAL, power=1, toughness=3)
+
+    def _setup_vandal():
+        st = _GS(on_the_play=True, players=[_PS(True), _PS(False)])
+        st.players[0].graveyard = [CardDef("Dead Guy", CardType.CREATURE, {"G": 1}, EffectId.FILLER, power=2, toughness=2)]
+        art = _P(CardDef("Their Relic", CardType.ARTIFACT, {"generic": 1}, EffectId.FILLER))
+        st.players[1].battlefield = [art]
+        enters_battlefield(st, vandal, from_zone="hand")
+        assert [e["type"] for e in st.trigger_queue] == ["etb"]
+        promote_triggers_to_stack(st)
+        resolve_top_of_stack(st)
+        return st, art
+
+    # (a) take it: exile a creature from GY, then exile the opponent's artifact.
+    state, opp_artifact = _setup_vandal()
+    assert state.pending_resolution["kind"] == "choose_graveyard_card"
+    assert choose_graveyard_card_options(state) == ["Dead Guy"]  # creature cards only
+    execute_choose_graveyard_card_option(state, "Dead Guy")
+    assert state.players[0].graveyard == []  # creature exiled from GY (the "if you do" cost)
+    assert state.pending_resolution["kind"] == "choose_opponent_permanent"
+    execute_choose_opponent_permanent_option(state, "Their Relic", 1)
+    assert opp_artifact not in state.players[1].battlefield  # opponent's artifact exiled
+    assert state.pending_resolution is None
+
+    # (b) decline the "you may": nothing exiled, target untouched.
+    state, opp_artifact = _setup_vandal()
+    assert state.pending_resolution["kind"] == "choose_graveyard_card"
+    execute_choose_graveyard_card_decline(state)
+    assert len(state.players[0].graveyard) == 1 and opp_artifact in state.players[1].battlefield
+    assert state.pending_resolution is None
+
+    # (c) no legal target (opponent controls no artifact/enchantment): the
+    # whole ETB is a no-op -- the may-exile is never even offered.
+    state = _GS(on_the_play=True, players=[_PS(True), _PS(False)])
+    state.players[0].graveyard = [CardDef("Dead Guy", CardType.CREATURE, {"G": 1}, EffectId.FILLER, power=2, toughness=2)]
+    enters_battlefield(state, vandal, from_zone="hand")
+    promote_triggers_to_stack(state)
+    resolve_top_of_stack(state)
+    assert state.pending_resolution is None and len(state.players[0].graveyard) == 1
+
+    print("green_cards.py Masked Vandal ETB self-check: OK")
+
+    # Generous Ent: hard-cast (Reach + ETB "create a Food token"), plus the
+    # Food token's own "{2},{T},Sacrifice: gain 3 life". (Forestcycling, the
+    # only mode before, is unchanged.)
+    state = _GS(on_the_play=True)
+    ent = CardDef(
+        "Generous Ent", CardType.CREATURE, {"generic": 5, "G": 1}, EffectId.GENEROUS_ENT,
+        forestcycling_cost={"generic": 1}, power=5, toughness=5,
+    )
+    state.hand = [ent]
+    cast_permanent_from_hand(state, ent)
+    ent_perm = next(p for p in state.battlefield if p.card_def.name == "Generous Ent")
+    assert has_keyword(state, ent_perm, "reach")
+    # ETB queued -> resolve -> a Food token is created.
+    assert not any(p.card_def.name == "Food" for p in state.battlefield)
+    promote_triggers_to_stack(state)
+    resolve_top_of_stack(state)
+    food = next(p for p in state.battlefield if p.card_def.name == "Food")
+    assert food.card_def is FOOD_TOKEN_CARD_DEF
+
+    # Food's sac ability: sacrifice (a token ceases to exist), gain 3 -- the
+    # gain is the effect, on the stack (the {2} + tap are drl_env's concern).
+    activate_food_sac(state, food)
+    assert not any(p.card_def.name == "Food" for p in state.battlefield)  # ceased to exist
+    assert state.graveyard == [] and state.life_total == 20  # no GY trip; gain still on the stack
+    resolve_top_of_stack(state)
+    assert state.life_total == 23  # +3 once the effect resolves
+
+    print("green_cards.py Generous Ent + Food token self-check: OK")
 
     # Wall of Roots: two real-rules bugs fixed together -- no {T} in the
     # real ability's own cost at all (unlike every other mana dork here),
@@ -1072,8 +1422,8 @@ if __name__ == "__main__":
     state.hand = [hydra_card2]
 
     cast_nyxborn_hydra_bestow(2)(state, hydra_card2)
-    assert state.pending_resolution["kind"] == "choose_permanent"
-    resolution.execute_choose_permanent_option(state, "Target Creature", 1)
+    assert state.pending_resolution["kind"] == "choose_any_target"  # Bestow = cast_aura, now any-target
+    resolution.execute_choose_any_target_creature(state, 0, "Target Creature", 1)  # side 0 (this 1-player fixture)
     assert state.hand == [hydra_card2]  # still in hand -- sitting on the stack, unresolved
     assert len(state.stack) == 1
     resolve_top_of_stack(state)

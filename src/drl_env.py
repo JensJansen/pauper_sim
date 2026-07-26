@@ -1,9 +1,14 @@
-"""Gymnasium environment adapter wrapping game.py's simulator.
+"""Action-table builder and game-state helpers for the token/attention DRL
+policy -- not an environment or a model, just the assembly logic between the
+game engine and the training loop.
 
-Not one of the 4 independent pieces (see DRL_PLAN.md) -- this is assembly
-logic that combines a simulator (game.py, imported and never modified)
-with an injected reward function (rewards.py's contract) into a
-Gym-compatible interface a DRL model can train against.
+build_action_table turns a decklist + game.EFFECT_REGISTRY into a flat action
+table the token pipeline drives: for each action, a human-readable label, a
+legal(state) predicate, and an execute(state) that applies it to the engine.
+A deck built entirely from already-implemented cards needs zero new code here.
+Also provides the per-seat helpers the training loop (token_train.py) reuses
+(_for_player, _lost, _hand_count_available, ...). Reward functions (rewards.py's
+contract) are injected separately by that loop, never here.
 """
 
 import os
@@ -14,10 +19,10 @@ import numpy as np
 import game
 
 # ---------------------------------------------------------------------------
-# D2.2 -- Action table (MULTI_DECK_PLAN.md Phase M4e: generated from a
-# decklist + game.EFFECT_REGISTRY instead of hand-typed -- this, plus the
-# pending-resolution machinery in game.py, is what makes a deck built
-# entirely from already-implemented cards need zero new code here.
+# Action table: generated from a decklist + game.EFFECT_REGISTRY instead of
+# hand-typed -- this, plus the pending-resolution machinery in the game
+# engine, is what makes a deck built entirely from already-implemented cards
+# need zero new code here.
 #
 # Categories, in table order:
 #   A. Play land: <name>            -- one per distinct land name
@@ -44,8 +49,7 @@ import game
 #      unlike before: two same-named permanents stop being interchangeable
 #      the instant an Aura attaches to only one of them, and cast_aura's
 #      cast-time-target/resolve-time-fizzle contract depends on knowing
-#      exactly which physical permanent was chosen (docs/MULTIPLAYER_GAPS.md
-#      "Permanent identity").
+#      exactly which physical permanent was chosen.
 #
 # spy_combo deck additions: B also covers Winding Way's modal cast (2
 # actions, one per mode), Land Grant's free alt-cost, Dread Return's
@@ -95,7 +99,7 @@ def _land_drop_legal(name):
             # Real Magic: playing a land is always sorcery-speed (no
             # per-card override exists in this cube) -- speed_legal's own
             # Speed.SORCERY branch already requires state.active_idx ==
-            # state.turn_player_idx (docs/PRIORITY_PLAN.md), so this alone
+            # state.turn_player_idx, so this alone
             # already refuses a land drop offered to the non-turn player
             # during a priority window, with no separate check needed here.
             and game.turn.speed_legal(state, game.turn.Speed.SORCERY)
@@ -322,7 +326,7 @@ _pass_legal._pending_gate = _GATE_NO_PENDING
 
 
 def _pass_execute(state):
-    pass  # handled by DeckEnv.step() itself, not via this table
+    pass  # no-op: a Pass is signalled by choose_action returning None (the game loop then advances), never by invoking this execute fn
 
 
 def _choose_name_options(state):
@@ -330,7 +334,7 @@ def _choose_name_options(state):
     kind of pending resolution -- if any -- is active. "choose_permanent"
     is NOT handled here -- see _choose_permanent_legal/_choose_permanent_
     execute below: it needs exact (name, slot) addressing (docs/
-    MULTIPLAYER_GAPS.md's "Permanent identity"), same as
+    "Permanent identity"), same as
     "choose_opponent_permanent" already gets, not this generic by-name
     dispatch."""
     pending = state.pending_resolution
@@ -368,7 +372,7 @@ def _choose_name_options(state):
     if kind == "select_to_hand" and pending["ordered"] is not None:
         return game.select_to_hand_options(state)  # ordering phase only -- "keep"/"bottom" are their own actions
     if kind == "order_triggers":
-        return game.order_triggers_options(state)  # docs/PRIORITY_PLAN.md item 1
+        return game.order_triggers_options(state)
     return []
 
 
@@ -409,7 +413,7 @@ def _choose_name_execute(name):
         elif kind == "select_to_hand":
             game.execute_select_to_hand_option(state, name)  # ordering phase only
         elif kind == "order_triggers":
-            game.execute_order_triggers_option(state, name)  # docs/PRIORITY_PLAN.md item 1
+            game.execute_order_triggers_option(state, name)
         else:  # scry / surveil, ordering phase
             game.execute_scry_surveil_option(state, name)
     return execute
@@ -442,12 +446,12 @@ def _choose_name_color_execute(name, color):
 def _attack_legal(name, slot):
     """Legal only during Phase.DECLARE_ATTACKERS, and only for the true
     turn owner (state.active_idx == state.turn_player_idx,
-    docs/PRIORITY_PLAN.md) -- declaring an attacker is a turn-based
+   ) -- declaring an attacker is a turn-based
     special action, not a priority action, so the non-turn player must
     never be allowed to declare one just because state.phase (a single
     shared field describing the TURN's phase) happens to match during
     their own priority window. And only if the specific physical
-    permanent occupying this (name, slot) -- docs/COMBAT_PLAN.md's
+    permanent occupying this (name, slot)
     permanent-identity design -- is currently attack-eligible
     (game.creature_attack_eligible): untapped, and not summoning sick
     unless it has haste. Attacking stays fully optional: a model can leave
@@ -484,7 +488,7 @@ def _choose_permanent_legal(name, slot):
     only while that kind is pending and (name, slot) is one of its own
     current options. Exact (name, slot) addressing, same reason
     _choose_opponent_permanent_legal below needs it (docs/
-    MULTIPLAYER_GAPS.md's "Permanent identity") -- a plain by-name "Choose:
+    "Permanent identity") -- a plain by-name "Choose:
     X" can't tell two same-named permanents apart, and cast_aura's whole
     fizzle-on-invalid-target contract depends on knowing exactly which one
     was chosen."""
@@ -506,7 +510,7 @@ def _choose_permanent_execute(name, slot):
 
 def _choose_opponent_permanent_legal(name, slot):
     """The general cross-player targeting primitive's action-table half
-    (docs/COMBAT_PLAN.md) -- legal only while a "choose_opponent_permanent"
+    -- legal only while a "choose_opponent_permanent"
     resolution is pending and (name, slot) is one of its own current
     options. Only ever correct when the referencing side is already the
     active perspective (game.begin_choose_opponent_permanent's own
@@ -529,8 +533,7 @@ def _choose_opponent_permanent_execute(name, slot):
 
 
 def _assign_blocker_legal(name, slot):
-    """One "Assign Blocker: <name> (slot j)" action (docs/COMBAT_PLAN.md's
-    blocking design) -- legal only while a "declare_blockers" resolution
+    """One "Assign Blocker: <name> (slot j)" action -- legal only while a "declare_blockers" resolution
     is pending (game.turn._declare_blockers_gen has already flipped
     state.active_idx to the defender by the time this is ever checked)
     and the specific physical permanent at this (name, slot) is currently
@@ -555,7 +558,7 @@ def _assign_blocker_execute(name, slot):
     which of the attacker's declared, not-yet-blocked attackers it
     blocks -- restricted by extra_predicate to attackers this specific
     blocker is actually allowed to block: flying's own restriction
-    (docs/COMBAT_PLAN.md step 7) means an attacker with flying can only be
+    means an attacker with flying can only be
     chosen here if `blocker` itself also has flying (game.has_keyword --
     resolution.py can't compute this itself, see declare_blocker_
     assignment's own docstring for why the predicate has to come from
@@ -590,6 +593,27 @@ _done_blocking_legal._pending_gate = frozenset({"declare_blockers"})
 
 def _done_blocking_execute(state):
     game.complete_resolution(state)
+
+
+def _assign_damage_to_opponent_legal(state):
+    """The trample "assign this combat-damage point to the defending player"
+    action -- legal only during an assign_combat_damage resolution whose
+    attacker HAS trample and still has points to assign (the blockers are
+    the pointer half of this decision; this fixed action is the player
+    half). NOT a targeting-prefixed name, so build_fixed_action_table keeps
+    it in the fixed table rather than stripping it to the pointer scheme."""
+    pending = state.pending_resolution
+    return (
+        pending is not None and pending["kind"] == "assign_combat_damage"
+        and pending["has_trample"] and pending["remaining"] > 0
+    )
+
+
+_assign_damage_to_opponent_legal._pending_gate = frozenset({"assign_combat_damage"})
+
+
+def _assign_damage_to_opponent_execute(state):
+    game.execute_assign_combat_damage_to_player(state)
 
 
 def _pool_spend_legal(color):
@@ -743,6 +767,25 @@ def _decline_search_execute(state):
     game.execute_search_fetch_decline(state)
 
 
+def _decline_graveyard_card_legal(state):
+    """Only for an OPTIONAL choose_graveyard_card (Masked Vandal's "you may
+    exile a creature card from your graveyard") with real options to decline
+    -- gated on pending["optional"] so it never appears for Dread Return /
+    Relic's own MANDATORY graveyard picks, which share the same kind."""
+    pending = state.pending_resolution
+    return (
+        pending is not None and pending["kind"] == "choose_graveyard_card" and pending.get("optional")
+        and bool(game.choose_graveyard_card_options(state))
+    )
+
+
+_decline_graveyard_card_legal._pending_gate = frozenset({"choose_graveyard_card"})
+
+
+def _decline_graveyard_card_execute(state):
+    game.execute_choose_graveyard_card_decline(state)
+
+
 def _decline_discard_legal(state):
     pending = state.pending_resolution
     return (
@@ -785,6 +828,54 @@ _target_opponent_legal._pending_gate = frozenset({"choose_target_player"})
 
 def _target_opponent_execute(state):
     game.execute_choose_target_player_option(state, 1 - state.active_idx)
+
+
+def _target_any_self_legal(state):
+    """The "any target" player half (real Magic: a player is always a legal
+    "any target", including yourself -- Lightning Bolt to your own face is
+    legal, if rarely wise). Only offered when the pending choose_any_target
+    allows players (a "target creature"-only choice sets allow_players=False
+    and this stays masked). The creature half of the same choice rides the
+    identity pointer scheme (token_action_bridge), not a fixed action."""
+    pending = state.pending_resolution
+    return pending is not None and pending["kind"] == "choose_any_target" and pending["allow_players"]
+
+
+_target_any_self_legal._pending_gate = frozenset({"choose_any_target"})
+
+
+def _target_any_self_execute(state):
+    game.execute_choose_any_target_player(state, state.active_idx)
+
+
+def _target_any_opponent_legal(state):
+    pending = state.pending_resolution
+    return (
+        pending is not None and pending["kind"] == "choose_any_target"
+        and pending["allow_players"] and len(state.players) > 1
+    )
+
+
+_target_any_opponent_legal._pending_gate = frozenset({"choose_any_target"})
+
+
+def _target_any_opponent_execute(state):
+    game.execute_choose_any_target_player(state, 1 - state.active_idx)
+
+
+def _target_any_decline_legal(state):
+    """Decline an "up to one target" (optional) choose_any_target -- e.g.
+    Pinnacle Kill-Ship's ETB choosing zero targets. Only legal when the
+    pending was begun optional=True."""
+    pending = state.pending_resolution
+    return pending is not None and pending["kind"] == "choose_any_target" and pending.get("optional", False)
+
+
+_target_any_decline_legal._pending_gate = frozenset({"choose_any_target"})
+
+
+def _target_any_decline_execute(state):
+    game.execute_choose_any_target_decline(state)
 
 
 def _discard_or_sacrifice_sacrifice_legal(name):
@@ -1067,16 +1158,16 @@ def _omen_cast_execute(creature_card_def, cost, resolve):
 def build_action_table(decklist, registry, token_card_defs=(), pending_kinds=(),
                         opponent_decklist=None, opponent_token_card_defs=(), extra_choosable_names=()):
     """opponent_decklist/opponent_token_card_defs: the OTHER side's own
-    decklist/tokens (docs/COMBAT_PLAN.md's cross-player targeting
-    primitive) -- None/() for every 1-player deck (there's no real
+    decklist/tokens -- None/() for every 1-player deck (there's no real
     opponent battlefield to reference at all), matching combat_enabled=False
-    decks never seeing "Attack: X" become legal. Only ever given by
-    TwoPlayerDeckEnv, which already has this data on hand for its own
-    opponent_actions table.
+    decks never seeing "Attack: X" become legal. The token/pointer pipeline
+    passes None here (cross-player targeting moved to the pointer head, not
+    a fixed opponent action table) -- kept for a fixed "Choose opponent's:
+    X" table if one is ever wanted again.
 
     token_card_defs: every token CardDef this deck's own cards can
     create at runtime (Blood, Robot, Warrior, Eldrazi Spawn --
-    docs/MADNESS_DECKS_PLAN.md item 8), e.g. (game.BLOOD_TOKEN_CARD_DEF,).
+   ), e.g. (game.BLOOD_TOKEN_CARD_DEF,).
     Tokens are never decklist entries (no quantity, not in game.CARD_DEFS),
     so they can't flow through distinct_names/game.CARD_DEFS[name] the way
     every other action here does -- casting/land-drop/Flashback/etc. stay
@@ -1224,6 +1315,22 @@ def build_action_table(decklist, registry, token_card_defs=(), pending_kinds=(),
                 _omen_cast_legal(name, omen["cost"], omen_speed),
                 _omen_cast_execute(omen["card_def"], omen["cost"], omen["resolve"]),
             ))
+        # Boulderbranch Golem: Prototype -- a second cast option for the same
+        # hand card, its own cheaper cost, producing a DIFFERENT CardDef (the
+        # smaller 3/3 with its own ETB). Structurally identical to Omen ("cast
+        # this hand card for an alternate cost as a different creature"), so it
+        # reuses the same _omen_cast_legal/_omen_cast_execute helpers -- only
+        # the resolve differs (no library shuffle; the prototype creature just
+        # enters). Real reminder text: "You may cast this spell with different
+        # mana cost, color, and size. It keeps its abilities and types."
+        prototype = card_spec.get("prototype")
+        if prototype is not None:
+            proto_speed = _cast_speed(prototype["card_def"], prototype)
+            actions.append((
+                f"Cast {name} (prototype)",
+                _omen_cast_legal(name, prototype["cost"], proto_speed),
+                _omen_cast_execute(prototype["card_def"], prototype["cost"], prototype["resolve"]),
+            ))
 
     activatable = [(name, game.CARD_DEFS[name].effect_id) for name in distinct_names]
     activatable += [(cd.name, cd.effect_id) for cd in token_card_defs]
@@ -1308,7 +1415,7 @@ def build_action_table(decklist, registry, token_card_defs=(), pending_kinds=(),
         actions.append((f"Choose: {name}", _choose_name_legal(name), _choose_name_execute(name)))
 
     # "Attack: X (slot k)" -- one per (creature name, slot) pair
-    # (docs/COMBAT_PLAN.md's permanent-identity design), legal only during
+    #, legal only during
     # Phase.DECLARE_ATTACKERS (see _attack_legal). k runs 1..that card's
     # own decklist quantity for a real card -- the pooled slot scheme
     # means this is a hard, correct bound even through repeated bounce/
@@ -1356,7 +1463,7 @@ def build_action_table(decklist, registry, token_card_defs=(), pending_kinds=(),
 
     # "Assign Blocker: X (slot j)" -- same own-creature (name, slot)
     # addressing as "Attack: X (slot k)" above, since blocking is a
-    # decision about this player's OWN creatures (docs/COMBAT_PLAN.md),
+    # decision about this player's OWN creatures,
     # just legal at a different point (once _declare_blockers_gen has
     # flipped state.active_idx to the defender and a "declare_blockers"
     # resolution is pending -- see _assign_blocker_legal). "Done blocking"
@@ -1371,9 +1478,16 @@ def build_action_table(decklist, registry, token_card_defs=(), pending_kinds=(),
                 _assign_blocker_execute(name, slot),
             ))
     actions.append(("Done blocking", _done_blocking_legal, _done_blocking_execute))
+    # Trample's "assign a combat-damage point to the defending player" half
+    # of a gang-blocking damage assignment (the blocker half is the pointer
+    # scheme). One fixed action, runtime-gated to a trampling attacker mid-
+    # assign_combat_damage -- masked illegal otherwise.
+    actions.append((
+        "Assign combat damage to opponent", _assign_damage_to_opponent_legal, _assign_damage_to_opponent_execute,
+    ))
 
     # "Choose opponent's: X (slot k)" -- the general cross-player
-    # targeting primitive (docs/COMBAT_PLAN.md), one per (opponent
+    # targeting primitive, one per (opponent
     # creature name, slot), built from the OPPONENT's own decklist/tokens
     # instead of this side's own -- blocking's first consumer. Same
     # quantity-or-TOKEN_LIMIT bound as the attack registration above, just
@@ -1454,6 +1568,13 @@ def build_action_table(decklist, registry, token_card_defs=(), pending_kinds=(),
         # unconditionally before this change; both current decks already
         # share "search_fetch" either way, so this isn't a growth vector).
         actions.append(("Decline (search)", _decline_search_legal, _decline_search_execute))
+    if "choose_graveyard_card" in pending_kinds:
+        # Only ever legal for an OPTIONAL choose_graveyard_card (Masked
+        # Vandal's "you may exile a creature from your graveyard"); the
+        # legal_fn itself gates on pending["optional"], so it stays present-
+        # but-permanently-illegal for decks whose only graveyard picks are
+        # mandatory (Dread Return, Relic), same footing as "Decline (search)".
+        actions.append(("Decline (graveyard)", _decline_graveyard_card_legal, _decline_graveyard_card_execute))
     actions.append(("Abandon payment", _abandon_payment_legal, _abandon_payment_execute))  # pay_cost is baseline, always present
     # mulligan_decision/mulligan_bottom are baseline too (BASELINE_PENDING_KINDS,
     # game.turn.run_mulligan_phase) -- every deck goes through the pregame
@@ -1493,6 +1614,14 @@ def build_action_table(decklist, registry, token_card_defs=(), pending_kinds=(),
         # there are only ever at most 2 possible players, never more.
         actions.append(("Target: yourself", _target_self_legal, _target_self_execute))
         actions.append(("Target: opponent", _target_opponent_legal, _target_opponent_execute))
+    if "choose_any_target" in pending_kinds:
+        # The player half of an "any target" choice (Lightning Bolt etc.) --
+        # two fixed actions, same shape/reasoning as the choose_target_player
+        # pair above. The creature half (either battlefield) rides the
+        # identity pointer scheme (token_action_bridge), not fixed actions.
+        actions.append(("Target any: yourself", _target_any_self_legal, _target_any_self_execute))
+        actions.append(("Target any: opponent", _target_any_opponent_legal, _target_any_opponent_execute))
+        actions.append(("Choose no target", _target_any_decline_legal, _target_any_decline_execute))  # "up to one" decline
 
     return tuple(actions)
 
@@ -1503,7 +1632,7 @@ _battlefield_lookup_cache = None  # (state, {(name, slot): Permanent}) -- valid 
 def _cached_battlefield_lookup(state):
     """Sweep-scoped {(name, slot): Permanent} lookup for state.battlefield --
     same "profiled, not guessed" caching pattern as _cached_tap_cost_options
-    just below (docs/PRIORITY_PLAN.md item 6): _attack_legal/
+    just below: _attack_legal/
     _assign_blocker_legal each independently scanned the WHOLE battlefield
     with any(...) to find one specific (name, slot), once per action-table
     entry -- for a deck with many creature copies (boggles' Auras/tokens)
@@ -1529,10 +1658,7 @@ _tap_cost_options_cache = None  # (state, result) -- valid only for the duration
 
 def _cached_tap_cost_options(state):
     """Memoizes game.tap_cost_options(state) for the exact duration of one
-    legal_action_mask sweep (docs/PRIORITY_PLAN.md item 6 -- profiled,
-    not guessed: mana.tap_cost_options was called 480,942 times against
-    only 78,969 mask builds, ~6x more than needed and ~10% of total
-    training time by itself). _choose_name_legal/_choose_name_color_legal
+    legal_action_mask sweep. _choose_name_legal/_choose_name_color_legal
     (the "Choose: X"/"Choose: X as color" mana-source actions) each
     independently call this from scratch, once per candidate name/color,
     so one sweep recomputes the identical list several times over.
@@ -1549,16 +1675,15 @@ def _cached_tap_cost_options(state):
 
 
 def legal_action_mask(state, actions):
-    """Stateless: usable both by DeckEnv.action_masks() and by
-    harness.evaluate(), which plays games directly through game.run_game,
-    not through env.step (see DRL_CHECKLIST.md's D6 implementation note).
-    `actions` is any table built by build_action_table -- every deck's own
-    table, none privileged as a default (a caller with its own decklist
-    always has its own table to pass, e.g. harness.py's self.actions).
+    """Stateless -- takes the action table explicitly, so any caller (the
+    token pipeline's own _seat_step, a direct game-loop driver, ...)
+    can use it. `actions` is any table built by build_action_table -- every
+    deck's own table, none privileged as a default (a caller with its own
+    decklist always has its own table to pass).
 
     Category-gating (profiled, not guessed: this table can run ~300 entries
     long, and every single one of those closures gets called on every
-    sweep regardless of relevance -- see docs/GPU_VECENV_INVESTIGATION.md's
+    sweep regardless of relevance
     training-speed followup): most `_X_legal` closures start with a cheap,
     static check of state.pending_resolution (either "must be None" or
     "must be one specific kind/set of kinds") before doing any real work.
@@ -1605,7 +1730,7 @@ def legal_action_mask(state, actions):
 
 
 # ---------------------------------------------------------------------------
-# D2.3 / D2.4 -- DeckEnv
+# Two-player reward + seat-perspective helpers
 # ---------------------------------------------------------------------------
 
 def _lost(state, seat_idx):
@@ -1642,7 +1767,7 @@ def _for_player(state, player_idx, fn):
 if __name__ == "__main__":
     # ponytail self-check: no pytest in this project, mirrors the
     # assert-based demo convention -- run via `python drl_env.py` from
-    # src/. Exercises Plot (MADNESS_DECKS_PLAN.md item 4) and the on-cast
+    # src/. Exercises Plot and the on-cast
     # trigger hook (item 11) through the REAL _plot_legal/_plot_execute/
     # _cast_from_exile_legal/_cast_from_exile_execute functions -- not a
     # parallel reimplementation. No real Plot/Guttersnipe card exists yet
@@ -1710,11 +1835,18 @@ if __name__ == "__main__":
         # Same turn: not castable yet ("on a later turn").
         assert not _cast_from_exile_legal("Fake Plot Spell", None, game.turn.Speed.SORCERY)(state)
 
-        # A later turn: castable for free, fires on_cast_trigger (Guttersnipe).
+        # A later turn: castable for free, queues on_cast_trigger (Guttersnipe).
         state.turn_number += 1
         assert _cast_from_exile_legal("Fake Plot Spell", None, game.turn.Speed.SORCERY)(state)
         _cast_from_exile_execute("Fake Plot Spell", game.EFFECT_REGISTRY[EffectId.FILLER]["cast"]["resolve"])(state)
         assert state.exile == []
+        # on_cast now QUEUES the trigger (faithful timing) -- it fires only
+        # once game.turn's priority round promotes it onto the stack (above
+        # the spell) and it resolves, not inline at cast.
+        assert on_cast_calls == []
+        assert [e["type"] for e in state.trigger_queue] == ["cast_trigger"]
+        game.promote_triggers_to_stack(state)
+        game.resolve_top_of_stack(state)
         assert on_cast_calls == ["Guttersnipe-ish"]
 
         # extra_legal gate on the cast-from-exile path (Highway Robbery's
@@ -1791,7 +1923,8 @@ if __name__ == "__main__":
             assert on_cast_calls == []  # declining payment must never have collected it
             assert state.hand == [fake_bolt]  # never actually cast -- still sitting in hand
 
-        # Actually pay this time -- now, and only now, it fires (once).
+        # Actually pay this time -- now, and only now, the trigger is queued
+        # (once), then fires when promoted to the stack and resolved.
         assert cast_legal(state)
         cast_execute(state)
         while state.pending_resolution is not None:
@@ -1804,8 +1937,15 @@ if __name__ == "__main__":
                 # it toward the cost (mana.py's own design, see the Plot
                 # check above) -- spend it explicitly.
                 game.execute_pool_spend(state, game.pool_spend_options(state)[0])
+        # Paid: the spell is on the stack and the on_cast trigger is queued
+        # (not fired inline). Promote + resolve to fire it, above the spell.
+        assert on_cast_calls == []
+        assert [e["type"] for e in state.trigger_queue] == ["cast_trigger"]
+        assert len(state.stack) == 1  # the spell itself, paid and on the stack
+        game.promote_triggers_to_stack(state)
+        game.resolve_top_of_stack(state)
         assert on_cast_calls == ["Guttersnipe-ish"]
-        assert len(state.stack) == 1
+        assert len(state.stack) == 1  # the spell still waiting below the resolved trigger
     finally:
         game.CARD_DEFS.clear()
         game.CARD_DEFS.update(_card_defs_backup)
@@ -1844,16 +1984,20 @@ if __name__ == "__main__":
         # check above. Spend it explicitly.
         game.execute_pool_spend(state, game.pool_spend_options(state)[0])
 
-    assert state.pending_resolution["kind"] == "discard"  # Blood's own effect: discard a card
+    assert state.pending_resolution["kind"] == "discard"  # Blood's discard -- a COST, paid before the effect
     game.execute_discard_option(state, "Card To Discard")
     assert state.pending_resolution is None
     assert [p.card_def.name for p in state.battlefield] == ["Swamp"]  # Blood is gone, never added to any zone
+    # The DRAW is Blood's effect -- on the stack now (faithful timing), not
+    # fired the instant its costs (sac + discard) were paid. Resolve it.
+    assert len(state.stack) == 1 and state.hand == []
+    game.resolve_top_of_stack(state)
     assert [c.name for c in state.hand] == ["Library Card"]  # discarded one, drew one
 
     print("drl_env.py tokens self-check: OK")
 
 
-    # Cross-player targeting (docs/COMBAT_PLAN.md): build_action_table's
+    # Cross-player targeting: build_action_table's
     # opponent_decklist/opponent_token_card_defs params register "Choose
     # opponent's: X (slot k)" actions from the OTHER side's own card pool
     # -- blocking's first consumer, but exercised standalone here since
@@ -1899,7 +2043,7 @@ if __name__ == "__main__":
 
     print("drl_env.py cross-player targeting self-check: OK")
 
-    # Turn-owner / priority-holder split (docs/PRIORITY_PLAN.md item 0):
+    # Turn-owner / priority-holder split:
     # _land_drop_legal (via speed_legal) and _attack_legal must both
     # refuse the non-turn player even when state.phase/state.
     # lands_played_this_turn/their own eligible creature would otherwise
@@ -1937,7 +2081,7 @@ if __name__ == "__main__":
     print("drl_env.py turn-owner (land drop / declare attacker) self-check: OK")
 
 
-    # Blocking (docs/COMBAT_PLAN.md): build_action_table's "Assign Blocker:
+    # Blocking: build_action_table's "Assign Blocker:
     # <name> (slot j)" / "Done blocking" entries, end to end through the
     # REAL production functions (_assign_blocker_legal/_execute,
     # _done_blocking_legal/_execute) -- not a parallel reimplementation.
@@ -1985,12 +2129,12 @@ if __name__ == "__main__":
     done_execute(state)  # "Done blocking" -- atk_bogle_2 goes unblocked
     assert completed == [True]
     assert state.pending_resolution is None
-    assert state.players[0].blocked_by == {atk_bogle_1: defender_bogle}
+    assert state.players[0].blocked_by == {atk_bogle_1: [defender_bogle]}
 
 
     print("drl_env.py blocking self-check: OK")
 
-    # Flying (docs/COMBAT_PLAN.md step 7): _assign_blocker_execute's own
+    # Flying: _assign_blocker_execute's own
     # extra_predicate (game.has_keyword), end to end through the REAL
     # action table -- Silhana Ledgewalker (real "can't be blocked except
     # by creatures with flying," modeled as the "flying" keyword) can only
@@ -2021,17 +2165,20 @@ if __name__ == "__main__":
     state.active_idx = 1  # simulating _declare_blockers_gen's own flip to the defender
 
     game.begin_declare_blockers(state, on_complete=lambda s: None)
-    assert bogle_legal(state) and imp_legal(state)  # both otherwise-eligible blockers (untapped, unused)
-
-    bogle_execute(state)  # parks the Bogle -- but it can't legally block a flyer, so this fizzles
-    assert state.pending_resolution["kind"] == "declare_blockers"  # re-opened, nothing left pending
-    assert state.players[0].blocked_by == {}  # nothing assigned -- the Bogle was never a legal choice for this attacker
+    # GANG-BLOCKING eligibility fix: Slippery Bogle (no flying) is NOT even
+    # offered here -- the only attacker (Silhana Ledgewalker, modeled with
+    # flying) can only be blocked by a flyer, so Bogle has no legal target
+    # and "Assign Blocker: Slippery Bogle" is illegal (it used to be an
+    # offered no-op that fizzled -- exactly what this fix removes at the
+    # source). Kitchen Imp (flying) IS a legal blocker.
+    assert not bogle_legal(state)
+    assert imp_legal(state)
 
     imp_execute(state)  # Kitchen Imp HAS flying -- opens a real nested choice
     assert state.pending_resolution["kind"] == "choose_opponent_permanent"
     assert game.choose_opponent_permanent_options(state) == [("Silhana Ledgewalker", 1)]
     game.execute_choose_opponent_permanent_option(state, "Silhana Ledgewalker", 1)
-    assert state.players[0].blocked_by == {attacking_ledgewalker: defending_imp}
+    assert state.players[0].blocked_by == {attacking_ledgewalker: [defending_imp]}
 
     print("drl_env.py flying self-check: OK")
 
@@ -2072,12 +2219,14 @@ if __name__ == "__main__":
     # Cost fully paid -- precast_choice means cast_aura runs its target
     # choice IMMEDIATELY here, NOT deferred to when this eventually pops
     # off the stack (that's the whole point of this redesign).
-    assert state.pending_resolution["kind"] == "choose_permanent"
-    assert set(game.choose_permanent_options(state)) == {("Slippery Bogle", 1), ("Slippery Bogle", 2)}
+    # Aura now targets any creature on EITHER battlefield (real "Enchant
+    # creature"), hexproof-aware -- the creature half rides the identity
+    # pointer scheme (token_action_bridge), so we drive it via the same
+    # execute the pointer path calls, not a "Choose target:" fixed action.
+    assert state.pending_resolution["kind"] == "choose_any_target"
+    assert set(game.choose_any_target_creature_options(state)) == {(0, "Slippery Bogle", 1), (0, "Slippery Bogle", 2)}
 
-    _, choose_slot_2_legal, choose_slot_2_execute = targeting_actions[_gidx("Choose target: Slippery Bogle (slot 2)")]
-    assert choose_slot_2_legal(state)
-    choose_slot_2_execute(state)
+    game.execute_choose_any_target_creature(state, 0, "Slippery Bogle", 2)  # the SPECIFIC slot-2 bogle
     # Target chosen -- pushed to the stack, not yet attached (still
     # physically in hand, same "still in hand while on stack" convention
     # every other cast path here follows).
@@ -2104,7 +2253,7 @@ if __name__ == "__main__":
     targeting_actions[_gidx("Cast Rancor")][2](state)
     targeting_actions[_gidx("Choose: Forest")][2](state)
     targeting_actions[_gidx("Spend G from pool")][2](state)
-    targeting_actions[_gidx("Choose target: Slippery Bogle (slot 1)")][2](state)
+    game.execute_choose_any_target_creature(state, 0, "Slippery Bogle", 1)  # Aura targets via the any-target pointer path now
     assert len(state.stack) == 1
     state.battlefield.remove(bogle_1)  # dies before the cast resolves
 
@@ -2123,7 +2272,7 @@ if __name__ == "__main__":
     print("drl_env.py _lost self-check: OK")
 
     # tap_cost_options memoization never returns a stale answer (docs/
-    # PRIORITY_PLAN.md item 6): build a pay_cost resolution with exactly 1
+    #): build a pay_cost resolution with exactly 1
     # untapped Mountain, sweep the mask (populating the cache -- "Choose:
     # Mountain" legal), tap it (a real mutation -- zero untapped sources
     # left, so tap_cost_options itself now returns empty), then sweep

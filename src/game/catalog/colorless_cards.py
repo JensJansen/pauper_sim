@@ -24,11 +24,12 @@ clause is a deliberate, documented drop rather than a guess:
   because it was worth building as its own always-available action
   rather than an ETB-only one-off choice bundled into a bigger creature
   spell.
-- Boulderbranch Golem: Prototype ({3}{G} for a 3/3 instead) would need a
-  second CardDef with its own power/toughness for the exact same card
-  name -- real, but disproportionate machinery for one filler creature.
-  Dropped, same category as Nyxborn Hydra's own Bestow/X drop
-  (game.catalog.green_cards) -- always cast at its real default {7} 6/5.
+- Boulderbranch Golem: Prototype ({3}{G} for a 3/3 instead) is IMPLEMENTED --
+  a second CardDef (BOULDERBRANCH_GOLEM_PROTOTYPE_CARD_DEF) with its own
+  stats/effect_id for the same display name, offered as a "Cast X (prototype)"
+  action that reuses the Omen cast machinery. Its ETB "gain life equal to its
+  power" is baked per mode (6 normal / 3 prototype), since nothing in this
+  pool changes the Golem's power before the ETB resolves.
 - Maelstrom Colossus: Cascade is implemented for real (cast_maelstrom_
   colossus below) -- it invokes an ARBITRARY other catalog card's own
   "cast" resolve, which normally assumes the card is already in
@@ -74,15 +75,16 @@ cost is tracked separately, see mana.execute_tap_cost_option)."""
 
 from .. import registry
 from ..cards import CardDef, CardType, EffectId
-from ..effects.casting import cast_permanent_from_hand, enters_battlefield
+from ..effects.casting import _log_target_fizzle, capture_any_target, cast_permanent_from_hand, enters_battlefield, target_still_legal
+from ..effects.stack import push_ability_to_stack, push_to_stack
 from ..effects.shared import discard_from_hand_to_graveyard, find_to_hand
 from ..effects.state_based import check_state_based_actions
-from ..effects.stats import permanent_power
+from ..effects.stats import can_be_targeted, permanent_power
 from ..effects.tokens import activate_blood_sac
 from ..effects.win_check import gain_life
 from ..mana import COLORS
 from ..resolution import (
-    begin_choose_graveyard_card, begin_choose_opponent_permanent, begin_choose_permanent,
+    begin_choose_any_target, begin_choose_graveyard_card, begin_choose_opponent_permanent, begin_choose_permanent,
     begin_choose_target_player, begin_search_fetch, scry, surveil,
 )
 from ..turn import Speed
@@ -132,41 +134,54 @@ COLORLESS_CARD_CATALOG = {
 
 
 def activate_tocasia_dig_site_surveil(state, permanent):
-    """{3}, T: Surveil 1 (shares the tap cost with its plain {T}: Add {C})."""
+    """{3}, T: Surveil 1 (shares the tap cost with its plain {T}: Add {C}).
+    Faithful timing: the tap is a COST (paid now); the surveil is the
+    effect, so it goes on the stack and resolves after a priority window."""
     permanent.tapped = True
     state.log_event("tap", permanent=(permanent.card_def.name, permanent.slot), reason="activate")
-    surveil(state, 1)
+    push_ability_to_stack(state, permanent.card_def, lambda st: surveil(st, 1))
 
 
 def activate_expedition_map(state, permanent):
     """{2}, T, Sacrifice: search library for a land -- the model's choice.
-    Caller has already paid the {1} cost."""
+    Caller has already paid the {1} cost. Faithful timing: the {T} and the
+    sacrifice are COSTS (paid now); the search is the effect, so it goes on
+    the stack and resolves (opening the search) after a priority window."""
     state.battlefield.remove(permanent)
     state.graveyard.append(permanent.card_def)
     state.log_event(
         "zone_move", permanent=(permanent.card_def.name, permanent.slot), from_zone="battlefield",
         to_zone="graveyard", reason="sacrifice",
     )
-    begin_search_fetch(state, lambda c: c.card_type == CardType.LAND, find_to_hand)
+    push_ability_to_stack(state, permanent.card_def, lambda st: begin_search_fetch(st, lambda c: c.card_type == CardType.LAND, find_to_hand))
 
 
 def activate_bonders_ornament_draw(state, permanent):
-    """{4}, T: draw a card (shares the tap cost with its plain mana ability)."""
+    """{4}, T: draw a card (shares the tap cost with its plain mana ability).
+    Faithful timing: the tap is a COST (paid now); the draw is the effect,
+    so it goes on the stack and resolves after a priority window."""
     permanent.tapped = True
     state.log_event("tap", permanent=(permanent.card_def.name, permanent.slot), reason="activate")
-    state.draw(1)
+    push_ability_to_stack(state, permanent.card_def, lambda st: st.draw(1))
 
 
 def activate_candy_trail_sac(state, permanent):
-    """{2}, T, Sacrifice: gain 3 life and draw a card."""
+    """{2}, T, Sacrifice: gain 3 life and draw a card. Faithful timing: the
+    {T} and the sacrifice are COSTS (paid now); gaining 3 and drawing are
+    the effect, so they go on the stack and resolve after a priority
+    window."""
     state.battlefield.remove(permanent)
     state.graveyard.append(permanent.card_def)
     state.log_event(
         "zone_move", permanent=(permanent.card_def.name, permanent.slot), from_zone="battlefield",
         to_zone="graveyard", reason="sacrifice",
     )
-    gain_life(state, 3)
-    state.draw(1)
+
+    def _effect(state):
+        gain_life(state, 3)
+        state.draw(1)
+
+    push_ability_to_stack(state, permanent.card_def, _effect)
 
 
 def activate_relic_of_progenitus_draw(state, permanent):
@@ -176,16 +191,26 @@ def activate_relic_of_progenitus_draw(state, permanent):
     card, and costs nothing extra in the 1-player configs that actually
     do today. Exile itself untracked, same convention as this same
     artifact's own repeatable {T} ability below -- just clears each
-    graveyard to nothing rather than tracking a real exile pile."""
+    graveyard to nothing rather than tracking a real exile pile.
+
+    Faithful timing: exiling this artifact is a COST (paid now); exiling
+    all graveyards and drawing are the effect, so they go on the stack and
+    resolve after a priority window. "Exile all graveyards" is measured at
+    resolution (the effect reads state.players' graveyards then), matching
+    real Magic."""
     state.battlefield.remove(permanent)  # exiled, not graveyard; exile is untracked
     state.log_event(
         "zone_move", permanent=(permanent.card_def.name, permanent.slot), from_zone="battlefield",
         to_zone="exile_untracked", reason="activate_exile_self",
     )
-    for player in state.players:
-        player.graveyard.clear()
-    state.log_event("graveyards_exiled")
-    state.draw(1)
+
+    def _effect(state):
+        for player in state.players:
+            player.graveyard.clear()
+        state.log_event("graveyards_exiled")
+        state.draw(1)
+
+    push_ability_to_stack(state, permanent.card_def, _effect)
 
 
 def activate_relic_of_progenitus_exile(state, permanent):
@@ -203,24 +228,44 @@ def activate_relic_of_progenitus_exile(state, permanent):
     artifact's other, one-shot exile-self ability above. Repeatable (no
     mana cost, {T} only), independent of that other ability. An empty
     target graveyard -> nothing to choose, the same empty-options safety
-    net begin_choose_graveyard_card already provides."""
-    permanent.tapped = True
+    net begin_choose_graveyard_card already provides.
+
+    Faithful timing + cross-player choice:
+    the {T} is a COST (paid now); the target player is chosen as the ability
+    is put on the stack (targets lock at activation); only the EFFECT waits
+    on the stack. When it resolves, the TARGETED player -- not the activator
+    -- chooses which of their own graveyard cards to exile: active_idx is
+    flipped to them for that forced choice and restored afterward. This
+    replaces the old "simplified to the activating player's choice"
+    approximation now that a real cross-player flip exists to do it right."""
+    permanent.tapped = True  # {T} -- a COST, paid now on activation
     state.log_event("tap", permanent=(permanent.card_def.name, permanent.slot), reason="activate")
 
     def _on_player_chosen(state, idx):
-        target_player = state.players[idx]
+        def _effect(state):
+            # resolve_top_of_stack set active_idx to this entry's controller
+            # (the activator). Flip to the targeted player so THEY pick the
+            # card; the priority loop leaves active_idx alone while a pending
+            # they own is open (game.turn._run_priority_round_gen), and
+            # _on_card_chosen restores it once the choice is made.
+            activator = state.active_idx
+            target_player = state.players[idx]
 
-        def _on_card_chosen(state, name):
-            if name is None:
-                return
-            found = next(c for c in target_player.graveyard if c.name == name)
-            target_player.graveyard.remove(found)  # exiled, not removed-to-nowhere; exile is untracked
-            state.log_event(
-                "zone_move", card=found.name, from_zone="graveyard", to_zone="exile_untracked",
-                target_player_idx=idx,
-            )
+            def _on_card_chosen(state, name):
+                state.active_idx = activator  # the targeted player's forced choice is done
+                if name is None:
+                    return
+                found = next(c for c in target_player.graveyard if c.name == name)
+                target_player.graveyard.remove(found)  # exiled, not removed-to-nowhere; exile is untracked
+                state.log_event(
+                    "zone_move", card=found.name, from_zone="graveyard", to_zone="exile_untracked",
+                    target_player_idx=idx,
+                )
 
-        begin_choose_graveyard_card(state, lambda c: True, _on_card_chosen, graveyard=target_player.graveyard)
+            state.active_idx = idx
+            begin_choose_graveyard_card(state, lambda c: True, _on_card_chosen, graveyard=target_player.graveyard)
+
+        push_ability_to_stack(state, permanent.card_def, _effect)
 
     begin_choose_target_player(state, _on_player_chosen)
 
@@ -339,33 +384,38 @@ def cast_maelstrom_colossus(state, card_def):
 
 
 def pinnacle_kill_ship_etb(state):
-    """ETB: 10 damage to up to one target creature. Reuses
-    begin_choose_opponent_permanent (resolution.py) unmodified -- its own
-    empty-options safety net already auto-completes with None the instant
-    no opposing creature exists, which is every current Tron config (no
-    2-player Tron config exists yet, and state.opponent itself would raise
-    in 1-player mode -- guarded explicitly below, same convention
-    win_check.deal_damage_to_opponent already uses). "Up to one" (fully
-    optional even with a legal target) is simplified to "must choose one if
-    any exist," same "no rational reason to decline an available, harmless
-    hit" shortcut every other real-target Aura/effect in this codebase
-    already takes (Rancor/Ancestral Mask/etc. never offer a decline either).
-    Marks damage directly and calls check_state_based_actions itself --
-    same pattern cast_breath_weapon (red_cards.py) already uses for its own
-    "creature" damage sweep, not deal_damage_to_opponent (that's for a
-    PLAYER's own life total, never a creature)."""
-    if len(state.players) <= 1:
-        return
+    """ETB trigger: "deals 10 damage to up to one target creature." Faithful:
+    the trigger's EFFECT goes on the stack -- up to one target creature on
+    EITHER battlefield (hexproof/shroud aware) is chosen as the trigger is
+    put on the stack (begin_choose_any_target, optional=True for "up to
+    one"), the 10 damage waits on the stack, then hits that exact creature at
+    resolution, or fizzles if it has left the battlefield by then (608.2b),
+    or does nothing if no target was chosen. Target selection at ETB time is
+    when the trigger goes on the stack (603.3d) -- there's no state-based
+    step between entering and this that could change the legal targets."""
+    kill_ship_def = registry.CARD_DEFS["Pinnacle Kill-Ship"]
 
-    def _on_chosen(state, choice):
-        if choice is None:
-            return
-        name, slot = choice
-        target = next(p for p in state.opponent.battlefield if p.card_def.name == name and p.slot == slot)
-        target.damage_marked += 10
-        check_state_based_actions(state)
+    def _on_target(state, target_descriptor):
+        captured = capture_any_target(state, target_descriptor)  # ("creature", perm) or None (declined / no target)
 
-    begin_choose_opponent_permanent(state, lambda p: p.card_type == CardType.CREATURE, _on_chosen)
+        def _resolve(state, card_def):
+            if captured is None:
+                return  # "up to one": no target chosen -- the ability resolves doing nothing
+            if not target_still_legal(state, captured):
+                _log_target_fizzle(state, card_def, (captured[1].card_def.name, captured[1].slot))
+                return
+            captured[1].damage_marked += 10
+            check_state_based_actions(state)
+
+        push_to_stack(state, kill_ship_def, _resolve, reserves_hand_card=False)  # the ETB effect, on the stack
+
+    begin_choose_any_target(
+        state,
+        lambda p: p.card_type == CardType.CREATURE and can_be_targeted(state, p, state.active_idx),
+        _on_target,
+        allow_players=False,
+        optional=True,  # "up to one target"
+    )
 
 
 def _pinnacle_kill_ship_station_legal(state, permanent):
@@ -389,27 +439,71 @@ def _pinnacle_kill_ship_station_resolve(state, permanent):
     (Permanent.card_type) once 7+ are reached; type_override is flipped
     here explicitly (once, the instant the threshold is first crossed --
     nothing in this card pool ever removes a charge counter, so there's no
-    "un-animate" path to handle)."""
+    "un-animate" path to handle).
+
+    Faithful timing: tapping another creature is a
+    COST, paid now on activation; putting the charge counters (and the
+    animate check) is the effect, so it goes on the stack and resolves after
+    a priority window."""
     def _on_chosen(state, choice):
         if choice is None:
             return
         name, slot = choice
         tapped_creature = next(p for p in state.battlefield if p.card_def.name == name and p.slot == slot)
-        tapped_creature.tapped = True
+        tapped_creature.tapped = True  # tap another creature -- a COST, paid now
         state.log_event(
             "tap", permanent=(name, slot), reason="pinnacle_kill_ship_station",
             source=(permanent.card_def.name, permanent.slot),
         )
+        # Charge counters gained = the tapped creature's power. Snapshotted
+        # here at cost-payment time: nothing in this pool changes a
+        # creature's power at instant speed, so this equals its power at
+        # resolution, and stands as last-known information if that creature
+        # leaves the battlefield (bounced/killed in response) before the
+        # effect resolves.
         gained = permanent_power(state, tapped_creature)
-        permanent.counters["charge"] = permanent.counters.get("charge", 0) + gained
-        animate = registry.EFFECT_REGISTRY[EffectId.PINNACLE_KILL_SHIP]["animate"]
-        if permanent.counters["charge"] >= animate["threshold"]:
-            permanent.type_override = CardType.CREATURE
-            state.log_event("animated", permanent=(permanent.card_def.name, permanent.slot), new_type="CREATURE")
+
+        def _effect(state):
+            permanent.counters["charge"] = permanent.counters.get("charge", 0) + gained
+            animate = registry.EFFECT_REGISTRY[EffectId.PINNACLE_KILL_SHIP]["animate"]
+            if permanent.counters["charge"] >= animate["threshold"]:
+                permanent.type_override = CardType.CREATURE
+                state.log_event("animated", permanent=(permanent.card_def.name, permanent.slot), new_type="CREATURE")
+
+        push_ability_to_stack(state, permanent.card_def, _effect)
 
     begin_choose_permanent(
         state, lambda p: p is not permanent and not p.tapped and p.card_type == CardType.CREATURE, _on_chosen,
     )
+
+
+# Boulderbranch Golem's Prototype {3}{G} 3/3 mode. A DISTINCT CardDef (same
+# display name, own smaller stats + own effect_id) reached only via the
+# "prototype" registry spec + drl_env's "Cast X (prototype)" action -- never
+# registered in COLORLESS_CARD_CATALOG itself, same ontology as green_cards'
+# SAGU_WILDLING_CREATURE_CARD_DEF. Its own effect_id carries the ETB
+# "gain life equal to its power" as a fixed 3 (this mode's power) -- see the
+# BOULDERBRANCH_GOLEM_PROTOTYPE registry entry below. Real reminder text:
+# "You may cast this spell with different mana cost, color, and size. It keeps
+# its abilities and types." (The artifact/color change is a no-op here -- the
+# engine models both modes as plain CREATUREs, and no card cares about the
+# green color a Prototype cast grants.)
+BOULDERBRANCH_GOLEM_PROTOTYPE_CARD_DEF = CardDef(
+    "Boulderbranch Golem", CardType.CREATURE, {"generic": 3, "G": 1}, EffectId.BOULDERBRANCH_GOLEM_PROTOTYPE,
+    power=3, toughness=3,
+)
+
+
+def cast_boulderbranch_prototype(state, card_def):
+    """Cast Boulderbranch Golem for its Prototype cost as the 3/3. The mana
+    ({3}{G}) is already paid by drl_env._omen_cast_execute; `card_def` is
+    BOULDERBRANCH_GOLEM_PROTOTYPE_CARD_DEF, a different object from the
+    "Boulderbranch Golem" actually sitting in hand (the normal {7} CardDef,
+    same display name) -- so the hand card is found by NAME, not identity,
+    same as Sagu Wildling's own Omen creature half."""
+    hand_card = next(c for c in state.hand if c.name == "Boulderbranch Golem")
+    state.hand.remove(hand_card)
+    enters_battlefield(state, card_def)
 
 
 COLORLESS_EFFECT_REGISTRY = {
@@ -428,7 +522,7 @@ COLORLESS_EFFECT_REGISTRY = {
     },
     EffectId.CONDUIT_PYLONS: {
         "mana": ("fixed", "C"),
-        "etb_trigger": lambda state: surveil(state, 1),
+        "etb_trigger": lambda state, permanent: surveil(state, 1),
         "filter_mana": {"colors": set(COLORS)},
         "pending_kinds": {"surveil"},
     },
@@ -453,7 +547,7 @@ COLORLESS_EFFECT_REGISTRY = {
         },
     },
     EffectId.CANDY_TRAIL: {
-        "etb_trigger": lambda state: scry(state, 2),
+        "etb_trigger": lambda state, permanent: scry(state, 2),
         "cast": {"resolve": lambda state, card_def: cast_permanent_from_hand(state, card_def)},
         "activated_abilities": {
             "sac": {
@@ -505,22 +599,39 @@ COLORLESS_EFFECT_REGISTRY = {
     EffectId.FILLER: {},
     EffectId.ROOFTOP_PERCHER: {
         "cast": {"resolve": lambda state, card_def: cast_permanent_from_hand(state, card_def)},
-        "etb_trigger": lambda state: gain_life(state, 3),
+        "etb_trigger": lambda state, permanent: gain_life(state, 3),
         "keywords": {"flying"},
     },
     EffectId.BOULDERBRANCH_GOLEM: {
         "cast": {"resolve": lambda state, card_def: cast_permanent_from_hand(state, card_def)},
-        # Real text is "gain life equal to its power" -- power is fixed at
-        # 6 in this simplified (no-Prototype) model, so this is that same
-        # value, not a dynamic read.
-        "etb_trigger": lambda state: gain_life(state, 6),
+        # Real text is "gain life equal to its power." Power is fixed at 6 in
+        # THIS (normal {7} 6/5) mode -- nothing in this pool changes it before
+        # the ETB resolves -- so the amount is baked as 6 rather than read off
+        # the permanent; the Prototype 3/3 mode bakes 3 the same way (its own
+        # BOULDERBRANCH_GOLEM_PROTOTYPE effect_id below).
+        "etb_trigger": lambda state, permanent: gain_life(state, 6),
+        # Prototype {3}{G} -- 3/3: a second, cheaper cast option producing the
+        # smaller creature (BOULDERBRANCH_GOLEM_PROTOTYPE_CARD_DEF). Reuses the
+        # Omen action machinery (drl_env.build_action_table's own "prototype"
+        # block + _omen_cast_legal/_omen_cast_execute).
+        "prototype": {
+            "card_def": BOULDERBRANCH_GOLEM_PROTOTYPE_CARD_DEF,
+            "cost": {"generic": 3, "G": 1},
+            "resolve": lambda state, card_def: cast_boulderbranch_prototype(state, card_def),
+        },
+    },
+    EffectId.BOULDERBRANCH_GOLEM_PROTOTYPE: {
+        # Reached only via the Prototype cast action (never a decklist/CARD_DEFS
+        # entry by this effect_id). "Gain life equal to its power" = 3 in this
+        # 3/3 mode, baked the same way the normal mode bakes 6 above.
+        "etb_trigger": lambda state, permanent: gain_life(state, 3),
     },
     EffectId.MAELSTROM_COLOSSUS: {
         "cast": {"resolve": lambda state, card_def: cast_maelstrom_colossus(state, card_def)},
     },
     EffectId.PINNACLE_KILL_SHIP: {
         "cast": {"resolve": lambda state, card_def: cast_permanent_from_hand(state, card_def)},
-        "etb_trigger": lambda state: pinnacle_kill_ship_etb(state),
+        "etb_trigger": lambda state, permanent: pinnacle_kill_ship_etb(state),
         "activated_abilities": {
             "station": {
                 "speed": Speed.SORCERY,  # real text: "Station only as a sorcery"
@@ -528,7 +639,9 @@ COLORLESS_EFFECT_REGISTRY = {
                 "resolve": lambda state, permanent: _pinnacle_kill_ship_station_resolve(state, permanent),
             },
         },
-        "pending_kinds": {"choose_permanent", "choose_opponent_permanent"},
+        # choose_permanent = Station (tap a creature YOU control -- a cost);
+        # choose_any_target = the ETB "up to one target creature" (either side).
+        "pending_kinds": {"choose_permanent", "choose_any_target"},
         # Read by stats._animate_spec (power/toughness/keywords once
         # animated) and _pinnacle_kill_ship_station_resolve (the threshold
         # that flips Permanent.type_override to CREATURE). Real text: 7+
@@ -552,8 +665,17 @@ if __name__ == "__main__":
     # ponytail self-check: no pytest in this project, mirrors the
     # assert-based demo convention -- run via
     # `python -m game.catalog.colorless_cards` from src/.
+    from ..effects.stack import resolve_top_of_stack
+    from ..effects.triggers import promote_triggers_to_stack
     from ..resolution import choose_graveyard_card_options, execute_choose_graveyard_card_option
     from ..state import GameState, Permanent
+
+    def _resolve_etb(state):
+        """Test helper: drive a just-queued ETB (faithful timing queues it
+        rather than firing inline) onto the stack and resolve it, the way
+        game.turn's own priority round does in real play."""
+        promote_triggers_to_stack(state)
+        resolve_top_of_stack(state)
 
     # Basic landcycling {1}: discard this card from hand, search for a
     # basic land -- a real model choice between Forest and Plains (unlike
@@ -589,8 +711,12 @@ if __name__ == "__main__":
     state.battlefield = [candy_trail]
     state.library = [CardDef("Forest", CardType.LAND, None, EffectId.FOREST, basic=True)]
     activate_candy_trail_sac(state, candy_trail)
-    assert state.battlefield == []
-    assert state.life_total == 23  # STARTING_LIFE (20) + 3
+    assert state.battlefield == []  # sacrificed -- a cost, paid immediately on activation
+    # gain 3 + draw are the ability's EFFECT -- now on the stack (faithful
+    # timing), not applied the instant the cost was paid.
+    assert len(state.stack) == 1 and state.life_total == 20 and state.hand == []
+    resolve_top_of_stack(state)
+    assert state.life_total == 23  # STARTING_LIFE (20) + 3, once the effect resolves
     assert [c.name for c in state.hand] == ["Forest"]
     print("colorless_cards.py Candy Trail self-check: OK")
 
@@ -616,9 +742,13 @@ if __name__ == "__main__":
         CardDef("Breath Weapon", CardType.INSTANT, {"generic": 2, "R": 1}, EffectId.BREATH_WEAPON),
     ]
     activate_relic_of_progenitus_exile(state, relic)
-    assert relic.tapped
-    assert state.pending_resolution["kind"] == "choose_target_player"  # a real choice, not skipped
+    assert relic.tapped  # {T} -- a cost, paid immediately on activation
+    assert state.pending_resolution["kind"] == "choose_target_player"  # target chosen at activation
     execute_choose_target_player_option(state, 0)  # explicitly target yourself
+    # The effect (the targeted player exiles a graveyard card) is now on the
+    # stack -- it opens the graveyard-card choice only once it resolves.
+    assert state.pending_resolution is None and len(state.stack) == 1
+    resolve_top_of_stack(state)
     assert state.pending_resolution["kind"] == "choose_graveyard_card"
     assert choose_graveyard_card_options(state) == ["Bramble Wurm", "Breath Weapon"]
     execute_choose_graveyard_card_option(state, "Bramble Wurm")
@@ -627,8 +757,11 @@ if __name__ == "__main__":
 
     state.library = [CardDef("Forest", CardType.LAND, None, EffectId.FOREST, basic=True)]
     activate_relic_of_progenitus_draw(state, relic)
-    assert state.battlefield == []
-    assert state.graveyard == []  # "exile ALL graveyards" -- the untouched "Breath Weapon" is gone too
+    assert state.battlefield == []  # exile-self -- a cost, paid immediately
+    # "exile ALL graveyards" + draw are the effect -- on the stack now.
+    assert len(state.stack) == 1 and [c.name for c in state.graveyard] == ["Breath Weapon"]
+    resolve_top_of_stack(state)
+    assert state.graveyard == []  # the untouched "Breath Weapon" is gone too, once resolved
     assert [c.name for c in state.hand] == ["Forest"]
     print("colorless_cards.py Relic of Progenitus (self-target + exile-all) self-check: OK")
 
@@ -645,9 +778,12 @@ if __name__ == "__main__":
     state2.players[0].graveyard = [CardDef("Mine", CardType.CREATURE, None, EffectId.FILLER)]
     state2.players[1].graveyard = [CardDef("Theirs", CardType.CREATURE, None, EffectId.FILLER)]
     activate_relic_of_progenitus_exile(state2, relic2)
-    execute_choose_target_player_option(state2, 1)  # target the opponent
+    execute_choose_target_player_option(state2, 1)  # target the opponent (locked at activation)
+    resolve_top_of_stack(state2)  # effect resolves -> the TARGETED player picks the card
+    assert state2.active_idx == 1  # active_idx flipped to the targeted player for their choice
     assert choose_graveyard_card_options(state2) == ["Theirs"]  # THEIR graveyard, not "Mine"
     execute_choose_graveyard_card_option(state2, "Theirs")
+    assert state2.active_idx == 0  # restored to the activator once the choice is made
     assert state2.players[1].graveyard == []
     assert [c.name for c in state2.players[0].graveyard] == ["Mine"]  # own graveyard untouched
     print("colorless_cards.py Relic of Progenitus (real opponent target) self-check: OK")
@@ -662,14 +798,34 @@ if __name__ == "__main__":
     percher = CardDef("Rooftop Percher", CardType.CREATURE, {"generic": 5}, EffectId.ROOFTOP_PERCHER, power=3, toughness=3)
     state.hand = [percher]
     cast_permanent_from_hand(state, percher)
+    _resolve_etb(state)  # ETB gain-3 is queued now (faithful timing), resolved off the stack
     assert state.life_total == 23  # STARTING_LIFE (20) + 3
 
     golem = CardDef("Boulderbranch Golem", CardType.CREATURE, {"generic": 7}, EffectId.BOULDERBRANCH_GOLEM, power=6, toughness=5)
     state.hand = [golem]
     cast_permanent_from_hand(state, golem)
+    _resolve_etb(state)
     assert state.life_total == 29  # +6 on top of the 23 above
 
     print("colorless_cards.py Tron filler creature self-check: OK")
+
+    # Boulderbranch Golem Prototype {3}{G} -- 3/3: a second cast option (own
+    # cheaper cost, smaller stats, own ETB "gain life = its power" = 3). Cast
+    # the prototype from hand; the {7} hand card is consumed, a 3/3 enters,
+    # and life goes up by 3 (not the normal mode's 6).
+    state = GameState(on_the_play=True)
+    golem_hand = CardDef("Boulderbranch Golem", CardType.CREATURE, {"generic": 7}, EffectId.BOULDERBRANCH_GOLEM, power=6, toughness=5)
+    state.hand = [golem_hand]
+    cast_boulderbranch_prototype(state, BOULDERBRANCH_GOLEM_PROTOTYPE_CARD_DEF)
+    assert state.hand == []  # the {7} hand card was consumed by the prototype cast
+    _resolve_etb(state)
+    assert state.life_total == 23  # 20 + 3 (the 3/3's power), not +6
+    proto = next(p for p in state.battlefield if p.card_def.name == "Boulderbranch Golem")
+    assert proto.card_def is BOULDERBRANCH_GOLEM_PROTOTYPE_CARD_DEF
+    from ..effects.stats import permanent_toughness as _proto_toughness
+    assert permanent_power(state, proto) == 3 and _proto_toughness(state, proto) == 3
+
+    print("colorless_cards.py Boulderbranch Golem Prototype self-check: OK")
 
     # Maelstrom Colossus's real Cascade -- four cases: a hit that's cast
     # for free, a whiff (nothing eligible), a hit whose own extra_legal
@@ -783,12 +939,17 @@ if __name__ == "__main__":
     _pinnacle_kill_ship_station_resolve(state, kill_ship)
     assert resolution.choose_permanent_options(state) == [("Strong Tapper", 1), ("Weak Tapper", 1)]  # Kill-Ship itself never offered -- "another creature"
     resolution.execute_choose_permanent_option(state, "Strong Tapper", 1)
-    assert strong.tapped is True
+    assert strong.tapped is True  # tapped -- a cost, paid immediately on activation
+    # Placing the charge counters is the EFFECT -- on the stack now (faithful
+    # timing), applied only on resolution.
+    assert len(state.stack) == 1 and kill_ship.counters.get("charge", 0) == 0
+    resolve_top_of_stack(state)
     assert kill_ship.counters["charge"] == 5  # the TAPPED creature's own power
     assert kill_ship.card_type == CardType.ARTIFACT  # still below the 7-counter threshold
 
     _pinnacle_kill_ship_station_resolve(state, kill_ship)
     resolution.execute_choose_permanent_option(state, "Weak Tapper", 1)
+    resolve_top_of_stack(state)
     assert kill_ship.counters["charge"] == 8  # 5 + 3, now >= 7
     assert kill_ship.card_type == CardType.CREATURE  # animated
     assert permanent_power(state, kill_ship) == 7 and _permanent_toughness(state, kill_ship) == 7
@@ -797,27 +958,49 @@ if __name__ == "__main__":
 
     print("colorless_cards.py Pinnacle Kill-Ship Station self-check: OK")
 
-    # ETB, 1-player: correctly a no-op -- state.opponent would otherwise
-    # raise IndexError (same guard win_check.deal_damage_to_opponent uses),
-    # matching every current Tron config (no opponent battlefield exists).
-    state = GameState(on_the_play=True)
-    lone_kill_ship = Permanent(CardDef("Pinnacle Kill-Ship", CardType.ARTIFACT, {"generic": 7}, EffectId.PINNACLE_KILL_SHIP))
-    state.battlefield = [lone_kill_ship]
-    pinnacle_kill_ship_etb(state)  # must not raise
-    assert state.pending_resolution is None
+    # ETB "up to one target creature" -- now on the stack: 10 damage to a
+    # chosen creature (either side, hexproof-aware) at resolution, or fizzle
+    # if it's gone, or nothing if declined.
+    import contextlib
+    import io
 
-    # ETB, 2-player: a real opposing creature -- 10 damage, lethal via the
-    # ordinary state-based-action check (not special-cased in the ETB
-    # itself).
+    from .. import resolution as _res
+    from ..effects.stack import resolve_top_of_stack
     from ..state import PlayerState
 
-    state2 = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
+    # (a) target an opponent creature -> 10 damage at resolution (lethal via SBA)
+    state = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
     victim = Permanent(CardDef("Victim", CardType.CREATURE, None, EffectId.FILLER, power=1, toughness=3))
-    state2.players[1].battlefield = [victim]
-    pinnacle_kill_ship_etb(state2)
-    assert state2.pending_resolution["kind"] == "choose_opponent_permanent"
-    assert resolution.choose_opponent_permanent_options(state2) == [("Victim", 1)]
-    resolution.execute_choose_opponent_permanent_option(state2, "Victim", 1)
-    assert victim not in state2.players[1].battlefield  # 10 damage vs 3 toughness -- lethal
+    victim.slot = 1
+    state.players[1].battlefield = [victim]
+    pinnacle_kill_ship_etb(state)
+    assert state.pending_resolution["kind"] == "choose_any_target" and state.pending_resolution["optional"]
+    _res.execute_choose_any_target_creature(state, 1, "Victim", 1)
+    assert len(state.stack) == 1  # the ETB effect waits on the stack
+    resolve_top_of_stack(state)
+    assert victim not in state.players[1].battlefield  # 10 vs 3 -> lethal via SBA
 
-    print("colorless_cards.py Pinnacle Kill-Ship ETB self-check: OK")
+    # (b) up-to-one: decline -> the ability resolves doing nothing
+    state = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
+    bystander = Permanent(CardDef("Bystander", CardType.CREATURE, None, EffectId.FILLER, power=1, toughness=3))
+    bystander.slot = 1
+    state.players[1].battlefield = [bystander]
+    pinnacle_kill_ship_etb(state)
+    _res.execute_choose_any_target_decline(state)
+    resolve_top_of_stack(state)
+    assert bystander in state.players[1].battlefield and bystander.damage_marked == 0
+
+    # (c) fizzle: chosen creature gone before the ETB resolves
+    state = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
+    doomed = Permanent(CardDef("Doomed", CardType.CREATURE, None, EffectId.FILLER, power=1, toughness=3))
+    doomed.slot = 1
+    state.players[1].battlefield = [doomed]
+    pinnacle_kill_ship_etb(state)
+    _res.execute_choose_any_target_creature(state, 1, "Doomed", 1)
+    state.players[1].battlefield = []  # exiled/bounced before resolution
+    _log = io.StringIO()
+    with contextlib.redirect_stdout(_log):
+        resolve_top_of_stack(state)
+    assert "fizzle" in _log.getvalue().lower()
+
+    print("colorless_cards.py Pinnacle Kill-Ship ETB (up-to-one, on stack, fizzle) self-check: OK")

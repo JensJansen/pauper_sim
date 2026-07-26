@@ -1,18 +1,18 @@
 """Multi-deck Magic-subset simulator -- package entry point.
 
 This package replaces what used to be a single game.py file, split by
-domain (cards, state, resolution, mana, effects, turn loop, reporting,
+domain (cards, state, resolution, mana, effects, turn loop,
 per-color card catalogs, and the registry that unions every color). A
 deck is just a decklist file (data/*.txt, parsed by game.decklist)
 resolved against the shared card catalog (game.CARD_DEFS) each color
 catalog contributes to -- adding or reweighting a deck built entirely
 from already-implemented cards never needs a code change, and neither
-does reusing a card across multiple decks (DECK_REGISTRY_REFRESH_PLAN.md).
+does reusing a card across multiple decks.
 
 Every submodule is re-exported here flat (game.CARD_DEFS, game.GameState,
 game.play_land_from_hand, ...) so every existing `import game; game.X`
-caller (drl_env.py, rewards.py, harness.py, run.py,
-generate_regression_snapshot.py) keeps working unchanged.
+caller (drl_env.py, rewards.py, terminated.py, and the token_*.py training
+pipeline) keeps working unchanged.
 
 Import order matters: `from . import registry` first is what actually
 triggers loading every catalog module (and, transitively, most of the
@@ -68,17 +68,19 @@ from .effects.casting import bounce_land_etb, cast_aura, cast_permanent_from_han
 from .effects.combat import combat_damage_step, creature_attack_eligible, creature_block_eligible, declare_attacker, declare_attackers_step
 from .effects.madness_and_plot import execute_madness_cast, plot_to_exile
 from .effects.shared import find_and_remove_by_name
-from .effects.stack import on_cast_trigger, push_to_stack, resolve_top_of_stack
+from .effects.stack import on_cast_trigger, push_ability_to_stack, push_to_stack, resolve_top_of_stack
 from .effects.state_based import HAND_SIZE_LIMIT, cleanup_step
 from .effects.stats import creature_keywords, enchantment_count, has_keyword, permanent_power, permanent_toughness
 from .effects.tokens import (
     BLOOD_TOKEN_CARD_DEF,
     ELDRAZI_SPAWN_TOKEN_CARD_DEF,
+    FOOD_TOKEN_CARD_DEF,
     ROBOT_TOKEN_CARD_DEF,
     TOKEN_LIMIT,
     WARRIOR_TOKEN_CARD_DEF,
     activate_blood_sac,
     activate_eldrazi_spawn_sac,
+    activate_food_sac,
     create_token,
 )
 from .effects.triggers import promote_triggers_to_stack
@@ -101,9 +103,11 @@ from .mana import (
     tap_cost_options,
 )
 from .registry import CARD_DEFS, EFFECT_REGISTRY, ENTERS_TAPPED_EFFECTS, SIMPLE_MANA_SOURCE_EFFECTS, derive_pending_kinds
-from .reporting import aggregate_results, print_report
 from .resolution import (
+    assign_combat_damage_options,
+    begin_assign_combat_damage,
     begin_bottom,
+    begin_choose_any_target,
     begin_choose_graveyard_card,
     begin_choose_opponent_permanent,
     begin_choose_permanent,
@@ -119,6 +123,8 @@ from .resolution import (
     begin_scry_surveil,
     begin_search_fetch,
     bottom_options,
+    choose_any_target_creature_options,
+    choose_any_target_options,
     choose_graveyard_card_options,
     choose_opponent_permanent_options,
     choose_permanent_options,
@@ -128,9 +134,15 @@ from .resolution import (
     discard_or_sacrifice_discard_options,
     discard_or_sacrifice_sacrifice_options,
     execute_bottom_option,
+    execute_choose_any_target_creature,
+    execute_choose_any_target_decline,
+    execute_choose_any_target_player,
+    execute_choose_graveyard_card_decline,
     execute_choose_graveyard_card_option,
     execute_choose_opponent_permanent_option,
     execute_choose_permanent_option,
+    execute_assign_combat_damage_option,
+    execute_assign_combat_damage_to_player,
     execute_choose_target_player_option,
     execute_discard_decline,
     execute_discard_option,
@@ -153,5 +165,5 @@ from .resolution import (
     search_fetch_options,
     surveil,
 )
-from .state import GameState, Permanent, build_shuffled_library, new_game_state, new_multiplayer_game_state
-from .turn import Phase, Speed, draw_step, run_game, run_mulligan_phase, run_multiplayer_game, run_turn, untap_step
+from .state import GameState, Permanent, build_shuffled_library, new_multiplayer_game_state
+from .turn import Phase, Speed, draw_step, run_mulligan_phase, run_multiplayer_game, run_turn, untap_step

@@ -46,14 +46,14 @@ MULTICOLOR_EFFECT_REGISTRY = {
     EffectId.RAKDOS_CARNARIUM: {
         "mana": ("fixed_multi", ("B", "R")),
         "enters_tapped": True,
-        "etb_trigger": lambda state: bounce_land_etb(state),
+        "etb_trigger": lambda state, permanent: bounce_land_etb(state),
         "pending_kinds": {"choose_permanent"},
     },
     EffectId.JAGGED_BARRENS: {
         "mana": ("flexible", {"B", "R"}),
         "enters_tapped": True,
         # Deals 1 damage to target opponent.
-        "etb_trigger": lambda state: deal_damage_to_opponent(state, 1),
+        "etb_trigger": lambda state, permanent: deal_damage_to_opponent(state, 1),
     },
     # Never actually cast (real cost is {U}{B} -- off-color for both
     # rakdos_madness and mono_red_madness, by design): always discarded,
@@ -61,7 +61,7 @@ MULTICOLOR_EFFECT_REGISTRY = {
     # all -- matches Generous Ent's own "never hard-cast" precedent.
     EffectId.SNEAKY_SNACKER: {
         "on_draw_count": {"count": 3},
-        # order_triggers (docs/PRIORITY_PLAN.md item 1): reachable the
+        # order_triggers: reachable the
         # instant 2+ copies both cross their own draw-count trigger on
         # the same draw -- a real placement-order choice, not fixed
         # queue order, even though this trigger is otherwise "automatic"
@@ -69,16 +69,17 @@ MULTICOLOR_EFFECT_REGISTRY = {
         "pending_kinds": {"order_triggers"},
     },
     EffectId.SLIPPERY_BOGLE: {
-        # No ability -- functionally a vanilla 1/1 hexproof for {G};
-        # hexproof is a documented no-op, same treatment as every other
-        # bogle/hexproof creature here -- no opposing spells/abilities
-        # exist in this solitaire simulator to be hexproof against.
+        # Vanilla 1/1 with hexproof for {G}. Hexproof is now a REAL targeting
+        # restriction (stats.can_be_targeted): once opponents can target
+        # across sides (faithful burn/removal), this bogle can't be the
+        # target of their spells/abilities -- the whole point of the deck.
         "cast": {"resolve": lambda state, card_def: cast_permanent_from_hand(state, card_def)},
+        "keywords": {"hexproof"},
     },
     EffectId.ARMADILLO_CLOAK: {
-        # Real text: enchanted creature also gets trample (docs/COMBAT_
-        # PLAN.md step 7 -- combat_damage_step's own trample-aware damage
-        # assignment, "keywords" below) and "whenever enchanted creature
+        # Real text: enchanted creature also gets trample (combat_damage_
+        # step's own trample-aware damage assignment reads the "keywords"
+        # below) and "whenever enchanted creature
         # deals damage, you gain that much life" -- a TRIGGERED ability,
         # not real lifelink, so it's its OWN "lifelink": True key
         # (stats.lifelink_count), summed across every enchanting Aura
@@ -94,7 +95,7 @@ MULTICOLOR_EFFECT_REGISTRY = {
             "extra_legal": lambda state: any_creature_on_battlefield(state),
             "precast_choice": True,  # real MTG "enchant target creature" -- must be chosen before the stack, see drl_env._precast_choice_execute
         },
-        "pending_kinds": {"choose_permanent"},
+        "pending_kinds": {"choose_any_target"},  # Aura: cast_aura targets any creature (either side), hexproof-aware
         "pt_bonus": lambda state, aura: 2,
         "toughness_bonus": lambda state, aura: 2,  # real text is +2/+2
         "keywords": {"trample"},

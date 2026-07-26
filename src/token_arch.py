@@ -8,7 +8,7 @@ conditioner. Deliberately does NOT include a trunk, critic, or action head
 Uses torch.nn.MultiheadAttention/TransformerEncoderLayer directly (already
 a torch dependency, no new library) rather than hand-rolling attention --
 same "stdlib/already-installed dependency before custom code" reasoning
-this codebase already applies elsewhere (e.g. lean_ppo.py reusing
+this codebase already applies elsewhere (e.g. the prior flat-MLP trainer reusing
 torch.distributions.Categorical instead of a hand-rolled categorical).
 
 Padding/masking: a batch of games has a variable number of tokens per
@@ -37,7 +37,7 @@ def pad_token_batch(token_lists, device="cpu"):
     the pointer-network action head to map a legal target back to its own
     row). T = the longest token list in this specific batch, not a fixed
     constant -- every batch pads to its own max, matching how PPO rollout
-    batches already vary in size elsewhere in this codebase (lean_ppo.py's
+    batches already vary in size elsewhere in this codebase (the prior flat-MLP trainer's
     own final minibatch can be shorter than batch_size)."""
     batch_size = len(token_lists)
     max_len = max((len(tl) for tl in token_lists), default=1)

@@ -44,7 +44,7 @@ try:
     # real play, once the enclosing top-level action is fully done):
     # promote. The trigger itself is now a real stack entry -- an
     # opponent gets a priority window before the cast-or-decline choice
-    # is even offered (docs/PRIORITY_PLAN.md item 1) -- so resolving it
+    # is even offered -- so resolving it
     # is what actually opens the decision, not promotion itself.
     triggers.promote_triggers_to_stack(state)
     assert state.pending_resolution is None  # just sitting on the stack, not open yet
@@ -61,7 +61,7 @@ try:
     assert state.pending_resolution["kind"] == "pay_cost"
     assert mana.tap_cost_options(state) == [("Forest", None, False)]
     mana.execute_tap_cost_option(state, "Forest", None, False)
-    # Pool-only model (MANA_POOL_PLAN.md): the tap only floats {G} into the
+    # Pool-only model: the tap only floats {G} into the
     # pool -- paying the cost is a separate, explicit spend.
     assert state.pending_resolution["kind"] == "pay_cost"
     mana.execute_pool_spend(state, "G")
@@ -118,7 +118,7 @@ finally:
 print("integration_check.py madness cast + abandon payment (no-vanish regression): OK")
 
 # -- Blocking's own mutual combat damage + creature death (docs/COMBAT_
-# PLAN.md steps 5/6): combat.py's own combat_damage_step handing off to
+#): combat.py's own combat_damage_step handing off to
 # state_based.py's check_state_based_actions -- a blocked attacker deals
 # no damage to the opponent (absorbed), but IT and its blocker now fight
 # each other for real, and check_state_based_actions kills whichever
@@ -150,11 +150,11 @@ try:
     combat.declare_attacker(state, attacker_a)
     combat.declare_attacker(state, attacker_b)
     combat.declare_attacker(state, unblocked_attacker)
-    state.blocked_by[attacker_a] = blocker_a
-    state.blocked_by[attacker_b] = blocker_b
+    state.blocked_by[attacker_a] = [blocker_a]
+    state.blocked_by[attacker_b] = [blocker_b]
     combat.combat_damage_step(state)
 
-    assert state.damage_dealt == 2  # only the unblocked attacker's power counts -- A/B's damage is absorbed
+    assert state.players[1].life_total == 18  # 20 - only the unblocked attacker's power (2); A/B's is absorbed
     assert state.attackers == []
     # Pair A: attacker_a (toughness 3) took blocker_a's 5 power -> dead.
     # blocker_a (toughness 2) took attacker_a's 1 power -> survives.

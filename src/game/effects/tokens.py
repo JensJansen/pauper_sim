@@ -1,16 +1,18 @@
 """Token creation, the two token-specific activated abilities, and the
 token CardDefs themselves -- Melded Moxite's Robot, Voldaren Epicure/
 Vampire's Kiss's Blood, Cartouche of Solidarity's Warrior, Malevolent
-Rumble's Eldrazi Spawn (docs/MADNESS_DECKS_PLAN.md item 8). Builds on
+Rumble's Eldrazi Spawn. Builds on
 casting.enters_battlefield for the actual battlefield-entry mechanics --
 a token entering is exactly as real as any other permanent from there on;
 only its creation (no hand/library removal beforehand) differs."""
 
 from . import casting
+from .stack import push_ability_to_stack
+from .win_check import gain_life
 from .. import registry, resolution
 from ..cards import CardDef, CardType, EffectId
 
-TOKEN_LIMIT = 20  # shared across every token name, not per-name -- see docs/COMBAT_PLAN.md
+TOKEN_LIMIT = 20  # shared across every token name, not per-name
 
 
 def create_token(state, card_def, tapped=False):
@@ -23,9 +25,7 @@ def create_token(state, card_def, tapped=False):
 
     TOKEN_LIMIT caps how many tokens (any name, combined -- an Eldrazi
     Spawn and a Warrior count the same toward this one shared pool) this
-    player can have on the battlefield at once (docs/COMBAT_PLAN.md's
-    permanent-identity discussion: no per-card token-production math,
-    just one flat, generous ceiling). Beyond it, creation fails outright
+    player can have on the battlefield at once. Beyond it, creation fails outright
     -- returns None, never touches the battlefield, never fires an ETB
     trigger, as if it was never attempted at all. No real deck comes
     remotely close today; this exists for whatever degenerate future
@@ -47,13 +47,24 @@ def activate_blood_sac(state, permanent):
     state-based action -- never added to the graveyard, unlike a real
     card), then discard a card (reusing resolution.begin_discard
     directly, which is what makes Madness-awareness automatic for
-    whatever gets discarded this way), then draw."""
+    whatever gets discarded this way), then draw.
+
+    Faithful timing: the sacrifice and the discard
+    are both COSTS, paid immediately on activation; only the DRAW is the
+    ability's effect, so it goes on the stack (push_ability_to_stack) once
+    both costs are paid -- both players get a priority window before it
+    resolves, and a same-name copy still discarded to pay this cost is
+    reserved correctly (push_ability_to_stack passes reserves_hand_card=
+    False; the discard already left hand at cost time)."""
     state.battlefield.remove(permanent)
     state.log_event(
         "zone_move", permanent=(permanent.card_def.name, permanent.slot), from_zone="battlefield",
         to_zone="ceases_to_exist", reason="sacrifice",
     )
-    resolution.begin_discard(state, 1, optional=False, on_complete=lambda s, _cards: s.draw(1))
+    resolution.begin_discard(
+        state, 1, optional=False,
+        on_complete=lambda s, _cards: push_ability_to_stack(s, permanent.card_def, lambda st: st.draw(1)),
+    )
 
 
 def activate_eldrazi_spawn_sac(state, permanent):
@@ -76,10 +87,27 @@ def activate_eldrazi_spawn_sac(state, permanent):
     state.log_event("mana_tap", permanent=(permanent.card_def.name, permanent.slot), mode="sac_ability", produced=["C"])
 
 
+def activate_food_sac(state, permanent):
+    """Food's "{2}, {T}, Sacrifice this token: You gain 3 life" (Generous
+    Ent's ETB makes one). The {2} mana and the untapped precondition are
+    handled generically by drl_env.py's cost_key-based activated-ability
+    wiring (same as Candy Trail's own sac ability). Sacrifice a TOKEN (ceases
+    to exist, never a graveyard trip -- unlike Candy Trail, a real card), then
+    the gain-3 is the effect and goes on the stack (push_ability_to_stack),
+    resolving after a priority window."""
+    state.battlefield.remove(permanent)
+    state.log_event(
+        "zone_move", permanent=(permanent.card_def.name, permanent.slot), from_zone="battlefield",
+        to_zone="ceases_to_exist", reason="sacrifice",
+    )
+    push_ability_to_stack(state, permanent.card_def, lambda st: gain_life(st, 3))
+
+
 BLOOD_TOKEN_CARD_DEF = CardDef("Blood", CardType.ARTIFACT, None, EffectId.BLOOD_TOKEN, sac_ability_cost={"generic": 1})
 ROBOT_TOKEN_CARD_DEF = CardDef("Robot", CardType.CREATURE, None, EffectId.ROBOT_TOKEN, power=2, toughness=2)  # 2/2
 WARRIOR_TOKEN_CARD_DEF = CardDef("Warrior", CardType.CREATURE, None, EffectId.WARRIOR_TOKEN, power=1, toughness=1)  # 1/1; vigilance -- see EffectId.WARRIOR_TOKEN's own registry entry (white_cards.py)
 ELDRAZI_SPAWN_TOKEN_CARD_DEF = CardDef("Eldrazi Spawn", CardType.CREATURE, None, EffectId.ELDRAZI_SPAWN_TOKEN, power=0, toughness=1)  # 0/1
+FOOD_TOKEN_CARD_DEF = CardDef("Food", CardType.ARTIFACT, None, EffectId.FOOD_TOKEN, sac_ability_cost={"generic": 2})  # {2},{T},Sac: gain 3
 
 
 if __name__ == "__main__":
@@ -112,9 +140,14 @@ if __name__ == "__main__":
         assert [p.card_def.name for p in state.battlefield] == ["Robot"]
         assert state.graveyard == []
         assert len(state.trigger_queue) == 1 and state.trigger_queue[0]["kind"] == "madness"
-        # Draw fires via begin_discard's own on_complete regardless of the
-        # queued trigger -- net hand size unchanged (lost the discarded
-        # card, gained one drawn).
+        # The DRAW is the ability's effect -- now on the stack (faithful
+        # timing), not fired inline the instant the costs were paid. Nothing
+        # drawn until it resolves off the stack.
+        from .stack import resolve_top_of_stack
+        assert len(state.stack) == 1 and len(state.hand) == 0
+        resolve_top_of_stack(state)
+        # Draw fired on resolution -- net hand size unchanged vs. before the
+        # activation (lost the discarded card, gained one drawn).
         assert len(state.hand) == drawn_before
     finally:
         registry.EFFECT_REGISTRY[EffectId.FILLER] = _filler_backup
@@ -138,7 +171,7 @@ if __name__ == "__main__":
     # "Fails outright" also means no ETB trigger fires for the rejected token.
     etb_calls = []
     _filler_backup = registry.EFFECT_REGISTRY[EffectId.FILLER]
-    registry.EFFECT_REGISTRY[EffectId.FILLER] = {"etb_trigger": lambda s: etb_calls.append(True)}
+    registry.EFFECT_REGISTRY[EffectId.FILLER] = {"etb_trigger": lambda s, permanent: etb_calls.append(True)}
     try:
         fake_token = CardDef("Fake Token", CardType.CREATURE, None, EffectId.FILLER)
         result = create_token(state, fake_token)

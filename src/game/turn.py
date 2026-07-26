@@ -1,17 +1,17 @@
 """Turn loop: a fixed sequence of phases (game.turn.Phase), each running its
 own turn-based automatic effect (if any) then a real priority round
-(docs/PRIORITY_PLAN.md) -- both players get a real chance to act or
+ -- both players get a real chance to act or
 respond at every phase/step, not just the turn player, except Untap (never
 any priority) and Cleanup (priority only if something triggers there)."""
 
 import enum
 
-from .effects.combat import combat_damage_step, declare_attackers_step
+from .effects.combat import attackers_needing_damage_assignment, combat_damage_step, declare_attackers_step
 from .effects.stack import resolve_top_of_stack
 from .effects.state_based import check_state_based_actions, cleanup_step
 from .effects.triggers import promote_triggers_to_stack
-from .resolution import begin_declare_blockers, begin_mulligan, complete_resolution
-from .state import DeckedOut, new_game_state, new_multiplayer_game_state
+from .resolution import begin_assign_combat_damage, begin_declare_blockers, begin_mulligan, complete_resolution
+from .state import DeckedOut, new_multiplayer_game_state
 
 
 class Phase(enum.Enum):
@@ -19,7 +19,7 @@ class Phase(enum.Enum):
     each phase's own turn-based automatic effect below (if any) plus,
     for DECLARE_BLOCKERS specifically, the defending player's own
     block-assignment decision (_declare_blockers_gen) -- both run BEFORE
-    that phase's own real priority round (docs/PRIORITY_PLAN.md); (2)
+    that phase's own real priority round; (2)
     what "Pass" advances past (empty stack, everyone's passed in a row);
     and (3) via Speed/speed_legal below, which top-level actions
     (Cast/Activate/Play land) are legal at all -- a Speed.SORCERY action
@@ -29,8 +29,7 @@ class Phase(enum.Enum):
     this repo currently cares (see the gap analysis this design followed
     from), so UPKEEP has no automatic effect at all yet, just a seam for
     one later. END's own effect (cleanup_step: discard to hand size,
-    clear combat damage) is real, not a placeholder -- see
-    docs/COMBAT_PLAN.md."""
+    clear combat damage) is real, not a placeholder."""
     UNTAP = "untap"
     UPKEEP = "upkeep"
     DRAW = "draw"
@@ -47,7 +46,7 @@ class Speed(enum.Enum):
     land) is legal relative to phase -- real Magic's own casting-speed
     rules, deliberately without the stack (see Phase's own docstring on
     what's still not modeled). YOUR_TURN and INSTANT no longer behave
-    identically now that real priority (docs/PRIORITY_PLAN.md) means the
+    identically now that real priority means the
     non-turn player can genuinely hold priority mid-someone-else's-turn:
     INSTANT stays legal regardless of whose turn it structurally is (real
     Magic's whole point of the keyword); YOUR_TURN requires
@@ -86,7 +85,7 @@ def speed_legal(state, speed):
 
     Real Magic's sorcery-speed rule is "your main phase, empty stack, you
     have priority" -- ALL THREE conditions, not just the phase/stack half:
-    under real priority (docs/PRIORITY_PLAN.md), the non-turn player can
+    under real priority, the non-turn player can
     hold priority during the turn player's own MAIN1/MAIN2 (state.phase is
     a single shared field, describing the TURN's phase, not "whichever
     player is currently being asked"), and must not be allowed to play a
@@ -138,7 +137,7 @@ PHASE_ACTION_CAPS = {phase: 200 for phase in Phase}
 # how many times priority could plausibly pass back and forth, and by how
 # many stack items could plausibly need resolving, before real resource
 # limits -- mana, cards in hand -- stop a policy cold) rather than a whole
-# phase, since docs/PRIORITY_PLAN.md's general priority round can now run
+# phase, since general priority round can now run
 # more than once per phase (once per stack resolution).
 #
 # ponytail: dropped from 200 to 20 as a temporary stopgap while
@@ -172,7 +171,7 @@ def untap_step(state):
 def draw_step(state):
     # Checked against this player's OWN turn count (turns_taken), not the
     # game's global turn_number: once a second player also takes turns
-    # (MULTIPLAYER_ENGINE_PLAN.md), turn_number==1 no longer means "my
+    #, turn_number==1 no longer means "my
     # first turn" -- P2's first turn is turn_number==2. In 1-player mode
     # turns_taken tracks turn_number exactly (there's only one player), so
     # this is behaviorally identical to the old check there.
@@ -214,8 +213,8 @@ def _run_mulligan_gen(state):
 
 def run_mulligan_phase(state, choose_action):
     """Synchronous driver for _run_mulligan_gen -- same run_turn/
-    _run_turn_gen pairing shape. Called once, by run_game/
-    run_multiplayer_game below, before their own turn loop starts."""
+    _run_turn_gen pairing shape. Called once, by run_multiplayer_game
+    below, before its own turn loop starts."""
     gen = _run_mulligan_gen(state)
     try:
         next(gen)
@@ -227,10 +226,10 @@ def run_mulligan_phase(state, choose_action):
 
 def _declare_blockers_gen(state):
     """The defending player's own block-assignment decision
-    (docs/COMBAT_PLAN.md), yielded through the SAME generic decision
+   , yielded through the SAME generic decision
     protocol as everything else in this generator-based turn loop --
     folded directly into _run_turn_gen's own Phase.DECLARE_BLOCKERS
-    handling (docs/PRIORITY_PLAN.md item 3), replacing the old
+    handling, replacing the old
     run_declare_blockers (which took a defender_choose_action callback
     and drove its own separate while loop, entirely outside the main
     generator's yield protocol). Declaring blockers is a turn-based
@@ -243,7 +242,7 @@ def _declare_blockers_gen(state):
 
     Flips back to the attacker once the defender is done (0 or more
     assignments), before this phase's own regular priority round runs
-    next (attacker gets it first, per rule 1 -- COMBAT_PLAN.md's "combat
+    next (attacker gets it first, per rule 1 -- "combat
     tricks are only asymmetrically supportable" limitation no longer
     applies once that round exists: the defender's own consult is no
     longer the only response window either side gets).
@@ -278,15 +277,55 @@ def _declare_blockers_gen(state):
             state.players[state.active_idx].actions_taken += 1
             action()  # "Done" is its own explicit action here -- None (Pass) is never expected, same as before
         if state.pending_resolution is not None:
-            complete_resolution(state)
+            # Cap exhausted mid-blocking. The pending resolution here may be
+            # the top-level "declare_blockers" (on_complete takes only
+            # state) OR a NESTED "choose which attacker to block"
+            # (begin_choose_opponent_permanent, whose on_complete is
+            # _on_attacker_chosen(s, choice) and REQUIRES a choice arg) --
+            # complete_resolution(state) with no payload crashes the latter
+            # (confirmed live: a barely-trained defender looped on
+            # Assign-Blocker and hit the cap with the attacker-choice still
+            # open). Abandon outright instead: keep whatever blocks are
+            # already recorded in blocked_by, drop the in-progress one, end
+            # blocking regardless of nesting depth. Same "can't finish, so
+            # the attempt ends" precedent abandon_pay_cost / the priority
+            # round's own cap-exhaustion already use.
+            state.log_event("declare_blockers_cap_abandoned", pending_kind=state.pending_resolution["kind"])
+            state.pending_resolution = None
     finally:
         state.active_idx = attacker_idx
         state.log_event("priority_flip", reason="declare_blockers_done", to_idx=state.active_idx)
 
 
+def _assign_combat_damage_gen(state):
+    """After blockers are declared (active_idx already back to the ATTACKER,
+    _declare_blockers_gen's finally): for each attacker blocked by 2+
+    creatures, the attacking player freely assigns that attacker's combat
+    damage across its blockers (+ trample) -- one point at a time, same
+    generic yield protocol as every other in-turn decision. A lone blocker
+    (or 0-power attacker) needs no decision (combat_damage_step auto-
+    assigns). These forced sub-resolution picks are deliberately NOT counted
+    toward actions_taken -- like resolving a cost or the automatic draw,
+    they're a mechanical consequence of a multi-block, not a discretionary
+    action the action-count reward should penalize.
+
+    Cap-bounded purely as defense: unlike blocking's own no-op trap, each
+    pick strictly decrements the pending's `remaining`, so this always
+    finishes in exactly `power` picks -- it cannot loop. On the (unreachable)
+    cap exhaustion, abandon and let combat_damage_step auto-assign."""
+    for attacker, blockers, power, has_trample in attackers_needing_damage_assignment(state):
+        begin_assign_combat_damage(state, attacker, blockers, power, has_trample, on_complete=lambda s: None)
+        for _ in range(PRIORITY_ROUND_ACTION_CAP):
+            if state.pending_resolution is None:
+                break
+            action = yield
+            action()
+        else:
+            state.pending_resolution = None  # cap defense only; fall back to auto-assign
+
+
 def _run_priority_round_gen(state):
-    """One or more rounds of real priority-passing (docs/PRIORITY_PLAN.md
-    item 2), run at the start of every phase/step (after its own
+    """One or more rounds of real priority-passing, run at the start of every phase/step (after its own
     turn-based actions, see _run_turn_gen) and repeated after every single
     stack resolution.
 
@@ -302,7 +341,7 @@ def _run_priority_round_gen(state):
     (yields once, gets back a zero-arg callable -- the stack grows,
     priority stays with them, rule 2, and "holding priority" falls out
     for free) or passes (yields once, gets back None -- priority moves to
-    the other player, docs/PRIORITY_PLAN.md's own 2-player-only scope).
+    the other player, own 2-player-only scope).
     Once every player has passed in a row: if the stack is non-empty,
     its top item resolves and priority resets to turn_player_idx (rule 1)
     -- the round repeats; if the stack is empty, this generator ends and
@@ -317,7 +356,22 @@ def _run_priority_round_gen(state):
     consecutive_passes = 0
     for _ in range(PRIORITY_ROUND_ACTION_CAP):
         check_state_based_actions(state)
-        promote_triggers_to_stack(state)
+        # Move queued triggers (ETBs, cast triggers, Madness decisions,
+        # Sneaky Snacker returns) onto the stack ONLY at a genuine priority
+        # point -- never while a resolution is still in progress (real Magic
+        # 704.3/603.3: triggered abilities are put on the stack the next time
+        # a player WOULD receive priority, which is not mid-cost/mid-choice).
+        # A pending_resolution means we're mid-action -- paying a cost,
+        # locking a target, walking a discard -- and promoting then would
+        # (a) land a cast/ETB trigger UNDER the spell or effect that
+        # resolution hasn't pushed yet (wrong stack order), and (b) for 2+
+        # simultaneous triggers, open begin_order_triggers' own pending right
+        # on top of the one already in progress, clobbering it. Deferring to
+        # the next pending-free iteration is both correct and safe: this loop
+        # runs promote every iteration, so a trigger queued mid-resolution is
+        # picked up the instant that resolution clears.
+        if state.pending_resolution is None:
+            promote_triggers_to_stack(state)
         action = yield
         if action is None:
             state.log_event("pass")
@@ -397,12 +451,11 @@ def _run_priority_round_gen(state):
 
 def _run_turn_gen(state, combat_enabled=False):
     """Generator form of one full turn -- the single implementation shared
-    by run_turn's synchronous choose_action loop below (harness.py's
-    evaluate(), generate_regression_snapshot.py) and drl_env.DeckEnv's
-    one-action-per-gym-step() interface. Iterates FULL_PHASES or
+    by run_turn's synchronous choose_action loop below and the token
+    training pipeline's own per-seat driver (token_train.py). Iterates FULL_PHASES or
     MINIMAL_PHASES depending on combat_enabled; for each phase, runs that
     phase's own turn-based automatic effect (if any), then a real
-    priority round (docs/PRIORITY_PLAN.md) -- except Untap (never any
+    priority round -- except Untap (never any
     priority at all, rule 4) and Cleanup (priority only if something
     newly triggered there, rule 4 -- see its own handling below).
     Phase.DECLARE_BLOCKERS additionally runs the defending player's own
@@ -416,9 +469,8 @@ def _run_turn_gen(state, combat_enabled=False):
     this generator is completely agnostic to WHO answers a given yield;
     state.active_idx (whoever currently holds priority) tells the CALLER
     that, and dispatching accordingly is entirely the caller's own
-    business (run_turn's plain choose_action(state) below; drl_env.
-    TwoPlayerDeckEnv's own fork between yielding out to the real gym
-    step() interface and resolving the other seat synchronously). Ends
+    business (run_turn's plain choose_action(state) below; the token
+    training loop's own fork between the two seats). Ends
     (StopIteration) once every phase has run its course.
 
     Wrapped in one try/except DeckedOut: a draw (this phase's own, or a
@@ -427,23 +479,21 @@ def _run_turn_gen(state, combat_enabled=False):
     state.GameState.draw's own docstring); catching it here, around the
     whole turn, ends the turn/generator immediately and uniformly,
     wherever it happened, with state.decked_out already set by draw()
-    itself. Callers (run_turn, DeckEnv) never see DeckedOut, only the
-    StopIteration this produces either way.
+    itself. Callers (run_turn, the training loop) never see DeckedOut, only
+    the StopIteration this produces either way.
 
     combat_enabled: per-deck opt-in (default off, matching every other
     deck-specific knob here) -- only rakdos madness/mono red madness/
     boggles pass True. Phase.DECLARE_ATTACKERS is a real per-creature
     decision (declare_attackers_step/creature_attack_eligible/
     declare_attacker, game/effects/combat.py); Phase.COMBAT_DAMAGE totals
-    unblocked attackers' power into state.damage_dealt/the opponent's
-    life_total."""
+    unblocked attackers' power into the opponent's life_total."""
     try:
         # Whoever active_idx is right now, at the very start of this
         # generator, is the true turn owner for the whole turn -- callers
         # (run_turn/run_multiplayer_game) always invoke this with active_idx
         # already pointing at them, before any priority consult could ever
-        # flip it away (docs/PRIORITY_PLAN.md's turn-owner/priority-holder
-        # split). Set once here, never touched again until next turn.
+        # flip it away. Set once here, never touched again until next turn.
         state.turn_player_idx = state.active_idx
         state.turn_number += 1
         state.turns_taken += 1  # this player's own turn count -- see draw_step's own note on why turn_number alone isn't enough once a second player exists
@@ -467,6 +517,13 @@ def _run_turn_gen(state, combat_enabled=False):
 
             if phase is Phase.DECLARE_BLOCKERS:
                 yield from _declare_blockers_gen(state)
+                if state.turn_won is not None:
+                    return
+                # A multi-blocked attacker's controller now freely assigns
+                # that attacker's combat damage across its blockers (gang-
+                # blocking) -- before COMBAT_DAMAGE's own combat_damage_step
+                # auto-effect applies it.
+                yield from _assign_combat_damage_gen(state)
                 if state.turn_won is not None:
                     return
 
@@ -538,7 +595,7 @@ def run_turn(state, choose_action, combat_enabled=False):
     itself and feeds the result into _run_turn_gen. See that generator's
     docstring for the actual turn logic -- this is just its synchronous
     driver. choose_action(state) is called for EVERY yield regardless of
-    whose decision it is (docs/PRIORITY_PLAN.md) -- a closure that needs
+    whose decision it is -- a closure that needs
     to act differently per player reads state.active_idx itself (same
     contract run_multiplayer_game's own choose_action already relies on),
     no separate callback for blocking or any other reactive window needed
@@ -552,23 +609,9 @@ def run_turn(state, choose_action, combat_enabled=False):
         pass
 
 
-def run_game(decklist, terminated_fn, rng, on_the_play, horizon, choose_action, combat_enabled=False,
-             event_log=None):
-    """1-player entry point -- unchanged signature/behavior from before
-    MULTIPLAYER_ENGINE_PLAN.md (drl_env.py, out of scope for that plan,
-    calls this directly and must keep working unmodified) aside from the
-    new, defaulted-off event_log param (game.state.GameState's own
-    docstring on what turning it on costs/does)."""
-    state = new_game_state(decklist, terminated_fn, on_the_play, rng, event_log=event_log)
-    run_mulligan_phase(state, choose_action)
-    while state.turn_number < horizon and state.turn_won is None and not state.decked_out:
-        run_turn(state, choose_action, combat_enabled=combat_enabled)
-    return state
-
-
 def run_multiplayer_game(decklists, terminated_fns, rng, starting_player_idx, choose_action,
                           horizon=None, combat_enabled=False, event_log=None):
-    """N-player entry point (docs/MULTIPLAYER_ENGINE_PLAN.md). Full
+    """N-player entry point. Full
     sequential turns -- one player's whole turn runs to completion (same
     run_turn/choose_action(state) contract as the 1-player path; a
     choose_action closure that needs to act differently per player can
@@ -598,7 +641,7 @@ def run_multiplayer_game(decklists, terminated_fns, rng, starting_player_idx, ch
         first_turn = False
         # choose_action already dispatches on state.active_idx for the
         # normal turn loop, so it's equally correct for every reactive
-        # priority window too (docs/PRIORITY_PLAN.md) -- no separate
+        # priority window too -- no separate
         # callable needed, per this function's own choose_action
         # docstring above. run_turn's own generator now yields at EVERY
         # decision point uniformly (not just blocking's), so this one
@@ -610,7 +653,7 @@ def run_multiplayer_game(decklists, terminated_fns, rng, starting_player_idx, ch
 if __name__ == "__main__":
     # ponytail self-check: no pytest in this project, mirrors the
     # assert-based demo convention -- run via `python -m game.turn` from
-    # src/. Exercises the 2-player engine (docs/MULTIPLAYER_ENGINE_PLAN.md)
+    # src/. Exercises the 2-player engine
     # end to end: turn alternation, on_the_play/turns_taken, life_total
     # loss, deck-out-as-instant-loss, and a real game played through actual
     # cards (not a synthetic no-op deck) -- Mountain + Lightning Bolt is
@@ -685,7 +728,7 @@ if __name__ == "__main__":
     )
     assert state.active_idx == 0
     deal_damage_to_opponent(state, 15)
-    assert state.players[0].damage_dealt == 15 and state.players[1].life_total == 5
+    assert state.players[1].life_total == 5  # 20 - 15
     assert state.turn_won is None  # not lethal yet
     deal_damage_to_opponent(state, 5)
     assert state.players[1].life_total == 0
@@ -718,7 +761,19 @@ if __name__ == "__main__":
     # payment path (game.mana.begin_pay_cost + push_to_stack), not a
     # direct deal_damage_to_opponent call like the unit check above.
     bolt_def = registry.CARD_DEFS["Lightning Bolt"]
-    bolt_resolve = registry.EFFECT_REGISTRY[bolt_def.effect_id]["cast"]["resolve"]
+
+    # This priority/stack game test uses Lightning Bolt purely as a burn
+    # vehicle to prove damage lands on a REAL opponent through the normal
+    # cast/mana-payment/stack path. Its production "cast" resolve is now a
+    # precast target choice ("any target", game.catalog.red_cards -- tested
+    # there), which would open a choose_any_target pending this toy policy
+    # doesn't model. Use a local direct-to-opponent resolve so this stays a
+    # turn/priority/stack test, decoupled from targeting.
+    def bolt_resolve(s, cd):
+        if cd in s.hand:
+            s.hand.remove(cd)
+        s.graveyard.append(cd)
+        deal_damage_to_opponent(s, 3)
 
     def _bolts_available(state):
         # Lightning Bolt is instant-speed (CardType.INSTANT), so it stays
@@ -740,7 +795,7 @@ if __name__ == "__main__":
             # mulligans existed.
             return lambda: resolution.execute_mulligan_keep(state)
         if state.pending_resolution is not None and state.pending_resolution["kind"] == "discard":
-            # cleanup_step's own hand-size discard (docs/COMBAT_PLAN.md)
+            # cleanup_step's own hand-size discard
             # can now happen to EITHER player at the end of THEIR OWN
             # turn -- unlike every other resolution below (which only
             # ever belongs to player 0, the only one who ever casts/taps
@@ -755,7 +810,7 @@ if __name__ == "__main__":
         if state.pending_resolution is not None:
             # Only ever a pay_cost here now (paying Lightning Bolt's {R}) --
             # discard (above) is handled regardless of whose turn it is.
-            # Pool-only model (MANA_POOL_PLAN.md): a tap only floats mana
+            # Pool-only model: a tap only floats mana
             # into the pool, so tap first if there's still an untapped
             # Mountain, then spend the floated R from the pool.
             tap_opts = mana.tap_cost_options(state)
@@ -781,14 +836,13 @@ if __name__ == "__main__":
         horizon=60,  # safety cap only -- the game is expected to end well before this via life_total, not by hitting it
     )
     assert state.winner == 0
-    assert state.players[1].life_total <= 0
-    assert state.players[0].damage_dealt >= 20  # at least lethal (10 Bolts * 3 available; only ~7 needed)
+    assert state.players[1].life_total <= 0  # burned out (10 Bolts * 3 available; only ~7 needed for lethal)
     assert state.turn_won is not None and state.turn_won < 60  # ended on life_total, not the safety cap
     print(f"turn.py real 2-player game self-check: OK (player 1 dead on turn {state.turn_won}, "
-          f"damage_dealt={state.players[0].damage_dealt}, life_total={state.players[1].life_total})")
+          f"life_total={state.players[1].life_total})")
 
     # -- _declare_blockers_gen: the defender's own consult, active_idx flip
-    # -- (docs/COMBAT_PLAN.md, docs/PRIORITY_PLAN.md item 3).
+    # --.
     # resolution.py's own self-check already covers begin_declare_blockers/
     # declare_blocker_assignment directly; this one is specifically about
     # the flip-drive-restore shape unique to this generator, driven the
@@ -830,7 +884,7 @@ if __name__ == "__main__":
         pass
     assert state.active_idx == 0  # flipped back to the attacker once the consult is done
     assert active_idx_during_consult and all(idx == 1 for idx in active_idx_during_consult)  # the defender's own seat throughout
-    assert state.players[0].blocked_by == {bear: grizzly}
+    assert state.players[0].blocked_by == {bear: [grizzly]}
     assert state.pending_resolution is None
 
     # No-op guard: fewer than 2 players -- never starts a resolution at
@@ -846,7 +900,7 @@ if __name__ == "__main__":
 
     print("turn.py _declare_blockers_gen self-check: OK")
 
-    # Turn-owner / priority-holder split (docs/PRIORITY_PLAN.md item 0):
+    # Turn-owner / priority-holder split:
     # speed_legal's Speed.SORCERY (and the new Speed.YOUR_TURN) branches
     # must refuse the non-turn player even when state.phase/state.stack
     # alone would otherwise say "legal" -- state.phase is a single shared
