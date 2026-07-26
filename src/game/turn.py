@@ -609,7 +609,7 @@ def run_turn(state, choose_action, combat_enabled=False):
         pass
 
 
-def run_multiplayer_game(decklists, terminated_fns, rng, starting_player_idx, choose_action,
+def run_multiplayer_game(decklists, rng, starting_player_idx, choose_action,
                           horizon=None, combat_enabled=False, event_log=None):
     """N-player entry point. Full
     sequential turns -- one player's whole turn runs to completion (same
@@ -618,9 +618,9 @@ def run_multiplayer_game(decklists, terminated_fns, rng, starting_player_idx, ch
     read state.active_idx itself, no separate callable per player needed)
     before active_idx flips to the next one. horizon=None (default) means
     uncapped: the loop instead ends only on an actual game-loss condition
-    (state.turn_won, set by a player's own terminated_fn, a life_total
-    hitting 0 -- both via game.effects.win_check._check_end_of_game -- or a
-    decked-out draw). This can't hang: draw_step draws exactly one card
+    (state.turn_won, set by a life_total hitting 0 -- via
+    game.effects.win_check._check_end_of_game -- or a decked-out draw).
+    This can't hang: draw_step draws exactly one card
     every turn for whichever player is active, so total combined library
     size across every player is a hard upper bound on turns regardless of
     board state, independent of PHASE_ACTION_CAPS' own per-phase bound.
@@ -632,7 +632,7 @@ def run_multiplayer_game(decklists, terminated_fns, rng, starting_player_idx, ch
     horizon-capped exit (an eager flip would leave it pointing at a player
     who never actually got a turn, misattributing every state.hand/
     state.decked_out/etc. read a caller does on the returned state)."""
-    state = new_multiplayer_game_state(decklists, terminated_fns, starting_player_idx, rng, event_log=event_log)
+    state = new_multiplayer_game_state(decklists, starting_player_idx, rng, event_log=event_log)
     run_mulligan_phase(state, choose_action)
     first_turn = True
     while (horizon is None or state.turn_number < horizon) and state.turn_won is None and not state.decked_out:
@@ -670,7 +670,6 @@ if __name__ == "__main__":
     # -- construction: opening hands, on_the_play, starting life ----------
     state = new_multiplayer_game_state(
         decklists=[[("Mountain", 20)], [("Mountain", 20)]],
-        terminated_fns=[None, None],
         starting_player_idx=0,
         rng=random.Random(0),
     )
@@ -703,7 +702,6 @@ if __name__ == "__main__":
 
     state = run_multiplayer_game(
         decklists=[[("Mountain", 20)], [("Mountain", 20)]],
-        terminated_fns=[None, None],
         rng=random.Random(0),
         starting_player_idx=0,
         choose_action=_pass_except_discard,
@@ -829,7 +827,6 @@ if __name__ == "__main__":
 
     state = run_multiplayer_game(
         decklists=[[("Mountain", 20), ("Lightning Bolt", 10)], [("Mountain", 20)]],
-        terminated_fns=[None, None],
         rng=random.Random(0),
         starting_player_idx=0,
         choose_action=_burn_policy,

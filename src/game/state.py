@@ -5,7 +5,7 @@ pending-resolution bookkeeping and a list of PlayerStates).
 GameState exposes
 every zone (hand/battlefield/library/graveyard/exile/mana_pool/
 trigger_queue/lands_played_this_turn/cards_drawn_this_turn/decked_out/
-attackers/terminated_fn/on_the_play/life_total) as a property
+attackers/on_the_play/life_total) as a property
 that reads/writes state.players[state.active_idx] -- the player whose turn
 it currently is. This is what lets every existing card-effect function and
 all of mana.py/resolution.py/game/effects/*.py keep working completely
@@ -131,7 +131,7 @@ class PlayerState:
     nothing in this class itself knows or cares how many other
     PlayerStates, if any, exist alongside it."""
 
-    def __init__(self, on_the_play, terminated_fn=None, life_total=STARTING_LIFE):
+    def __init__(self, on_the_play, life_total=STARTING_LIFE):
         self.library = []       # ordered list[CardDef], index 0 = top of deck
         self.hand = []          # list[CardDef]
         self.battlefield = []   # list[Permanent]
@@ -180,15 +180,6 @@ class PlayerState:
         # in the current card pool needs it). Reset alongside attackers,
         # each combat (declare_attackers_step).
         self.blocked_by = {}
-
-        # terminated_fn(state) -> bool is this player's own injected win
-        # condition (their deck's own combo-completion check -- Tron
-        # assembly, a damage threshold), checked generically via
-        # game.effects.win_check._check_end_of_game rather than hardcoded to any
-        # one deck. Defaults to None so hand-built test states (which set
-        # state.turn_won directly, bypassing this mechanism) don't need to
-        # supply one; real games always pass one explicitly.
-        self.terminated_fn = terminated_fn
 
         # Whether this player skips their very first draw (real Magic: the
         # player on the play doesn't draw turn 1). Checked against
@@ -284,12 +275,12 @@ class GameState:
     "your own turn," not just "the right phase," so anything gating on
     those needs turn_player_idx specifically, never active_idx."""
 
-    def __init__(self, on_the_play, rng=None, terminated_fn=None, players=None, event_log=None):
+    def __init__(self, on_the_play, rng=None, players=None, event_log=None):
         # `players`, if given, replaces the single-player list this
-        # constructor would otherwise build from on_the_play/terminated_fn
-        # -- used by new_multiplayer_game_state below. on_the_play/
-        # terminated_fn are then ignored (each player supplies their own).
-        self.players = players if players is not None else [PlayerState(on_the_play, terminated_fn=terminated_fn)]
+        # constructor would otherwise build from on_the_play -- used by
+        # new_multiplayer_game_state below. on_the_play is then ignored
+        # (each player supplies their own).
+        self.players = players if players is not None else [PlayerState(on_the_play)]
         self.active_idx = 0
 
         # None (the default -- every existing caller) means "logging is
@@ -366,7 +357,6 @@ class GameState:
     life_total = _active_player_property("life_total")
     attackers = _active_player_property("attackers")
     blocked_by = _active_player_property("blocked_by")
-    terminated_fn = _active_player_property("terminated_fn")
     on_the_play = _active_player_property("on_the_play")
     turns_taken = _active_player_property("turns_taken")
     mulligans_taken = _active_player_property("mulligans_taken")
@@ -448,17 +438,16 @@ def build_shuffled_library(decklist, rng):
     return library
 
 
-def new_multiplayer_game_state(decklists, terminated_fns, starting_player_idx, rng, event_log=None):
-    """N-player entry point -- decklists/
-    terminated_fns are one entry per player and may differ (nothing here
-    requires a mirror match; CARD_DEFS is already deck-agnostic). Only
-    starting_player_idx is "on the play" (skips their own first draw --
-    see turn.draw_step) and takes the first turn; every other player
-    starts with on_the_play=False. Every player draws their own opening 7,
-    same as a single-player opening hand, regardless of who
+def new_multiplayer_game_state(decklists, starting_player_idx, rng, event_log=None):
+    """N-player entry point -- decklists are one entry per player and may
+    differ (nothing here requires a mirror match; CARD_DEFS is already
+    deck-agnostic). Only starting_player_idx is "on the play" (skips their
+    own first draw -- see turn.draw_step) and takes the first turn; every
+    other player starts with on_the_play=False. Every player draws their
+    own opening 7, same as a single-player opening hand, regardless of who
     goes first."""
     players = [
-        PlayerState(on_the_play=(i == starting_player_idx), terminated_fn=terminated_fns[i])
+        PlayerState(on_the_play=(i == starting_player_idx))
         for i in range(len(decklists))
     ]
     state = GameState(
@@ -564,7 +553,7 @@ if __name__ == "__main__":
     events = []
     state = run_multiplayer_game(
         decklists=[[("Mountain", 10), ("Lightning Bolt", 5)], [("Mountain", 20)]],
-        terminated_fns=[None, None], rng=random.Random(0), starting_player_idx=0,
+        rng=random.Random(0), starting_player_idx=0,
         choose_action=_burn_policy, horizon=12, event_log=events,
     )
     assert state.players[1].life_total < 20  # at least one Bolt landed on the opponent

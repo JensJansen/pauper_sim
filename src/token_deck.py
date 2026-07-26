@@ -51,8 +51,8 @@ class DeckNetwork(nn.Module):
         docstring on why it's a reference, not owned here). scalar_features:
         [B, SCALAR_FEATURE_DIM] -- the non-tokenized globals (life totals,
         turn number, phase one-hot, pending-kind one-hot, mana pool -- the
-        same information drl_env.build_observation's own non-per-card
-        blocks already carry, unchanged by this migration). pointer_token_mask:
+        same non-per-card globals the scalar-feature builder
+        (token_train._scalar_features) carries). pointer_token_mask:
         [B, T] bool, True where a token is a currently-legal POINTER TARGET
         for whatever specific resolution is pending right now (Attack-
         eligible creature, block-eligible creature, etc.) -- this is
@@ -86,9 +86,8 @@ class DeckNetwork(nn.Module):
 
 # Turn number/horizon, lands-played-this-turn, mulligans-taken, am-I-turn-
 # player, my/opponent life totals, floating mana pool (len(POOL_COLORS)),
-# phase one-hot (len(Phase)) -- the same non-per-card globals drl_env.
-# build_observation already carries; deliberately NOT re-deriving these via
-# tokens, since they're genuinely scalar/global facts, not per-card ones.
+# phase one-hot (len(Phase)) -- genuinely scalar/global facts, deliberately
+# NOT re-derived via tokens since they aren't per-card ones.
 import game  # noqa: E402
 from token_arch import FiLM  # noqa: E402
 

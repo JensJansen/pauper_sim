@@ -46,7 +46,6 @@ from concurrent.futures import ProcessPoolExecutor
 import torch
 
 from rewards import action_count_win_reward_200_floor02
-from terminated import never_terminated
 from token_arch import SetTransformer
 from token_deck import DeckNetwork
 from token_league import LeaguePool
@@ -125,7 +124,6 @@ def _run_session(n_iterations, games_per_iteration, snapshot_every, executor, n_
               f"{ {name: len(pool.snapshots[name]) for name in deck_names} }")
 
     rng = random.Random()
-    terminated_fns = [never_terminated, never_terminated]
     reward_fn = action_count_win_reward_200_floor02
     reward_fn_name = "action_count_win_reward_200_floor02"
     horizon = 120
@@ -150,7 +148,7 @@ def _run_session(n_iterations, games_per_iteration, snapshot_every, executor, n_
             else:
                 buf, played = collect_rollout_league(
                     name, live_nets[name], deck_ctxs[name], decklists[name], reward_fn,
-                    pool, decklists, deck_ctxs, live_nets, terminated_fns, horizon, games_per_iteration, rng, device="cpu",
+                    pool, decklists, deck_ctxs, live_nets, horizon, games_per_iteration, rng, device="cpu",
                 )
             collect_time_total += time.time() - t_collect0
             total_games += played
@@ -232,7 +230,6 @@ def _run_matchup_session(deck_a_name, deck_b_name, total_games, log_path):
         optimizers[name] = optimizer
 
     rng = random.Random()
-    terminated_fns = [never_terminated, never_terminated]
     reward_fn = action_count_win_reward_200_floor02
     horizon = 120
 
@@ -247,7 +244,7 @@ def _run_matchup_session(deck_a_name, deck_b_name, total_games, log_path):
     train_selfplay(
         live_nets[deck_a_name], deck_ctxs[deck_a_name], decklists[deck_a_name], reward_fn,
         live_nets[deck_b_name], deck_ctxs[deck_b_name], decklists[deck_b_name], reward_fn,
-        [optimizers[deck_a_name]], [optimizers[deck_b_name]], terminated_fns, horizon,
+        [optimizers[deck_a_name]], [optimizers[deck_b_name]], horizon,
         n_iterations=n_iterations, games_per_iteration=games_per_iteration, rng=rng, device="cpu", game_logs=game_logs,
     )
     elapsed = time.time() - t0
@@ -287,7 +284,7 @@ def build_arg_parser():
                          help="Write the game engine's own event log for every game this session to PATH as JSON.")
     parser.add_argument("--gpu-threshold", type=int, default=None, metavar="BATCH_SIZE",
                          help="ppo_update batch_size at/above which to mechanically switch that update to GPU. "
-                              "Find via benchmark_ppo_batch_size.py's own measured crossover -- default None means "
+                              "Set from an empirically measured CPU/GPU crossover -- default None means "
                               "always CPU (no threshold known/set).")
     parser.add_argument("--batch-size-start", type=int, default=32,
                          help="ppo_update batch_size at the first iteration (small/granular early).")

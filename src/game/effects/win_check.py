@@ -1,10 +1,10 @@
 """Win-condition checking and the one function that can trigger it via
 damage. Split out of the old effects_common.py because both casting.py
-(a permanent entering can newly satisfy a terminated_fn) and combat.py
-(damage can drop life_total to 0) need to reach _check_end_of_game, but
-neither of those two needs the other -- keeping the check here, as a
-shared leaf both depend on, avoids duplicating it or merging casting and
-combat back into one module."""
+(enters_battlefield runs a co-located end-of-game check after a board
+mutation) and combat.py (damage can drop life_total to 0) need to reach
+_check_end_of_game, but neither of those two needs the other -- keeping
+the check here, as a shared leaf both depend on, avoids duplicating it or
+merging casting and combat back into one module."""
 
 
 def _check_end_of_game(state):
@@ -14,20 +14,14 @@ def _check_end_of_game(state):
     lose_life below. Replaces what used to be the same two lines duplicated
     at each of those call sites .
 
-    Three independent ways to win: the active player's own terminated_fn
-    (their deck's combo-completion condition -- Tron assembly, a damage
-    threshold) firing; -- 2-player only -- the opponent's life_total
-    hitting 0; or the active player's OWN life hitting 0 (opponent wins,
-    2-player; a bare failure with no winner in 1-player). No-ops once the
-    game has already ended."""
+    Two independent ways to win: -- 2-player only -- the opponent's
+    life_total hitting 0; or the active player's OWN life hitting 0
+    (opponent wins, 2-player; a bare failure with no winner in 1-player).
+    No-ops once the game has already ended."""
     if state.turn_won is not None:
         return
     active_idx = state.active_idx
     active = state.players[active_idx]
-    if active.terminated_fn is not None and active.terminated_fn(state):
-        state.turn_won = state.turn_number
-        state.winner = active_idx
-        return
     if len(state.players) > 1 and state.opponent.life_total <= 0:
         state.turn_won = state.turn_number
         state.winner = active_idx
@@ -73,7 +67,7 @@ def gain_life(state, n, player_idx=None):
     the one case that credits someone else -- a BLOCKER's lifelink, whose
     controller is the defending, non-active player (combat._blocker_deal_
     damage). No _check_end_of_game call needed, since gaining life can never
-    newly satisfy a terminated_fn or drop anyone's life to 0."""
+    drop anyone's life to 0."""
     _apply_life(state, state.active_idx if player_idx is None else player_idx, n, "gain")
 
 
@@ -119,22 +113,12 @@ def deal_damage_to_player(state, player_idx, n):
 
 if __name__ == "__main__":
     # ponytail self-check: run via `python -m game.effects.win_check` from
-    # src/. Both win paths directly: the generic terminated_fn hook, and the
-    # 2-player life_total hitting 0 (deal_damage_to_opponent's reason to exist).
+    # src/. Every win path directly: the 2-player life_total hitting 0
+    # (deal_damage_to_opponent's reason to exist), self-death, and the
+    # life_change event log.
     from ..state import GameState, PlayerState
 
-    # terminated_fn: the generic deck-win predicate still fires through
-    # _check_end_of_game (never_terminated ships as the only one now, but the
-    # hook is generic). A trivial predicate + any state change that runs the
-    # check proves the wiring, independent of life totals.
     state = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
-    state.players[0].terminated_fn = lambda s: s.turn_number >= 5  # terminated_fn= kwarg is ignored when players= is given
-    state.turn_number = 4
-    deal_damage_to_opponent(state, 1)  # runs _check_end_of_game; predicate false at turn 4
-    assert state.turn_won is None
-    state.turn_number = 5
-    deal_damage_to_opponent(state, 1)  # predicate now true -> active player wins via terminated_fn
-    assert state.turn_won == state.turn_number and state.winner == 0
 
     state2 = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
     state2.players[1].life_total = 4
@@ -175,7 +159,7 @@ if __name__ == "__main__":
     ], life_events
 
     # 1-player self-death is a bare failure -- no opponent to award the win to.
-    s1 = GameState(on_the_play=True, terminated_fn=lambda _s: False)
+    s1 = GameState(on_the_play=True)
     lose_life(s1, 20)
     assert s1.life_total == 0 and s1.turn_won == s1.turn_number and s1.winner is None
 

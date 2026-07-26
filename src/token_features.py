@@ -146,8 +146,8 @@ def cached_static_card_features(name, vocab):
 # Tokenization: turn each PUBLIC zone (battlefield/graveyard/stack/exile,
 # both seats) into a variable-length list of per-token feature rows, instead
 # of drl_env.py's fixed per-(name, slot) observation slots. Deliberately
-# does NOT touch hand or library -- those stay hidden (aggregate count only,
-# same as today's _opponent_aggregate_features), preserving the existing
+# does NOT touch hand or library -- those stay hidden (aggregate count only),
+# preserving the existing
 # hidden-information guarantee. See this module's own docstring for the
 # static/dynamic split; DYNAMIC_FEATURE_DIM below is this function's own
 # per-instance half.
@@ -175,8 +175,7 @@ def _token_row(name, zone, is_mine, vocab, permanent=None, owner_idx=None, encha
     is_mine alone, since is_mine is relative to whichever seat's own
     perspective build_token_set is building for right now, while blocked_by
     lookups need the permanent's actual owning seat regardless of
-    perspective (same distinction drl_env._creature_slot_block's own
-    owner_idx parameter draws)."""
+    perspective."""
     row = list(cached_static_card_features(name, vocab))
     untapped = tapped = eff_power = eff_toughness = blocked_attacker = committed_blocker = 0.0
     if permanent is not None:
@@ -224,8 +223,8 @@ def build_token_set(state, my_seat_idx, vocab):
     -- untouched by this migration).
 
     Hand and library are deliberately excluded -- those stay hidden
-    (aggregate count only), matching drl_env._opponent_aggregate_features'
-    own "only hand/library CONTENTS are hidden" rule. Violating that here
+    (aggregate count only), per the "only hand/library CONTENTS are hidden"
+    rule. Violating that here
     would leak hidden information the rest of this engine carefully
     protects."""
     opponent_seat_idx = 1 - my_seat_idx
@@ -259,7 +258,6 @@ def build_token_set(state, my_seat_idx, vocab):
 
 if __name__ == "__main__":
     # ponytail self-check: run via `python token_features.py` from src/.
-    import terminated  # noqa: F401 -- confirms the module still loads alongside this self-check, same convention the other self-checks here use
     from game.state import GameState, PlayerState, Permanent
 
     decklist_a = game.parse_decklist_file("../data/mono_red_madness.txt")

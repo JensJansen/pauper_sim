@@ -33,7 +33,6 @@ import torch
 
 import drl_env
 import game
-from terminated import never_terminated
 from token_action_bridge import (
     any_pointer_legal, build_fixed_action_table, execute_pointer_choice, pointer_legal_mask,
 )
@@ -60,6 +59,14 @@ class RolloutBuffer:
         self.reward.append(reward)
         self.done.append(done)
 
+    def extend(self, other):
+        """Append every transition from another RolloutBuffer -- the shared
+        "copy one buffer's entries into another" primitive for pooling both
+        seats (mirror self-play) and merging per-game league buffers."""
+        for i in range(len(other)):
+            self.add(other.token_lists[i], other.scalar[i], other.mask[i], other.action[i],
+                     other.logp[i], other.value[i], other.reward[i], other.done[i])
+
     def clear(self):
         self.__init__()
 
@@ -78,9 +85,8 @@ def _reward_for(state, seat, reward_fn, horizon, done):
 def _scalar_features(state, seat_idx, horizon):
     """Non-tokenized globals -- turn number, lands-played, mulligans, am-I-
     turn-player, floating mana pool, phase one-hot, my/opponent life. Same
-    composition token_deck.SCALAR_FEATURE_DIM documents and the same
-    information drl_env.build_observation's own non-per-card blocks already
-    carry (POOL_CAP there is 8; matched here). state.mana_pool is a
+    composition token_deck.SCALAR_FEATURE_DIM documents (mana-pool cap of 8,
+    matched here). state.mana_pool is a
     GameState property proxying to state.players[state.active_idx]
     (game/state.py's _active_player_property) -- read unconditionally, not
     gated, since _for_player below already guarantees active_idx == seat_idx
@@ -166,7 +172,7 @@ def _seat_step(state, seat, deck_ctx, net, horizon, device):
     return executor, buffer_entry, is_pass
 
 
-def collect_rollout(seat_nets, decklists, reward_fns, terminated_fns, deck_ctxs, horizon, n_games, rng, device="cpu",
+def collect_rollout(seat_nets, decklists, reward_fns, deck_ctxs, horizon, n_games, rng, device="cpu",
                      game_logs=None):
     """Plays n_games real self-play games (game.run_multiplayer_game),
     recording a transition into whichever seat's own buffer made each
@@ -203,7 +209,7 @@ def collect_rollout(seat_nets, decklists, reward_fns, terminated_fns, deck_ctxs,
         starting_idx = rng.randint(0, 1)
         event_log = [] if game_logs is not None else None
         state = game.run_multiplayer_game(
-            decklists=decklists, terminated_fns=terminated_fns, rng=rng, starting_player_idx=starting_idx,
+            decklists=decklists, rng=rng, starting_player_idx=starting_idx,
             choose_action=choose_action, horizon=horizon, combat_enabled=True, event_log=event_log,
         )
         if game_logs is not None:
@@ -219,7 +225,7 @@ def collect_rollout(seat_nets, decklists, reward_fns, terminated_fns, deck_ctxs,
 
 
 def collect_rollout_league(training_deck_name, training_net, training_ctx, training_decklist, reward_fn,
-                            pool, decklists_by_name, ctxs_by_name, live_nets, terminated_fns, horizon, n_games,
+                            pool, decklists_by_name, ctxs_by_name, live_nets, horizon, n_games,
                             rng, device="cpu"):
     """League-play counterpart to collect_rollout: RESAMPLES the opponent
     from `pool` before every single game (not once for the whole call) --
@@ -259,15 +265,12 @@ def collect_rollout_league(training_deck_name, training_net, training_ctx, train
         ctxs[training_seat], ctxs[opponent_seat] = training_ctx, ctxs_by_name[opponent_deck_name]
         reward_fns[training_seat] = reward_fns[opponent_seat] = reward_fn  # opponent's own reward is computed but never recorded
 
-        buffers, played = collect_rollout(seat_nets, decklists, reward_fns, terminated_fns, ctxs, horizon,
+        buffers, played = collect_rollout(seat_nets, decklists, reward_fns, ctxs, horizon,
                                            n_games=1, rng=rng, device=device)
         games_played += played
         seats_to_record = (0, 1) if is_self else (training_seat,)
         for seat in seats_to_record:
-            src = buffers[seat]
-            for i in range(len(src)):
-                buf.add(src.token_lists[i], src.scalar[i], src.mask[i], src.action[i],
-                        src.logp[i], src.value[i], src.reward[i], src.done[i])
+            buf.extend(buffers[seat])
     return buf, games_played
 
 
@@ -330,11 +333,10 @@ def _league_rollout_worker(training_deck_name, all_state_dicts, all_trunk_hidden
 
     pool = LeaguePool(league_root_dir, list(decklists))  # read-only here -- this worker never calls register_snapshot
     rng = random.Random(seed)
-    terminated_fns = [never_terminated, never_terminated]
 
     buf, played = collect_rollout_league(
         training_deck_name, live_nets[training_deck_name], deck_ctxs[training_deck_name], decklists[training_deck_name],
-        reward_fn, pool, decklists, deck_ctxs, live_nets, terminated_fns, horizon, n_games, rng, device="cpu",
+        reward_fn, pool, decklists, deck_ctxs, live_nets, horizon, n_games, rng, device="cpu",
     )
     entries = [
         (_strip_identities(buf.token_lists[i]), buf.scalar[i], buf.mask[i], buf.action[i],
@@ -513,8 +515,8 @@ def device_for_batch_size(batch_size, gpu_threshold):
     schedule; that's a settled, batch-size-independent finding (GPU loses
     on tiny per-decision batches no matter how large training's own
     minibatch grows), not something this function touches. gpu_threshold:
-    find via benchmark_ppo_batch_size.py's own measured crossover -- never
-    assume one. None (not yet measured) or no CUDA -> always CPU."""
+    set from an empirically measured CPU/GPU crossover -- never assume one.
+    None (not yet measured) or no CUDA -> always CPU."""
     if gpu_threshold is None or not torch.cuda.is_available():
         return "cpu"
     return "cuda" if batch_size >= gpu_threshold else "cpu"
@@ -538,15 +540,13 @@ def move_optimizer_state(optimizer, device):
 def _pooled(buffers):
     merged = RolloutBuffer()
     for buf in buffers:
-        for i in range(len(buf)):
-            merged.add(buf.token_lists[i], buf.scalar[i], buf.mask[i], buf.action[i],
-                       buf.logp[i], buf.value[i], buf.reward[i], buf.done[i])
+        merged.extend(buf)
     return merged
 
 
 def train_selfplay(net_a, deck_ctx_a, decklist_a, reward_fn_a, net_b, deck_ctx_b, decklist_b, reward_fn_b,
-                    optimizers_a, optimizers_b, terminated_fns, horizon, n_iterations, games_per_iteration,
-                    rng, device="cpu", log_every=1, game_logs=None):
+                    optimizers_a, optimizers_b, horizon, n_iterations, games_per_iteration,
+                    rng, device="cpu", game_logs=None):
     """Runs n_iterations rounds of collect_rollout (games_per_iteration real
     games each) + ppo_update. See this module's own docstring for when
     net_a is net_b (mirror self-play, one pooled update) vs. not (Stage 2
@@ -560,7 +560,7 @@ def train_selfplay(net_a, deck_ctx_a, decklist_a, reward_fn_a, net_b, deck_ctx_b
     mirror = net_a is net_b
     for iteration in range(n_iterations):
         buffers, games_played = collect_rollout(
-            [net_a, net_b], [decklist_a, decklist_b], [reward_fn_a, reward_fn_b], terminated_fns,
+            [net_a, net_b], [decklist_a, decklist_b], [reward_fn_a, reward_fn_b],
             [deck_ctx_a, deck_ctx_b], horizon, games_per_iteration, rng, device=device, game_logs=game_logs,
         )
         if mirror:
@@ -569,12 +569,11 @@ def train_selfplay(net_a, deck_ctx_a, decklist_a, reward_fn_a, net_b, deck_ctx_b
         else:
             stats_a = ppo_update(net_a, optimizers_a, buffers[0], device) if len(buffers[0]) else (0.0, 0.0, 0.0)
             stats_b = ppo_update(net_b, optimizers_b, buffers[1], device) if len(buffers[1]) else (0.0, 0.0, 0.0)
-        if iteration % log_every == 0:
-            mean_r_a = float(np.mean(buffers[0].reward)) if len(buffers[0]) else 0.0
-            mean_r_b = float(np.mean(buffers[1].reward)) if len(buffers[1]) else 0.0
-            print(f"  iter {iteration}: games={games_played} buf=({len(buffers[0])},{len(buffers[1])}) "
-                  f"mean_reward=({mean_r_a:.3f},{mean_r_b:.3f}) "
-                  f"policy_loss=({stats_a[0]:.4f},{stats_b[0]:.4f}) value_loss=({stats_a[1]:.4f},{stats_b[1]:.4f})")
+        mean_r_a = float(np.mean(buffers[0].reward)) if len(buffers[0]) else 0.0
+        mean_r_b = float(np.mean(buffers[1].reward)) if len(buffers[1]) else 0.0
+        print(f"  iter {iteration}: games={games_played} buf=({len(buffers[0])},{len(buffers[1])}) "
+              f"mean_reward=({mean_r_a:.3f},{mean_r_b:.3f}) "
+              f"policy_loss=({stats_a[0]:.4f},{stats_b[0]:.4f}) value_loss=({stats_a[1]:.4f},{stats_b[1]:.4f})")
 
 
 if __name__ == "__main__":
@@ -589,7 +588,6 @@ if __name__ == "__main__":
 
     import game
     from rewards import action_count_win_reward_200_floor02
-    from terminated import never_terminated
     from token_arch import SetTransformer
     from token_deck import DeckNetwork
     from token_features import CardVocab
@@ -620,7 +618,6 @@ if __name__ == "__main__":
     # optimizer scenario, the actual bug this session's feedback caught, is
     # exercised separately and explicitly in block 3 below).
 
-    terminated_fns = [never_terminated, never_terminated]
     reward_fn = action_count_win_reward_200_floor02
     rng = _random.Random(0)
     horizon = 20
@@ -629,7 +626,7 @@ if __name__ == "__main__":
     # update, exercises the "same weights both seats" path.
     t0 = time.time()
     buffers, games_played = collect_rollout(
-        [net_a, net_a], [decklist_a, decklist_a], [reward_fn, reward_fn], terminated_fns,
+        [net_a, net_a], [decklist_a, decklist_a], [reward_fn, reward_fn],
         [deck_ctx_a, deck_ctx_a], horizon, n_games=2, rng=rng, device=device,
     )
     assert games_played == 2
@@ -653,7 +650,7 @@ if __name__ == "__main__":
     t0 = time.time()
     train_selfplay(
         net_a, deck_ctx_a, decklist_a, reward_fn, net_b, deck_ctx_b, decklist_b, reward_fn,
-        [opt_a], [opt_b], terminated_fns, horizon, n_iterations=2, games_per_iteration=2, rng=rng, device=device,
+        [opt_a], [opt_b], horizon, n_iterations=2, games_per_iteration=2, rng=rng, device=device,
     )
     for net in (net_a, net_b):
         for p in net.parameters():
@@ -667,7 +664,7 @@ if __name__ == "__main__":
     # each a real list of structured event dicts.
     game_logs = []
     _buffers, played = collect_rollout(
-        [net_a, net_a], [decklist_a, decklist_a], [reward_fn, reward_fn], terminated_fns,
+        [net_a, net_a], [decklist_a, decklist_a], [reward_fn, reward_fn],
         [deck_ctx_a, deck_ctx_a], horizon, n_games=2, rng=rng, device=device, game_logs=game_logs,
     )
     assert len(game_logs) == played == 2, "one event_log entry must be appended per game played"
@@ -697,10 +694,10 @@ if __name__ == "__main__":
     shared2_before = [p.clone() for p in shared2.parameters()]
 
     train_selfplay(net_a2, deck_ctx_a, decklist_a, reward_fn, net_a2, deck_ctx_a, decklist_a, reward_fn,
-                    [opt_shared2, opt_a2_head], [opt_shared2, opt_a2_head], terminated_fns, horizon,
+                    [opt_shared2, opt_a2_head], [opt_shared2, opt_a2_head], horizon,
                     n_iterations=1, games_per_iteration=2, rng=rng, device=device)
     train_selfplay(net_b2, deck_ctx_b, decklist_b, reward_fn, net_b2, deck_ctx_b, decklist_b, reward_fn,
-                    [opt_shared2, opt_b2_head], [opt_shared2, opt_b2_head], terminated_fns, horizon,
+                    [opt_shared2, opt_b2_head], [opt_shared2, opt_b2_head], horizon,
                     n_iterations=1, games_per_iteration=2, rng=rng, device=device)
 
     assert id(opt_shared2) == id(opt_shared2), "sanity: the SAME optimizer object must be reused across both decks"
@@ -736,19 +733,19 @@ if __name__ == "__main__":
 
         pool.sample_opponent = lambda training_deck_name, rng: ("a", None)  # true mirror
         buf_self, played = collect_rollout_league("a", net_a, deck_ctx_a, decklist_a, reward_fn, pool,
-                                                    decklists_by_name, ctxs_by_name, live_nets, terminated_fns,
+                                                    decklists_by_name, ctxs_by_name, live_nets,
                                                     horizon, n_games=1, rng=rng, device=device)
         assert played == 1 and len(buf_self) > 0, "true mirror must record a non-empty pooled buffer"
 
         pool.sample_opponent = lambda training_deck_name, rng: ("b", None)  # another deck's live net
         buf_cross, played = collect_rollout_league("a", net_a, deck_ctx_a, decklist_a, reward_fn, pool,
-                                                     decklists_by_name, ctxs_by_name, live_nets, terminated_fns,
+                                                     decklists_by_name, ctxs_by_name, live_nets,
                                                      horizon, n_games=1, rng=rng, device=device)
         assert played == 1 and len(buf_cross) > 0, "cross-deck opponent must still record the training seat's own transitions"
 
         pool.sample_opponent = lambda training_deck_name, rng: ("a", snapshot_path)  # frozen snapshot of self
         buf_snap, played = collect_rollout_league("a", net_a, deck_ctx_a, decklist_a, reward_fn, pool,
-                                                    decklists_by_name, ctxs_by_name, live_nets, terminated_fns,
+                                                    decklists_by_name, ctxs_by_name, live_nets,
                                                     horizon, n_games=1, rng=rng, device=device)
         assert played == 1 and len(buf_snap) > 0, "a frozen snapshot opponent must still record the training seat's own transitions"
         assert snapshot_path in pool._net_cache, "load_snapshot_net must have populated the cache"

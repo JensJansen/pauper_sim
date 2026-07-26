@@ -30,7 +30,6 @@ import time
 import torch
 
 from rewards import action_count_win_reward_200_floor02
-from terminated import never_terminated
 from token_arch import SetTransformer
 from token_deck import DeckNetwork
 from token_pool import build_pool
@@ -81,7 +80,6 @@ def main():
         print(f"resumed from {CHECKPOINT} (session {session}, vocab {ckpt['vocab_size']}=={vocab.size})")
 
     rng = random.Random()
-    terminated_fns = [never_terminated, never_terminated]
     reward_fn = action_count_win_reward_200_floor02
     horizon = 120
 
@@ -94,7 +92,7 @@ def main():
             print(f"[mirror: {name}] session {session} iteration {i}", flush=True)
             train_selfplay(nets[name], deck_ctxs[name], decklists[name], reward_fn,
                             nets[name], deck_ctxs[name], decklists[name], reward_fn,
-                            [opt_shared, head_opts[name]], [opt_shared, head_opts[name]], terminated_fns, horizon,
+                            [opt_shared, head_opts[name]], [opt_shared, head_opts[name]], horizon,
                             n_iterations=1, games_per_iteration=games_per_iteration, rng=rng, device="cpu")
     elapsed = time.time() - t0
     print(f"session {session} done in {elapsed:.1f}s ({elapsed / total_games:.2f}s/game)")

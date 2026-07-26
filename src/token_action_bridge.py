@@ -175,8 +175,6 @@ def execute_pointer_choice(state, permanent):
 
 if __name__ == "__main__":
     # ponytail self-check: run via `python token_action_bridge.py` from src/.
-    import terminated  # noqa: F401 -- confirms the module still loads, same convention this codebase's other self-checks use
-
     decklist = game.parse_decklist_file("../data/mono_red_madness.txt")
     pending_kinds = game.derive_pending_kinds(decklist)
     # mono_red_madness creates BOTH of these mid-game (Blood from madness
@@ -271,7 +269,7 @@ if __name__ == "__main__":
         if saw_attack[0] and saw_block[0] and saw_choose_opponent[0]:
             break
         game.run_multiplayer_game(
-            decklists=[decklist, decklist], terminated_fns=[lambda s: False, lambda s: False],
+            decklists=[decklist, decklist],
             rng=random.Random(seed), starting_player_idx=seed % 2, choose_action=make_choose_action(random.Random(seed)),
             horizon=40, combat_enabled=True,
         )

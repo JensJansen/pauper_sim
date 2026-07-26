@@ -54,9 +54,8 @@ def action_count_win_reward(plateau_actions=80, max_actions=200, min_reward=0.25
     return reward_fn
 
 
-# Pre-baked named instances (callers reference reward_fns by plain name via
+# Pre-baked named instance (callers reference reward_fns by plain name via
 # getattr off this module -- see token_train's own reward_fn_name plumbing).
-action_count_win_reward_200 = action_count_win_reward()
 # Floor lowered to 0.2 (vs. the default 0.25) per the "sliding scale from
 # 1 - 0.2" spec -- this is the reward league self-play (run_league.py) uses.
 action_count_win_reward_200_floor02 = action_count_win_reward(min_reward=0.2)
@@ -69,14 +68,17 @@ if __name__ == "__main__":
     # seat to mean anything).
     from game.state import GameState, PlayerState
 
-    assert action_count_win_reward_200.plateau_actions == 80
-    assert action_count_win_reward_200.max_actions == 200
-    assert action_count_win_reward_200.min_reward == 0.25
+    # Default instance (0.25 floor) -- built locally just for this check; the
+    # only pre-baked module-level instance the pipeline ships is the 0.2-floor one.
+    rf = action_count_win_reward()
+    assert rf.plateau_actions == 80
+    assert rf.max_actions == 200
+    assert rf.min_reward == 0.25
 
     state2 = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
     state2.turn_won = None
-    assert action_count_win_reward_200(state2, done=True, horizon=120) == 0.0  # no winner -> 0
-    assert action_count_win_reward_200(state2, done=False, horizon=120) == 0.0  # not done -> 0
+    assert rf(state2, done=True, horizon=120) == 0.0  # no winner -> 0
+    assert rf(state2, done=False, horizon=120) == 0.0  # not done -> 0
 
     state2.turn_won = 5
     state2.winner = 0
@@ -86,22 +88,22 @@ if __name__ == "__main__":
     # per request.
     state2.players[1].actions_taken = 999  # the LOSER's own count must never matter
     state2.players[0].actions_taken = 1
-    assert action_count_win_reward_200(state2, done=True, horizon=120) == 1.0
+    assert rf(state2, done=True, horizon=120) == 1.0
     state2.players[0].actions_taken = 80
-    assert action_count_win_reward_200(state2, done=True, horizon=120) == 1.0
+    assert rf(state2, done=True, horizon=120) == 1.0
 
     # Linear ramp from (80, 1.0) to (200, 0.25) -- midpoint (140) should
     # land exactly halfway between.
     state2.players[0].actions_taken = 140
-    assert abs(action_count_win_reward_200(state2, done=True, horizon=120) - 0.625) < 1e-9
+    assert abs(rf(state2, done=True, horizon=120) - 0.625) < 1e-9
 
     # Floor: exactly 0.25 at max_actions (200), and bottoms out there --
     # never continues down toward 0 for a wildly long game past the cap.
     state2.players[0].actions_taken = 200
-    win_at_cap = action_count_win_reward_200(state2, done=True, horizon=120)
+    win_at_cap = rf(state2, done=True, horizon=120)
     assert abs(win_at_cap - 0.25) < 1e-9
     state2.players[0].actions_taken = 5000
-    win_past_cap = action_count_win_reward_200(state2, done=True, horizon=120)
+    win_past_cap = rf(state2, done=True, horizon=120)
     assert win_at_cap == win_past_cap  # bottomed out -- doesn't keep decaying below this
 
     print("rewards.py action_count_win_reward self-check: OK")

@@ -18,7 +18,7 @@ TOKEN_LIMIT = 20  # shared across every token name, not per-name
 def create_token(state, card_def, tapped=False):
     """A token permanent, not backed by any library/CARD_DEFS card.
     Reuses casting.enters_battlefield's full battlefield-entry path (ETB
-    dispatch, terminated_fn check) unchanged -- only its creation (no
+    dispatch, end-of-game check) unchanged -- only its creation (no
     hand/library removal beforehand) is different. tapped=True covers
     "Create a TAPPED 2/2 Robot" (Melded Moxite's own wording); Blood
     tokens enter untapped.

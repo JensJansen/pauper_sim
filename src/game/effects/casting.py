@@ -171,10 +171,9 @@ def enters_battlefield(state, card_def, force_tapped=False, from_zone=None):
     enters-tapped default and QUEUING its ETB triggered ability (via
     game.registry.EFFECT_REGISTRY) onto state.trigger_queue for the priority
     round to put on the stack -- not running it inline (see the ETB block
-    below for why), then check _check_end_of_game since a permanent entering
-    is the only way a terminated_fn-based win condition can newly become
-    true. Caller has already removed card_def from its previous zone
-    (hand/library).
+    below for why), then run _check_end_of_game as a co-located end-of-game
+    check after the board mutation (see win_check.py). Caller has already
+    removed card_def from its previous zone (hand/library).
 
     force_tapped=True overrides the registry's own enters_tapped default
     to always-tapped -- a one-off per-trigger condition, not a property of

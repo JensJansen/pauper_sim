@@ -11,8 +11,8 @@ does reusing a card across multiple decks.
 
 Every submodule is re-exported here flat (game.CARD_DEFS, game.GameState,
 game.play_land_from_hand, ...) so every existing `import game; game.X`
-caller (drl_env.py, rewards.py, terminated.py, and the token_*.py training
-pipeline) keeps working unchanged.
+caller (drl_env.py, rewards.py, and the token_*.py training pipeline)
+keeps working unchanged.
 
 Import order matters: `from . import registry` first is what actually
 triggers loading every catalog module (and, transitively, most of the
@@ -22,8 +22,6 @@ only reference `registry.EFFECT_REGISTRY` lazily instead of importing the
 name directly, which is what makes this order-independent rather than a
 real problem.
 """
-
-import random  # noqa: F401 -- re-exported so `game.random.Random(seed)` keeps working
 
 from . import registry
 from .cards import CardDef, CardType, EffectId

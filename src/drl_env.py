@@ -1642,9 +1642,8 @@ def _cached_battlefield_lookup(state):
     turns each of those checks into an O(1) lookup. Safe for the same
     reason _cached_tap_cost_options is: a legal_action_mask sweep only ever
     calls legal_fns, never an execute_* function, so state can't change
-    mid-sweep. (name, slot) is a safe dict key here the same way
-    _creature_slot_block's own by_slot lookup already relies on it being
-    unique per name -- state.battlefield is always ONE side's own,
+    mid-sweep. (name, slot) is a safe dict key here because it is unique
+    per side -- state.battlefield is always ONE side's own,
     active-relative zone (see this module's other active-relative
     docstrings), never two players' permanents mixed in one sweep."""
     global _battlefield_lookup_cache

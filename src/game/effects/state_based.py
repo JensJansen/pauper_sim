@@ -83,10 +83,9 @@ def _destroy_creature(state, permanent):
     graveyard: real Magic's own rule is that a token ceases to exist
     entirely once it leaves the battlefield, matching every existing
     token-removal path (tokens.activate_blood_sac's own docstring says
-    this explicitly). build_observation's graveyard_counts is keyed only
-    by real decklist names, same as every other zone-count block there --
-    appending a token's card_def would have KeyError'd the very next
-    observation build, caught by a live training smoke test with real
+    this explicitly). The observation encoding keys graveyard cards by
+    real decklist names, so appending a token's card_def would have broken
+    the very next observation build, caught by a live training smoke test with real
     token-creating cards (boggles' own Malevolent Rumble/Cartouche of
     Solidarity) rather than any narrower unit self-check.
 

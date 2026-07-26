@@ -90,8 +90,8 @@ def permanent_power(state, permanent, enchanting_auras=None):
 
     enchanting_auras: optional pre-fetched result of _enchanting_auras(state,
     permanent), for a caller that already needs the same list for multiple
-    creatures in one pass (drl_env._creature_slot_block, which calls this
-    AND permanent_toughness for every occupied creature slot in an
+    creatures in one pass (the per-token feature builder does, calling this
+    AND permanent_toughness for every battlefield creature in one
     observation -- profiled: _enchanting_auras's own battlefield scan was a
     real, measurable cost, repeated redundantly per call). None (every
     existing caller) means "compute it myself," identical to before this
