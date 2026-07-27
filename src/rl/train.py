@@ -414,18 +414,20 @@ def collect_rollout_league(training_deck_name, training_net, training_ctx, train
     DeckNetwork -- needed because a sampled opponent may be "some OTHER
     deck's live net", not just training_net or a frozen snapshot.
 
-    Only the training seat's transitions are ever recorded, UNLESS the
-    sampled opponent turns out to be training_net's own literal live
-    object (a true mirror pairing, not a frozen snapshot of the same
-    deck) -- then both seats' transitions get pooled, matching the data
-    efficiency the old dedicated mirror-mode path already had. A frozen
-    opponent (any snapshot, or a DIFFERENT deck's live net) never
-    contributes a buffer entry: its weights aren't being updated by this
-    call, so recording its transitions would train nothing."""
+    Returns (buf, opponent_buffers, games_played). buf is the training deck's
+    transitions (training seat always; both seats on a true mirror, matching the
+    old mirror-mode data efficiency). opponent_buffers is Path A's salvage: a
+    dict {live_opponent_deck_name -> RolloutBuffer} holding the OPPONENT seat's
+    transitions from games where the opponent was another deck's CURRENT live
+    net -- on-policy for that deck (its net is constant across this whole round),
+    so the caller can train that deck from them too, harvesting the ~half of
+    each live-vs-live game's signal that used to be discarded. A frozen snapshot
+    opponent is off-policy and still contributes nothing."""
     buf = RolloutBuffer()
+    opponent_buffers = {}
     games_played = 0
     for _ in range(n_games):
-        seat_nets, decklists, ctxs, reward_fns, training_seat, is_self = _league_pairing(
+        seat_nets, decklists, ctxs, reward_fns, training_seat, is_self, opp_name, opp_is_live = _league_pairing(
             training_deck_name, training_net, training_ctx, training_decklist, reward_fn,
             pool, decklists_by_name, ctxs_by_name, live_nets, rng,
         )
@@ -434,7 +436,9 @@ def collect_rollout_league(training_deck_name, training_net, training_ctx, train
         games_played += played
         for seat in ((0, 1) if is_self else (training_seat,)):
             buf.extend(buffers[seat])
-    return buf, games_played
+        if opp_is_live:
+            opponent_buffers.setdefault(opp_name, RolloutBuffer()).extend(buffers[1 - training_seat])
+    return buf, opponent_buffers, games_played
 
 
 def _league_pairing(training_deck_name, training_net, training_ctx, training_decklist, reward_fn,
@@ -442,9 +446,17 @@ def _league_pairing(training_deck_name, training_net, training_ctx, training_dec
     """Sample one opponent (true mirror / another deck's live net / a frozen
     snapshot) and lay out the per-seat nets/decklists/ctxs/reward_fns for a
     single league game, randomizing which seat the training net takes. Returns
-    those four 2-lists plus (training_seat, is_self). Shared by
-    collect_rollout_league and collect_rollout_league_batched so the opponent-
-    sampling and which-seat-to-record rules can never drift between the two."""
+    those four 2-lists plus (training_seat, is_self, opponent_deck_name,
+    opponent_is_live). Shared by collect_rollout_league and
+    collect_rollout_league_batched so the opponent-sampling and which-seat-to-
+    record rules can never drift between the two.
+
+    opponent_is_live: the opponent is ANOTHER deck's CURRENT live net (not a
+    frozen snapshot, not the training net itself). Its transitions this game are
+    on-policy for ITS net, so they can be salvaged to train that deck too (Path
+    A -- see collect_rollout_league / run_league._run_session). A snapshot
+    opponent is off-policy (frozen old weights) and a mirror is the same net
+    already pooled into the training buffer, so both are False here."""
     opponent_deck_name, snapshot_path = pool.sample_opponent(training_deck_name, rng)
     is_self = snapshot_path is None and opponent_deck_name == training_deck_name
     if is_self:
@@ -453,6 +465,7 @@ def _league_pairing(training_deck_name, training_net, training_ctx, training_dec
         opponent_net = live_nets[opponent_deck_name]
     else:
         opponent_net = pool.load_snapshot_net(snapshot_path, training_net.shared_stack, ctxs_by_name[opponent_deck_name])
+    opponent_is_live = snapshot_path is None and not is_self  # another deck's current net -> its transitions are salvageable
 
     training_seat = rng.randint(0, 1)  # randomized so the training net isn't always seat 0/1
     opponent_seat = 1 - training_seat
@@ -460,8 +473,8 @@ def _league_pairing(training_deck_name, training_net, training_ctx, training_dec
     seat_nets[training_seat], seat_nets[opponent_seat] = training_net, opponent_net
     decklists[training_seat], decklists[opponent_seat] = training_decklist, decklists_by_name[opponent_deck_name]
     ctxs[training_seat], ctxs[opponent_seat] = training_ctx, ctxs_by_name[opponent_deck_name]
-    reward_fns[training_seat] = reward_fns[opponent_seat] = reward_fn  # opponent's own reward is computed but never recorded
-    return seat_nets, decklists, ctxs, reward_fns, training_seat, is_self
+    reward_fns[training_seat] = reward_fns[opponent_seat] = reward_fn
+    return seat_nets, decklists, ctxs, reward_fns, training_seat, is_self, opponent_deck_name, opponent_is_live
 
 
 def collect_rollout_league_batched(training_deck_name, training_net, training_ctx, training_decklist, reward_fn,
@@ -475,28 +488,34 @@ def collect_rollout_league_batched(training_deck_name, training_net, training_ct
     forward per round of decisions instead of a batch-of-1 per decision. Every
     league opponent -- the training net, another deck's live net, a frozen
     snapshot -- shares the one frozen shared stack, exactly what
-    _batched_forward requires."""
+    _batched_forward requires.
+
+    Returns (buf, opponent_buffers, games_played) -- same Path A salvage of
+    live-opponent transitions as collect_rollout_league (see its docstring)."""
     batch_size = batch_size or n_games
     buf = RolloutBuffer()
+    opponent_buffers = {}
     games_played = 0
     remaining = n_games
     while remaining > 0:
         k = min(batch_size, remaining)
         specs, meta = [], []
         for _ in range(k):
-            seat_nets, decklists, ctxs, reward_fns, training_seat, is_self = _league_pairing(
+            seat_nets, decklists, ctxs, reward_fns, training_seat, is_self, opp_name, opp_is_live = _league_pairing(
                 training_deck_name, training_net, training_ctx, training_decklist, reward_fn,
                 pool, decklists_by_name, ctxs_by_name, live_nets, rng,
             )
             specs.append((seat_nets, decklists, ctxs, reward_fns))
-            meta.append((training_seat, is_self))
+            meta.append((training_seat, is_self, opp_name, opp_is_live))
         per_game_buffers, played = collect_rollout_batched(specs, horizon, rng, device=device)
         games_played += played
-        for (training_seat, is_self), game_buffers in zip(meta, per_game_buffers):
+        for (training_seat, is_self, opp_name, opp_is_live), game_buffers in zip(meta, per_game_buffers):
             for seat in ((0, 1) if is_self else (training_seat,)):
                 buf.extend(game_buffers[seat])
+            if opp_is_live:
+                opponent_buffers.setdefault(opp_name, RolloutBuffer()).extend(game_buffers[1 - training_seat])
         remaining -= k
-    return buf, games_played
+    return buf, opponent_buffers, games_played
 
 
 def _strip_identities(token_list):
@@ -509,6 +528,24 @@ def _strip_identities(token_list):
     Permanent (embedded in a real GameState object graph) is even safely
     picklable at all."""
     return [(idx, row, None) for idx, row, _identity in token_list]
+
+
+def _buffer_to_entries(buf):
+    """Serialize a RolloutBuffer to plain (picklable) tuples for the process
+    boundary -- identities stripped (see _strip_identities). Shared by the
+    worker for both its training-deck buffer and each salvaged live-opponent
+    buffer (Path A)."""
+    return [
+        (_strip_identities(buf.token_lists[i]), buf.scalar[i], buf.mask[i], buf.action[i],
+         buf.logp[i], buf.value[i], buf.reward[i], buf.done[i])
+        for i in range(len(buf))
+    ]
+
+
+def _extend_buffer_from_entries(buf, entries):
+    for entry in entries:
+        buf.add(*entry)
+    return buf
 
 
 def _league_rollout_worker(training_deck_name, all_state_dicts, all_trunk_hidden, shared_state_dict,
@@ -559,16 +596,13 @@ def _league_rollout_worker(training_deck_name, all_state_dicts, all_trunk_hidden
     pool = LeaguePool(league_root_dir, list(decklists))  # read-only here -- this worker never calls register_snapshot
     rng = random.Random(seed)
 
-    buf, played = collect_rollout_league(
+    buf, opponent_buffers, played = collect_rollout_league(
         training_deck_name, live_nets[training_deck_name], deck_ctxs[training_deck_name], decklists[training_deck_name],
         reward_fn, pool, decklists, deck_ctxs, live_nets, horizon, n_games, rng, device="cpu",
     )
-    entries = [
-        (_strip_identities(buf.token_lists[i]), buf.scalar[i], buf.mask[i], buf.action[i],
-         buf.logp[i], buf.value[i], buf.reward[i], buf.done[i])
-        for i in range(len(buf))
-    ]
-    return entries, played
+    entries = _buffer_to_entries(buf)
+    opponent_entries = {opp: _buffer_to_entries(ob) for opp, ob in opponent_buffers.items()}  # Path A salvage, per live opponent
+    return entries, opponent_entries, played
 
 
 def collect_rollout_league_parallel(training_deck_name, live_nets, reward_fn_name, league_root_dir, horizon, n_games,
@@ -599,13 +633,15 @@ def collect_rollout_league_parallel(training_deck_name, live_nets, reward_fn_nam
         for chunk in chunks if chunk > 0
     ]
     buf = RolloutBuffer()
+    opponent_buffers = {}  # Path A: live-opponent deck name -> salvaged transitions, merged across workers
     games_played = 0
     for future in futures:
-        entries, played = future.result()
+        entries, opponent_entries, played = future.result()
         games_played += played
-        for entry in entries:
-            buf.add(*entry)
-    return buf, games_played
+        _extend_buffer_from_entries(buf, entries)
+        for opp, opp_entries in opponent_entries.items():
+            _extend_buffer_from_entries(opponent_buffers.setdefault(opp, RolloutBuffer()), opp_entries)
+    return buf, opponent_buffers, games_played
 
 
 def _compute_gae(rewards_, values_, dones_, gamma, gae_lambda):
@@ -1044,32 +1080,39 @@ if __name__ == "__main__":
         snapshot_path = pool.snapshots["a"][0][1]
 
         pool.sample_opponent = lambda training_deck_name, rng: ("a", None)  # true mirror
-        buf_self, played = collect_rollout_league("a", net_a, deck_ctx_a, decklist_a, reward_fn, pool,
-                                                    decklists_by_name, ctxs_by_name, live_nets,
-                                                    horizon, n_games=1, rng=rng, device=device)
+        buf_self, opp_self, played = collect_rollout_league("a", net_a, deck_ctx_a, decklist_a, reward_fn, pool,
+                                                            decklists_by_name, ctxs_by_name, live_nets,
+                                                            horizon, n_games=1, rng=rng, device=device)
         assert played == 1 and len(buf_self) > 0, "true mirror must record a non-empty pooled buffer"
+        assert opp_self == {}, "a true mirror salvages NO separate opponent buffer (both seats already pooled into buf_self)"
 
         pool.sample_opponent = lambda training_deck_name, rng: ("b", None)  # another deck's live net
-        buf_cross, played = collect_rollout_league("a", net_a, deck_ctx_a, decklist_a, reward_fn, pool,
-                                                     decklists_by_name, ctxs_by_name, live_nets,
-                                                     horizon, n_games=1, rng=rng, device=device)
+        buf_cross, opp_cross, played = collect_rollout_league("a", net_a, deck_ctx_a, decklist_a, reward_fn, pool,
+                                                              decklists_by_name, ctxs_by_name, live_nets,
+                                                              horizon, n_games=1, rng=rng, device=device)
         assert played == 1 and len(buf_cross) > 0, "cross-deck opponent must still record the training seat's own transitions"
+        # Path A: a LIVE-net opponent's transitions are salvaged under its deck name.
+        assert set(opp_cross) == {"b"} and len(opp_cross["b"]) > 0, "a live-net opponent must salvage its own on-policy transitions"
+        assert all(np.isfinite(v) for v in opp_cross["b"].value) and all(np.isfinite(r) for r in opp_cross["b"].reward)
 
         pool.sample_opponent = lambda training_deck_name, rng: ("a", snapshot_path)  # frozen snapshot of self
-        buf_snap, played = collect_rollout_league("a", net_a, deck_ctx_a, decklist_a, reward_fn, pool,
-                                                    decklists_by_name, ctxs_by_name, live_nets,
-                                                    horizon, n_games=1, rng=rng, device=device)
+        buf_snap, opp_snap, played = collect_rollout_league("a", net_a, deck_ctx_a, decklist_a, reward_fn, pool,
+                                                            decklists_by_name, ctxs_by_name, live_nets,
+                                                            horizon, n_games=1, rng=rng, device=device)
         assert played == 1 and len(buf_snap) > 0, "a frozen snapshot opponent must still record the training seat's own transitions"
+        assert opp_snap == {}, "a frozen snapshot opponent is off-policy -- salvages nothing"
         assert snapshot_path in pool._net_cache, "load_snapshot_net must have populated the cache"
 
         # Batched league collection over the same real pool: several games played
         # concurrently (collect_rollout_league_batched), one shared-stack forward
-        # per batch, still recording only the training seat's transitions.
-        buf_batched, played_b = collect_rollout_league_batched(
+        # per batch, with the SAME Path A live-opponent salvage.
+        pool.sample_opponent = lambda training_deck_name, rng: ("b", None)  # all live-net opponents
+        buf_batched, opp_batched, played_b = collect_rollout_league_batched(
             "a", net_a, deck_ctx_a, decklist_a, reward_fn, pool, decklists_by_name, ctxs_by_name,
             live_nets, horizon, n_games=4, rng=rng, device=device, batch_size=2,
         )
         assert played_b == 4 and len(buf_batched) > 0, "batched league collection must record the training seat's transitions"
+        assert set(opp_batched) == {"b"} and len(opp_batched["b"]) > 0, "batched collection must salvage the live opponent's transitions too"
         assert all(np.isfinite(v) for v in buf_batched.value) and all(np.isfinite(r) for r in buf_batched.reward)
 
         for buf in (buf_self, buf_cross, buf_snap):

@@ -111,9 +111,25 @@ def _save_live_checkpoints(live_nets, optimizers, deck_names, session, session_p
         f.write(str(session))
 
 
+def _ppo_update_on_device(net, optimizer, buf, update_device, batch_size):
+    """One ppo_update, round-tripping the net + Adam state to GPU only for the
+    update when update_device is cuda (collection always needs the net on CPU),
+    then straight back. Used for a deck's own update AND each salvaged live-
+    opponent update (Path A)."""
+    if update_device == "cuda":
+        net.to("cuda")
+        move_optimizer_state(optimizer, "cuda")
+    out = ppo_update(net, [optimizer], buf, update_device, batch_size=batch_size)
+    if update_device == "cuda":
+        net.to("cpu")
+        move_optimizer_state(optimizer, "cpu")
+    return out
+
+
 def _run_session(n_iterations, games_per_iteration, snapshot_every, executor, n_workers,
                   gpu_threshold=None, batch_size_start=32, batch_size_cap=2048, batch_size_steps=6,
-                  collect_batch_size=None, fresh_stack=False, league_dir=None, seed=None):
+                  collect_batch_size=None, fresh_stack=False, league_dir=None, seed=None,
+                  salvage_opponents=True):
     # fresh_stack + league_dir + seed let the benchmark harness drive this EXACT
     # loop with untrained (but identical-config) models over a throwaway dir,
     # reproducibly -- the only intended differences from a real training
@@ -169,44 +185,43 @@ def _run_session(n_iterations, games_per_iteration, snapshot_every, executor, n_
                 # once, ONE shared-stack forward per batch of decisions (see
                 # rl.train.collect_rollout_league_batched). Single process, so
                 # no executor -- an alternative to the --n-workers MP path.
-                buf, played = collect_rollout_league_batched(
+                buf, opp_buffers, played = collect_rollout_league_batched(
                     name, live_nets[name], deck_ctxs[name], decklists[name], reward_fn,
                     pool, decklists, deck_ctxs, live_nets, horizon, games_per_iteration, rng,
                     device="cpu", batch_size=collect_batch_size,
                 )
             elif executor is not None:
-                buf, played = collect_rollout_league_parallel(
+                buf, opp_buffers, played = collect_rollout_league_parallel(
                     name, live_nets, reward_fn_name, league_dir, horizon, games_per_iteration,
                     executor, n_workers, SHARED_HPARAMS,
                 )
             else:
-                buf, played = collect_rollout_league(
+                buf, opp_buffers, played = collect_rollout_league(
                     name, live_nets[name], deck_ctxs[name], decklists[name], reward_fn,
                     pool, decklists, deck_ctxs, live_nets, horizon, games_per_iteration, rng, device="cpu",
                 )
             collect_time_total += time.time() - t_collect0
             total_games += played
             t_update0 = time.time()
+            policy_loss = value_loss = entropy = 0.0
             if len(buf):
-                # Collection above (and any OTHER deck's collection this
-                # same iteration, which may sample THIS deck's live net as
-                # its opponent -- collect_rollout_league's own live_nets
-                # lookup) always needs this net on CPU -- so a GPU update
-                # is a real round trip, move there, update, move straight
-                # back, never left resident.
-                if update_device == "cuda":
-                    live_nets[name].to("cuda")
-                    move_optimizer_state(optimizers[name], "cuda")
-                policy_loss, value_loss, entropy = ppo_update(
-                    live_nets[name], [optimizers[name]], buf, update_device, batch_size=batch_size,
-                )
-                if update_device == "cuda":
-                    live_nets[name].to("cpu")
-                    move_optimizer_state(optimizers[name], "cpu")
-            else:
-                policy_loss = value_loss = entropy = 0.0
+                policy_loss, value_loss, entropy = _ppo_update_on_device(
+                    live_nets[name], optimizers[name], buf, update_device, batch_size)
+            # Path A: also train each LIVE-opponent deck from the transitions it
+            # generated this round. Those are on-policy for its net (its net was
+            # constant across THIS deck's whole round), so this harvests the
+            # ~half of each live-vs-live game's signal that used to be discarded,
+            # with NO extra collection. Snapshot/mirror opponents contribute
+            # nothing (off-policy / already pooled into buf). opp_buffers is {}
+            # when salvage is off or no live opponent was sampled.
+            salvaged = 0
+            if salvage_opponents:
+                for opp_name, opp_buf in opp_buffers.items():
+                    if len(opp_buf):
+                        _ppo_update_on_device(live_nets[opp_name], optimizers[opp_name], opp_buf, update_device, batch_size)
+                        salvaged += len(opp_buf)
             update_time_total += time.time() - t_update0
-            print(f"  iter {iteration} [{name}]: games={played} buf={len(buf)} batch_size={batch_size} "
+            print(f"  iter {iteration} [{name}]: games={played} buf={len(buf)} salvaged={salvaged} batch_size={batch_size} "
                   f"device={update_device} policy_loss={policy_loss:.4f} value_loss={value_loss:.4f}", flush=True)
 
         if (iteration + 1) % snapshot_every == 0:
@@ -331,6 +346,10 @@ def build_arg_parser():
                               "forward per batch of decisions (rl.train.collect_rollout_league_batched). Single "
                               "process -- overrides --n-workers. Best paired with a GPU; on CPU the batch-of-1 path "
                               "(with forced-move skipping) is already competitive.")
+    parser.add_argument("--no-opponent-salvage", action="store_true",
+                         help="Disable Path A: when the sampled opponent is another deck's LIVE net, train THAT deck "
+                              "too from its (on-policy) transitions this round, at no extra collection cost -- on by "
+                              "default. Pass this to fall back to training only the round's own deck (for A/B).")
     return parser
 
 
@@ -347,7 +366,8 @@ def main():
     )
     n_workers = args.n_workers
     schedule_kwargs = dict(gpu_threshold=args.gpu_threshold, batch_size_start=args.batch_size_start,
-                            batch_size_cap=args.batch_size_cap, batch_size_steps=args.batch_size_steps)
+                            batch_size_cap=args.batch_size_cap, batch_size_steps=args.batch_size_steps,
+                            salvage_opponents=not args.no_opponent_salvage)
     if args.collect_batch_size and args.collect_batch_size > 1:
         # Vectorized in-process collection -- single process, no executor.
         _run_session(args.n_iterations, args.games_per_iteration, args.snapshot_every, None, 1,
