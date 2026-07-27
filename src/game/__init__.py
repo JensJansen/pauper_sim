@@ -63,18 +63,26 @@ from .catalog.green_cards import (
 )
 from .decklist import parse_decklist_file, parse_decklist_text
 from .effects.casting import bounce_land_etb, cast_aura, cast_permanent_from_hand, enters_battlefield, play_land_from_hand
-from .effects.combat import combat_damage_step, creature_attack_eligible, creature_block_eligible, declare_attacker, declare_attackers_step
+from .effects.combat import combat_damage_step, creature_attack_eligible, creature_block_eligible, declare_attacker, declare_attackers_step, enforce_menace, has_unfulfilled_goad, menace_block_incomplete
+from .effects.undercity import INITIATIVE_MARKER_CARD, ROOM_NAMES, apply_goad, expire_until_next_turn, take_initiative, venture
 from .effects.madness_and_plot import execute_madness_cast, plot_to_exile
 from .effects.shared import find_and_remove_by_name
-from .effects.stack import on_cast_trigger, push_ability_to_stack, push_to_stack, resolve_top_of_stack
+from .effects.stack import counter_spell, on_cast_trigger, push_ability_to_stack, push_to_stack, resolve_top_of_stack
 from .effects.state_based import HAND_SIZE_LIMIT, cleanup_step
 from .effects.stats import creature_keywords, enchantment_count, has_keyword, permanent_power, permanent_toughness
 from .effects.tokens import (
+    BIRD_ILLUSION_TOKEN_CARD_DEF,
     BLOOD_TOKEN_CARD_DEF,
+    CLUE_TOKEN_CARD_DEF,
     ELDRAZI_SPAWN_TOKEN_CARD_DEF,
     FOOD_TOKEN_CARD_DEF,
+    HUMAN_SOLDIER_TOKEN_CARD_DEF,
+    MAP_TOKEN_CARD_DEF,
     ROBOT_TOKEN_CARD_DEF,
+    SAMURAI_TOKEN_CARD_DEF,
+    SKELETON_TOKEN_CARD_DEF,
     TOKEN_LIMIT,
+    TREASURE_TOKEN_CARD_DEF,
     WARRIOR_TOKEN_CARD_DEF,
     activate_blood_sac,
     activate_eldrazi_spawn_sac,
@@ -108,13 +116,24 @@ from .resolution import (
     begin_choose_any_target,
     begin_choose_graveyard_card,
     begin_choose_opponent_permanent,
+    begin_choose_mana_color,
     begin_choose_permanent,
+    begin_choose_room,
+    begin_choose_stack_target,
+    begin_throne_reveal,
     begin_choose_target_player,
     begin_declare_blockers,
+    begin_exile_n_from_graveyard,
+    begin_may_copy,
+    begin_may_transform,
+    begin_pay_unless,
+    begin_tuck_to_library,
     begin_discard,
     begin_discard_or_sacrifice,
     begin_madness_decision,
     begin_mulligan,
+    begin_ponder,
+    begin_put_on_top_from_hand,
     begin_resolution,
     begin_sacrifice,
     begin_order_triggers,
@@ -125,7 +144,10 @@ from .resolution import (
     choose_any_target_options,
     choose_graveyard_card_options,
     choose_opponent_permanent_options,
+    choose_mana_color_options,
     choose_permanent_options,
+    choose_room_options,
+    choose_stack_target_options,
     complete_resolution,
     declare_blocker_assignment,
     discard_options,
@@ -138,7 +160,10 @@ from .resolution import (
     execute_choose_graveyard_card_decline,
     execute_choose_graveyard_card_option,
     execute_choose_opponent_permanent_option,
+    execute_choose_mana_color,
     execute_choose_permanent_option,
+    execute_choose_room_option,
+    execute_choose_stack_target_option,
     execute_assign_combat_damage_option,
     execute_assign_combat_damage_to_player,
     execute_choose_target_player_option,
@@ -150,18 +175,31 @@ from .resolution import (
     execute_mulligan_keep,
     execute_mulligan_take,
     execute_order_triggers_option,
+    execute_ponder_option,
+    execute_ponder_shuffle,
+    execute_put_on_top_option,
     execute_sacrifice_option,
     execute_scry_surveil_option,
+    execute_may_copy,
+    execute_may_transform,
+    execute_throne_reveal_option,
+    execute_tuck_position,
+    explore,
     execute_search_fetch_decline,
     execute_search_fetch_option,
     madness_decision_options,
     mulligan_decision_options,
     order_triggers_options,
+    pay_unless_decline,
+    pay_unless_pay,
+    ponder_options,
+    put_on_top_options,
     sacrifice_options,
     scry,
     scry_surveil_options,
     search_fetch_options,
     surveil,
+    throne_reveal_options,
 )
 from .state import GameState, Permanent, build_shuffled_library, new_multiplayer_game_state
 from .turn import Phase, Speed, draw_step, run_mulligan_phase, run_multiplayer_game, run_turn, untap_step

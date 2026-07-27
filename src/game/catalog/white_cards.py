@@ -73,6 +73,7 @@ WHITE_EFFECT_REGISTRY = {
         "toughness_bonus": lambda state, aura: enchantment_count(state, aura),
         "keywords": {"first_strike"},
     },
+    EffectId.SAMURAI_TOKEN: {"keywords": {"vigilance"}},  # 2/2 white Samurai (Experimental Synthesizer, G8)
     EffectId.WARRIOR_TOKEN: {
         # Cartouche of Solidarity's own ETB token (cartouche_of_solidarity_
         # attach above) -- vigilance means attacking never taps it

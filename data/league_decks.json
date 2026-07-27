@@ -3,5 +3,11 @@
   "rakdos_madness": "rakdos_madness.txt",
   "spy_combo": "spy_combo.txt",
   "boggles": "boggles.txt",
-  "monster_tron": "monster_tron.txt"
+  "monster_tron": "monster_tron.txt",
+  "dmir_terror": "dmir_terror.txt",
+  "elves": "elves.txt",
+  "grixis_affinity": "grixis_affinity.txt",
+  "jund_wildfire": "jund_wildfire.txt",
+  "mono_blue_terror": "mono_blue_terror.txt",
+  "mono_red_rally": "mono_red_rally.txt"
 }

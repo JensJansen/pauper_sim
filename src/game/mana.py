@@ -11,8 +11,37 @@ safe to import from anywhere without caring about ordering.
 """
 
 from . import registry
-from .cards import EffectId
+from .cards import CardType, EffectId
 from .resolution import begin_resolution, complete_resolution
+
+
+def _has_haste(state, permanent):
+    """Haste from either source: a registry "haste": True (Kitchen Imp) or a
+    granted/static "haste" keyword (Goblin Tomb Raider). Lazy stats import --
+    stats has no need for mana, but keep the load-order convention."""
+    if registry.EFFECT_REGISTRY.get(permanent.card_def.effect_id, {}).get("haste", False):
+        return True
+    from .effects.stats import creature_keywords
+    return "haste" in creature_keywords(state, permanent)
+
+
+def tap_summoning_locked(state, permanent):
+    """A CREATURE ability with the {T} symbol in its cost can't be activated
+    while summoning sick (real Magic 302.6: needs continuous control since your
+    most recent turn began), unless the creature has haste. Non-creatures are
+    never summoning sick. Shared by the mana system (creature mana dorks) and
+    the non-mana {T} activated abilities (Wellwisher, Timberwatch Elf).
+
+    EXCEPTION -- a mana ability with NO {T} in its real cost is NOT gated:
+    Wall of Roots ("{0}: Put a -0/-1 counter on this: Add {G}", marked
+    "mana_no_tap") can produce mana the very turn it enters, exactly because
+    its ability has no tap symbol. 302.6 restricts only {T}/{Q} abilities."""
+    if permanent.card_type != CardType.CREATURE:
+        return False
+    if registry.EFFECT_REGISTRY.get(permanent.card_def.effect_id, {}).get("mana_no_tap", False):
+        return False  # no {T} in the cost -> summoning sickness doesn't apply
+    return permanent.summoning_sick and not _has_haste(state, permanent)
+
 
 TRON_TYPES = {"Mine", "Power Plant", "Tower"}
 COLORS = ("W", "U", "B", "R", "G")
@@ -147,6 +176,15 @@ def mana_output(permanent, state, color_choice=None):
             raise ValueError(f"{permanent.card_def.name} has no color choice")
         symbol, predicate = spec[1], spec[2]
         output = [symbol] * sum(1 for p in state.battlefield if predicate(p))
+    elif kind == "count_all":
+        # ("count_all", symbol, predicate): like "count", but "for each X on
+        # THE BATTLEFIELD" (both players' battlefields) rather than "you
+        # control" -- Priest of Titania ("Add {G} for each Elf on the
+        # battlefield").
+        if color_choice is not None:
+            raise ValueError(f"{permanent.card_def.name} has no color choice")
+        symbol, predicate = spec[1], spec[2]
+        output = [symbol] * sum(1 for pl in state.players for p in pl.battlefield if predicate(p))
     else:
         raise ValueError(f"{permanent.card_def.name} is not a simple mana source")
     return output + _bonus_mana_symbols(state, permanent)
@@ -226,6 +264,7 @@ def choose_taps_for_cost(state, cost):
     untapped = [
         p for p in state.battlefield
         if not p.tapped and p.card_def.effect_id in registry.SIMPLE_MANA_SOURCE_EFFECTS
+        and not tap_summoning_locked(state, p)  # a summoning-sick creature dork can't tap (302.6)
     ]
     untapped.sort(key=lambda p: p.card_def.effect_id == EffectId.TRON_LAND)
 
@@ -359,6 +398,8 @@ def tap_cost_options(state):
     for p in state.battlefield:
         if p.tapped or id(p) in tapped_ids:
             continue
+        if tap_summoning_locked(state, p):  # a summoning-sick creature dork can't tap for mana (302.6)
+            continue
         effect = p.card_def.effect_id
         spec = registry.EFFECT_REGISTRY.get(effect, {}).get("mana")
         if spec is not None:
@@ -368,7 +409,7 @@ def tap_cost_options(state):
             if extra_available is not None and not extra_available(state, p):
                 continue
             kind = spec[0]
-            if kind in ("fixed", "fixed_multi", "tron", "count"):
+            if kind in ("fixed", "fixed_multi", "tron", "count", "count_all"):
                 key = (p.card_def.name, None, False)
                 if key not in seen:
                     seen.add(key)
@@ -420,6 +461,8 @@ def execute_tap_cost_option(state, name, color_choice, is_filter):
 
     def _available(p):
         if id(p) in tapped_ids or p.card_def.name != name:
+            return False
+        if tap_summoning_locked(state, p):  # 302.6 -- never tap a summoning-sick creature dork
             return False
         if is_filter:
             return not (
@@ -696,6 +739,8 @@ if __name__ == "__main__":
         Permanent(CardDef("Wall of Roots", CardType.CREATURE, {"generic": 1, "G": 1}, _EffectId.WALL_OF_ROOTS, defender=True)),
         Permanent(CardDef("Wall of Roots", CardType.CREATURE, {"generic": 1, "G": 1}, _EffectId.WALL_OF_ROOTS, defender=True)),
     ]
+    for _p in state.battlefield:
+        _p.summoning_sick = False  # Overgrown Battlement's {T} mana ability needs no summoning sickness (302.6)
     battlement = state.battlefield[0]
     assert mana_output(battlement, state) == ["G", "G", "G"]  # 3 Defenders, itself included
     # Untapped, 0 other sources -- old code would've credited Battlement

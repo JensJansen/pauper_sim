@@ -47,7 +47,10 @@ def parse_decklist_text(text):
 
 
 def parse_decklist_file(path):
-    with open(path) as f:
+    # UTF-8 explicitly: decklists carry accented card names (Lórien Revealed),
+    # and open()'s platform-default encoding is cp1252 on Windows -- which
+    # mojibakes the UTF-8 bytes into a name that misses CARD_DEFS.
+    with open(path, encoding="utf-8") as f:
         return parse_decklist_text(f.read())
 
 

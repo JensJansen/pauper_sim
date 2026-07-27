@@ -7,7 +7,7 @@ stack.py does. See casting.py's own module docstring for why that
 dependency has to point this direction."""
 
 from . import casting
-from .stack import push_to_stack
+from .stack import counter_spell, push_to_stack
 from .. import registry, resolution
 
 
@@ -61,6 +61,51 @@ def _trigger_resolve(entry):
             ltb = registry.EFFECT_REGISTRY.get(card_def.effect_id, {}).get("ltb_trigger")
             if ltb is not None:
                 ltb(state, permanent)
+        return resolve
+    if entry["type"] == "upkeep":
+        # "At the beginning of your upkeep, ..." (Delver of Secrets), queued by
+        # game.turn.upkeep_step. Same (state, permanent) hook shape + fresh
+        # lazy lookup as etb/ltb above.
+        permanent = entry["permanent"]
+
+        def resolve(state, card_def):
+            upkeep = registry.EFFECT_REGISTRY.get(card_def.effect_id, {}).get("upkeep_trigger")
+            if upkeep is not None:
+                upkeep(state, permanent)
+        return resolve
+    if entry["type"] == "venture":
+        # "Venture into Undercity" (The Initiative / Avenging Hunter), queued by
+        # undercity.queue_venture (on taking the initiative or at upkeep). The
+        # player is carried on the entry; resolving it advances their dungeon.
+        # Lazy import -- undercity pulls in casting/tokens, above this module.
+        player_idx = entry["player_idx"]
+
+        def resolve(state, card_def):
+            from . import undercity
+            undercity.venture(state, player_idx)
+        return resolve
+    if entry["type"] == "ward":
+        # Ward (Tolarian Terror): queued by casting._maybe_trigger_ward when an
+        # opponent targets the Warded creature. It's promoted onto the stack
+        # ABOVE the triggering spell (queued before that spell's push, promoted
+        # in the next priority round), so when it resolves the triggering spell
+        # is the entry just below -- state.stack[-1]. The targeting player
+        # (payer_idx) pays the ward cost (begin_pay_unless) or that spell/
+        # ability is countered. Fizzles gracefully if the spell already left
+        # the stack (countered in response) -- nothing to counter.
+        payer_idx = entry["payer_idx"]
+        cost = entry["cost"]
+
+        def resolve(state, card_def):
+            if not state.stack:
+                return
+            spell_entry = state.stack[-1]
+
+            def _on_pay(state, paid):
+                if not paid:
+                    counter_spell(state, spell_entry)
+
+            resolution.begin_pay_unless(state, payer_idx, cost, _on_pay)
         return resolve
     if entry["type"] == "cast_trigger":
         # A "whenever you cast an instant/sorcery" ability (Guttersnipe --
@@ -138,7 +183,7 @@ def promote_triggers_to_stack(state):
     state.trigger_queue.clear()
     if len(stack_entries) == 1:
         entry = stack_entries[0]
-        push_to_stack(state, entry["card_def"], entry["resolve"], reserves_hand_card=False)
+        push_to_stack(state, entry["card_def"], entry["resolve"], reserves_hand_card=False, is_spell=False)  # a triggered ability, not a spell
         return
     resolution.begin_order_triggers(state, stack_entries, on_complete=lambda s: None)
 

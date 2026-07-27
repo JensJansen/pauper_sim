@@ -22,24 +22,34 @@ from ..cards import CardDef, CardType, EffectId
 from ..effects.casting import (
     _log_target_fizzle, capture_any_target, cast_aura, cast_permanent_from_hand, enters_battlefield, target_still_legal,
 )
-from ..effects.shared import any_creature_on_battlefield, discard_from_hand_to_graveyard, find_and_remove_by_name, find_to_hand
+from ..effects.shared import (
+    any_creature_on_battlefield, card_subtypes, discard_from_hand_to_graveyard, find_and_remove_by_name, find_to_hand,
+)
 from ..effects.stack import push_ability_to_stack, push_to_stack
 from ..effects.state_based import check_state_based_actions
 from ..effects.stats import can_be_targeted, enchantment_count, has_keyword, permanent_power, permanent_toughness
 from ..effects.tokens import (
     ELDRAZI_SPAWN_TOKEN_CARD_DEF, FOOD_TOKEN_CARD_DEF, activate_eldrazi_spawn_sac, activate_food_sac, create_token,
 )
+from ..effects import undercity
 from ..effects.win_check import deal_damage_to_opponent, gain_life
-from ..mana import COLORS
+from ..mana import COLORS, tap_summoning_locked
 
 GREEN_CARD_CATALOG = {
-    "Forest": CardDef("Forest", CardType.LAND, None, EffectId.FOREST, basic=True),
+    "Forest": CardDef("Forest", CardType.LAND, None, EffectId.FOREST, basic=True, subtypes=("Forest",)),
+    # Enters tapped unless you control 3+ OTHER Forests; when it enters
+    # untapped, create a Food token. Subtype Forest -- counts itself toward
+    # another Gingerbread Cabin's own "3+ other Forests" check.
+    "Gingerbread Cabin": CardDef(
+        "Gingerbread Cabin", CardType.LAND, None, EffectId.GINGERBREAD_CABIN, subtypes=("Forest",),
+    ),
     "Generous Ent": CardDef(
         "Generous Ent", CardType.CREATURE, {"generic": 5, "G": 1}, EffectId.GENEROUS_ENT,
         forestcycling_cost={"generic": 1}, power=5, toughness=5,
     ),
     "Masked Vandal": CardDef(
         "Masked Vandal", CardType.CREATURE, {"generic": 1, "G": 1}, EffectId.MASKED_VANDAL, power=1, toughness=3,
+        subtypes=("Elf",),  # real Masked Vandal is a Changeling (every creature type) -- only the Elf type matters in this pool (Priest of Titania / Wellwisher / Timberwatch Elf count it)
     ),
     "Saruli Caretaker": CardDef(
         "Saruli Caretaker", CardType.CREATURE, {"G": 1}, EffectId.SARULI_CARETAKER, defender=True, power=1, toughness=1,
@@ -58,7 +68,7 @@ GREEN_CARD_CATALOG = {
         power=0, toughness=3,
     ),
     "Nyxborn Hydra": CardDef("Nyxborn Hydra", CardType.CREATURE, {"G": 1}, EffectId.NYXBORN_HYDRA, power=0, toughness=1),
-    "Quirion Ranger": CardDef("Quirion Ranger", CardType.CREATURE, {"G": 1}, EffectId.QUIRION_RANGER, power=1, toughness=1),
+    "Quirion Ranger": CardDef("Quirion Ranger", CardType.CREATURE, {"G": 1}, EffectId.QUIRION_RANGER, power=1, toughness=1, subtypes=("Elf",)),
     "Winding Way": CardDef("Winding Way", CardType.SORCERY, {"generic": 1, "G": 1}, EffectId.WINDING_WAY),
     "Lead the Stampede": CardDef("Lead the Stampede", CardType.SORCERY, {"generic": 2, "G": 1}, EffectId.LEAD_THE_STAMPEDE),
     "Land Grant": CardDef("Land Grant", CardType.SORCERY, {"generic": 1, "G": 1}, EffectId.LAND_GRANT),
@@ -92,7 +102,66 @@ GREEN_CARD_CATALOG = {
     # 2-player game (_ram_through_extra_legal) -- a documented no-op in any
     # 1-player config, like every other opponent-requiring effect here.
     "Ram Through": CardDef("Ram Through", CardType.INSTANT, {"generic": 1, "G": 1}, EffectId.RAM_THROUGH),
+
+    # --- G3: jund_wildfire ---
+    "Pulse of Murasa": CardDef("Pulse of Murasa", CardType.INSTANT, {"generic": 2, "G": 1}, EffectId.PULSE_OF_MURASA),
+
+    # --- G9: elves. NOTE (pre-existing engine convention): creature {T}
+    # abilities here don't check summoning sickness (the mana framework never
+    # has -- Overgrown Battlement/Saruli Caretaker already tap the turn they
+    # enter), so these mana dorks / tap abilities inherit that uniformly. ---
+    "Llanowar Elves": CardDef("Llanowar Elves", CardType.CREATURE, {"G": 1}, EffectId.LLANOWAR_ELVES, power=1, toughness=1, subtypes=("Elf", "Druid")),
+    "Fyndhorn Elves": CardDef("Fyndhorn Elves", CardType.CREATURE, {"G": 1}, EffectId.FYNDHORN_ELVES, power=1, toughness=1, subtypes=("Elf", "Druid")),
+    "Priest of Titania": CardDef("Priest of Titania", CardType.CREATURE, {"generic": 1, "G": 1}, EffectId.PRIEST_OF_TITANIA, power=1, toughness=1, subtypes=("Elf", "Druid")),
+    "Wellwisher": CardDef("Wellwisher", CardType.CREATURE, {"generic": 1, "G": 1}, EffectId.WELLWISHER, power=1, toughness=1, subtypes=("Elf",)),
+    "Timberwatch Elf": CardDef("Timberwatch Elf", CardType.CREATURE, {"generic": 2, "G": 1}, EffectId.TIMBERWATCH_ELF, power=1, toughness=2, subtypes=("Elf",)),
+
+    # --- G12: initiative (elves) ---
+    "Avenging Hunter": CardDef("Avenging Hunter", CardType.CREATURE, {"generic": 4, "G": 1}, EffectId.AVENGING_HUNTER, power=5, toughness=4, subtypes=("Dragon", "Ranger")),
 }
+
+
+def _is_elf(permanent):
+    return "Elf" in card_subtypes(permanent.card_def)
+
+
+def _count_elves(state):
+    """Elves on THE battlefield -- both players' -- matching Priest of Titania
+    / Wellwisher / Timberwatch Elf's "each Elf on the battlefield"."""
+    return sum(1 for player in state.players for p in player.battlefield if _is_elf(p))
+
+
+def wellwisher_activate(state, permanent):
+    """{T}: You gain 1 life for each Elf on the battlefield (counted at
+    resolution)."""
+    permanent.tapped = True
+    push_ability_to_stack(state, permanent.card_def, lambda st: gain_life(st, _count_elves(st)))
+
+
+def timberwatch_elf_activate(state, permanent):
+    """{T}: Target creature gets +X/+X until end of turn, X = # Elves on the
+    battlefield (counted at resolution). Target locked at activation."""
+    permanent.tapped = True
+    idx = state.active_idx
+
+    def _on_target(state, descriptor):
+        captured = capture_any_target(state, descriptor)
+
+        def _resolve(st, cd):
+            if not target_still_legal(st, captured):
+                _log_target_fizzle(st, cd, None)
+                return
+            x = _count_elves(st)
+            captured[1].temp_power += x
+            captured[1].temp_toughness += x
+            st.log_event("pump", target=(captured[1].card_def.name, captured[1].slot), amount=x)
+
+        push_to_stack(state, permanent.card_def, _resolve, reserves_hand_card=False, is_spell=False)
+
+    resolution.begin_choose_any_target(
+        state, lambda p: p.card_type == CardType.CREATURE and can_be_targeted(state, p, idx),
+        _on_target, allow_players=False,
+    )
 
 # Sagu Wildling's own creature half (Omen's real payoff) -- a distinct
 # CardDef from the "Sagu Wildling" entry above (that one is the SORCERY
@@ -350,7 +419,7 @@ def quirion_ranger_untap_resolve(state, permanent):
             target.tapped = False
             state.log_event("untap", permanent=(target.card_def.name, target.slot), reason="quirion_ranger")
 
-        push_to_stack(state, permanent.card_def, _resolve, reserves_hand_card=False)
+        push_to_stack(state, permanent.card_def, _resolve, reserves_hand_card=False, is_spell=False)  # activated ability -- not a spell
 
     resolution.begin_choose_any_target(
         state,
@@ -769,9 +838,121 @@ def masked_vandal_etb(state):
     resolution.begin_choose_graveyard_card(state, lambda c: c.card_type == CardType.CREATURE, _after_gy, optional=True)
 
 
+def _gingerbread_cabin_enters_tapped(state):
+    """"This land enters tapped unless you control three or more other
+    Forests." Counts Forest-subtype permanents already on the battlefield --
+    this Cabin isn't added until after enters_battlefield reads this, so
+    they're all genuinely "other" (a basic Forest is a Forest; another
+    Gingerbread Cabin is too)."""
+    forests = sum(1 for p in state.battlefield if "Forest" in card_subtypes(p.card_def))
+    return forests < 3
+
+
+def gingerbread_cabin_etb(state, permanent):
+    """"When this land enters untapped, create a Food token." Reads how it
+    entered (flags["entered_tapped"], set by enters_battlefield) rather than
+    its current tapped-ness, which a later tap-for-mana could have flipped
+    before this queued ETB resolves."""
+    if not permanent.flags.get("entered_tapped", False):
+        create_token(state, FOOD_TOKEN_CARD_DEF)
+
+
+def _pulse_of_murasa_eligible(card_def):
+    return card_def.card_type in (CardType.CREATURE, CardType.LAND)
+
+
+def cast_pulse_of_murasa(state, card_def):
+    """{2}{G}: "Return target creature or land card from A graveyard to its
+    owner's hand. You gain 6 life." Target chosen at cast (precast_choice) from
+    EITHER player's graveyard, rechecked at resolution -- if that card has left
+    the graveyard by then (graveyard hate in response), the spell has no legal
+    target and does nothing, lifegain included (608.2c). The returned card goes
+    to ITS OWNER's hand (the graveyard it was in); the caster gains the 6 life.
+
+    Cross-graveyard is offered by name across both graveyards; a same-named
+    card present in both resolves caster's-graveyard-first (the pre-existing
+    engine-wide fungible-by-name convention for graveyard/permanent selection,
+    and the only rationally-wanted target anyway -- returning an opponent's
+    card to THEIR hand never helps you)."""
+    caster_idx = state.active_idx
+
+    def _on_chosen(state, name):
+        def _resolve(state, card_def):
+            discard_from_hand_to_graveyard(state, card_def)  # Pulse itself -> caster's graveyard
+            owner_idx = found = None
+            if name is not None:
+                order = [caster_idx] + [i for i in range(len(state.players)) if i != caster_idx]
+                for idx in order:
+                    found = next((c for c in state.players[idx].graveyard
+                                  if c.name == name and _pulse_of_murasa_eligible(c)), None)
+                    if found is not None:
+                        owner_idx = idx
+                        break
+            if found is None:
+                _log_target_fizzle(state, card_def, None)  # target left the graveyard -> fizzle, no lifegain
+                return
+            state.players[owner_idx].graveyard.remove(found)
+            state.players[owner_idx].hand.append(found)  # to its OWNER's hand
+            state.log_event("zone_move", card=found.name, from_zone="graveyard", to_zone="hand", reason="pulse_of_murasa")
+            gain_life(state, 6)  # caster (active_idx at resolution) gains
+
+        push_to_stack(state, card_def, _resolve)
+
+    combined = [c for pl in state.players for c in pl.graveyard]  # A graveyard = either player's
+    resolution.begin_choose_graveyard_card(state, _pulse_of_murasa_eligible, _on_chosen, graveyard=combined)
+
+
 GREEN_EFFECT_REGISTRY = {
     EffectId.FOREST: {
         "mana": ("fixed", "G"),
+    },
+    EffectId.PULSE_OF_MURASA: {
+        "cast": {
+            "resolve": lambda state, card_def: cast_pulse_of_murasa(state, card_def),
+            "extra_legal": lambda state: any(
+                _pulse_of_murasa_eligible(c) for pl in state.players for c in pl.graveyard),  # A graveyard, either player
+            "precast_choice": True,  # target graveyard card locked at cast
+        },
+        "pending_kinds": {"choose_graveyard_card"},
+    },
+    # --- G9: elves ---
+    EffectId.LLANOWAR_ELVES: {
+        "cast": {"resolve": lambda state, card_def: cast_permanent_from_hand(state, card_def)},
+        "mana": ("fixed", "G"),  # {T}: Add {G}
+    },
+    EffectId.FYNDHORN_ELVES: {
+        "cast": {"resolve": lambda state, card_def: cast_permanent_from_hand(state, card_def)},
+        "mana": ("fixed", "G"),  # {T}: Add {G} (functional twin of Llanowar Elves)
+    },
+    EffectId.PRIEST_OF_TITANIA: {
+        "cast": {"resolve": lambda state, card_def: cast_permanent_from_hand(state, card_def)},
+        "mana": ("count_all", "G", _is_elf),  # {T}: Add {G} for each Elf on the battlefield (both sides)
+    },
+    EffectId.WELLWISHER: {
+        "cast": {"resolve": lambda state, card_def: cast_permanent_from_hand(state, card_def)},
+        "activated_abilities": {
+            "lifegain": {  # {T}: gain 1 life per Elf -- non-mana tap ability (legal/resolve path)
+                # {T} ability -> summoning-sickness gated (302.6): untapped AND not a summoning-sick hasteless creature.
+                "legal": lambda state, permanent: not permanent.tapped and not tap_summoning_locked(state, permanent),
+                "resolve": lambda state, permanent: wellwisher_activate(state, permanent),
+            },
+        },
+    },
+    EffectId.TIMBERWATCH_ELF: {
+        "cast": {"resolve": lambda state, card_def: cast_permanent_from_hand(state, card_def)},
+        "activated_abilities": {
+            "pump": {  # {T}: target creature +X/+X (X = # Elves) until EOT
+                # {T} ability -> summoning-sickness gated (302.6).
+                "legal": lambda state, permanent: not permanent.tapped and not tap_summoning_locked(state, permanent),
+                "resolve": lambda state, permanent: timberwatch_elf_activate(state, permanent),
+            },
+        },
+        "pending_kinds": {"choose_any_target"},
+    },
+    EffectId.GINGERBREAD_CABIN: {
+        "mana": ("fixed", "G"),
+        "enters_tapped": _gingerbread_cabin_enters_tapped,  # callable(state) -- see enters_battlefield
+        "etb_trigger": lambda state, permanent: gingerbread_cabin_etb(state, permanent),
     },
     EffectId.GENEROUS_ENT: {
         # Reach + ETB "create a Food token" -- the real hard-cast, alongside
@@ -1047,6 +1228,20 @@ GREEN_EFFECT_REGISTRY = {
             },
         },
     },
+    # --- G12: initiative / Undercity ---
+    EffectId.AVENGING_HUNTER: {
+        "cast": {"resolve": lambda state, card_def: cast_permanent_from_hand(state, card_def)},
+        "keywords": {"trample"},
+        # "When this creature enters, you take the initiative" -- its controller
+        # (active_idx at ETB resolution). take_initiative also queues the venture.
+        "etb_trigger": lambda state, permanent: undercity.take_initiative(state, state.active_idx),
+        # Every resolution kind an Undercity venture can open, so
+        # drl_env.build_action_table pre-registers the matching actions for any
+        # deck running Avenging Hunter: room branch, the 6 rooms with choices,
+        # and Throne's reveal-and-pick.
+        "pending_kinds": {"choose_room", "throne_reveal", "search_fetch", "scry", "choose_any_target", "choose_target_player"},
+    },
+    EffectId.SKELETON_TOKEN: {"keywords": {"menace"}},  # 4/1 Undercity Catacombs Skeleton
     # Ram Through (functional blank): deliberately no entry -- see the
     # comment on its CardDef above.
 }
@@ -1460,3 +1655,167 @@ if __name__ == "__main__":
     assert _stats.permanent_power(state, bestowed) == 2 and _stats.permanent_toughness(state, bestowed) == 3  # 0/1 base + 2, its own pt_bonus no longer applies to anything
 
     print("green_cards.py Nyxborn Hydra Bestow self-check: OK")
+
+    # Gingerbread Cabin: "enters tapped unless you control 3+ other Forests;
+    # when it enters untapped, create a Food token." Exercises the new
+    # callable enters_tapped (evaluated before the Cabin is on the
+    # battlefield, so its count is "other" Forests) and the entered_tapped
+    # flag the ETB reads.
+    from ..effects.casting import play_land_from_hand as _play_land
+    from ..effects.stack import resolve_top_of_stack as _resolve_top
+    from ..effects.triggers import promote_triggers_to_stack as _promote
+
+    def _drive_etb(state):
+        _promote(state)
+        while state.stack:
+            _resolve_top(state)
+
+    # <3 other Forests -> enters tapped, no Food.
+    state = GameState(on_the_play=True)
+    state.hand = [CardDef("Gingerbread Cabin", CardType.LAND, None, EffectId.GINGERBREAD_CABIN, subtypes=("Forest",))]
+    cabin = _play_land(state, state.hand[0])
+    assert cabin.tapped and cabin.flags["entered_tapped"] is True
+    _drive_etb(state)
+    assert not any(p.card_def.name == "Food" for p in state.battlefield)
+
+    # 3+ other Forests -> enters untapped, creates a Food. A prior Gingerbread
+    # Cabin counts as a Forest too (subtype Forest), so 2 basics + 1 Cabin = 3.
+    state = GameState(on_the_play=True)
+    state.battlefield = [
+        Permanent(CardDef("Forest", CardType.LAND, None, EffectId.FOREST, basic=True, subtypes=("Forest",))),
+        Permanent(CardDef("Forest", CardType.LAND, None, EffectId.FOREST, basic=True, subtypes=("Forest",))),
+        Permanent(CardDef("Gingerbread Cabin", CardType.LAND, None, EffectId.GINGERBREAD_CABIN, subtypes=("Forest",))),
+    ]
+    state.hand = [CardDef("Gingerbread Cabin", CardType.LAND, None, EffectId.GINGERBREAD_CABIN, subtypes=("Forest",))]
+    cabin = _play_land(state, state.hand[0])
+    assert not cabin.tapped and cabin.flags["entered_tapped"] is False
+    _drive_etb(state)
+    assert any(p.card_def.name == "Food" for p in state.battlefield)
+
+    print("green_cards.py Gingerbread Cabin (conditional-tapped + Food) self-check: OK")
+
+    # Pulse of Murasa: return a creature/land card from your graveyard to hand,
+    # gain 6. Only creature/land cards are eligible (not an instant).
+    from ..resolution import choose_graveyard_card_options, execute_choose_graveyard_card_option
+    from ..effects.stack import resolve_top_of_stack as _pulse_resolve_top
+
+    state = GameState(on_the_play=True)
+    pulse = CardDef("Pulse of Murasa", CardType.INSTANT, {"generic": 2, "G": 1}, EffectId.PULSE_OF_MURASA)
+    state.hand = [pulse]
+    state.graveyard = [
+        CardDef("A Creature", CardType.CREATURE, {"G": 1}, EffectId.FILLER, power=1, toughness=1),
+        CardDef("A Land", CardType.LAND, None, EffectId.FOREST, basic=True),
+        CardDef("An Instant", CardType.INSTANT, {"G": 1}, EffectId.FILLER),  # ineligible
+    ]
+    state.life_total = 10
+    cast_pulse_of_murasa(state, pulse)
+    assert state.pending_resolution["kind"] == "choose_graveyard_card"
+    assert choose_graveyard_card_options(state) == ["A Creature", "A Land"]  # instant excluded
+    execute_choose_graveyard_card_option(state, "A Creature")
+    _pulse_resolve_top(state)
+    assert any(c.name == "A Creature" for c in state.hand)
+    assert state.life_total == 16  # +6
+    assert pulse in state.graveyard  # the instant itself resolved to the graveyard
+
+    # Cross-graveyard (Oracle "from A graveyard ... to its owner's hand"): the
+    # caster can return a card from the OPPONENT's graveyard -- it goes to the
+    # OPPONENT's (owner's) hand, and the caster still gains the 6.
+    from ..state import PlayerState as _PSpulse
+    state = GameState(on_the_play=True, players=[_PSpulse(True), _PSpulse(False)])
+    state.active_idx = 0
+    pulse2 = CardDef("Pulse of Murasa", CardType.INSTANT, {"generic": 2, "G": 1}, EffectId.PULSE_OF_MURASA)
+    state.players[0].hand = [pulse2]
+    opp_beast = CardDef("Opp Beast", CardType.CREATURE, {"G": 1}, EffectId.FILLER, power=2, toughness=2)
+    state.players[1].graveyard = [opp_beast]
+    state.players[0].life_total = 10
+    cast_pulse_of_murasa(state, pulse2)
+    assert choose_graveyard_card_options(state) == ["Opp Beast"]  # the opponent's graveyard card is a legal target
+    execute_choose_graveyard_card_option(state, "Opp Beast")
+    _pulse_resolve_top(state)
+    assert opp_beast in state.players[1].hand  # returned to ITS OWNER (the opponent), not the caster
+    assert state.players[0].life_total == 16  # caster gained 6
+    assert state.active_idx == 0
+    print("green_cards.py Pulse of Murasa (cross-graveyard, owner's hand) self-check: OK")
+
+    # --- G9 elves ---
+    from ..effects.stack import resolve_top_of_stack as _rts9
+    from ..mana import mana_output
+    from ..resolution import execute_choose_any_target_creature
+    from ..state import PlayerState as _PS9
+
+    # Priest of Titania: {T} adds {G} per Elf on THE battlefield (both sides),
+    # incl. Masked Vandal (Changeling) and the opponent's Elves.
+    state = GameState(on_the_play=True, players=[_PS9(True), _PS9(False)])
+    state.active_idx = 0
+    priest = Permanent(registry.CARD_DEFS["Priest of Titania"])
+    priest.slot = 1
+    state.players[0].battlefield = [priest, Permanent(registry.CARD_DEFS["Llanowar Elves"]), Permanent(registry.CARD_DEFS["Masked Vandal"])]
+    state.players[1].battlefield = [Permanent(registry.CARD_DEFS["Quirion Ranger"])]
+    assert mana_output(priest, state) == ["G"] * 4  # Priest + Llanowar + Masked Vandal (changeling) + opp Quirion
+    print("green_cards.py Priest of Titania (count Elves, both battlefields + Changeling) self-check: OK")
+
+    # Wellwisher: {T} gain 1 life per Elf.
+    state = GameState(on_the_play=True)
+    well = Permanent(registry.CARD_DEFS["Wellwisher"])
+    well.slot = 1
+    state.battlefield = [well, Permanent(registry.CARD_DEFS["Llanowar Elves"])]  # 2 Elves
+    wellwisher_activate(state, well)
+    assert well.tapped
+    _rts9(state)
+    assert state.life_total == 22  # 20 + 2
+    print("green_cards.py Wellwisher self-check: OK")
+
+    # Timberwatch Elf: {T} target creature +X/+X, X = # Elves.
+    state = GameState(on_the_play=True)
+    tw = Permanent(registry.CARD_DEFS["Timberwatch Elf"])
+    tw.slot = 1
+    target = Permanent(CardDef("Beater", CardType.CREATURE, None, EffectId.FILLER, power=2, toughness=2))
+    target.slot = 1
+    state.battlefield = [tw, target, Permanent(registry.CARD_DEFS["Llanowar Elves"])]  # 2 Elves
+    timberwatch_elf_activate(state, tw)
+    execute_choose_any_target_creature(state, 0, "Beater", 1)
+    _rts9(state)
+    assert _stats.permanent_power(state, target) == 4 and _stats.permanent_toughness(state, target) == 4  # +2/+2
+    print("green_cards.py Timberwatch Elf (+X/+X) self-check: OK")
+
+    # Avenging Hunter: ETB -> you take the initiative -> a venture is queued
+    # and, on resolving, enters Secret Entrance (basic-land search).
+    from ..effects.triggers import promote_triggers_to_stack
+    from ..effects.stack import resolve_top_of_stack
+    from ..state import PlayerState
+
+    state = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
+    state.active_idx = state.turn_player_idx = 0
+    state.players[0].library = [
+        CardDef("Forest", CardType.LAND, None, EffectId.FOREST, basic=True, subtypes=("Forest",)),
+        CardDef("z", CardType.SORCERY, {}, EffectId.FILLER),
+    ]
+    ah = registry.CARD_DEFS["Avenging Hunter"]
+    assert has_keyword(state, Permanent(ah), "trample")  # 5/4 Trample
+    state.players[0].hand = [ah]
+    cast_permanent_from_hand(state, ah)  # ETB queued
+    promote_triggers_to_stack(state)
+    resolve_top_of_stack(state)  # ETB -> take_initiative (which queues the venture)
+    assert state.initiative_idx == 0
+    promote_triggers_to_stack(state)
+    resolve_top_of_stack(state)  # venture -> Secret Entrance -> basic-land search
+    assert state.players[0].dungeon_room == "Secret Entrance"
+    assert state.pending_resolution["kind"] == "search_fetch"
+    print("green_cards.py Avenging Hunter (ETB initiative -> venture) self-check: OK")
+
+    # Summoning sickness (302.6): a creature's {T} ability (a mana dork, or a
+    # non-mana {T} ability) can't be used the turn it enters, unless it has
+    # haste. An ability with NO {T} in its cost is exempt.
+    state = GameState(on_the_play=True)
+    llan = Permanent(registry.CARD_DEFS["Llanowar Elves"])  # summoning_sick=True by construction
+    assert tap_summoning_locked(state, llan)  # sick mana dork -> can't tap for {G}
+    llan.summoning_sick = False
+    assert not tap_summoning_locked(state, llan)  # controlled since last turn -> can tap
+    well = Permanent(registry.CARD_DEFS["Wellwisher"])  # sick {T} ability
+    assert tap_summoning_locked(state, well)
+    assert not registry.EFFECT_REGISTRY[EffectId.WELLWISHER]["activated_abilities"]["lifegain"]["legal"](state, well)
+    well.summoning_sick = False
+    assert registry.EFFECT_REGISTRY[EffectId.WELLWISHER]["activated_abilities"]["lifegain"]["legal"](state, well)
+    wor = Permanent(registry.CARD_DEFS["Wall of Roots"])  # sick, but its mana ability has NO {T}
+    assert not tap_summoning_locked(state, wor)  # mana_no_tap -> not summoning-sickness gated
+    print("green_cards.py summoning-sickness (creature {T} abilities gated; no-{T} exempt) self-check: OK")

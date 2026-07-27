@@ -104,6 +104,17 @@ class Permanent:
         # expressed by mutating it directly.
         self.type_override = None
 
+        # Until-end-of-turn temporary modifiers (Agony Warp's -3/-0 & -0/-3;
+        # Toxin Analysis' granted deathtouch/lifelink), all cleared by
+        # game.effects.state_based.cleanup_step at end of turn. temp_power/
+        # temp_toughness fold into stats.permanent_power/toughness; temp_
+        # keywords into stats.creature_keywords. Separate from `counters`,
+        # which persist (they're real +1/+1 / lifelink counters, not
+        # until-EOT effects).
+        self.temp_power = 0
+        self.temp_toughness = 0
+        self.temp_keywords = set()
+
     @property
     def card_type(self):
         """This permanent's REAL current type -- type_override if one is
@@ -145,6 +156,14 @@ class PlayerState:
         # (persist across turns until cast).
         self.exile = []
 
+        # Impulse zone: cards exiled "you may play until end of [this / your
+        # next] turn" (Reckless Impulse, Experimental Synthesizer, Clockwork
+        # Percussionist). list of (card_def, playable_until_turn_number) --
+        # playable while state.turn_number <= that number; pruned once past it
+        # by game.turn.untap_step. Kept distinct from `exile` (whose Plot
+        # entries persist forever until cast) since impulse cards expire.
+        self.impulse = []
+
         # list[dict], each {"type": "decision"|"automatic", "kind": str, ...}.
         # Populated by things that happen mid-resolution but must not be
         # acted on until the enclosing action's entire effect is fully
@@ -158,6 +177,15 @@ class PlayerState:
         # Reset each turn this player takes (turn._run_turn_gen), incremented
         # once per card actually drawn (see draw() below).
         self.cards_drawn_this_turn = 0
+
+        # Undercity dungeon progress (The Initiative / Avenging Hunter): the
+        # name of the room this player currently occupies, or None if they're
+        # not in a dungeon. "Venture into Undercity" (game.effects.undercity)
+        # enters at Secret Entrance when None, else advances to the next room;
+        # cleared back to None once the final room (Throne of the Dead Three)
+        # completes, so a later venture starts a fresh run. Persists across
+        # turns and independently of who currently holds the initiative.
+        self.dungeon_room = None
 
         self.decked_out = False
 
@@ -326,6 +354,15 @@ class GameState:
         self.turn_won = None
         self.winner = None
 
+        # Which player (index into state.players) currently has THE INITIATIVE
+        # (Avenging Hunter / The Initiative), or None if no one does. A single
+        # shared designation, like the monarch. game.effects.undercity.
+        # take_initiative sets it (and queues that player's venture); combat
+        # damage to the holder passes it (game.effects.combat); the holder
+        # ventures into Undercity at the start of each of their upkeeps
+        # (game.turn.upkeep_step).
+        self.initiative_idx = None
+
         # None, or a dict describing an in-progress multi-step decision
         # (paying a cost one tap at a time, resolving a scry/surveil,
         # choosing a search target, ...) that must be fully resolved
@@ -349,6 +386,7 @@ class GameState:
     library = _active_player_property("library")
     graveyard = _active_player_property("graveyard")
     exile = _active_player_property("exile")
+    impulse = _active_player_property("impulse")
     trigger_queue = _active_player_property("trigger_queue")
     lands_played_this_turn = _active_player_property("lands_played_this_turn")
     cards_drawn_this_turn = _active_player_property("cards_drawn_this_turn")

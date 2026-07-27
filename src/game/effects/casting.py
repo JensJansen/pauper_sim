@@ -22,10 +22,58 @@ own module docstring."""
 from .. import registry
 from ..cards import CardType
 from ..state import Permanent
+from .shared import discard_from_hand_to_graveyard
 from .stack import push_to_stack
 from .stats import can_be_targeted
 from .win_check import _check_end_of_game
 from .. import resolution
+
+
+def has_creature_target(state, eligible=lambda p: True):
+    """Is there any legal creature target for a "destroy/target creature"
+    spell -- on EITHER battlefield, matching `eligible`, and targetable by
+    the active player (hexproof/shroud)? A spell with a single creature
+    target can't be cast without one (real Magic), so this backs the cast's
+    own extra_legal."""
+    idx = state.active_idx
+    return any(
+        p.card_type == CardType.CREATURE and eligible(p) and can_be_targeted(state, p, idx)
+        for player in state.players for p in player.battlefield
+    )
+
+
+def cast_targeting_creature(state, card_def, on_resolve, eligible=lambda p: True):
+    """Shared body for every single-target "target creature" spell: pick a
+    creature on EITHER battlefield matching `eligible` (hexproof/shroud-
+    aware), locked at cast (used with precast_choice); on resolution the
+    spell goes to its owner's graveyard and, if the target is still a legal
+    creature (608.2b), `on_resolve(state, target_permanent)` runs -- else the
+    spell fizzles doing nothing. Callers supply on_resolve: destroy
+    (Cast Down/Terminate/Snuff Out, via state_based.destroy_permanent), put
+    counters (Unexpected Fangs), or grant until-EOT keywords + Investigate
+    (Toxin Analysis). `eligible` narrows the legal targets (Snuff Out's
+    nonblack); the default is any creature."""
+    idx = state.active_idx
+
+    def _on_target(state, descriptor):
+        captured = capture_any_target(state, descriptor)
+
+        def _resolve(state, card_def):
+            discard_from_hand_to_graveyard(state, card_def)  # the spell itself -> its owner's graveyard
+            if not target_still_legal(state, captured):
+                where = (captured[1].card_def.name, captured[1].slot) if captured is not None else None
+                _log_target_fizzle(state, card_def, where)
+                return
+            on_resolve(state, captured[1])
+
+        push_to_stack(state, card_def, _resolve)
+
+    resolution.begin_choose_any_target(
+        state,
+        lambda p: p.card_type == CardType.CREATURE and eligible(p) and can_be_targeted(state, p, idx),
+        _on_target,
+        allow_players=False,
+    )
 
 
 def play_land_from_hand(state, card_def):
@@ -70,7 +118,32 @@ def capture_any_target(state, target):
         return target
     _, side, name, slot = target
     perm = next(p for p in state.players[side].battlefield if p.card_def.name == name and p.slot == slot)
+    _maybe_trigger_ward(state, perm)
     return ("creature", perm)
+
+
+def _maybe_trigger_ward(state, permanent):
+    """Ward (Tolarian Terror): "Whenever this becomes the target of a spell or
+    ability an OPPONENT controls, counter it unless that player pays [cost]."
+    capture_any_target is the moment a creature becomes a target, so this fires
+    here -- but only when the chooser (state.active_idx, the caster/activator)
+    is an opponent of the permanent's controller (a controller targeting their
+    own Warded creature never triggers Ward). Queues a "ward" trigger (resolved
+    by game.effects.triggers), carrying the payer (that opponent) and the ward
+    cost; it lands on the stack above the triggering spell (which the caller
+    pushes right after this returns) and makes the payer pay-or-be-countered.
+    Lazy registry read, same convention as the rest of this module."""
+    ward = registry.EFFECT_REGISTRY.get(permanent.card_def.effect_id, {}).get("ward")
+    if ward is None:
+        return
+    caster_idx = state.active_idx
+    controller = next((idx for idx, p in enumerate(state.players) if permanent in p.battlefield), None)
+    if controller is None or caster_idx == controller:
+        return  # only an OPPONENT's targeting triggers Ward
+    state.trigger_queue.append(
+        {"type": "ward", "card_def": permanent.card_def, "payer_idx": caster_idx, "cost": ward}
+    )
+    state.log_event("ward_triggered", permanent=(permanent.card_def.name, permanent.slot), payer=caster_idx)
 
 
 def target_still_legal(state, captured):
@@ -182,8 +255,18 @@ def enters_battlefield(state, card_def, force_tapped=False, from_zone=None):
     trigger returns it from the graveyard
     item 7). Every existing caller omits it, unaffected."""
     spec = registry.EFFECT_REGISTRY.get(card_def.effect_id, {})
-    tapped = force_tapped or spec.get("enters_tapped", False)
+    # enters_tapped may be a plain bool OR a callable(state) -> bool, for a
+    # land whose tapped-ness depends on the board (Gingerbread Cabin: tapped
+    # unless you control 3+ other Forests). Evaluated BEFORE this permanent
+    # is added to the battlefield below, so "other" counts exclude it.
+    raw_tapped = spec.get("enters_tapped", False)
+    tapped = force_tapped or (raw_tapped(state) if callable(raw_tapped) else raw_tapped)
     permanent = Permanent(card_def, tapped=tapped)
+    # Record how it entered so an ETB conditioned on entering untapped
+    # (Gingerbread Cabin's Food) reads the entry state, not whatever the
+    # permanent's tapped-ness has since become (it could be tapped for mana
+    # in the priority window before the queued ETB resolves).
+    permanent.flags["entered_tapped"] = tapped
     # Pooled slot assignment: the lowest number not
     # already in use among this player's currently-live permanents of the
     # same name. Never a running/monotonic count -- a name's slot numbers

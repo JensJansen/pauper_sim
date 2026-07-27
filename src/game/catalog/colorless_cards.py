@@ -77,15 +77,15 @@ from .. import registry
 from ..cards import CardDef, CardType, EffectId
 from ..effects.casting import _log_target_fizzle, capture_any_target, cast_permanent_from_hand, enters_battlefield, target_still_legal
 from ..effects.stack import push_ability_to_stack, push_to_stack
-from ..effects.shared import discard_from_hand_to_graveyard, find_to_hand
-from ..effects.state_based import check_state_based_actions
+from ..effects.shared import affinity_reduction, discard_from_hand_to_graveyard, find_and_remove_by_name, find_to_hand
+from ..effects.state_based import check_state_based_actions, sacrifice_to_graveyard
 from ..effects.stats import can_be_targeted, permanent_power
-from ..effects.tokens import activate_blood_sac
+from ..effects.tokens import MAP_TOKEN_CARD_DEF, activate_blood_sac, activate_clue_sac, activate_map_sac
 from ..effects.win_check import gain_life
 from ..mana import COLORS
 from ..resolution import (
-    begin_choose_any_target, begin_choose_graveyard_card, begin_choose_opponent_permanent, begin_choose_permanent,
-    begin_choose_target_player, begin_search_fetch, scry, surveil,
+    begin_choose_any_target, begin_choose_graveyard_card, begin_choose_mana_color, begin_choose_opponent_permanent,
+    begin_choose_permanent, begin_choose_target_player, begin_pay_unless, begin_scry_surveil, begin_search_fetch, scry, surveil,
 )
 from ..turn import Speed
 
@@ -130,7 +130,139 @@ COLORLESS_CARD_CATALOG = {
 
     # --- boggles deck ---
     "Ash Barrens": CardDef("Ash Barrens", CardType.LAND, None, EffectId.ASH_BARRENS, cycling_cost={"generic": 1}),
+
+    # --- jund_wildfire ---
+    # {T}: Add {C}. {T}, Sacrifice this land: fetch a basic Swamp/Mountain/
+    # Forest onto the battlefield tapped. Cycling {B}{R}{G} (plain cycling =
+    # discard, draw a card) is wired in G2 alongside the cycling
+    # generalization -- cycling_cost carried here now so it's ready.
+    "Twisted Landscape": CardDef(
+        "Twisted Landscape", CardType.LAND, None, EffectId.TWISTED_LANDSCAPE,
+        fetch_ability_cost={}, cycling_cost={"B": 1, "R": 1, "G": 1},
+    ),
+
+    # --- G7: grixis_affinity ---
+    "Myr Enforcer": CardDef("Myr Enforcer", CardType.CREATURE, {"generic": 7}, EffectId.MYR_ENFORCER, power=4, toughness=4, artifact=True),
+
+    # --- G8: artifact value engines (grixis_affinity / jund_wildfire) ---
+    "Ichor Wellspring": CardDef("Ichor Wellspring", CardType.ARTIFACT, {"generic": 2}, EffectId.ICHOR_WELLSPRING),
+    "Chromatic Star": CardDef("Chromatic Star", CardType.ARTIFACT, {"generic": 1}, EffectId.CHROMATIC_STAR, sac_ability_cost={"generic": 1}),
+    "Nihil Spellbomb": CardDef("Nihil Spellbomb", CardType.ARTIFACT, {"generic": 1}, EffectId.NIHIL_SPELLBOMB, sac_ability_cost={}),
+    "Lembas": CardDef("Lembas", CardType.ARTIFACT, {"generic": 2}, EffectId.LEMBAS, sac_ability_cost={"generic": 2}),
 }
+
+
+def ichor_wellspring_draw(state, *_a):
+    """ETB and dies both "draw a card"."""
+    state.draw(1)
+
+
+def chromatic_star_mana(state, permanent):
+    """{1}, {T}, Sacrifice this artifact: Add one mana of ANY COLOR. The {1}
+    and untapped precondition come from drl_env's cost_key wiring; sacrificing
+    (a mana ability, resolved immediately, no stack) fires its dies-trigger
+    (draw). The activating player then chooses which of the five colors to
+    add (begin_choose_mana_color) -- real color fixing, not a fixed {C}."""
+    sacrifice_to_graveyard(state, permanent)  # queues the dies-trigger (draw)
+
+    def _add_color(state, color):
+        state.mana_pool[color] = state.mana_pool.get(color, 0) + 1
+        state.log_event("mana_tap", permanent=(permanent.card_def.name, permanent.slot), mode="chromatic_star", produced=[color])
+
+    begin_choose_mana_color(state, _add_color)
+
+
+def nihil_spellbomb_sac(state, permanent):
+    """{T}, Sacrifice: Exile target player's graveyard. The sacrifice fires
+    its dies-trigger (may pay {B} draw); the exile (of the chosen player's
+    whole graveyard) is the effect, on the stack."""
+    sacrifice_to_graveyard(state, permanent)  # queues the dies-trigger
+
+    def _on_player(state, idx):
+        def _effect(st):
+            st.players[idx].graveyard.clear()
+            st.log_event("graveyard_exiled", player_idx=idx)
+        push_ability_to_stack(state, permanent.card_def, _effect)
+
+    begin_choose_target_player(state, _on_player)
+
+
+def nihil_spellbomb_dies(state, permanent):
+    """"When put into a graveyard from the battlefield, you may pay {B}. If you
+    do, draw a card." The controller (active player at this trigger's
+    resolution) may pay {B} for the draw."""
+    payer = state.active_idx
+
+    def _on_result(state, paid):
+        if paid:
+            state.draw(1)
+
+    begin_pay_unless(state, payer, {"B": 1}, _on_result)
+
+
+def lembas_etb(state):
+    """When Lembas enters: scry 1, THEN draw a card (the draw chained onto the
+    scry's completion so it happens after)."""
+    begin_scry_surveil(state, "scry", 1, on_complete=lambda s: s.draw(1))
+
+
+def lembas_sac(state, permanent):
+    """{2}, {T}, Sacrifice: You gain 3 life. Sacrificing fires its dies-trigger
+    (shuffle itself back into the library) -- so Lembas recurs."""
+    sacrifice_to_graveyard(state, permanent)  # queues the dies-trigger (shuffle into library)
+    push_ability_to_stack(state, permanent.card_def, lambda st: gain_life(st, 3))
+
+
+def lembas_dies(state, permanent):
+    """"When put into a graveyard from the battlefield, its owner shuffles it
+    into their library." It's in the owner's graveyard now (this trigger
+    resolves for that owner -> state.graveyard is theirs); move it to the
+    library and shuffle."""
+    card_def = permanent.card_def
+    if card_def in state.graveyard:
+        state.graveyard.remove(card_def)
+        state.library.append(card_def)
+        state.rng.shuffle(state.library)
+        state.log_event("zone_move", card=card_def.name, from_zone="graveyard", to_zone="library", reason="lembas_shuffle")
+
+
+def _twisted_landscape_fetch_eligible(card_def):
+    return card_def.extra.get("basic", False) and card_def.name in ("Swamp", "Mountain", "Forest")
+
+
+def activate_twisted_landscape_fetch(state, permanent):
+    """{T}, Sacrifice this land: search library for a basic Swamp, Mountain,
+    or Forest, put it onto the battlefield TAPPED, then shuffle. The {T}
+    (untapped requirement enforced generically by drl_env._activate_legal)
+    and the sacrifice are COSTS, paid now; the search is the effect, so it
+    goes on the stack and resolves after a priority window -- same shape as
+    Expedition Map, except the fetch lands on the battlefield tapped
+    (force_tapped) rather than in hand."""
+    state.battlefield.remove(permanent)
+    state.graveyard.append(permanent.card_def)
+    state.log_event(
+        "zone_move", permanent=(permanent.card_def.name, permanent.slot), from_zone="battlefield",
+        to_zone="graveyard", reason="sacrifice",
+    )
+
+    def _effect(st):
+        def _on_fetch(st, land_name):
+            found = find_and_remove_by_name(st, land_name)
+            st.rng.shuffle(st.library)
+            if found:
+                enters_battlefield(st, found, force_tapped=True)
+
+        begin_search_fetch(st, _twisted_landscape_fetch_eligible, _on_fetch)  # mandatory (Expedition Map precedent); fizzles to None if no basic left
+
+    push_ability_to_stack(state, permanent.card_def, _effect)
+
+
+def cycle_twisted_landscape(state, card_def):
+    """Cycling {B}{R}{G}: discard this card from hand, draw a card (plain
+    Cycling -- has the draw rider, unlike Ash Barrens' basic Landcycling).
+    Reuses the generic "cycle" hand-zone action (drl_env)."""
+    discard_from_hand_to_graveyard(state, card_def)
+    state.draw(1)
 
 
 def activate_tocasia_dig_site_surveil(state, permanent):
@@ -286,6 +418,22 @@ def _lotus_petal_on_tap_undo(state, permanent):
     state.battlefield.append(permanent)
 
 
+def _treasure_on_tap(state, permanent):
+    """Treasure's "{T}, Sacrifice this artifact: Add one mana of any color" --
+    consumed on tap like Lotus Petal, but a TOKEN, so it ceases to exist
+    (never a graveyard trip). The flexible-color output + untapped-{T}
+    precondition come from the registry "mana" spec, same as Lotus Petal."""
+    state.battlefield.remove(permanent)
+    state.log_event(
+        "zone_move", permanent=(permanent.card_def.name, permanent.slot), from_zone="battlefield",
+        to_zone="ceases_to_exist", reason="sacrifice",
+    )
+
+
+def _treasure_on_tap_undo(state, permanent):
+    state.battlefield.append(permanent)
+
+
 def _basic_land(card_def):
     return card_def.extra.get("basic", False)
 
@@ -407,7 +555,7 @@ def pinnacle_kill_ship_etb(state):
             captured[1].damage_marked += 10
             check_state_based_actions(state)
 
-        push_to_stack(state, kill_ship_def, _resolve, reserves_hand_card=False)  # the ETB effect, on the stack
+        push_to_stack(state, kill_ship_def, _resolve, reserves_hand_card=False, is_spell=False)  # ETB (triggered ability) -- not a spell
 
     begin_choose_any_target(
         state,
@@ -565,6 +713,25 @@ COLORLESS_EFFECT_REGISTRY = {
             },
         },
     },
+    EffectId.CLUE_TOKEN: {
+        # "{2}, Sacrifice this artifact: Draw a card." Never a decklist card --
+        # only ever created by Investigate (Toxin Analysis). Same cost_key
+        # wiring as Blood/Food.
+        "activated_abilities": {
+            "sac": {
+                "cost_key": "sac_ability_cost",
+                "resolve": lambda state, permanent: activate_clue_sac(state, permanent),
+            },
+        },
+    },
+    EffectId.TREASURE_TOKEN: {
+        # "{T}, Sacrifice: Add one mana of any color" -- consumed flexible
+        # source, exactly Lotus Petal's shape (mana + on_tap sacrifice), only
+        # this is a token so it ceases rather than going to the graveyard.
+        "mana": ("flexible", set(COLORS)),
+        "on_tap": lambda state, permanent: _treasure_on_tap(state, permanent),
+        "on_tap_undo": lambda state, permanent: _treasure_on_tap_undo(state, permanent),
+    },
     EffectId.BARRELS_OF_BLASTING_JELLY: {
         "cast": {"resolve": lambda state, card_def: cast_permanent_from_hand(state, card_def)},
         "filter_mana": {"colors": set(COLORS)},
@@ -655,6 +822,70 @@ COLORLESS_EFFECT_REGISTRY = {
         "forestcycle": {
             "cost_key": "cycling_cost",
             "resolve": lambda state, card_def: cycle_ash_barrens(state, card_def),
+        },
+        "pending_kinds": {"search_fetch"},
+    },
+
+    # --- G7: grixis_affinity ---
+    EffectId.MYR_ENFORCER: {
+        "cast": {"resolve": lambda state, card_def: cast_permanent_from_hand(state, card_def)},
+        "cost_reduction": affinity_reduction,  # Affinity for artifacts (4/4 vanilla artifact creature)
+    },
+
+    # --- G8: artifact value engines ---
+    EffectId.ICHOR_WELLSPRING: {
+        "cast": {"resolve": lambda state, card_def: cast_permanent_from_hand(state, card_def)},
+        "etb_trigger": lambda state, permanent: ichor_wellspring_draw(state),  # ETB draw
+        "ltb_trigger": lambda state, permanent: ichor_wellspring_draw(state),  # "put into a graveyard from the battlefield" draw
+    },
+    EffectId.CHROMATIC_STAR: {
+        "cast": {"resolve": lambda state, card_def: cast_permanent_from_hand(state, card_def)},
+        "activated_abilities": {
+            "sac": {"cost_key": "sac_ability_cost", "resolve": lambda state, permanent: chromatic_star_mana(state, permanent)},
+        },
+        "ltb_trigger": lambda state, permanent: ichor_wellspring_draw(state),  # dies -> draw
+        "pending_kinds": {"choose_mana_color"},  # "add one mana of any color" color choice
+    },
+    EffectId.NIHIL_SPELLBOMB: {
+        "cast": {"resolve": lambda state, card_def: cast_permanent_from_hand(state, card_def)},
+        "activated_abilities": {
+            "sac": {"cost_key": "sac_ability_cost", "resolve": lambda state, permanent: nihil_spellbomb_sac(state, permanent)},
+        },
+        "ltb_trigger": lambda state, permanent: nihil_spellbomb_dies(state, permanent),  # dies -> may pay {B} draw
+        "pending_kinds": {"choose_target_player", "pay_unless"},
+    },
+    EffectId.LEMBAS: {
+        "cast": {"resolve": lambda state, card_def: cast_permanent_from_hand(state, card_def)},
+        "etb_trigger": lambda state, permanent: lembas_etb(state),  # scry 1, then draw
+        "activated_abilities": {
+            "sac": {"cost_key": "sac_ability_cost", "resolve": lambda state, permanent: lembas_sac(state, permanent)},
+        },
+        "ltb_trigger": lambda state, permanent: lembas_dies(state, permanent),  # dies -> shuffle into library
+        "pending_kinds": {"scry"},
+    },
+    EffectId.MAP_TOKEN: {
+        "activated_abilities": {
+            "explore": {
+                "cost_key": "ability_cost",
+                "speed": Speed.SORCERY,  # "Activate only as a sorcery"
+                "resolve": lambda state, permanent: activate_map_sac(state, permanent),
+            },
+        },
+        "pending_kinds": {"choose_permanent", "surveil"},  # choose the exploring creature; surveil = explore's keep/bin
+    },
+
+    # --- jund_wildfire ---
+    EffectId.TWISTED_LANDSCAPE: {
+        "mana": ("fixed", "C"),
+        "activated_abilities": {
+            "fetch": {
+                "cost_key": "fetch_ability_cost",  # {} -- only {T} + sacrifice, both paid inside the resolve
+                "resolve": lambda state, permanent: activate_twisted_landscape_fetch(state, permanent),
+            },
+        },
+        "cycle": {  # Cycling {B}{R}{G}: discard, draw a card -- the generic "Cycle {name}" action
+            "cost_key": "cycling_cost",
+            "resolve": lambda state, card_def: cycle_twisted_landscape(state, card_def),
         },
         "pending_kinds": {"search_fetch"},
     },
@@ -1004,3 +1235,125 @@ if __name__ == "__main__":
     assert "fizzle" in _log.getvalue().lower()
 
     print("colorless_cards.py Pinnacle Kill-Ship ETB (up-to-one, on stack, fizzle) self-check: OK")
+
+    # Twisted Landscape: "{T}, Sacrifice this land: search for a basic Swamp,
+    # Mountain, or Forest, put it onto the battlefield tapped, then shuffle."
+    # The {T}+sacrifice are costs (paid now); the search is on the stack.
+    from ..resolution import execute_search_fetch_option, search_fetch_options
+
+    state = GameState(on_the_play=True)
+    twisted = Permanent(CardDef(
+        "Twisted Landscape", CardType.LAND, None, EffectId.TWISTED_LANDSCAPE,
+        fetch_ability_cost={}, cycling_cost={"B": 1, "R": 1, "G": 1},
+    ))
+    state.battlefield = [twisted]
+    state.library = [
+        CardDef("Mountain", CardType.LAND, None, EffectId.MOUNTAIN, basic=True, subtypes=("Mountain",)),
+        CardDef("Forest", CardType.LAND, None, EffectId.FOREST, basic=True, subtypes=("Forest",)),
+        CardDef("Island", CardType.LAND, None, EffectId.ISLAND, basic=True, subtypes=("Island",)),  # ineligible
+    ]
+    activate_twisted_landscape_fetch(state, twisted)
+    assert twisted not in state.battlefield  # sacrificed -- a cost, paid immediately
+    assert state.graveyard[-1].name == "Twisted Landscape"
+    assert len(state.stack) == 1  # the search is the EFFECT, on the stack
+    resolve_top_of_stack(state)
+    assert sorted(search_fetch_options(state)) == ["Forest", "Mountain"]  # Island excluded (not S/M/F)
+    execute_search_fetch_option(state, "Mountain")
+    fetched = [p for p in state.battlefield if p.card_def.name == "Mountain"]
+    assert len(fetched) == 1 and fetched[0].tapped  # onto the battlefield TAPPED
+    assert not any(c.name == "Mountain" for c in state.library)  # removed from library
+    print("colorless_cards.py Twisted Landscape sac-fetch self-check: OK")
+
+    # --- G7: Myr Enforcer affinity -- {7} reduced by # artifacts you control.
+    import drl_env
+    state = GameState(on_the_play=True)
+    state.battlefield = [Permanent(CardDef("Great Furnace", CardType.LAND, None, EffectId.GREAT_FURNACE, artifact=True)) for _ in range(4)]
+    eff = drl_env._effective_cast_cost(state, registry.CARD_DEFS["Myr Enforcer"])
+    assert eff["generic"] == 3, eff  # 7 - 4 artifacts
+    state.battlefield = []
+    assert drl_env._effective_cast_cost(state, registry.CARD_DEFS["Myr Enforcer"])["generic"] == 7  # no artifacts -> full
+    print("colorless_cards.py Myr Enforcer (affinity) self-check: OK")
+
+    # --- G8 artifact value engines ---
+    from ..effects.state_based import sacrifice_to_graveyard as _sac
+    from ..effects.triggers import promote_triggers_to_stack as _prom
+
+    def _drive(s):
+        _prom(s)
+        while s.stack:
+            resolve_top_of_stack(s)
+
+    # Ichor Wellspring: ETB draw + dies draw.
+    state = GameState(on_the_play=True)
+    state.hand = [registry.CARD_DEFS["Ichor Wellspring"]]
+    state.library = [CardDef(f"c{i}", CardType.LAND, None, EffectId.ISLAND, basic=True) for i in range(4)]
+    cast_permanent_from_hand(state, registry.CARD_DEFS["Ichor Wellspring"])
+    _drive(state)
+    assert len(state.hand) == 1  # ETB
+    ichor = next(p for p in state.battlefield if p.card_def.name == "Ichor Wellspring")
+    _sac(state, ichor)
+    _drive(state)
+    assert len(state.hand) == 2  # dies draw
+    print("colorless_cards.py Ichor Wellspring (ETB + dies draw) self-check: OK")
+
+    # Nihil Spellbomb: sac -> exile a target player's graveyard; dies -> may pay {B} draw.
+    from ..state import PlayerState
+    state = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
+    state.active_idx = 0
+    state.players[1].graveyard = [CardDef("g", CardType.INSTANT, {"U": 1}, EffectId.FILLER)]
+    nihil = Permanent(registry.CARD_DEFS["Nihil Spellbomb"])
+    nihil.slot = 1
+    state.players[0].battlefield = [nihil]
+    state.players[0].library = [CardDef("d", CardType.LAND, None, EffectId.SWAMP, basic=True)]
+    state.players[0].mana_pool = {"B": 1}
+    nihil_spellbomb_sac(state, nihil)
+    from ..resolution import execute_choose_target_player_option
+    execute_choose_target_player_option(state, 1)
+    _drive(state)
+    assert state.players[1].graveyard == []  # exiled
+    assert state.pending_resolution["kind"] == "pay_unless"  # dies: may pay {B}
+    from .. import mana as _mana
+    from ..resolution import pay_unless_pay
+    pay_unless_pay(state)
+    while state.pending_resolution is not None and state.pending_resolution["kind"] == "pay_cost":
+        _mana.execute_pool_spend(state, _mana.pool_spend_options(state)[0])
+    assert len(state.players[0].hand) == 1  # paid, drew
+    print("colorless_cards.py Nihil Spellbomb (exile gy + dies pay-B draw) self-check: OK")
+
+    # Lembas: dies -> shuffle itself back into the library (recurs).
+    state = GameState(on_the_play=True)
+    lembas = Permanent(registry.CARD_DEFS["Lembas"])
+    lembas.slot = 1
+    state.battlefield = [lembas]
+    lembas_dies(state, lembas)  # simulate the dies-trigger (card would be in graveyard)
+    # (direct call with card not in graveyard is a no-op; exercise via the graveyard path)
+    state = GameState(on_the_play=True)
+    state.graveyard = [registry.CARD_DEFS["Lembas"]]
+    lem_perm = Permanent(registry.CARD_DEFS["Lembas"])
+    lembas_dies(state, lem_perm)
+    assert registry.CARD_DEFS["Lembas"] in state.library and registry.CARD_DEFS["Lembas"] not in state.graveyard
+    print("colorless_cards.py Lembas (dies -> shuffle into library) self-check: OK")
+
+    # Chromatic Star: "{1},{T},Sacrifice: Add one mana of ANY color" -- the
+    # activator picks the color (all five offered, never {C}); the dies-draw
+    # still fires. (The {1} is paid by drl_env's cost_key wiring in real play;
+    # here we call the resolve directly, post-cost.)
+    from ..resolution import choose_mana_color_options, execute_choose_mana_color
+    from ..effects.triggers import promote_triggers_to_stack as _cs_promote
+    from ..effects.stack import resolve_top_of_stack as _cs_resolve
+    state = GameState(on_the_play=True)
+    star = Permanent(registry.CARD_DEFS["Chromatic Star"])
+    star.slot = 1
+    state.battlefield = [star]
+    state.library = [CardDef("Draw Me", CardType.LAND, None, EffectId.FILLER)]
+    chromatic_star_mana(state, star)
+    assert star not in state.battlefield  # sacrificed
+    assert state.pending_resolution["kind"] == "choose_mana_color"
+    assert set(choose_mana_color_options(state)) == {"W", "U", "B", "R", "G"}  # any color, never {C}
+    execute_choose_mana_color(state, "U")
+    assert state.mana_pool.get("U") == 1 and "C" not in state.mana_pool  # a real blue, not colorless
+    _cs_promote(state)  # the dies-trigger (draw) was queued by the sacrifice
+    while state.stack:
+        _cs_resolve(state)
+    assert len(state.hand) == 1  # dies-draw fired
+    print("colorless_cards.py Chromatic Star (any-color choice + dies-draw) self-check: OK")

@@ -11,19 +11,30 @@ creature in play" board wipe, this deck's own creatures included."""
 
 from .. import resolution
 from ..cards import CardDef, CardType, EffectId
-from ..effects.casting import _log_target_fizzle, capture_any_target, cast_permanent_from_hand, target_still_legal
+from ..effects.casting import (
+    _log_target_fizzle, capture_any_target, cast_permanent_from_hand, enters_battlefield, target_still_legal,
+)
 from ..effects.madness_and_plot import plot_to_exile
-from ..effects.shared import discard_from_hand_to_graveyard
+from ..effects.shared import card_subtypes, discard_from_hand_to_graveyard, find_and_remove_by_name, impulse_exile, is_artifact
 from ..effects.stack import push_ability_to_stack, push_to_stack
-from ..effects.state_based import check_state_based_actions
-from ..effects.stats import can_be_targeted
-from ..effects.tokens import BLOOD_TOKEN_CARD_DEF, ROBOT_TOKEN_CARD_DEF, create_token
+from ..effects.state_based import check_state_based_actions, destroy_permanent, sacrifice_to_graveyard
+from ..effects.stats import can_be_targeted, controller_idx, has_keyword
+from ..effects.tokens import (
+    BLOOD_TOKEN_CARD_DEF, HUMAN_SOLDIER_TOKEN_CARD_DEF, ROBOT_TOKEN_CARD_DEF, SAMURAI_TOKEN_CARD_DEF,
+    TREASURE_TOKEN_CARD_DEF, create_token,
+)
+from ..mana import begin_pay_cost, plan_payment
+from ..turn import Speed
 from ..effects.win_check import deal_damage_to_opponent, deal_damage_to_player
 
 RED_CARD_CATALOG = {
-    "Mountain": CardDef("Mountain", CardType.LAND, None, EffectId.MOUNTAIN),
+    "Mountain": CardDef("Mountain", CardType.LAND, None, EffectId.MOUNTAIN, basic=True, subtypes=("Mountain",)),
+    # Artifact land: played as a land, but also an artifact (affinity/
+    # metalcraft/artifact-sac read extra["artifact"]).
+    "Great Furnace": CardDef("Great Furnace", CardType.LAND, None, EffectId.GREAT_FURNACE, artifact=True),
     "Voldaren Epicure": CardDef(
         "Voldaren Epicure", CardType.CREATURE, {"R": 1}, EffectId.VOLDAREN_EPICURE, power=1, toughness=1,
+        subtypes=("Human", "Vampire"),  # Human -- for Rally at the Hornburg's "Humans you control gain haste"
     ),
     "Lightning Bolt": CardDef("Lightning Bolt", CardType.INSTANT, {"R": 1}, EffectId.LIGHTNING_BOLT),
     "Fiery Temper": CardDef("Fiery Temper", CardType.INSTANT, {"generic": 1, "R": 2}, EffectId.FIERY_TEMPER),
@@ -44,7 +55,228 @@ RED_CARD_CATALOG = {
     "Lava Dart": CardDef("Lava Dart", CardType.INSTANT, {"R": 1}, EffectId.LAVA_DART),
     "End the Festivities": CardDef("End the Festivities", CardType.SORCERY, {"R": 1}, EffectId.END_THE_FESTIVITIES),
     "Breath Weapon": CardDef("Breath Weapon", CardType.INSTANT, {"generic": 2, "R": 1}, EffectId.BREATH_WEAPON),
+
+    # --- G3: jund_wildfire ---
+    "Cleansing Wildfire": CardDef("Cleansing Wildfire", CardType.SORCERY, {"generic": 1, "R": 1}, EffectId.CLEANSING_WILDFIRE),
+
+    # --- G5: mono_red_rally ---
+    "Reckless Impulse": CardDef("Reckless Impulse", CardType.SORCERY, {"generic": 1, "R": 1}, EffectId.RECKLESS_IMPULSE),
+    "Goblin Bushwhacker": CardDef(
+        "Goblin Bushwhacker", CardType.CREATURE, {"R": 1}, EffectId.GOBLIN_BUSHWHACKER, power=1, toughness=1,
+    ),
+
+    # --- G6: mono_red_rally ---
+    "Rally at the Hornburg": CardDef("Rally at the Hornburg", CardType.SORCERY, {"generic": 1, "R": 1}, EffectId.RALLY_AT_THE_HORNBURG),
+    "Reckless Lackey": CardDef(
+        "Reckless Lackey", CardType.CREATURE, {"R": 1}, EffectId.RECKLESS_LACKEY, power=1, toughness=2,
+        sac_ability_cost={"generic": 2, "R": 1},
+    ),
+    "Goblin Tomb Raider": CardDef(
+        "Goblin Tomb Raider", CardType.CREATURE, {"R": 1}, EffectId.GOBLIN_TOMB_RAIDER, power=1, toughness=2,
+    ),
+    # {R/G}{R/G} -- modeled {R}{R}: the green half is unreachable in mono-red
+    # rally (no green source), Slippery Bogle precedent (real cost per Scryfall).
+    "Burning-Tree Emissary": CardDef(
+        "Burning-Tree Emissary", CardType.CREATURE, {"R": 2}, EffectId.BURNING_TREE_EMISSARY, power=2, toughness=2,
+        subtypes=("Human", "Shaman"),  # Human -- for Rally at the Hornburg
+    ),
+
+    # --- G7: grixis_affinity / mono_red_rally ---
+    "Galvanic Blast": CardDef("Galvanic Blast", CardType.INSTANT, {"R": 1}, EffectId.GALVANIC_BLAST),
+
+    # --- G11: mono_red_rally ---
+    "Chain Lightning": CardDef("Chain Lightning", CardType.SORCERY, {"R": 1}, EffectId.CHAIN_LIGHTNING),
+
+    # --- G8: sac outlets / artifact engines (grixis / jund / mono_red) ---
+    "Krark-Clan Shaman": CardDef("Krark-Clan Shaman", CardType.CREATURE, {"R": 1}, EffectId.KRARK_CLAN_SHAMAN, power=1, toughness=1),
+    "Makeshift Munitions": CardDef("Makeshift Munitions", CardType.ENCHANTMENT, {"generic": 1, "R": 1}, EffectId.MAKESHIFT_MUNITIONS),
+    "Experimental Synthesizer": CardDef("Experimental Synthesizer", CardType.ARTIFACT, {"R": 1}, EffectId.EXPERIMENTAL_SYNTHESIZER, sac_ability_cost={"generic": 2, "R": 1}),
+    "Clockwork Percussionist": CardDef("Clockwork Percussionist", CardType.CREATURE, {"R": 1}, EffectId.CLOCKWORK_PERCUSSIONIST, power=1, toughness=1, artifact=True),
 }
+
+
+def _controls_artifact(state):
+    return any(is_artifact(p.card_def) for p in state.battlefield)
+
+
+def krark_clan_shaman_activate(state, permanent):
+    """Sacrifice an artifact: this creature deals 1 damage to each creature
+    without flying (both battlefields, itself included). The sacrifice is the
+    cost; the sweep is the effect (on the stack)."""
+    def _on_sac(state, _ok):
+        def _effect(st):
+            for player in st.players:
+                for p in player.battlefield:
+                    if p.card_type == CardType.CREATURE and not has_keyword(st, p, "flying"):
+                        p.damage_marked += 1
+            check_state_based_actions(st)
+        push_ability_to_stack(state, permanent.card_def, _effect)
+
+    resolution.begin_sacrifice(state, lambda p: is_artifact(p.card_def), 1, _on_sac)
+
+
+def _makeshift_munitions_legal(state, permanent):
+    # {1} affordable AND an artifact or creature to sacrifice.
+    if plan_payment(state, {"generic": 1}) is None:
+        return False
+    return any(p.card_type == CardType.CREATURE or is_artifact(p.card_def) for p in state.battlefield)
+
+
+def makeshift_munitions_activate(state, permanent):
+    """{1}, Sacrifice an artifact or creature: this enchantment deals 1 damage
+    to any target. Pay {1}, then sacrifice (the cost), then the 1 damage waits
+    on the stack for its locked target."""
+    def _after_pay(st):
+        def _on_sac(st2, _ok):
+            _burn_choose_target_and_push(st2, permanent.card_def, 1, lambda s, c: None, reserves_hand_card=False)
+        resolution.begin_sacrifice(st, lambda p: p.card_type == CardType.CREATURE or is_artifact(p.card_def), 1, _on_sac)
+
+    begin_pay_cost(state, {"generic": 1}, on_complete=_after_pay)
+
+
+def experimental_synthesizer_sac(state, permanent):
+    """{2}{R}, Sacrifice this artifact: create a 2/2 white Samurai with
+    vigilance. Sacrificing also fires its own "or leaves the battlefield"
+    impulse (its ltb_trigger, via sacrifice_to_graveyard)."""
+    sacrifice_to_graveyard(state, permanent)  # queues the LTB impulse
+    push_ability_to_stack(state, permanent.card_def, lambda st: create_token(st, SAMURAI_TOKEN_CARD_DEF))
+
+
+def _galvanic_blast_amount(state):
+    """Metalcraft: 4 damage if you control 3+ artifacts, else 2. Evaluated at
+    resolution (state.battlefield is the caster's own, active_idx restored to
+    the controller by resolve_top_of_stack)."""
+    return 4 if sum(1 for p in state.battlefield if is_artifact(p.card_def)) >= 3 else 2
+
+
+def cast_galvanic_blast(state, card_def):
+    """{R}: Galvanic Blast deals 2 damage to any target -- 4 with Metalcraft.
+    Reuses the shared any-target burn tail with a callable amount (the
+    Metalcraft check runs at resolution)."""
+    _cast_burn_any_target(state, card_def, _galvanic_blast_amount)
+
+
+def cast_rally_at_the_hornburg(state, card_def):
+    """{1}{R}: Create two 1/1 white Human Soldier tokens; Humans you control
+    gain haste until end of turn (temp keyword, cleared at cleanup)."""
+    discard_from_hand_to_graveyard(state, card_def)
+    create_token(state, HUMAN_SOLDIER_TOKEN_CARD_DEF)
+    create_token(state, HUMAN_SOLDIER_TOKEN_CARD_DEF)
+    for p in state.battlefield:
+        if p.card_type == CardType.CREATURE and "Human" in card_subtypes(p.card_def):
+            p.temp_keywords = p.temp_keywords | {"haste"}
+
+
+def activate_reckless_lackey_sac(state, permanent):
+    """{2}{R}, Sacrifice this creature: Draw a card and create a Treasure
+    token. The {2}{R} + untapped precondition come from the generic cost_key
+    wiring; sacrifice (a real card -> graveyard) is a cost paid now, and the
+    draw + Treasure are the effect (on the stack, after a priority window)."""
+    state.battlefield.remove(permanent)
+    state.graveyard.append(permanent.card_def)
+    state.log_event(
+        "zone_move", permanent=(permanent.card_def.name, permanent.slot), from_zone="battlefield",
+        to_zone="graveyard", reason="sacrifice",
+    )
+
+    def _effect(st):
+        st.draw(1)
+        create_token(st, TREASURE_TOKEN_CARD_DEF)
+
+    push_ability_to_stack(state, permanent.card_def, _effect)
+
+
+def _goblin_tomb_raider_controls_artifact(state, permanent):
+    idx = controller_idx(state, permanent)
+    if idx is None:
+        return False
+    return any(is_artifact(p.card_def) for p in state.players[idx].battlefield)
+
+
+def burning_tree_emissary_etb(state):
+    """"When this creature enters, add {R}{G}." Free mana into the pool."""
+    state.mana_pool["R"] = state.mana_pool.get("R", 0) + 1
+    state.mana_pool["G"] = state.mana_pool.get("G", 0) + 1
+    state.log_event("mana_tap", permanent=("Burning-Tree Emissary", None), mode="etb", produced=["R", "G"])
+
+
+def cast_reckless_impulse(state, card_def):
+    """{1}{R}: Exile the top two cards of your library; until the end of your
+    NEXT turn, you may play them (shared.impulse_exile -> the impulse zone;
+    the "Play from exile: X" actions cast/play them, paying normal costs)."""
+    discard_from_hand_to_graveyard(state, card_def)
+    impulse_exile(state, 2, until_next_turn=True)
+
+
+def _goblin_bushwhacker_kicked(state, card_def):
+    permanent = cast_permanent_from_hand(state, card_def)
+    permanent.flags["kicked"] = True  # read by the ETB below
+
+
+def goblin_bushwhacker_etb(state, permanent):
+    """"When this creature enters, if it was kicked, creatures you control get
+    +1/+0 and gain haste until end of turn." Until-EOT team pump via the G3
+    temp-modifier machinery (temp_power / temp_keywords, cleared at cleanup).
+    Includes Bushwhacker itself, and the granted haste lets the team attack
+    this turn."""
+    if not permanent.flags.get("kicked"):
+        return
+    for p in state.battlefield:
+        if p.card_type == CardType.CREATURE:
+            p.temp_power += 1
+            p.temp_keywords = p.temp_keywords | {"haste"}
+
+
+def _is_basic_land(card_def):
+    return card_def.extra.get("basic", False)
+
+
+def cast_cleansing_wildfire(state, card_def):
+    """{1}{R}: "Destroy target land. Its controller may search their library
+    for a basic land card, put it onto the battlefield tapped, then shuffle.
+    Draw a card." Target ANY land on either battlefield (locked at cast). The
+    DESTROYED land's CONTROLLER (not necessarily the caster) does the optional
+    search into THEIR OWN library, putting the basic onto THEIR battlefield
+    tapped and shuffling THEIR library; the CASTER draws.
+
+    The search and the draw happen regardless of whether the destroy actually
+    succeeded (an indestructible land survives, but the controller still
+    searches) -- both skipped only if the target land is gone by resolution
+    (target illegal -> the spell does nothing, 608.2b)."""
+    idx = state.active_idx
+
+    def _on_target(state, descriptor):
+        captured = capture_any_target(state, descriptor)
+
+        def _resolve(state, card_def):
+            discard_from_hand_to_graveyard(state, card_def)  # the sorcery itself -> caster's graveyard
+            if not target_still_legal(state, captured):
+                where = (captured[1].card_def.name, captured[1].slot) if captured is not None else None
+                _log_target_fizzle(state, card_def, where)  # target gone -> no destroy, no search, no draw
+                return
+            land = captured[1]
+            caster = state.active_idx  # controller of the resolving spell
+            controller = controller_idx(state, land)  # the DESTROYED land's controller does the search
+            destroy_permanent(state, land)  # no-op if indestructible; search/draw still happen
+
+            def _after_search(state, fetched_name):
+                found = find_and_remove_by_name(state, fetched_name) if fetched_name is not None else None
+                state.rng.shuffle(state.library)  # the controller's library (active_idx == controller here)
+                if found is not None:
+                    enters_battlefield(state, found, force_tapped=True)  # onto the controller's battlefield, tapped
+                state.active_idx = caster  # restore before the CASTER draws
+                state.draw(1)  # "Draw a card" (the caster) -- whether or not a basic was fetched
+
+            state.active_idx = controller  # the land's controller searches THEIR own library
+            resolution.begin_search_fetch(state, _is_basic_land, _after_search, optional=True)  # "MAY search"
+
+        push_to_stack(state, card_def, _resolve)
+
+    resolution.begin_choose_any_target(
+        state,
+        lambda p: p.card_type == CardType.LAND and can_be_targeted(state, p, idx),
+        _on_target, allow_players=False,
+    )
 
 
 def voldaren_epicure_etb(state):
@@ -66,10 +298,14 @@ def _resolve_burn_damage(state, captured, amount, card_def):
         perm = captured[1]  # a creature target that's gone -- (name, slot) for the fizzle log
         _log_target_fizzle(state, card_def, (perm.card_def.name, perm.slot))
         return
+    # `amount` may be a callable(state) -> int for a burn whose damage is
+    # decided at resolution (Galvanic Blast's Metalcraft: 4 if you control 3+
+    # artifacts, else 2), not a fixed int (Lightning Bolt).
+    amt = amount(state) if callable(amount) else amount
     if captured[0] == "player":
-        deal_damage_to_player(state, captured[1], amount)
+        deal_damage_to_player(state, captured[1], amt)
     else:  # ("creature", permanent)
-        captured[1].damage_marked += amount
+        captured[1].damage_marked += amt
         check_state_based_actions(state)
 
 
@@ -126,6 +362,100 @@ def madness_fiery_temper(state, card_def):
     itself to the graveyard on resolution, never touches hand. Target is
     locked here as the spell is put on the stack, same as a hard cast."""
     _burn_choose_target_and_push(state, card_def, 3, lambda s, c: s.graveyard.append(c), reserves_hand_card=False)
+
+
+def _chain_lightning_resolve_tail(state, captured, card_def):
+    """Chain Lightning's own effect once it (or a copy) resolves off the
+    stack: deal 3 to the locked any-target, then the copy rider. Real Magic
+    608.2b fizzle if a creature target has left; a player target is always
+    legal. "Then that player or that permanent's controller may pay {R}{R}. If
+    the player does, they may copy this spell and may choose a new target for
+    that copy" -- the affected player is the target player, or (for a creature
+    target) that creature's controller, captured BEFORE the 3 damage can kill
+    and remove it (last-known controller, matching the resolving instruction).
+
+    Two INDEPENDENT "may"s, faithfully separate: (1) the affected player may
+    pay {R}{R} (begin_pay_unless); (2) IF they paid, they may copy (begin_may_
+    copy) -- and only then choose a new target for the copy. active_idx is the
+    resolving spell's controller here; the payer/copier's own two decisions run
+    under active_idx flipped to them, restored to the controller once the whole
+    rider settles (the begin_pay_unless convention, extended across the copy)."""
+    controller = state.active_idx  # the resolving spell's/copy's own controller
+    if not target_still_legal(state, captured):
+        perm = captured[1]
+        _log_target_fizzle(state, card_def, (perm.card_def.name, perm.slot))
+        return
+    if captured[0] == "player":
+        affected_idx = captured[1]
+        deal_damage_to_player(state, affected_idx, 3)
+    else:  # ("creature", permanent)
+        affected_idx = controller_idx(state, captured[1])  # capture before SBA can remove it
+        captured[1].damage_marked += 3
+        check_state_based_actions(state)
+
+    def _on_pay_result(state, paid):
+        if not paid:
+            return  # first "may" declined (or unaffordable) -> no copy; active_idx already restored to controller
+        # {R}{R} paid. The SECOND, independent "may": the payer may copy.
+        state.active_idx = affected_idx  # the payer/copier owns the may-copy + new-target choices
+
+        def _on_copy_decision(state, do_copy):
+            if do_copy:
+                _chain_lightning_make_copy(state, card_def, affected_idx, restore_idx=controller)
+            else:
+                state.active_idx = controller  # paid but declined to copy (a legal, if rare, line)
+
+        resolution.begin_may_copy(state, _on_copy_decision)
+
+    resolution.begin_pay_unless(state, affected_idx, {"R": 2}, _on_pay_result)
+
+
+def _chain_lightning_make_copy(state, card_def, copier_idx, restore_idx):
+    """The copier puts a COPY of Chain Lightning on the stack -- controlled by
+    them, so its own rider's payment/perspective are theirs -- and "may choose
+    a new target for that copy" (begin_choose_any_target from the copier's
+    perspective; keeping the same target is allowed). A copy is not a card: it
+    touches no zone and reserves no hand card, and simply ceases to exist after
+    resolving. The copy carries the identical resolve tail, so its own copy
+    rider fires recursively (mana-bounded). active_idx is set to the copier for
+    the target choice, then restored to restore_idx (the resolving spell's
+    controller) once the copy is on the stack."""
+    state.active_idx = copier_idx
+
+    def _on_target(state, target):
+        captured = capture_any_target(state, target)
+        push_to_stack(
+            state, card_def, lambda s, cd: _chain_lightning_resolve_tail(s, captured, cd),
+            reserves_hand_card=False,  # a copy, not the physical card
+        )
+        state.active_idx = restore_idx  # copy pushed with copier as controller; restore
+
+    resolution.begin_choose_any_target(
+        state,
+        lambda p: p.card_type == CardType.CREATURE and can_be_targeted(state, p, copier_idx),
+        _on_target,
+    )
+
+
+def cast_chain_lightning(state, card_def):
+    """{R} sorcery: Chain Lightning deals 3 damage to any target; then the copy
+    rider (see _chain_lightning_resolve_tail). Target locked as the spell is
+    put on the stack (precast_choice), like every other any-target burn; the
+    card goes hand -> graveyard on resolution, ahead of the damage."""
+    def _on_target(state, target):
+        captured = capture_any_target(state, target)
+
+        def _resolve(state, card_def):
+            discard_from_hand_to_graveyard(state, card_def)  # itself -> graveyard first
+            _chain_lightning_resolve_tail(state, captured, card_def)
+
+        push_to_stack(state, card_def, _resolve)
+
+    resolution.begin_choose_any_target(
+        state,
+        lambda p: p.card_type == CardType.CREATURE and can_be_targeted(state, p, state.active_idx),
+        _on_target,
+    )
 
 
 def faithless_looting_discard(state):
@@ -316,6 +646,106 @@ RED_EFFECT_REGISTRY = {
     EffectId.MOUNTAIN: {
         "mana": ("fixed", "R"),
     },
+    EffectId.GREAT_FURNACE: {
+        "mana": ("fixed", "R"),
+    },
+    EffectId.CLEANSING_WILDFIRE: {
+        "cast": {
+            "resolve": lambda state, card_def: cast_cleansing_wildfire(state, card_def),
+            # A targeted spell can't be cast with no legal target: needs >=1
+            # land on EITHER battlefield this player can target.
+            "extra_legal": lambda state: any(
+                p.card_type == CardType.LAND and can_be_targeted(state, p, state.active_idx)
+                for pl in state.players for p in pl.battlefield),
+            "precast_choice": True,  # target land chosen at cast
+        },
+        "pending_kinds": {"choose_any_target", "search_fetch"},
+    },
+    EffectId.RECKLESS_IMPULSE: {
+        "cast": {"resolve": lambda state, card_def: cast_reckless_impulse(state, card_def)},
+        "pending_kinds": {"impulse"},  # marks the deck as impulse-capable -> "Play from exile: X" actions
+    },
+    EffectId.RALLY_AT_THE_HORNBURG: {
+        "cast": {"resolve": lambda state, card_def: cast_rally_at_the_hornburg(state, card_def)},
+    },
+    EffectId.RECKLESS_LACKEY: {
+        "cast": {"resolve": lambda state, card_def: cast_permanent_from_hand(state, card_def)},
+        "keywords": {"first_strike", "haste"},
+        "activated_abilities": {
+            "sac": {
+                "cost_key": "sac_ability_cost",
+                "resolve": lambda state, permanent: activate_reckless_lackey_sac(state, permanent),
+            },
+        },
+    },
+    EffectId.GOBLIN_TOMB_RAIDER: {
+        "cast": {"resolve": lambda state, card_def: cast_permanent_from_hand(state, card_def)},
+        # "As long as you control an artifact, this creature gets +1/+0 and
+        # has haste." A conditional static self-boost (stats._static_self).
+        "static_self": {
+            "condition": lambda state, permanent: _goblin_tomb_raider_controls_artifact(state, permanent),
+            "power": 1,
+            "keywords": {"haste"},
+        },
+    },
+    EffectId.BURNING_TREE_EMISSARY: {
+        "cast": {"resolve": lambda state, card_def: cast_permanent_from_hand(state, card_def)},
+        "etb_trigger": lambda state, permanent: burning_tree_emissary_etb(state),
+    },
+    EffectId.GALVANIC_BLAST: {
+        "cast": {"resolve": lambda state, card_def: cast_galvanic_blast(state, card_def), "precast_choice": True},
+        "pending_kinds": {"choose_any_target"},
+    },
+    EffectId.KRARK_CLAN_SHAMAN: {
+        "cast": {"resolve": lambda state, card_def: cast_permanent_from_hand(state, card_def)},
+        "activated_abilities": {
+            "sweep": {  # non-mana cost (sacrifice an artifact) -- legal/resolve path
+                "legal": lambda state, permanent: _controls_artifact(state),
+                "resolve": lambda state, permanent: krark_clan_shaman_activate(state, permanent),
+            },
+        },
+        "pending_kinds": {"sacrifice"},
+    },
+    EffectId.MAKESHIFT_MUNITIONS: {
+        "cast": {"resolve": lambda state, card_def: cast_permanent_from_hand(state, card_def)},
+        "activated_abilities": {
+            "ping": {  # {1} + sacrifice -- paid inside the resolve, so legal/resolve path
+                "legal": lambda state, permanent: _makeshift_munitions_legal(state, permanent),
+                "resolve": lambda state, permanent: makeshift_munitions_activate(state, permanent),
+            },
+        },
+        "pending_kinds": {"sacrifice", "choose_any_target"},
+    },
+    EffectId.EXPERIMENTAL_SYNTHESIZER: {
+        "cast": {"resolve": lambda state, card_def: cast_permanent_from_hand(state, card_def)},
+        # ETB and LTB both impulse-exile the top card (playable until end of turn).
+        "etb_trigger": lambda state, permanent: impulse_exile(state, 1, until_next_turn=False),
+        "ltb_trigger": lambda state, permanent: impulse_exile(state, 1, until_next_turn=False),
+        "activated_abilities": {
+            "make_samurai": {
+                "cost_key": "sac_ability_cost",
+                "speed": Speed.SORCERY,  # "Activate only as a sorcery"
+                "resolve": lambda state, permanent: experimental_synthesizer_sac(state, permanent),
+            },
+        },
+        "pending_kinds": {"impulse"},  # marks the deck impulse-capable
+    },
+    EffectId.CLOCKWORK_PERCUSSIONIST: {
+        "cast": {"resolve": lambda state, card_def: cast_permanent_from_hand(state, card_def)},
+        "keywords": {"haste"},
+        # "When this creature dies, ..." -- a battlefield->graveyard leave, so ltb_trigger.
+        "ltb_trigger": lambda state, permanent: impulse_exile(state, 1, until_next_turn=True),
+        "pending_kinds": {"impulse"},
+    },
+    EffectId.GOBLIN_BUSHWHACKER: {
+        "cast_modes": {
+            # Unkicked: {R} (card_def.cast_cost, no per-mode override). Kicked:
+            # {R}{R} (Kicker {R}), flagging the ETB to pump the team.
+            "unkicked": {"resolve": lambda state, card_def: cast_permanent_from_hand(state, card_def)},
+            "kicked": {"cost": {"R": 2}, "resolve": lambda state, card_def: _goblin_bushwhacker_kicked(state, card_def)},
+        },
+        "etb_trigger": lambda state, permanent: goblin_bushwhacker_etb(state, permanent),
+    },
     EffectId.VOLDAREN_EPICURE: {
         "cast": {"resolve": lambda state, card_def: cast_permanent_from_hand(state, card_def)},
         "etb_trigger": lambda state, permanent: voldaren_epicure_etb(state),
@@ -325,6 +755,13 @@ RED_EFFECT_REGISTRY = {
         # (drl_env._precast_choice_execute), not at resolution -- real Magic.
         "cast": {"resolve": lambda state, card_def: cast_lightning_bolt(state, card_def), "precast_choice": True},
         "pending_kinds": {"choose_any_target"},
+    },
+    EffectId.CHAIN_LIGHTNING: {
+        # precast_choice: original target locked at cast, same as the burn above.
+        # The copy rider adds pay_unless (the {R}{R} may-pay) + another
+        # choose_any_target (the copier's new target); both drl_env-driven.
+        "cast": {"resolve": lambda state, card_def: cast_chain_lightning(state, card_def), "precast_choice": True},
+        "pending_kinds": {"choose_any_target", "pay_unless", "may_copy"},
     },
     EffectId.FIERY_TEMPER: {
         # precast_choice on BOTH modes: "any target" is locked as the spell
@@ -564,3 +1001,293 @@ if __name__ == "__main__":
         _reg.EFFECT_REGISTRY[EffectId.FILLER] = _fb
 
     print("red_cards.py Lightning Bolt any-target self-check: OK")
+
+    # Chain Lightning: 3 to any target, then the copy rider. Caster (0) targets
+    # opponent (1); opp pays {R}{R} to copy + retarget the caster (0); the copy
+    # deals 3 back and the caster declines to copy -- the chain stops.
+    from ..mana import execute_pool_spend, pool_spend_options
+
+    def _drain_pool_pay(state):  # walk begin_pay_cost's pool spend to completion
+        guard = 0
+        while state.pending_resolution is not None and state.pending_resolution["kind"] == "pay_cost":
+            guard += 1
+            assert guard < 12
+            execute_pool_spend(state, pool_spend_options(state)[0])
+
+    state = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
+    state.active_idx = 0
+    state.players[1].mana_pool = {"R": 2}  # opponent can afford the copy rider once
+    chain = CardDef("Chain Lightning", CardType.SORCERY, {"R": 1}, EffectId.CHAIN_LIGHTNING)
+    state.players[0].hand = [chain]
+    cast_chain_lightning(state, chain)  # precast target choice
+    _res.execute_choose_any_target_player(state, 1)  # caster targets the opponent
+    assert chain in state.players[0].hand  # in hand until it resolves
+    resolve_top_of_stack(state)
+    assert state.players[1].life_total == 17 and chain in state.players[0].graveyard  # 3 to opp, itself to gy
+    # rider FIRST "may": the affected player (opp, idx 1) may pay {R}{R}
+    assert state.pending_resolution["kind"] == "pay_unless" and state.active_idx == 1
+    _res.pay_unless_pay(state)
+    _drain_pool_pay(state)  # opp taps {R}{R} from pool
+    # rider SECOND, INDEPENDENT "may": having paid, opp may copy
+    assert state.pending_resolution["kind"] == "may_copy" and state.active_idx == 1
+    _res.execute_may_copy(state, True)  # choose to copy
+    # now the opponent chooses the copy's new target (their perspective)
+    assert state.pending_resolution["kind"] == "choose_any_target" and state.active_idx == 1
+    _res.execute_choose_any_target_player(state, 0)  # retarget the original caster
+    assert state.active_idx == 0  # active_idx restored to the resolving spell's controller
+    assert len(state.stack) == 1 and state.stack[0]["controller"] == 1  # copy on stack, opp controls it
+    resolve_top_of_stack(state)
+    assert state.players[0].life_total == 17  # the copy dealt 3 back to the caster
+    # the copy's rider: now the caster (idx 0) is the affected player; they decline to pay
+    assert state.pending_resolution["kind"] == "pay_unless" and state.active_idx == 0
+    _res.pay_unless_decline(state)
+    assert state.pending_resolution is None and state.stack == []  # chain stops, no card left behind (copy ceased)
+    print("red_cards.py Chain Lightning (copy rider: pay -> copy -> retarget -> decline) self-check: OK")
+
+    # The two "may"s are independent: paying {R}{R} but DECLINING to copy is a
+    # legal (if rarely-useful) line -- the mana is spent, no copy is made.
+    state = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
+    state.active_idx = 0
+    state.players[1].mana_pool = {"R": 2}
+    chain2 = CardDef("Chain Lightning", CardType.SORCERY, {"R": 1}, EffectId.CHAIN_LIGHTNING)
+    state.players[0].hand = [chain2]
+    cast_chain_lightning(state, chain2)
+    _res.execute_choose_any_target_player(state, 1)
+    resolve_top_of_stack(state)
+    assert state.players[1].life_total == 17
+    _res.pay_unless_pay(state)
+    _drain_pool_pay(state)
+    assert state.pending_resolution["kind"] == "may_copy" and state.active_idx == 1
+    _res.execute_may_copy(state, False)  # paid, but decline to copy
+    assert state.pending_resolution is None and state.stack == []  # no copy made
+    assert state.active_idx == 0  # restored to controller
+    assert sum(state.players[1].mana_pool.values()) == 0  # the {R}{R} was still spent
+    print("red_cards.py Chain Lightning (pay but decline copy -- independent mays) self-check: OK")
+
+    # Cleansing Wildfire: destroy target land (any). Its controller searches
+    # for a basic (tapped); the caster draws.
+    from ..resolution import execute_search_fetch_option, search_fetch_options
+
+    # (a) Own tapped land -> you search + fetch a basic tapped + draw.
+    state = GameState(on_the_play=True)
+    dual = Permanent(CardDef("Twisted Landscape", CardType.LAND, None, EffectId.TWISTED_LANDSCAPE))
+    dual.slot = 1
+    dual.tapped = True
+    state.battlefield = [dual]
+    cw = CardDef("Cleansing Wildfire", CardType.SORCERY, {"generic": 1, "R": 1}, EffectId.CLEANSING_WILDFIRE)
+    state.hand = [cw]
+    state.library = [
+        CardDef("Mountain", CardType.LAND, None, EffectId.MOUNTAIN, basic=True, subtypes=("Mountain",)),
+        CardDef("Guttersnipe", CardType.CREATURE, {"generic": 2, "R": 1}, EffectId.GUTTERSNIPE, power=2, toughness=2),  # nonbasic -- ineligible
+    ]
+    cast_cleansing_wildfire(state, cw)
+    assert state.pending_resolution["kind"] == "choose_any_target"
+    assert (0, "Twisted Landscape", 1) in _res.choose_any_target_creature_options(state)
+    _res.execute_choose_any_target_creature(state, 0, "Twisted Landscape", 1)
+    resolve_top_of_stack(state)  # destroy + open the (may) search
+    assert dual not in state.battlefield  # destroyed
+    assert state.pending_resolution["kind"] == "search_fetch"
+    assert search_fetch_options(state) == ["Mountain"]  # only the basic
+    execute_search_fetch_option(state, "Mountain")
+    fetched = [p for p in state.battlefield if p.card_def.name == "Mountain"]
+    assert len(fetched) == 1 and fetched[0].tapped  # onto the battlefield tapped
+    assert len(state.hand) == 1  # "Draw a card"
+    print("red_cards.py Cleansing Wildfire (own land) self-check: OK")
+
+    # (b) TARGET AN OPPONENT'S LAND: it's destroyed, the OPPONENT (its
+    # controller) searches THEIR library and the basic enters THEIR battlefield
+    # tapped; the CASTER draws.
+    state = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
+    state.active_idx = 0
+    opp_land = Permanent(CardDef("Opp Dual", CardType.LAND, None, EffectId.TWISTED_LANDSCAPE))
+    opp_land.slot = 1
+    state.players[1].battlefield = [opp_land]
+    state.players[1].library = [CardDef("Forest", CardType.LAND, None, EffectId.FOREST, basic=True, subtypes=("Forest",))]
+    cw2 = CardDef("Cleansing Wildfire", CardType.SORCERY, {"generic": 1, "R": 1}, EffectId.CLEANSING_WILDFIRE)
+    state.players[0].hand = [cw2]
+    state.players[0].library = [CardDef("CasterDraw", CardType.LAND, None, EffectId.MOUNTAIN, basic=True, subtypes=("Mountain",))]
+    cast_cleansing_wildfire(state, cw2)
+    _res.execute_choose_any_target_creature(state, 1, "Opp Dual", 1)  # target the OPPONENT's land
+    resolve_top_of_stack(state)  # destroy + open the search FOR THE OPPONENT
+    assert opp_land not in state.players[1].battlefield  # destroyed
+    assert state.pending_resolution["kind"] == "search_fetch" and state.active_idx == 1  # the land's controller searches
+    execute_search_fetch_option(state, "Forest")
+    opp_basics = [p for p in state.players[1].battlefield if p.card_def.name == "Forest"]
+    assert len(opp_basics) == 1 and opp_basics[0].tapped  # onto the OPPONENT's battlefield, tapped
+    assert state.active_idx == 0  # restored to the caster
+    assert len(state.players[0].hand) == 1 and state.players[0].hand[0].name == "CasterDraw"  # CASTER drew
+    print("red_cards.py Cleansing Wildfire (target opponent's land: controller searches, caster draws) self-check: OK")
+
+    # --- G5 ---
+    from ..effects.stats import has_keyword, permanent_power
+    from ..effects.triggers import promote_triggers_to_stack
+    from ..turn import untap_step
+
+    # Reckless Impulse: exile top 2 into the impulse zone (playable until the
+    # player's next turn), and untap prunes them once expired.
+    state = GameState(on_the_play=True)
+    state.turn_number = 3
+    ri = CardDef("Reckless Impulse", CardType.SORCERY, {"generic": 1, "R": 1}, EffectId.RECKLESS_IMPULSE)
+    state.hand = [ri]
+    state.library = [CardDef("A", CardType.LAND, None, EffectId.MOUNTAIN), CardDef("B", CardType.INSTANT, {"R": 1}, EffectId.LIGHTNING_BOLT), CardDef("C", CardType.LAND, None, EffectId.MOUNTAIN)]
+    cast_reckless_impulse(state, ri)
+    assert len(state.impulse) == 2 and all(u == 3 + len(state.players) for _cd, u in state.impulse)  # until next turn
+    assert [c.name for c in state.graveyard] == ["Reckless Impulse"]
+    state.turn_number = 3 + len(state.players) + 1  # past the deadline
+    untap_step(state)
+    assert state.impulse == []  # expired, pruned
+    print("red_cards.py Reckless Impulse (impulse-exile + expiry) self-check: OK")
+
+    # Goblin Bushwhacker kicked: team +1/+0 and haste until EOT (incl. itself).
+    state = GameState(on_the_play=True)
+    ally = Permanent(CardDef("Ally", CardType.CREATURE, None, EffectId.FILLER, power=1, toughness=1))
+    ally.slot = 1
+    state.battlefield = [ally]
+    bw = CardDef("Goblin Bushwhacker", CardType.CREATURE, {"R": 1}, EffectId.GOBLIN_BUSHWHACKER, power=1, toughness=1)
+    state.hand = [bw]
+    _goblin_bushwhacker_kicked(state, bw)
+    promote_triggers_to_stack(state)
+    while state.stack:
+        resolve_top_of_stack(state)
+    gob = next(p for p in state.battlefield if p.card_def.name == "Goblin Bushwhacker")
+    assert permanent_power(state, gob) == 2 and has_keyword(state, gob, "haste")
+    assert permanent_power(state, ally) == 2 and has_keyword(state, ally, "haste")
+    print("red_cards.py Goblin Bushwhacker (kicked team pump) self-check: OK")
+
+    # --- G6 ---
+    from .. import registry
+    from ..effects.tokens import HUMAN_SOLDIER_TOKEN_CARD_DEF, TREASURE_TOKEN_CARD_DEF
+
+    # Rally at the Hornburg: two 1/1 Human Soldiers; Humans you control (incl.
+    # a Human already out) gain haste.
+    state = GameState(on_the_play=True)
+    human = Permanent(CardDef("Human Ally", CardType.CREATURE, {"R": 1}, EffectId.FILLER, power=1, toughness=1, subtypes=("Human",)))
+    human.slot = 1
+    goblin = Permanent(CardDef("Goblin Ally", CardType.CREATURE, {"R": 1}, EffectId.FILLER, power=1, toughness=1, subtypes=("Goblin",)))
+    goblin.slot = 1
+    state.battlefield = [human, goblin]
+    rally = CardDef("Rally at the Hornburg", CardType.SORCERY, {"generic": 1, "R": 1}, EffectId.RALLY_AT_THE_HORNBURG)
+    state.hand = [rally]
+    cast_rally_at_the_hornburg(state, rally)
+    assert sum(1 for p in state.battlefield if p.card_def.name == "Human Soldier") == 2
+    assert has_keyword(state, human, "haste")  # Human gets haste
+    assert not has_keyword(state, goblin, "haste")  # non-Human doesn't
+    print("red_cards.py Rally at the Hornburg self-check: OK")
+
+    # Reckless Lackey: first strike + haste; sac -> draw + Treasure.
+    state = GameState(on_the_play=True)
+    lackey = Permanent(registry.CARD_DEFS["Reckless Lackey"])
+    lackey.slot = 1
+    state.battlefield = [lackey]
+    state.library = [CardDef("Top", CardType.LAND, None, EffectId.MOUNTAIN)]
+    assert has_keyword(state, lackey, "first_strike") and has_keyword(state, lackey, "haste")
+    activate_reckless_lackey_sac(state, lackey)
+    assert lackey not in state.battlefield and registry.CARD_DEFS["Reckless Lackey"] in state.graveyard
+    resolve_top_of_stack(state)
+    assert len(state.hand) == 1 and any(p.card_def.name == "Treasure" for p in state.battlefield)
+    print("red_cards.py Reckless Lackey (sac -> draw + Treasure) self-check: OK")
+
+    # Goblin Tomb Raider: +1/+0 and haste only while you control an artifact.
+    state = GameState(on_the_play=True)
+    gtr = Permanent(registry.CARD_DEFS["Goblin Tomb Raider"])
+    gtr.slot = 1
+    state.battlefield = [gtr]
+    assert permanent_power(state, gtr) == 1 and not has_keyword(state, gtr, "haste")
+    state.battlefield.append(Permanent(registry.CARD_DEFS["Great Furnace"]))  # an artifact land
+    assert permanent_power(state, gtr) == 2 and has_keyword(state, gtr, "haste")
+    print("red_cards.py Goblin Tomb Raider (conditional static) self-check: OK")
+
+    # Burning-Tree Emissary: ETB adds {R}{G} to the pool.
+    state = GameState(on_the_play=True)
+    bte = registry.CARD_DEFS["Burning-Tree Emissary"]
+    state.hand = [bte]
+    cast_permanent_from_hand(state, bte)
+    promote_triggers_to_stack(state)
+    while state.stack:
+        resolve_top_of_stack(state)
+    assert state.mana_pool.get("R") == 1 and state.mana_pool.get("G") == 1
+    print("red_cards.py Burning-Tree Emissary (ETB add RG) self-check: OK")
+
+    # --- G8 ---
+    from ..effects.state_based import sacrifice_to_graveyard as _sac8
+    from ..effects.triggers import promote_triggers_to_stack as _prom8
+    from ..state import PlayerState as _PS8
+
+    def _drive8(s):
+        _prom8(s)
+        while s.stack:
+            resolve_top_of_stack(s)
+
+    # Krark-Clan Shaman: Sacrifice an artifact -> 1 damage to each creature
+    # without flying (a real flyer is spared; itself dies as a 1/1). Uses real
+    # distinct cards: Gurmag Angler (nonflying) and Utrom Monitor (flying).
+    state = GameState(on_the_play=True, players=[_PS8(True), _PS8(False)])
+    state.active_idx = 0
+    krark = Permanent(registry.CARD_DEFS["Krark-Clan Shaman"])
+    krark.slot = 1
+    art = Permanent(registry.CARD_DEFS["Great Furnace"])
+    state.players[0].battlefield = [krark, art]
+    ground = Permanent(registry.CARD_DEFS["Gurmag Angler"])  # 5/5 nonflying
+    ground.slot = 1
+    flyer = Permanent(registry.CARD_DEFS["Utrom Monitor"])  # 3/3 flying
+    flyer.slot = 1
+    state.players[1].battlefield = [ground, flyer]
+    krark_clan_shaman_activate(state, krark)
+    resolution.execute_sacrifice_option(state, "Great Furnace")
+    _drive8(state)
+    assert ground.damage_marked == 1 and flyer.damage_marked == 0  # ground hit, flyer spared
+    assert krark not in state.players[0].battlefield  # 1/1 took 1 -> dead
+    print("red_cards.py Krark-Clan Shaman (sac artifact -> sweep nonflyers) self-check: OK")
+
+    # Experimental Synthesizer: ETB impulse; {2}{R},Sac -> Samurai + LTB impulse.
+    state = GameState(on_the_play=True)
+    state.turn_number = 1
+    state.hand = [registry.CARD_DEFS["Experimental Synthesizer"]]
+    state.library = [CardDef(f"t{i}", CardType.LAND, None, EffectId.MOUNTAIN, basic=True) for i in range(3)]
+    cast_permanent_from_hand(state, registry.CARD_DEFS["Experimental Synthesizer"])
+    _drive8(state)
+    assert len(state.impulse) == 1  # ETB impulse
+    es = next(p for p in state.battlefield if p.card_def.name == "Experimental Synthesizer")
+    experimental_synthesizer_sac(state, es)
+    _drive8(state)
+    assert any(p.card_def.name == "Samurai" for p in state.battlefield) and len(state.impulse) == 2  # + LTB impulse
+    print("red_cards.py Experimental Synthesizer (impulse + Samurai) self-check: OK")
+
+    # Clockwork Percussionist: haste; dies -> impulse (until next turn).
+    state = GameState(on_the_play=True)
+    state.turn_number = 1
+    state.library = [CardDef("q", CardType.LAND, None, EffectId.MOUNTAIN, basic=True)]
+    cp = Permanent(registry.CARD_DEFS["Clockwork Percussionist"])
+    cp.slot = 1
+    state.battlefield = [cp]
+    assert has_keyword(state, cp, "haste")
+    _sac8(state, cp)
+    _drive8(state)
+    assert len(state.impulse) == 1
+    print("red_cards.py Clockwork Percussionist (dies -> impulse) self-check: OK")
+
+    # --- G7: Galvanic Blast Metalcraft -- 2 damage, or 4 if you control 3+
+    # artifacts (checked at resolution).
+    state = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
+    state.active_idx = 0
+    victim = Permanent(CardDef("Victim", CardType.CREATURE, None, EffectId.FILLER, power=1, toughness=9))
+    victim.slot = 1
+    state.players[1].battlefield = [victim]
+    gb = registry.CARD_DEFS["Galvanic Blast"]
+    state.players[0].hand = [gb]
+    cast_galvanic_blast(state, gb)
+    resolution.execute_choose_any_target_creature(state, 1, "Victim", 1)
+    resolve_top_of_stack(state)
+    assert victim.damage_marked == 2  # no metalcraft
+    state = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
+    state.active_idx = 0
+    state.players[0].battlefield = [Permanent(registry.CARD_DEFS["Great Furnace"]) for _ in range(3)]  # metalcraft
+    victim = Permanent(CardDef("Victim", CardType.CREATURE, None, EffectId.FILLER, power=1, toughness=9))
+    victim.slot = 1
+    state.players[1].battlefield = [victim]
+    state.players[0].hand = [gb]
+    cast_galvanic_blast(state, gb)
+    resolution.execute_choose_any_target_creature(state, 1, "Victim", 1)
+    resolve_top_of_stack(state)
+    assert victim.damage_marked == 4  # metalcraft -> 4
+    print("red_cards.py Galvanic Blast (Metalcraft 2/4) self-check: OK")

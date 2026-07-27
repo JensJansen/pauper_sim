@@ -44,7 +44,7 @@ def on_cast_trigger(state, card_def):
             state.trigger_queue.append({"type": "cast_trigger", "card_def": permanent.card_def, "permanent": permanent})
 
 
-def push_to_stack(state, card_def, resolve, reserves_hand_card=True):
+def push_to_stack(state, card_def, resolve, reserves_hand_card=True, is_spell=True):
     """A spell is fully paid for (mana or an alternate cost) but not yet
     resolved -- defer `resolve(state, card_def)` onto state.stack instead of
     calling it now, giving the model a chance to respond (cast another
@@ -94,7 +94,7 @@ def push_to_stack(state, card_def, resolve, reserves_hand_card=True):
     priority -- resolve_top_of_stack restores it below."""
     state.stack.append({
         "card_def": card_def, "resolve": resolve, "controller": state.active_idx,
-        "reserves_hand_card": reserves_hand_card,
+        "reserves_hand_card": reserves_hand_card, "is_spell": is_spell,
     })
     state.log_event("zone_move", card=card_def.name, to_zone="stack", controller=state.active_idx)
 
@@ -109,8 +109,36 @@ def push_ability_to_stack(state, source_card_def, effect):
     TARGETS are already paid/chosen by the caller at activation/trigger time,
     before this push -- only the effect waits here. reserves_hand_card=False:
     an ability's source is on the battlefield (or its trigger already fired),
-    never a hand card awaiting this entry's own removal."""
-    push_to_stack(state, source_card_def, lambda st, cd: effect(st), reserves_hand_card=False)
+    never a hand card awaiting this entry's own removal. is_spell=False: an
+    ability is NOT a spell, so it's not a legal target for Counterspell/
+    Dispel/Spell Pierce (which counter spells, not abilities)."""
+    push_to_stack(state, source_card_def, lambda st, cd: effect(st), reserves_hand_card=False, is_spell=False)
+
+
+def counter_spell(state, entry):
+    """Counter a spell: remove its entry from the stack so it never resolves,
+    and send its card to the right zone. A normally-cast spell
+    (reserves_hand_card -- the card is still physically in its controller's
+    hand while on the stack, see push_to_stack) goes to that controller's
+    graveyard (real Magic: a countered spell goes to its owner's graveyard).
+    A spell cast from elsewhere (flashback/madness/plot/free-alt,
+    reserves_hand_card=False) has already left its origin zone at cast time,
+    so there's nothing to move -- it simply ceases (a flashback spell would
+    be exiled either way; a self-discarding spell like Crop Rotation is
+    already in the graveyard, which is exactly where a countered spell goes).
+    No-op if the entry has already left the stack (already countered/resolved
+    in response). Returns True iff it actually countered something."""
+    if entry not in state.stack:
+        return False
+    state.stack.remove(entry)
+    cd = entry["card_def"]
+    if entry.get("reserves_hand_card"):
+        controller = state.players[entry["controller"]]
+        if cd in controller.hand:
+            controller.hand.remove(cd)
+        controller.graveyard.append(cd)
+    state.log_event("countered", card=cd.name, controller=entry["controller"])
+    return True
 
 
 def resolve_top_of_stack(state):

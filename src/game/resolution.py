@@ -28,7 +28,7 @@ game/effects/madness_and_plot.py instead, which is free to depend on both
 this module and mana.py.  """
 
 from . import registry
-from .cards import CardDef
+from .cards import CardDef, CardType
 
 
 def begin_resolution(state, kind, on_complete, **fields):
@@ -461,6 +461,246 @@ def execute_choose_opponent_permanent_option(state, name, slot):
     complete_resolution(state, (name, slot))
 
 
+def explore(state, creature):
+    """A creature explores (Map token, Fanatical Offering): reveal the top
+    card of the exploring player's library -- a land goes to hand; a nonland
+    puts a +1/+1 counter on the creature, then "you may put that card into
+    your graveyard" (keep on top or bin), which is exactly surveil 1 on that
+    same still-on-top card. Empty library: nothing to reveal, no-op."""
+    if not state.library:
+        return
+    top = state.library[0]
+    if top.card_type == CardType.LAND:
+        state.library.pop(0)
+        state.hand.append(top)
+        state.log_event("explore", card=top.name, result="land_to_hand", creature=(creature.card_def.name, creature.slot))
+    else:
+        creature.counters["+1/+1"] = creature.counters.get("+1/+1", 0) + 1
+        state.log_event("explore", card=top.name, result="plus_counter", creature=(creature.card_def.name, creature.slot))
+        surveil(state, 1)  # "you may put it into your graveyard" == surveil 1 (keep on top or graveyard)
+
+
+def begin_exile_n_from_graveyard(state, n, on_complete, predicate=None):
+    """Exile n cards from the active player's own graveyard as a COST, the
+    model choosing which one at a time (chained begin_choose_graveyard_card).
+    predicate (default any) narrows eligible cards. Used by Delve (exile N to
+    pay {N} of a spell's generic cost, Gurmag Angler) and reusable by any
+    other "exile N from your graveyard" cost. Runs on_complete(state) once n
+    are exiled (or eligible cards run out)."""
+    pred = predicate or (lambda c: True)
+
+    def _step(remaining):
+        if remaining <= 0 or not any(pred(c) for c in state.graveyard):
+            on_complete(state)
+            return
+
+        def _chosen(state, name):
+            found = next(c for c in state.graveyard if c.name == name)
+            state.graveyard.remove(found)  # exiled, untracked
+            state.log_event("zone_move", card=found.name, from_zone="graveyard", to_zone="exile_untracked", reason="exile_cost")
+            _step(remaining - 1)
+
+        begin_choose_graveyard_card(state, pred, _chosen)
+
+    _step(n)
+
+
+def begin_tuck_to_library(state, card_def, owner_idx, on_complete=None):
+    """Deem Inferior: a permanent's OWNER (active_idx flipped to them) puts
+    its card into their library second-from-the-top or on the bottom -- their
+    choice, backed by two drl_env actions ("Tuck: 2nd from top" / "Tuck:
+    bottom"). The permanent must already be removed from the battlefield by
+    the caller."""
+    original = state.active_idx
+    state.active_idx = owner_idx
+    begin_resolution(
+        state, "tuck_position", on_complete or (lambda s: None),
+        tuck_card=card_def, owner_idx=owner_idx, original_idx=original,
+    )
+
+
+def execute_tuck_position(state, position):
+    pending = state.pending_resolution
+    card_def = pending["tuck_card"]
+    owner = state.players[pending["owner_idx"]]
+    original = pending["original_idx"]
+    on_complete = pending["on_complete"]
+    state.pending_resolution = None
+    state.active_idx = original
+    if position == "top2":
+        owner.library.insert(min(1, len(owner.library)), card_def)  # second from the top
+    else:
+        owner.library.append(card_def)  # bottom
+    state.log_event("tuck", card=card_def.name, position=position, owner_idx=pending["owner_idx"])
+    on_complete(state)
+
+
+def begin_may_transform(state, permanent):
+    """A "you may transform this creature" choice (Delver of Secrets, once an
+    instant/sorcery is revealed). Two drl_env actions -- "Transform" /
+    "Don't transform" -- back it; execute_may_transform applies or skips."""
+    begin_resolution(state, "may_transform", lambda s: None, permanent=permanent)
+
+
+def execute_may_transform(state, do_transform):
+    pending = state.pending_resolution
+    permanent = pending["permanent"]
+    if do_transform:
+        permanent.flags["transformed"] = True
+        state.log_event("transform", permanent=(permanent.card_def.name, permanent.slot))
+    complete_resolution(state)
+
+
+def begin_may_copy(state, on_complete):
+    """A "you may copy this spell" choice (Chain Lightning's rider, after the
+    {R}{R} has already been paid -- the second, independent "may" in "they may
+    pay {R}{R}. If the player does, they may copy this spell"). on_complete(
+    state, do_copy: bool)."""
+    begin_resolution(state, "may_copy", on_complete)
+
+
+def execute_may_copy(state, do_copy):
+    complete_resolution(state, do_copy)
+
+
+def begin_choose_room(state, options, on_complete):
+    """Undercity venture: the venturing player picks which of `options` (the
+    1 or 2 rooms the current room leads to) to enter next. on_complete(state,
+    room_name) fires with the chosen room. Effect-agnostic here -- the actual
+    room entry + its effect live in game.effects.undercity."""
+    begin_resolution(state, "choose_room", on_complete, options=tuple(options))
+
+
+def choose_room_options(state):
+    return list(state.pending_resolution["options"])
+
+
+def execute_choose_room_option(state, name):
+    complete_resolution(state, name)
+
+
+_ANY_COLORS = ("W", "U", "B", "R", "G")  # "any color" -- the five colors, never colorless {C}
+
+
+def begin_choose_mana_color(state, on_complete):
+    """"Add one mana of any color" (Chromatic Star): the activating player picks
+    one of the five colors. A mana ability, so it resolves immediately (no
+    stack); on_complete(state, color) is what actually adds the mana. Always
+    has five legal options, so it never softlocks."""
+    begin_resolution(state, "choose_mana_color", on_complete)
+
+
+def choose_mana_color_options(state):
+    return list(_ANY_COLORS)
+
+
+def execute_choose_mana_color(state, color):
+    complete_resolution(state, color)
+
+
+def begin_throne_reveal(state, n, on_complete):
+    """Undercity's Throne of the Dead Three: reveal the top `n` library cards;
+    the venturer picks one CREATURE card from among them
+    (throne_reveal_options). Every exit path (a pick, or the empty-reveal
+    auto-complete when no creature is revealed) returns the unchosen revealed
+    cards to the library and shuffles it -- done here so the library is always
+    left consistent; on_complete(state, chosen_card_def | None) then only has
+    to place the chosen creature (battlefield + counters + hexproof, in
+    game.effects.undercity)."""
+    revealed = state.library[:n]
+    del state.library[:n]
+    begin_resolution(state, "throne_reveal", on_complete, revealed=revealed)
+    if not throne_reveal_options(state):
+        _finish_throne(state, None)  # no creature among the revealed cards
+
+
+def throne_reveal_options(state):
+    return sorted({c.name for c in state.pending_resolution["revealed"] if c.card_type == CardType.CREATURE})
+
+
+def execute_throne_reveal_option(state, name):
+    chosen = next(c for c in state.pending_resolution["revealed"] if c.name == name and c.card_type == CardType.CREATURE)
+    _finish_throne(state, chosen)
+
+
+def _finish_throne(state, chosen):
+    revealed = state.pending_resolution["revealed"]
+    rest = [c for c in revealed if c is not chosen] if chosen is not None else list(revealed)
+    state.library.extend(rest)
+    state.rng.shuffle(state.library)
+    complete_resolution(state, chosen)
+
+
+def begin_choose_stack_target(state, predicate, on_complete):
+    """Choose a SPELL on the stack (Counterspell: any; Dispel: instant; Spell
+    Pierce: noncreature) to counter. `predicate(entry)` further narrows the
+    spell entries (entries are the stack's own {"card_def","is_spell",...}
+    dicts). Options are the distinct names of matching spell entries; the
+    chosen entry (the TOPMOST of that name -- most recently cast) is passed to
+    on_complete. Fizzles immediately (on_complete(None)) if nothing matches --
+    though a counter spell's own extra_legal already requires a legal target
+    to be cast at all."""
+    begin_resolution(state, "choose_stack_target", on_complete, predicate=predicate)
+    if not choose_stack_target_options(state):
+        complete_resolution(state, None)
+
+
+def choose_stack_target_options(state):
+    predicate = state.pending_resolution["predicate"]
+    return sorted({e["card_def"].name for e in state.stack if e.get("is_spell") and predicate(e)})
+
+
+def execute_choose_stack_target_option(state, name):
+    predicate = state.pending_resolution["predicate"]
+    # Topmost (last-pushed) matching spell of this name -- LIFO, the spell
+    # most recently put on the stack.
+    entry = next(
+        e for e in reversed(state.stack)
+        if e.get("is_spell") and predicate(e) and e["card_def"].name == name
+    )
+    complete_resolution(state, entry)
+
+
+def begin_pay_unless(state, payer_idx, cost, on_result):
+    """A "player may pay `cost` to decide an outcome" prompt. `cost` is a mana
+    cost dict ({"generic": 2} for Spell Pierce / Ward; {"B": 1} for Nihil
+    Spellbomb's "you may pay {B}"). `payer_idx` (the countered spell's
+    controller / the warded permanent's opponent / the Nihil controller)
+    decides whether to pay: active_idx is flipped to them for the decision and
+    restored once it's made. Backed by two drl_env actions -- "Pay (unless)"
+    (only when affordable) and "Don't pay (unless)"; the mana itself routes
+    through begin_pay_cost. on_result(state, paid: bool) fires with the
+    outcome -- the caller then counters/draws/etc. accordingly."""
+    original = state.active_idx
+    state.active_idx = payer_idx
+    begin_resolution(state, "pay_unless", None, cost=cost, on_result=on_result, original_idx=original)
+
+
+def pay_unless_pay(state):
+    """The payer chose to pay: hand off to begin_pay_cost (active_idx stays on
+    the payer so they tap their OWN sources); once the mana is paid, restore
+    active_idx and report paid=True."""
+    from .mana import begin_pay_cost  # call-time import -- mana imports resolution, so avoid a load cycle
+
+    pending = state.pending_resolution
+    cost, on_result, original = pending["cost"], pending["on_result"], pending["original_idx"]
+    state.pending_resolution = None
+
+    def _paid(state):
+        state.active_idx = original
+        on_result(state, True)
+
+    begin_pay_cost(state, cost, on_complete=_paid)
+
+
+def pay_unless_decline(state):
+    pending = state.pending_resolution
+    on_result, original = pending["on_result"], pending["original_idx"]
+    state.pending_resolution = None
+    state.active_idx = original
+    on_result(state, False)
+
+
 def begin_scry_surveil(state, kind, n, on_complete):
     """Reveal the top n library cards; the model decides keep-on-top or
     dispose for each one in turn (scry_surveil_options/
@@ -547,6 +787,90 @@ def surveil(state, n):
     """Surveil n (Conduit Pylons' ETB, Tocasia's Dig Site's ability): see
     begin_scry_surveil."""
     begin_scry_surveil(state, "surveil", n, on_complete=lambda s: None)
+
+
+def begin_put_on_top_from_hand(state, n, on_complete):
+    """Brainstorm's "put N cards from your hand on top of your library in any
+    order." The model picks N hand cards one at a time by name (the generic
+    "Choose: X" dispatch); the FIRST picked ends up on top (drawn first), so
+    the model fully controls the order. Fewer than N in hand just places
+    whatever's there. on_complete(state) runs once placement is done."""
+    begin_resolution(state, "put_on_top", on_complete, remaining=n, placed=[])
+    if not put_on_top_options(state):
+        _finish_put_on_top(state)
+
+
+def put_on_top_options(state):
+    pending = state.pending_resolution
+    if pending["remaining"] <= 0:
+        return []
+    # Excludes a copy already reserved on the stack (a spell cast in response,
+    # paid for and awaiting resolution): real Magic -- a card on the stack is
+    # NOT in your hand, so Brainstorm's "put two cards from your hand on top"
+    # can't pick it. The engine defers the on-stack card's own hand-removal to
+    # its resolution (game.effects.stack.push_to_stack), leaving it physically
+    # in the hand list, so this must subtract reservations exactly like
+    # discard_options does -- without it, Brainstorm could move a still-on-the-
+    # stack spell onto the library, and that spell's later resolve would fail
+    # to find its card in hand (confirmed via a Gurmag-Angler-mid-delve-cast +
+    # Brainstorm + Mental Note line in cross-deck self-play).
+    return _available_hand_names(state)
+
+
+def _finish_put_on_top(state):
+    pending = state.pending_resolution
+    state.library[0:0] = pending["placed"]  # placed[0] on top
+    state.log_event("put_on_top", cards=[c.name for c in pending["placed"]])
+    complete_resolution(state)
+
+
+def execute_put_on_top_option(state, name):
+    pending = state.pending_resolution
+    idx = next(i for i, c in enumerate(state.hand) if c.name == name)
+    pending["placed"].append(state.hand.pop(idx))
+    pending["remaining"] -= 1
+    if pending["remaining"] <= 0 or not state.hand:
+        _finish_put_on_top(state)
+
+
+def begin_ponder(state, on_complete):
+    """Ponder's "look at the top three cards, then put them back in any order.
+    You may shuffle." The model either orders the revealed cards back on top
+    one at a time (execute_ponder_option, via the generic "Choose: X"
+    dispatch; FIRST placed ends on top) OR shuffles the whole library
+    (execute_ponder_shuffle -- a dedicated "Shuffle (Ponder)" action, legal
+    only before any card has been placed, drl_env._ponder_shuffle_legal).
+    on_complete (Ponder's own "Draw a card") runs either way."""
+    revealed = state.library[:3]
+    del state.library[:3]
+    begin_resolution(state, "ponder", on_complete, remaining=revealed, ordered=[])
+    if not revealed:
+        complete_resolution(state)  # empty library: nothing to arrange -- on_complete (the draw) still runs
+
+
+def ponder_options(state):
+    return sorted({c.name for c in state.pending_resolution["remaining"]})
+
+
+def execute_ponder_option(state, name):
+    pending = state.pending_resolution
+    idx = next(i for i, c in enumerate(pending["remaining"]) if c.name == name)
+    pending["ordered"].append(pending["remaining"].pop(idx))
+    if not pending["remaining"]:
+        state.library[0:0] = pending["ordered"]  # ordered[0] on top
+        state.log_event("ponder", ordered=[c.name for c in pending["ordered"]], shuffled=False)
+        complete_resolution(state)
+
+
+def execute_ponder_shuffle(state):
+    """"You may shuffle": put the looked-at cards back and shuffle the whole
+    library. Only reachable before any card has been ordered (the action's
+    own legality gate)."""
+    pending = state.pending_resolution
+    state.library.extend(pending["remaining"])  # order irrelevant -- about to shuffle
+    state.rng.shuffle(state.library)
+    state.log_event("ponder", shuffled=True)
+    complete_resolution(state)
 
 
 def begin_discard(state, n, optional, on_complete):
@@ -868,6 +1192,7 @@ def execute_order_triggers_option(state, name):
     # push_to_stack(..., reserves_hand_card=False) applies for the
     # single-trigger branch right above this function's own caller.
     entry["reserves_hand_card"] = False
+    entry["is_spell"] = False  # a triggered ability, not a spell -- never a Counterspell target
     state.stack.append(entry)  # already the stack's own native {"card_def", "resolve"} shape
     state.log_event("zone_move", card=entry["card_def"].name, from_zone="trigger_queue", to_zone="stack")
     if not pending["remaining"]:
@@ -922,6 +1247,8 @@ def execute_sacrifice_option(state, name):
     ltb_spec = registry.EFFECT_REGISTRY.get(permanent.card_def.effect_id, {})
     if ltb_spec.get("ltb_trigger") is not None:
         state.trigger_queue.append({"type": "ltb", "card_def": permanent.card_def, "permanent": permanent})
+    from .effects.shared import fire_sacrifice_triggers
+    fire_sacrifice_triggers(state, state.active_idx, permanent.card_def)  # Gixian Infiltrator / Writhing Chrysalis
     pending["remaining"] -= 1
     if pending["remaining"] <= 0:
         complete_resolution(state, True)
@@ -1318,3 +1645,27 @@ if __name__ == "__main__":
     assert resolved_order == ["Trigger B", "Trigger A"]
 
     print("resolution.py begin_order_triggers self-check: OK")
+
+    # explore (Map token / Fanatical Offering): a land on top goes to hand; a
+    # nonland puts a +1/+1 counter on the exploring creature, then surveil 1
+    # (keep on top or bin) on that same card.
+    from .state import Permanent as _Perm
+
+    state = GameState(on_the_play=True)
+    creature = _Perm(CardDef("Explorer", CardType.CREATURE, None, None, power=1, toughness=1))
+    state.battlefield = [creature]
+    state.library = [CardDef("A Land", CardType.LAND, None, None), CardDef("A Spell", CardType.INSTANT, {"U": 1}, None)]
+    explore(state, creature)
+    assert [c.name for c in state.hand] == ["A Land"]  # land -> hand
+    assert creature.counters.get("+1/+1", 0) == 0  # no counter for a land
+
+    state = GameState(on_the_play=True)
+    creature = _Perm(CardDef("Explorer", CardType.CREATURE, None, None, power=1, toughness=1))
+    state.battlefield = [creature]
+    state.library = [CardDef("A Spell", CardType.INSTANT, {"U": 1}, None), CardDef("Next", CardType.LAND, None, None)]
+    explore(state, creature)
+    assert creature.counters["+1/+1"] == 1  # nonland -> +1/+1
+    assert state.pending_resolution["kind"] == "surveil"  # then "may put it in graveyard"
+    execute_scry_surveil_option(state, "dispose")
+    assert [c.name for c in state.graveyard] == ["A Spell"]
+    print("resolution.py explore self-check: OK")

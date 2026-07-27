@@ -6,7 +6,8 @@ any priority) and Cleanup (priority only if something triggers there)."""
 
 import enum
 
-from .effects.combat import attackers_needing_damage_assignment, combat_damage_step, declare_attackers_step
+from . import registry
+from .effects.combat import attackers_needing_damage_assignment, combat_damage_step, declare_attackers_step, enforce_menace
 from .effects.stack import resolve_top_of_stack
 from .effects.state_based import check_state_based_actions, cleanup_step
 from .effects.triggers import promote_triggers_to_stack
@@ -163,9 +164,43 @@ def untap_step(state):
         permanent.tapped = False
         permanent.summoning_sick = False
         permanent.flags.pop("used_this_turn", None)  # Barrels of Blasting Jelly
+        # "doesn't untap during its controller's next untap step" (Sleep of
+        # the Dead): skip this permanent's untap ONCE, consuming the flag.
+        if permanent.flags.pop("skip_next_untap", False):
+            permanent.tapped = True
     state.mana_pool.clear()  # floating mana doesn't carry across turns
+    # The Initiative's "until your next turn" durations (Arena's Goad, Throne's
+    # hexproof) expire at their owning player's turn start. Lazy import:
+    # undercity pulls in casting/tokens, loaded after turn.py.
+    from .effects import undercity
+    undercity.expire_until_next_turn(state)
+    # Impulse cards ("play until end of [this/your next] turn") whose deadline
+    # has passed expire now -- they leave the impulse zone (ceasing, untracked)
+    # and can no longer be played. turn_number is already this player's current
+    # turn here, so an entry with deadline < turn_number is past its window.
+    expired = [(cd.name, u) for (cd, u) in state.impulse if state.turn_number > u]
+    if expired:
+        state.impulse = [(cd, u) for (cd, u) in state.impulse if state.turn_number <= u]
+        state.log_event("impulse_expired", cards=[n for n, _u in expired])
     if untapped or mana_cleared:
         state.log_event("untap_step", untapped=untapped, mana_cleared=mana_cleared)
+
+
+def upkeep_step(state):
+    """"At the beginning of your upkeep, ..." triggers (Delver of Secrets).
+    Queues an "upkeep" trigger for each of the TURN player's own battlefield
+    permanents whose registry has an "upkeep_trigger" -- the priority round
+    that follows this phase's auto-effect then promotes them onto the stack
+    (real timing: upkeep triggers go on the stack, get a priority window).
+    A cheap no-op when nothing has one."""
+    for permanent in state.battlefield:  # active_idx == turn player at UPKEEP
+        if registry.EFFECT_REGISTRY.get(permanent.card_def.effect_id, {}).get("upkeep_trigger") is not None:
+            state.trigger_queue.append({"type": "upkeep", "card_def": permanent.card_def, "permanent": permanent})
+    # The Initiative: "at the beginning of your upkeep, venture into Undercity"
+    # (only the current holder). Queued like the card upkeep triggers above.
+    if state.initiative_idx == state.turn_player_idx:
+        from .effects import undercity
+        undercity.queue_venture(state, state.turn_player_idx)
 
 
 def draw_step(state):
@@ -182,6 +217,7 @@ def draw_step(state):
 
 _PHASE_AUTO_EFFECTS = {
     Phase.UNTAP: untap_step,
+    Phase.UPKEEP: upkeep_step,
     Phase.DRAW: draw_step,
     Phase.DECLARE_ATTACKERS: declare_attackers_step,
     Phase.COMBAT_DAMAGE: combat_damage_step,
@@ -519,6 +555,11 @@ def _run_turn_gen(state, combat_enabled=False):
                 yield from _declare_blockers_gen(state)
                 if state.turn_won is not None:
                     return
+                # Menace: a menace attacker left with exactly one blocker is
+                # unblocked (game.effects.combat.enforce_menace) before any
+                # damage is assigned -- must run after blocks are finalized,
+                # before _assign_combat_damage_gen reads them.
+                enforce_menace(state)
                 # A multi-blocked attacker's controller now freely assigns
                 # that attacker's combat damage across its blockers (gang-
                 # blocking) -- before COMBAT_DAMAGE's own combat_damage_step

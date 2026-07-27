@@ -165,6 +165,8 @@ def _attacker_deal_damage(state, attacker, blockers, amounts, opponent_amount, a
         if amount <= 0:
             continue
         blocker.damage_marked += amount
+        if attacker_facts["deathtouch"]:
+            blocker.flags["deathtouched"] = True  # any damage from a deathtouch source is lethal (SBA)
         assigned += amount
         state.log_event(
             "combat_damage", source=(attacker.card_def.name, attacker.slot),
@@ -204,6 +206,8 @@ def _blocker_deal_damage(state, blocker, attacker, blocker_facts):
     own stats is read in this direction)."""
     power = blocker_facts["power"]
     attacker.damage_marked += power
+    if power > 0 and blocker_facts["deathtouch"]:
+        attacker.flags["deathtouched"] = True  # any damage from a deathtouch source is lethal (SBA)
     state.log_event(
         "combat_damage", source=(blocker.card_def.name, blocker.slot), target=(attacker.card_def.name, attacker.slot),
         amount=power, trample_excess_to_opponent=0,
@@ -325,6 +329,13 @@ def combat_damage_step(state):
     spell or attaches/detaches an Aura mid-resolution, so no combatant's
     own facts can change during it (damage_marked does change, but that's
     read fresh off the permanent itself everywhere, never cached here)."""
+    # The Initiative (Avenging Hunter): "Whenever one or more creatures a
+    # player controls deal combat damage to you, that player takes the
+    # initiative." Snapshot the defending player's life now so any net combat-
+    # damage loss below (unblocked hits + trample) can be detected at the end.
+    defender_idx = 1 - state.active_idx if len(state.players) > 1 else None
+    defender_life_before = state.players[defender_idx].life_total if defender_idx is not None else None
+
     unblocked = [p for p in state.attackers if p not in state.blocked_by]
     groups = list(state.blocked_by.items())  # [(attacker, [blockers, ...])] -- gang-blocking (list-valued)
     all_combatants = set(state.attackers) | {b for _a, blockers in groups for b in blockers}
@@ -345,6 +356,7 @@ def combat_damage_step(state):
             "toughness": stats.permanent_toughness(state, permanent, enchanting_auras=auras),
             "first_strike": "first_strike" in keywords,
             "trample": "trample" in keywords,
+            "deathtouch": "deathtouch" in keywords,
             "lifelink_count": stats.lifelink_count(state, permanent, enchanting_auras=auras),
         }
 
@@ -390,6 +402,65 @@ def combat_damage_step(state):
             if not creature_facts[id(blocker)]["first_strike"] and _is_alive(state, blocker) and attacker_alive:
                 _blocker_deal_damage(state, blocker, attacker, creature_facts[id(blocker)])
     state_based.check_state_based_actions(state)
+
+    # The Initiative transfer: if the current holder was the defender and took
+    # any combat damage this step (life dropped), the attacking player takes
+    # the initiative (and ventures). Skipped if the game already ended -- a
+    # dead defender's initiative is moot. Lazy import: undercity pulls in
+    # casting/tokens, and combat sits underneath those.
+    if (defender_idx is not None and state.turn_won is None and state.initiative_idx == defender_idx
+            and state.players[defender_idx].life_total < defender_life_before):
+        from . import undercity
+        undercity.take_initiative(state, state.active_idx)
+
+
+def menace_block_incomplete(state):
+    """True while some menace attacker has exactly ONE blocker committed -- an
+    ILLEGAL block declaration ("can't be blocked except by two or more
+    creatures", 509.1c: 0 or 2+, never 1). drl_env forbids the defender from
+    finishing ("Done blocking") while this holds, and offers an "Unassign
+    Blocker" action so they can always reach a legal declaration (add a second
+    blocker or take the lone one back) -- declaration-time enforcement, not a
+    post-hoc correction. Called only during the declare-blockers step, where
+    active_idx is the defender, so the attacker's own blocked_by/attackers are
+    reached via state.opponent (the attacking player, from the defender's
+    point of view -- same accessor the block machinery already uses)."""
+    return any(
+        len(blockers) == 1 and stats.has_keyword(state, attacker, "menace")
+        for attacker, blockers in state.opponent.blocked_by.items()
+    )
+
+
+def enforce_menace(state):
+    """Defensive backstop, NOT the primary rule: the declaration-time gate
+    (menace_block_incomplete + the Unassign action in drl_env) already makes
+    the defender declare 0 or 2+ blockers on a menace attacker, so at combat
+    damage no menace attacker should have exactly one blocker. This only ever
+    fires if game.turn._declare_blockers_gen abandons a partial declaration on
+    its action-cap (a pathological policy that never finishes) -- it then drops
+    any lone menace-block so the OUTCOME is still faithful (a lone creature
+    can't stop a menace attacker). A no-op on every rational path. active_idx is
+    back on the attacker here, so state.blocked_by is the attacker's own."""
+    for attacker, blockers in list(state.blocked_by.items()):
+        if len(blockers) == 1 and stats.has_keyword(state, attacker, "menace"):
+            del state.blocked_by[attacker]
+            state.log_event("menace_unblocked", attacker=(attacker.card_def.name, attacker.slot))
+
+
+def has_unfulfilled_goad(state):
+    """True if the turn player controls a goaded creature that CAN attack but
+    isn't yet declared -- goad's "attacks each combat if able" then forbids
+    them ending their own declare-attackers step (drl_env._pass_legal gates
+    Pass on this during DECLARE_ATTACKERS). creature_attack_eligible already
+    excludes creatures that can't attack (tapped/summoning-sick) and ones
+    already in state.attackers, so a goaded creature that literally can't
+    attack -- or has been declared -- never blocks the Pass. In 2-player,
+    "attack a player other than you" is automatic (the sole opponent), so no
+    attack-target restriction is needed beyond forcing the declaration."""
+    return any(
+        p.flags.get("goaded_by") is not None and creature_attack_eligible(state, p)
+        for p in state.battlefield
+    )
 
 
 if __name__ == "__main__":
@@ -699,3 +770,76 @@ if __name__ == "__main__":
     assert not can_block(kb_state, silhana, imp)        # Silhana is NOT flying -> can't block a flier (the C8 fix)
     assert can_block(kb_state, vanilla_c, vanilla_c)    # no restriction -> anyone blocks
     print("combat.py can_block evasion/reach self-check: OK")
+
+    # --- G12: menace, goad, initiative transfer ---
+    from ..cards import EffectId as _EID
+
+    # Menace (509.1c): a declaration leaving a menace attacker with exactly ONE
+    # blocker is illegal. menace_block_incomplete flags it (so drl_env forbids
+    # "Done" until fixed -- 0 or 2+); enforce_menace is the cap-abandon backstop
+    # that drops a stray lone block. Player 0 attacks, player 1 (the defender,
+    # active during blocking) assigns blockers.
+    _fb = registry.EFFECT_REGISTRY[_EID.FILLER]
+    registry.EFFECT_REGISTRY[_EID.FILLER] = {"keywords": {"menace"}}
+    try:
+        state = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
+        menacer = Permanent(CardDef("Menacer", CardType.CREATURE, None, _EID.FILLER, power=4, toughness=1))
+        menacer.summoning_sick = False
+        state.players[0].battlefield = [menacer]
+        state.players[0].attackers = [menacer]
+        lone = Permanent(CardDef("Lone", CardType.CREATURE, None, None, power=1, toughness=1))
+        state.active_idx = 1  # the DEFENDER is active during declare-blockers
+
+        state.players[0].blocked_by = {menacer: [lone]}  # exactly one -> incomplete/illegal
+        assert menace_block_incomplete(state)  # "Done" would be forbidden here
+        b2 = Permanent(CardDef("B2", CardType.CREATURE, None, None, power=1, toughness=1))
+        state.players[0].blocked_by = {menacer: [lone, b2]}  # two -> a legal block
+        assert not menace_block_incomplete(state)
+        state.players[0].blocked_by = {}  # zero -> also legal (unblocked)
+        assert not menace_block_incomplete(state)
+
+        # Backstop: enforce_menace (active back on the attacker) drops a stray
+        # lone menace-block, keeping a two-block one.
+        state.active_idx = 0
+        state.players[0].blocked_by = {menacer: [lone]}
+        enforce_menace(state)
+        assert menacer not in state.players[0].blocked_by  # unblocked
+        state.players[0].blocked_by = {menacer: [lone, b2]}
+        enforce_menace(state)
+        assert state.players[0].blocked_by == {menacer: [lone, b2]}
+    finally:
+        registry.EFFECT_REGISTRY[_EID.FILLER] = _fb
+    print("combat.py menace (declaration incomplete-gate + backstop) self-check: OK")
+
+    # Goad: a goaded creature that can attack blocks its controller's Pass
+    # (has_unfulfilled_goad) until it's declared.
+    state = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
+    state.active_idx = state.turn_player_idx = 0
+    goaded = Permanent(CardDef("Goaded", CardType.CREATURE, None, _EID.FILLER, power=2, toughness=2))
+    goaded.summoning_sick = False
+    goaded.flags["goaded_by"] = 1
+    state.players[0].battlefield = [goaded]
+    declare_attackers_step(state)
+    assert has_unfulfilled_goad(state)  # able + undeclared -> must attack
+    declare_attacker(state, goaded)
+    assert not has_unfulfilled_goad(state)  # now declared -> satisfied
+    # a goaded creature that CAN'T attack (tapped) never forces the issue
+    state.players[0].attackers = []
+    goaded.tapped = True
+    assert not has_unfulfilled_goad(state)
+    print("combat.py goad (forces declaration) self-check: OK")
+
+    # Initiative transfer: the holder taking combat damage passes it to the
+    # attacker, who then has a venture queued.
+    state = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
+    state.active_idx = state.turn_player_idx = 0
+    state.initiative_idx = 1  # the DEFENDER holds it
+    hitter = Permanent(CardDef("Hitter", CardType.CREATURE, None, _EID.FILLER, power=3, toughness=3))
+    hitter.summoning_sick = False
+    state.players[0].battlefield = [hitter]
+    state.players[0].attackers = [hitter]
+    combat_damage_step(state)
+    assert state.players[1].life_total == 17  # 3 unblocked to the defender
+    assert state.initiative_idx == 0  # stolen by the attacker
+    assert any(e["type"] == "venture" for e in state.players[0].trigger_queue)
+    print("combat.py initiative transfer self-check: OK")

@@ -137,6 +137,27 @@ def _hand_count_available(state, name):
     return hand_count - stacked_count
 
 
+def _effective_cast_cost(state, card_def):
+    """A card's cast cost after any registry "cost_reduction" -- a
+    lambda(state) -> int (affinity = # artifacts you control; the graveyard
+    instant/sorcery count for Tolarian Terror / Cryptic Serpent; cards drawn
+    this turn for Deem Inferior). The reduction lowers ONLY the generic pips,
+    floored at 0 -- colored pips are never reduced (real "costs {N} less").
+    A card with no such spec (every existing card, and every G1-G6 card) pays
+    card_def.cast_cost unchanged, so this is a transparent no-op for them --
+    the single reason it's safe to route the whole cast path through it."""
+    cost = card_def.cast_cost
+    spec = game.EFFECT_REGISTRY.get(card_def.effect_id, {}).get("cost_reduction")
+    if spec is None or cost is None:
+        return cost
+    reduction = spec(state)
+    if reduction <= 0:
+        return cost
+    reduced = dict(cost)
+    reduced["generic"] = max(0, reduced.get("generic", 0) - reduction)
+    return reduced
+
+
 def _cast_legal(name, extra_legal, speed):
     def legal(state):
         if state.pending_resolution is not None:
@@ -146,7 +167,7 @@ def _cast_legal(name, extra_legal, speed):
         if _hand_count_available(state, name) <= 0:
             return False
         card_def = game.CARD_DEFS[name]
-        if game.plan_payment(state, card_def.cast_cost) is None:
+        if game.plan_payment(state, _effective_cast_cost(state, card_def)) is None:
             return False
         return extra_legal is None or extra_legal(state)
     legal._pending_gate = _GATE_NO_PENDING
@@ -177,7 +198,7 @@ def _cast_execute(name, resolve):
             # "Pass" -- see game.turn._run_turn_gen) has to actually
             # resolve it later.
             game.push_to_stack(s, card_def, resolve)
-        game.begin_pay_cost(state, card_def.cast_cost, on_complete=_after_pay)
+        game.begin_pay_cost(state, _effective_cast_cost(state, card_def), on_complete=_after_pay)
     return execute
 
 
@@ -200,7 +221,7 @@ def _precast_choice_execute(name, resolve):
         def _after_pay(s):
             game.on_cast_trigger(s, card_def)  # only once mana is irreversibly paid -- see _cast_execute's own comment
             resolve(s, card_def)
-        game.begin_pay_cost(state, card_def.cast_cost, on_complete=_after_pay)
+        game.begin_pay_cost(state, _effective_cast_cost(state, card_def), on_complete=_after_pay)
     return execute
 
 
@@ -249,6 +270,59 @@ def _x_precast_choice_execute(name, cost, resolve):
             resolve(s, card_def)
         game.begin_pay_cost(state, cost, on_complete=_after_pay)
     return execute
+
+
+def _delve_reduced_cost(card_def, n):
+    """Delve pays {1} of the generic cost per graveyard card exiled -- reduce
+    the generic pips by n, floored at 0 (colored pips untouched)."""
+    cost = dict(card_def.cast_cost)
+    cost["generic"] = max(0, cost.get("generic", 0) - n)
+    return cost
+
+
+def _delve_legal(name, n, speed):
+    """Cast this spell delving exactly n cards -- legal only with n cards in
+    the graveyard to exile AND the {generic-n} remainder affordable. One
+    action per n (0..delve["max"]); plan_payment masks the unaffordable ones,
+    same as x_cast_modes' own per-X enumeration."""
+    def legal(state):
+        if state.pending_resolution is not None:
+            return False
+        if not game.turn.speed_legal(state, speed):
+            return False
+        if _hand_count_available(state, name) <= 0:
+            return False
+        if len(state.graveyard) < n:
+            return False
+        return game.plan_payment(state, _delve_reduced_cost(game.CARD_DEFS[name], n)) is not None
+    legal._pending_gate = _GATE_NO_PENDING
+    return legal
+
+
+def _delve_execute(name, n, resolve):
+    """Exile n graveyard cards (the model chooses which -- begin_exile_n_from_
+    graveyard), then pay the {generic-n} remainder, then cast normally. The
+    exile is a cost, paid first; abandoning the mana payment afterward leaves
+    those cards exiled (same as any other paid cost)."""
+    def execute(state):
+        card_def = game.CARD_DEFS[name]
+
+        def _after_exile(s):
+            def _after_pay(s2):
+                game.on_cast_trigger(s2, card_def)
+                game.push_to_stack(s2, card_def, resolve)
+            game.begin_pay_cost(s, _delve_reduced_cost(card_def, n), on_complete=_after_pay)
+
+        game.begin_exile_n_from_graveyard(state, n, _after_exile)
+    return execute
+
+
+def _tuck_position_legal(state):
+    pending = state.pending_resolution
+    return pending is not None and pending["kind"] == "tuck_position"
+
+
+_tuck_position_legal._pending_gate = frozenset({"tuck_position"})
 
 
 def _activate_legal(name, cost_key, speed):
@@ -319,7 +393,16 @@ def _graveyard_ability_execute(name, cost_key, resolve):
 
 
 def _pass_legal(state):
-    return state.pending_resolution is None
+    if state.pending_resolution is not None:
+        return False
+    # Goad (Undercity Arena): a goaded creature that CAN attack must be
+    # declared -- its controller may not end their own declare-attackers step
+    # (Pass) while one is still able and undeclared. game.has_unfulfilled_goad
+    # only ever returns True during DECLARE_ATTACKERS for the turn player, so
+    # this is a no-op everywhere else.
+    if state.phase is game.turn.Phase.DECLARE_ATTACKERS and game.has_unfulfilled_goad(state):
+        return False
+    return True
 
 
 _pass_legal._pending_gate = _GATE_NO_PENDING
@@ -345,6 +428,8 @@ def _choose_name_options(state):
         return [n for n, c, f in _cached_tap_cost_options(state) if c is None and not f]
     if kind == "search_fetch":
         return game.search_fetch_options(state)
+    if kind == "throne_reveal":  # Undercity Throne: pick a creature card from the revealed top 10
+        return game.throne_reveal_options(state)
     if kind == "choose_graveyard_card":
         return game.choose_graveyard_card_options(state)
     if kind == "sacrifice":
@@ -373,6 +458,12 @@ def _choose_name_options(state):
         return game.select_to_hand_options(state)  # ordering phase only -- "keep"/"bottom" are their own actions
     if kind == "order_triggers":
         return game.order_triggers_options(state)
+    if kind == "put_on_top":  # Brainstorm: which hand card to put on top next
+        return game.put_on_top_options(state)
+    if kind == "ponder":  # Ponder: which revealed card to place on top next ("Shuffle (Ponder)" is its own action)
+        return game.ponder_options(state)
+    if kind == "choose_stack_target":  # Counterspell/Dispel/Spell Pierce: which spell on the stack to counter
+        return game.choose_stack_target_options(state)
     return []
 
 
@@ -382,9 +473,9 @@ def _choose_name_legal(name):
     # Matches _choose_name_options' own dispatch table above exactly --
     # every pending kind that function ever returns a non-empty list for.
     legal._pending_gate = frozenset({
-        "pay_cost", "search_fetch", "choose_graveyard_card", "sacrifice", "discard", "discard_or_sacrifice",
-        "mulligan_bottom", "ancient_stirrings", "malevolent_rumble", "scry", "surveil", "select_to_hand",
-        "order_triggers",
+        "pay_cost", "search_fetch", "throne_reveal", "choose_graveyard_card", "sacrifice", "discard",
+        "discard_or_sacrifice", "mulligan_bottom", "ancient_stirrings", "malevolent_rumble", "scry", "surveil",
+        "select_to_hand", "order_triggers", "put_on_top", "ponder", "choose_stack_target",
     })
     return legal
 
@@ -396,6 +487,8 @@ def _choose_name_execute(name):
             game.execute_tap_cost_option(state, name, None, False)
         elif kind == "search_fetch":
             game.execute_search_fetch_option(state, name)
+        elif kind == "throne_reveal":
+            game.execute_throne_reveal_option(state, name)
         elif kind == "choose_graveyard_card":
             game.execute_choose_graveyard_card_option(state, name)
         elif kind == "sacrifice":
@@ -414,6 +507,12 @@ def _choose_name_execute(name):
             game.execute_select_to_hand_option(state, name)  # ordering phase only
         elif kind == "order_triggers":
             game.execute_order_triggers_option(state, name)
+        elif kind == "put_on_top":
+            game.execute_put_on_top_option(state, name)
+        elif kind == "ponder":
+            game.execute_ponder_option(state, name)
+        elif kind == "choose_stack_target":
+            game.execute_choose_stack_target_option(state, name)
         else:  # scry / surveil, ordering phase
             game.execute_scry_surveil_option(state, name)
     return execute
@@ -585,7 +684,12 @@ def _assign_blocker_execute(name, slot):
 
 def _done_blocking_legal(state):
     pending = state.pending_resolution
-    return pending is not None and pending["kind"] == "declare_blockers"
+    if pending is None or pending["kind"] != "declare_blockers":
+        return False
+    # Menace (509.1c): can't FINISH a block declaration that leaves a menace
+    # attacker blocked by exactly one creature -- the defender must add a
+    # second blocker or unassign the lone one first.
+    return not game.menace_block_incomplete(state)
 
 
 _done_blocking_legal._pending_gate = frozenset({"declare_blockers"})
@@ -593,6 +697,37 @@ _done_blocking_legal._pending_gate = frozenset({"declare_blockers"})
 
 def _done_blocking_execute(state):
     game.complete_resolution(state)
+
+
+def _unassign_blocker_legal(name, slot):
+    """One "Unassign Blocker: <name> (slot j)" action -- take a committed
+    blocker back OUT of the block declaration (before Done). Legal while a
+    declare_blockers resolution is pending and the specific physical permanent
+    at this (name, slot) is currently committed as a blocker. Exists so the
+    menace 0-or-2+ rule (see _done_blocking_legal) is never a softlock: the
+    defender can always rearrange a lone menace-block into a legal declaration."""
+    def legal(state):
+        pending = state.pending_resolution
+        if pending is None or pending["kind"] != "declare_blockers":
+            return False
+        p = _cached_battlefield_lookup(state).get((name, slot))
+        return p is not None and any(p in blockers for blockers in state.opponent.blocked_by.values())
+    legal._pending_gate = frozenset({"declare_blockers"})
+    return legal
+
+
+def _unassign_blocker_execute(name, slot):
+    def execute(state):
+        p = next(pp for pp in state.battlefield if pp.card_def.name == name and pp.slot == slot)
+        blocked_by = state.opponent.blocked_by
+        for attacker, blockers in list(blocked_by.items()):
+            if p in blockers:
+                blockers.remove(p)
+                if not blockers:
+                    del blocked_by[attacker]
+                state.log_event("block_unassigned", blocker=(name, slot), attacker=(attacker.card_def.name, attacker.slot))
+                break
+    return execute
 
 
 def _assign_damage_to_opponent_legal(state):
@@ -715,6 +850,91 @@ _abandon_payment_legal._pending_gate = frozenset({"pay_cost"})
 
 def _abandon_payment_execute(state):
     game.abandon_pay_cost(state)
+
+
+def _ponder_shuffle_legal(state):
+    """Ponder's "you may shuffle" -- an alternative to ordering the revealed
+    cards, so legal only BEFORE any card has been placed on top (ordered
+    still empty). Once ordering has begun, that choice is made."""
+    pending = state.pending_resolution
+    return pending is not None and pending["kind"] == "ponder" and not pending["ordered"]
+
+
+_ponder_shuffle_legal._pending_gate = frozenset({"ponder"})
+
+
+def _ponder_shuffle_execute(state):
+    game.execute_ponder_shuffle(state)
+
+
+def _pay_unless_pay_legal(state):
+    """"Pay {N}" for the Spell Pierce / Ward rider -- legal only while a
+    pay_unless resolution is open AND the payer can actually afford the {N}
+    (active_idx is already flipped to the payer, so plan_payment reads THEIR
+    sources)."""
+    pending = state.pending_resolution
+    if pending is None or pending["kind"] != "pay_unless":
+        return False
+    return game.plan_payment(state, pending["cost"]) is not None
+
+
+_pay_unless_pay_legal._pending_gate = frozenset({"pay_unless"})
+
+
+def _pay_unless_pay_execute(state):
+    game.pay_unless_pay(state)
+
+
+def _pay_unless_decline_legal(state):
+    pending = state.pending_resolution
+    return pending is not None and pending["kind"] == "pay_unless"
+
+
+_pay_unless_decline_legal._pending_gate = frozenset({"pay_unless"})
+
+
+def _pay_unless_decline_execute(state):
+    game.pay_unless_decline(state)
+
+
+def _may_transform_legal(state):
+    pending = state.pending_resolution
+    return pending is not None and pending["kind"] == "may_transform"
+
+
+_may_transform_legal._pending_gate = frozenset({"may_transform"})
+
+
+def _may_copy_legal(state):
+    pending = state.pending_resolution
+    return pending is not None and pending["kind"] == "may_copy"
+
+
+_may_copy_legal._pending_gate = frozenset({"may_copy"})
+
+
+def _choose_room_legal(room):
+    def legal(state):
+        pending = state.pending_resolution
+        return pending is not None and pending["kind"] == "choose_room" and room in pending["options"]
+    legal._pending_gate = frozenset({"choose_room"})
+    return legal
+
+
+def _choose_room_execute(room):
+    return lambda state: game.execute_choose_room_option(state, room)
+
+
+def _choose_mana_color_legal(color):
+    def legal(state):
+        pending = state.pending_resolution
+        return pending is not None and pending["kind"] == "choose_mana_color"
+    legal._pending_gate = frozenset({"choose_mana_color"})
+    return legal
+
+
+def _choose_mana_color_execute(color):
+    return lambda state: game.execute_choose_mana_color(state, color)
 
 
 # ---------------------------------------------------------------------------
@@ -1010,11 +1230,19 @@ def _alt_cast_execute(name, resolve):
     return execute
 
 
-def _flashback_legal(name, ability_legal, speed):
+def _flashback_legal(name, ability_legal, speed, cost=None):
     """Dread Return's Flashback: cast from the graveyard, not hand. Real
     Magic: Flashback follows the same timing as the card itself, not its
     own independent rule -- speed is the same value the card's normal
-    cast derived, not a separate default."""
+    cast derived, not a separate default.
+
+    cost (optional): a MANA cost dict for a flashback whose flashback cost
+    includes mana (Deep Analysis' {1}{U}). When present, its affordability
+    is checked here (plan_payment) exactly like a normal cast; the free/
+    sacrifice-only flashbacks (Faithless Looting, Lava Dart, Dread Return)
+    leave it None and pay entirely inside their own resolve. Any NON-mana
+    additional cost (Deep Analysis' "Pay 3 life") is gated by ability_legal
+    instead (it can't be expressed as a mana dict)."""
     def legal(state):
         if state.pending_resolution is not None:
             return False
@@ -1022,16 +1250,100 @@ def _flashback_legal(name, ability_legal, speed):
             return False
         if not any(c.name == name for c in state.graveyard):
             return False
+        if cost is not None and game.plan_payment(state, cost) is None:
+            return False
         return ability_legal(state)
     legal._pending_gate = _GATE_NO_PENDING
     return legal
 
 
-def _flashback_execute(name, resolve):
+def _flashback_execute(name, resolve, cost=None):
     def execute(state):
         card_def = game.CARD_DEFS[name]
-        game.on_cast_trigger(state, card_def)  # item 11 -- see _cast_execute
-        resolve(state, card_def)
+        if cost is None:
+            game.on_cast_trigger(state, card_def)  # item 11 -- see _cast_execute
+            resolve(state, card_def)
+        else:
+            # Mana flashback cost: pay it first (like a normal cast), then
+            # fire the on-cast trigger and run the resolve, which pays any
+            # further additional cost (life) and pushes the effect.
+            def _after_pay(state):
+                game.on_cast_trigger(state, card_def)
+                resolve(state, card_def)
+            game.begin_pay_cost(state, cost, on_complete=_after_pay)
+    return execute
+
+
+def _impulse_entry(state, name):
+    """The topmost still-unexpired impulse entry (card_def, deadline) for
+    `name`, or None. Expired entries are pruned at untap, but this also
+    re-checks the deadline defensively."""
+    for cd, deadline in reversed(state.impulse):
+        if cd.name == name and state.turn_number <= deadline:
+            return (cd, deadline)
+    return None
+
+
+def _play_impulse_land_legal(name):
+    def legal(state):
+        if state.pending_resolution is not None:
+            return False
+        if _impulse_entry(state, name) is None:
+            return False
+        if not game.turn.speed_legal(state, game.turn.Speed.SORCERY):  # playing a land is sorcery-speed, your turn
+            return False
+        return state.lands_played_this_turn == 0
+    legal._pending_gate = _GATE_NO_PENDING
+    return legal
+
+
+def _play_impulse_land_execute(name):
+    def execute(state):
+        entry = _impulse_entry(state, name)
+        state.impulse.remove(entry)
+        state.hand.append(entry[0])  # source it via hand so play_land_from_hand works (Cascade-style insertion)
+        game.play_land_from_hand(state, entry[0])
+    return execute
+
+
+def _play_impulse_cast_legal(name, cost, extra_legal, speed):
+    def legal(state):
+        if state.pending_resolution is not None:
+            return False
+        if _impulse_entry(state, name) is None:
+            return False
+        if not game.turn.speed_legal(state, speed):
+            return False
+        if game.plan_payment(state, cost) is None:
+            return False
+        return extra_legal is None or extra_legal(state)
+    legal._pending_gate = _GATE_NO_PENDING
+    return legal
+
+
+def _play_impulse_cast_execute(name, cost, resolve, precast):
+    """Cast an impulse-exiled spell for `cost` (its normal cost -- impulse,
+    unlike Plot, is NOT free). Mirrors _cast_execute/_precast_choice_execute,
+    but the card is removed from the impulse zone only in _after_pay (once
+    mana is irreversibly paid) -- so abandoning payment leaves it in impulse,
+    no leak. Then it's inserted into hand (Cascade-style, so the card's own
+    resolve, written for a hand cast, finds and removes it) and either pushed
+    to the stack (non-precast) or resolved directly (precast, which pushes
+    itself)."""
+    def execute(state):
+        entry = _impulse_entry(state, name)
+
+        def _after_pay(s):
+            if entry in s.impulse:
+                s.impulse.remove(entry)
+            s.hand.append(entry[0])
+            game.on_cast_trigger(s, entry[0])
+            if precast:
+                resolve(s, entry[0])
+            else:
+                game.push_to_stack(s, entry[0], resolve)
+
+        game.begin_pay_cost(state, cost, on_complete=_after_pay)
     return execute
 
 
@@ -1221,12 +1533,22 @@ def build_action_table(decklist, registry, token_card_defs=(), pending_kinds=(),
         cast_modes = card_spec.get("cast_modes")
         if cast_modes is not None:
             for mode_name, mode_spec in cast_modes.items():
-                mode_execute_fn = _precast_choice_execute if mode_spec.get("precast_choice") else _cast_execute
-                actions.append((
-                    f"Cast {name} (choose {mode_name})",
-                    _cast_legal(name, mode_spec.get("extra_legal"), _cast_speed(game.CARD_DEFS[name], mode_spec)),
-                    mode_execute_fn(name, mode_spec["resolve"]),
-                ))
+                speed = _cast_speed(game.CARD_DEFS[name], mode_spec)
+                extra_legal = mode_spec.get("extra_legal")
+                # A mode may override the card's cast_cost (Kicker: the kicked
+                # mode costs more) -- if it does, route through the explicit-
+                # cost helpers (_x_cast_*), same ones x_cast_modes uses; else
+                # the default card_def.cast_cost path (Winding Way/Utopia Sprawl).
+                mode_cost = mode_spec.get("cost")
+                if mode_cost is not None:
+                    legal = _x_cast_legal(name, mode_cost, extra_legal, speed)
+                    ex_fn = _x_precast_choice_execute if mode_spec.get("precast_choice") else _x_cast_execute
+                    execute = ex_fn(name, mode_cost, mode_spec["resolve"])
+                else:
+                    legal = _cast_legal(name, extra_legal, speed)
+                    ex_fn = _precast_choice_execute if mode_spec.get("precast_choice") else _cast_execute
+                    execute = ex_fn(name, mode_spec["resolve"])
+                actions.append((f"Cast {name} (choose {mode_name})", legal, execute))
         # Nyxborn Hydra: X-cost modes (its own normal creature cast AND
         # Bestow, each with a different base cost) -- one action per (mode,
         # X) pair, X in 0..mode_spec["max_x"]. Each mode's own "resolve" is
@@ -1254,6 +1576,19 @@ def build_action_table(decklist, registry, token_card_defs=(), pending_kinds=(),
                         _x_cast_legal(name, cost, extra_legal, speed),
                         mode_execute_fn(name, cost, make_resolve(x)),
                     ))
+        # Gurmag Angler: Delve -- one "Cast X (delve N)" action per N in
+        # 0..delve["max"] (the generic cost), each exiling N graveyard cards
+        # to pay {N} of the generic. Same per-value enumeration + plan_payment
+        # masking as x_cast_modes.
+        delve = card_spec.get("delve")
+        if delve is not None:
+            delve_speed = _cast_speed(game.CARD_DEFS[name], delve)
+            for n in range(delve["max"] + 1):
+                actions.append((
+                    f"Cast {name} (delve {n})",
+                    _delve_legal(name, n, delve_speed),
+                    _delve_execute(name, n, delve["resolve"]),
+                ))
         # Land Grant: a second, free cast path alongside the normal one.
         alt_cast = card_spec.get("alt_cast")
         if alt_cast is not None:
@@ -1262,14 +1597,19 @@ def build_action_table(decklist, registry, token_card_defs=(), pending_kinds=(),
                 _alt_cast_legal(name, alt_cast["extra_legal"], _cast_speed(game.CARD_DEFS[name], alt_cast)),
                 _alt_cast_execute(name, alt_cast["resolve"]),
             ))
-        # Dread Return: Flashback casts from the graveyard, not hand.
-        flashback = card_spec.get("flashback")
-        if flashback is not None:
-            actions.append((
-                f"Flashback {name}",
-                _flashback_legal(name, flashback["legal"], _cast_speed(game.CARD_DEFS[name], flashback)),
-                _flashback_execute(name, flashback["resolve"]),
-            ))
+        # Dread Return: Flashback casts from the graveyard, not hand. Escape
+        # (Sleep of the Dead) is the same graveyard-cast machinery with a mana
+        # cost + its own additional cost handled inside the resolve -- shares
+        # _flashback_legal/_execute, only the action label differs.
+        for gy_cast_key, gy_cast_label in (("flashback", "Flashback"), ("escape", "Escape")):
+            gy_cast = card_spec.get(gy_cast_key)
+            if gy_cast is not None:
+                gc_cost = gy_cast.get("cost")  # mana cost dict, if the cost includes mana (Deep Analysis, Sleep of the Dead)
+                actions.append((
+                    f"{gy_cast_label} {name}",
+                    _flashback_legal(name, gy_cast["legal"], _cast_speed(game.CARD_DEFS[name], gy_cast), gc_cost),
+                    _flashback_execute(name, gy_cast["resolve"], gc_cost),
+                ))
         # Highway Robbery: Plot -- pay its plot cost to exile it now,
         # cast it for free from exile on any later turn. The cast-from-
         # exile half reuses this same card's normal "cast" resolve (the
@@ -1359,14 +1699,53 @@ def build_action_table(decklist, registry, token_card_defs=(), pending_kinds=(),
                     _activate_no_cost_execute(name, spec["resolve"]),
                 ))
 
+    # "Discard this card from hand: <do something>" cycling-family actions.
+    # Both keys share the identical hand-zone/cost-key/resolve plumbing
+    # (_forestcycle_legal/_execute) -- they differ only in the action label:
+    #   "forestcycle" -- basic-land-to-hand search (Generous Ent, Ash Barrens)
+    #   "cycle"       -- plain Cycling (discard, draw) and typed cycling like
+    #                    Islandcycling (Lorien Revealed) / Twisted Landscape
     for name in distinct_names:
-        fc_spec = registry.get(game.CARD_DEFS[name].effect_id, {}).get("forestcycle")
-        if fc_spec is not None:
-            actions.append((
-                f"Forestcycle {name}",
-                _forestcycle_legal(name, fc_spec["cost_key"]),
-                _forestcycle_execute(name, fc_spec["cost_key"], fc_spec["resolve"]),
-            ))
+        for spec_key, label in (("forestcycle", "Forestcycle"), ("cycle", "Cycle")):
+            cyc_spec = registry.get(game.CARD_DEFS[name].effect_id, {}).get(spec_key)
+            if cyc_spec is not None:
+                actions.append((
+                    f"{label} {name}",
+                    _forestcycle_legal(name, cyc_spec["cost_key"]),
+                    _forestcycle_execute(name, cyc_spec["cost_key"], cyc_spec["resolve"]),
+                ))
+
+    # Impulse: "you may play the exiled cards" (Reckless Impulse / Experimental
+    # Synthesizer / Clockwork Percussionist). Only emitted for a deck that can
+    # actually impulse (its impulse-source card declares pending_kinds
+    # {"impulse"}), so decks without one never carry these mostly-illegal
+    # actions. One action per deck card name: a land play, or a cast per the
+    # card's own cast/cast_modes spec (paying its NORMAL cost -- impulse, unlike
+    # Plot, is not free; x_cast_modes cards, none in the impulse decks, aren't
+    # offered from impulse).
+    if "impulse" in pending_kinds:
+        for name in distinct_names:
+            card_def = game.CARD_DEFS[name]
+            if card_def.card_type == game.CardType.LAND:
+                actions.append((f"Play from exile: {name}", _play_impulse_land_legal(name), _play_impulse_land_execute(name)))
+                continue
+            spec = registry.get(card_def.effect_id, {})
+            cast_spec = spec.get("cast")
+            if cast_spec is not None:
+                speed = _cast_speed(card_def, cast_spec)
+                actions.append((
+                    f"Play from exile: {name}",
+                    _play_impulse_cast_legal(name, card_def.cast_cost, cast_spec.get("extra_legal"), speed),
+                    _play_impulse_cast_execute(name, card_def.cast_cost, cast_spec["resolve"], cast_spec.get("precast_choice", False)),
+                ))
+            for mode_name, mode_spec in (spec.get("cast_modes") or {}).items():
+                mode_cost = mode_spec.get("cost", card_def.cast_cost)
+                speed = _cast_speed(card_def, mode_spec)
+                actions.append((
+                    f"Play from exile: {name} ({mode_name})",
+                    _play_impulse_cast_legal(name, mode_cost, mode_spec.get("extra_legal"), speed),
+                    _play_impulse_cast_execute(name, mode_cost, mode_spec["resolve"], mode_spec.get("precast_choice", False)),
+                ))
 
     # Bramble Wurm: an activated ability usable from the graveyard, not
     # the battlefield (unlike every "activated_abilities" entry above) or
@@ -1477,6 +1856,14 @@ def build_action_table(decklist, registry, token_card_defs=(), pending_kinds=(),
                 _assign_blocker_legal(name, slot),
                 _assign_blocker_execute(name, slot),
             ))
+            # "Unassign Blocker: X (slot j)" -- take a committed blocker back
+            # out (menace's 0-or-2+ rule needs this to never be a softlock, see
+            # _unassign_blocker_legal). Same (name, slot) own-creature domain.
+            actions.append((
+                f"Unassign Blocker: {name} (slot {slot})",
+                _unassign_blocker_legal(name, slot),
+                _unassign_blocker_execute(name, slot),
+            ))
     actions.append(("Done blocking", _done_blocking_legal, _done_blocking_execute))
     # Trample's "assign a combat-damage point to the defending player" half
     # of a gang-blocking damage assignment (the blocker half is the pointer
@@ -1558,6 +1945,20 @@ def build_action_table(decklist, registry, token_card_defs=(), pending_kinds=(),
         actions.append(("Decline (Ancient Stirrings)", _decline_legal, _decline_execute))
     if "malevolent_rumble" in pending_kinds:
         actions.append(("Decline (Malevolent Rumble)", _decline_malevolent_rumble_legal, _decline_malevolent_rumble_execute))
+    if "ponder" in pending_kinds:
+        actions.append(("Shuffle (Ponder)", _ponder_shuffle_legal, _ponder_shuffle_execute))
+    if "pay_unless" in pending_kinds:  # Spell Pierce / Ward "unless controller pays {N}"
+        actions.append(("Pay (unless)", _pay_unless_pay_legal, _pay_unless_pay_execute))
+        actions.append(("Don't pay (unless)", _pay_unless_decline_legal, _pay_unless_decline_execute))
+    if "tuck_position" in pending_kinds:  # Deem Inferior: owner picks 2nd-from-top or bottom
+        actions.append(("Tuck: 2nd from top", _tuck_position_legal, lambda state: game.execute_tuck_position(state, "top2")))
+        actions.append(("Tuck: bottom", _tuck_position_legal, lambda state: game.execute_tuck_position(state, "bottom")))
+    if "may_transform" in pending_kinds:  # Delver of Secrets: revealed an instant/sorcery, may flip
+        actions.append(("Transform", _may_transform_legal, lambda state: game.execute_may_transform(state, True)))
+        actions.append(("Don't transform", _may_transform_legal, lambda state: game.execute_may_transform(state, False)))
+    if "may_copy" in pending_kinds:  # Chain Lightning: after paying {R}{R}, may copy the spell
+        actions.append(("Copy spell", _may_copy_legal, lambda state: game.execute_may_copy(state, True)))
+        actions.append(("Don't copy spell", _may_copy_legal, lambda state: game.execute_may_copy(state, False)))
     if "select_to_hand" in pending_kinds:
         actions.append(("Keep (select to hand)", _select_to_hand_keep_legal, _select_to_hand_keep_execute))
         actions.append(("Bottom (select to hand)", _select_to_hand_bottom_legal, _select_to_hand_bottom_execute))
@@ -1622,6 +2023,12 @@ def build_action_table(decklist, registry, token_card_defs=(), pending_kinds=(),
         actions.append(("Target any: yourself", _target_any_self_legal, _target_any_self_execute))
         actions.append(("Target any: opponent", _target_any_opponent_legal, _target_any_opponent_execute))
         actions.append(("Choose no target", _target_any_decline_legal, _target_any_decline_execute))  # "up to one" decline
+    if "choose_room" in pending_kinds:  # Undercity venture: which next room to enter (a ≤2-way branch)
+        for room in game.ROOM_NAMES:
+            actions.append((f"Enter room: {room}", _choose_room_legal(room), _choose_room_execute(room)))
+    if "choose_mana_color" in pending_kinds:  # Chromatic Star: "add one mana of any color"
+        for color in game.COLORS:
+            actions.append((f"Add mana: {color}", _choose_mana_color_legal(color), _choose_mana_color_execute(color)))
 
     return tuple(actions)
 

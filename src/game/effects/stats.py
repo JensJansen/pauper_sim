@@ -42,6 +42,34 @@ def _animate_spec(permanent):
     return spec
 
 
+def _transform_spec(permanent):
+    """A transformed double-faced permanent's back-face stats (Delver of
+    Secrets -> Insectile Aberration 3/2 flying). Returns the registry
+    "transform" spec ({"power","toughness","keywords"}) once
+    permanent.flags["transformed"] is set, else None. Flag-gated (a real
+    one-way transform, set by the upkeep trigger), unlike _animate_spec's
+    counter threshold; both override the card_def's own base stats the same
+    way, with counters/temp/static bonuses still added on top."""
+    if not permanent.flags.get("transformed"):
+        return None
+    return registry.EFFECT_REGISTRY.get(permanent.card_def.effect_id, {}).get("transform")
+
+
+def _static_self(state, permanent):
+    """A creature's OWN conditional static boost (Goblin Tomb Raider: "as
+    long as you control an artifact, this creature gets +1/+0 and has
+    haste"). Returns (power, toughness, keywords) from the registry
+    "static_self" spec when its condition(state, permanent) holds, else
+    (0, 0, empty). Distinct from Aura pt_bonus (that's granted BY another
+    permanent); this is the creature's own always-on-when-condition-met
+    ability, read directly off itself with one registry lookup + the spec's
+    own condition."""
+    spec = registry.EFFECT_REGISTRY.get(permanent.card_def.effect_id, {}).get("static_self")
+    if spec is None or not spec["condition"](state, permanent):
+        return 0, 0, set()
+    return spec.get("power", 0), spec.get("toughness", 0), set(spec.get("keywords", ()))
+
+
 def _enchanting_auras(state, permanent):
     """Every Aura currently enchanting `permanent`, searched across BOTH
     players' own battlefields (state.players directly, NOT the
@@ -106,9 +134,17 @@ def permanent_power(state, permanent, enchanting_auras=None):
     sitting on `permanent` itself (its own counters dict, one registry
     lookup) with no battlefield scan, so they're already exactly as cheap
     as the single per-creature call this function already gets."""
+    transform = _transform_spec(permanent)
     animate = _animate_spec(permanent)
-    base = animate["power"] if animate is not None else permanent.card_def.extra.get("power", 0)
+    if transform is not None:
+        base = transform["power"]
+    elif animate is not None:
+        base = animate["power"]
+    else:
+        base = permanent.card_def.extra.get("power", 0)
     base += sum(_COUNTER_PT.get(kind, (0, 0))[0] * n for kind, n in permanent.counters.items())
+    base += permanent.temp_power  # until-EOT modifier (Agony Warp's -3/-0), cleared at cleanup_step
+    base += _static_self(state, permanent)[0]  # conditional static self-boost (Goblin Tomb Raider)
     auras = enchanting_auras if enchanting_auras is not None else _enchanting_auras(state, permanent)
     bonus = sum(
         registry.EFFECT_REGISTRY.get(aura.card_def.effect_id, {}).get("pt_bonus", lambda *_a: 0)(state, aura)
@@ -133,9 +169,17 @@ def permanent_toughness(state, permanent, enchanting_auras=None):
     pre-fetch, same reasoning. base folds in _animate_spec/_COUNTER_PT the
     same way permanent_power's own base does -- see that function's
     docstring for why neither needs a battlefield-scan cache of its own."""
+    transform = _transform_spec(permanent)
     animate = _animate_spec(permanent)
-    base = animate["toughness"] if animate is not None else permanent.card_def.extra.get("toughness", 0)
+    if transform is not None:
+        base = transform["toughness"]
+    elif animate is not None:
+        base = animate["toughness"]
+    else:
+        base = permanent.card_def.extra.get("toughness", 0)
     base += sum(_COUNTER_PT.get(kind, (0, 0))[1] * n for kind, n in permanent.counters.items())
+    base += permanent.temp_toughness  # until-EOT modifier (Agony Warp's -0/-3), cleared at cleanup_step
+    base += _static_self(state, permanent)[1]  # conditional static self-boost (Goblin Tomb Raider)
     auras = enchanting_auras if enchanting_auras is not None else _enchanting_auras(state, permanent)
     bonus = sum(
         registry.EFFECT_REGISTRY.get(aura.card_def.effect_id, {}).get("toughness_bonus", lambda *_a: 0)(state, aura)
@@ -170,10 +214,19 @@ def lifelink_count(state, permanent, enchanting_auras=None):
     auras fetch per creature per combat instead of each independently
     re-scanning state.players."""
     auras = enchanting_auras if enchanting_auras is not None else _enchanting_auras(state, permanent)
-    return sum(
+    count = sum(
         1 for aura in auras
         if registry.EFFECT_REGISTRY.get(aura.card_def.effect_id, {}).get("lifelink", False)
     )
+    # Real (keyword) lifelink -- from a lifelink counter (Unexpected Fangs) or
+    # an until-EOT grant (Toxin Analysis) -- adds ONE trigger and, unlike
+    # Armadillo Cloak's stacking triggered ability above, does NOT stack with
+    # itself: two lifelink sources on one creature still gain life only once.
+    # So it contributes +1 iff "lifelink" is in the creature's keywords,
+    # regardless of how many keyword-lifelink sources there are.
+    if "lifelink" in creature_keywords(state, permanent, enchanting_auras=auras):
+        count += 1
+    return count
 
 
 # Real Magic keyword strings this engine models as a boolean set
@@ -187,11 +240,18 @@ def lifelink_count(state, permanent, enchanting_auras=None):
 # Gladecover Scout, Silhana Ledgewalker) and "shroud": the targeting
 # restriction (can_be_targeted below) -- once opponents can target across
 # sides (faithful burn/removal) these stop being no-ops and gate legal
-# targets. Deathtouch/double strike/
-# menace: no card grants any of them -- not modeled, not a registry
-# key. (Reach is modeled per-card for Bramble Wurm.) Armadillo Cloak's own lifegain clause is NOT here -- see
+# targets. "deathtouch" IS modeled now (Toxin Analysis grants it until end
+# of turn via permanent.temp_keywords): combat.py marks a creature dealt
+# damage by a deathtouch source and state_based.check_state_based_actions
+# treats any such marked damage as lethal. "menace" IS modeled now (the
+# Undercity Catacombs Skeleton token has it -- an intrinsic registry
+# keyword, read here; game.effects.combat enforces the 2+-blocker rule at
+# block finalization). Double strike: still no card grants it -- not
+# modeled. (Reach is modeled per-card for Bramble Wurm.) Armadillo Cloak's own lifegain clause is NOT here -- see
 # lifelink_count above for why a boolean keyword is the wrong model for
-# a triggered, stacking ability.
+# a triggered, stacking ability (real, non-stacking keyword lifelink -- a
+# lifelink counter / an until-EOT grant -- IS folded into lifelink_count,
+# as a single non-stacking +1).
 def creature_keywords(state, permanent, enchanting_auras=None):
     """Union of this permanent's own intrinsic registry "keywords" set
     (a creature's own EFFECT_REGISTRY entry) plus every Aura currently
@@ -209,11 +269,20 @@ def creature_keywords(state, permanent, enchanting_auras=None):
     reasoning as permanent_power/permanent_toughness."""
     auras = enchanting_auras if enchanting_auras is not None else _enchanting_auras(state, permanent)
     keywords = set(registry.EFFECT_REGISTRY.get(permanent.card_def.effect_id, {}).get("keywords", ()))
+    transform = _transform_spec(permanent)
+    if transform is not None:
+        keywords |= set(transform.get("keywords", ()))  # Insectile Aberration's flying
     animate = _animate_spec(permanent)
     if animate is not None:
         keywords |= set(animate.get("keywords", ()))
     for aura in auras:
         keywords |= set(registry.EFFECT_REGISTRY.get(aura.card_def.effect_id, {}).get("keywords", ()))
+    keywords |= permanent.temp_keywords  # until-EOT granted keywords (Toxin Analysis' deathtouch/lifelink)
+    keywords |= _static_self(state, permanent)[2]  # conditional static self-boost keywords (Goblin Tomb Raider's haste)
+    if permanent.counters.get("lifelink", 0) > 0:
+        keywords.add("lifelink")  # a lifelink counter grants lifelink (Unexpected Fangs)
+    if permanent.flags.get("throne_hexproof"):
+        keywords.add("hexproof")  # Undercity's Throne of the Dead Three: hexproof until your next turn
     return keywords
 
 
