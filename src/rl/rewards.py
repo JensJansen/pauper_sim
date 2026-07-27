@@ -36,11 +36,7 @@ def action_count_win_reward(plateau_actions=80, max_actions=200, min_reward=0.25
     reward going even faster) -> max_reward (1.0); actions_taken >= max_actions
     (200) -> min_reward (0.25, clearly above a loss's 0); linear ramp between
     the two. A loss or draw is still exactly 0.0 either way -- only a win's own
-    value moves.
-
-    plateau_actions/max_actions/min_reward are stamped onto the returned
-    function itself so a caller holding only reward_fn can read them back
-    without a separate copy of the number."""
+    value moves."""
     span = max_actions - plateau_actions
     def reward_fn(state, done, horizon):
         if not done or state.turn_won is None:
@@ -48,9 +44,6 @@ def action_count_win_reward(plateau_actions=80, max_actions=200, min_reward=0.25
         winner_actions = state.players[state.winner].actions_taken
         over_plateau = min(max(0, winner_actions - plateau_actions), span)
         return 1.0 - over_plateau / span * (1.0 - min_reward)
-    reward_fn.plateau_actions = plateau_actions
-    reward_fn.max_actions = max_actions
-    reward_fn.min_reward = min_reward
     return reward_fn
 
 
@@ -71,9 +64,6 @@ if __name__ == "__main__":
     # Default instance (0.25 floor) -- built locally just for this check; the
     # only pre-baked module-level instance the pipeline ships is the 0.2-floor one.
     rf = action_count_win_reward()
-    assert rf.plateau_actions == 80
-    assert rf.max_actions == 200
-    assert rf.min_reward == 0.25
 
     state2 = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
     state2.turn_won = None

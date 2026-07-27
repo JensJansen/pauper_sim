@@ -15,10 +15,9 @@ cross-config wall-clock summary.
 Configs:
   seq        1 process, batch-of-1 collection (the sequential path)
   mp<N>      N worker processes (collect_rollout_league_parallel)
-  batch<K>   in-process vectorized collection, K games/batch (collect_rollout_league_batched)
 
     python src/benchmarking/training_run.py [--iterations N] [--games-per-iter N] \
-        [--configs seq,mp6,batch8] [--seed 0] [--snapshot-every N] [--gpu-threshold N]
+        [--configs seq,mp6] [--seed 0] [--snapshot-every N]
 """
 
 import argparse
@@ -31,22 +30,19 @@ import run_league
 
 
 def _parse_config(name):
-    """'seq' | 'mp<N>' | 'batch<K>' -> (n_worker_processes_or_None, collect_batch_size_or_None)."""
+    """'seq' | 'mp<N>' -> n_worker_processes_or_None."""
     if name == "seq":
-        return None, None
+        return None
     if name.startswith("mp"):
-        return int(name[2:]), None
-    if name.startswith("batch"):
-        return None, int(name[5:])
-    raise SystemExit(f"unknown config {name!r} (want seq | mp<N> | batch<K>)")
+        return int(name[2:])
+    raise SystemExit(f"unknown config {name!r} (want seq | mp<N>)")
 
 
-def _run_config(name, iters, gpi, snapshot_every, seed, gpu_threshold):
-    workers, collect_bs = _parse_config(name)
+def _run_config(name, iters, gpi, snapshot_every, seed):
+    workers = _parse_config(name)
     import tempfile
     league_dir = tempfile.mkdtemp(prefix=f"bench_train_{name}_")
-    kwargs = dict(gpu_threshold=gpu_threshold, collect_batch_size=collect_bs,
-                  fresh_stack=True, league_dir=league_dir, seed=seed)
+    kwargs = dict(fresh_stack=True, league_dir=league_dir, seed=seed)
     t0 = time.perf_counter()
     try:
         if workers and workers > 1:
@@ -63,19 +59,18 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--iterations", type=int, default=1)
     ap.add_argument("--games-per-iter", type=int, default=4)
-    ap.add_argument("--configs", type=str, default="seq,mp6,batch8")
+    ap.add_argument("--configs", type=str, default="seq,mp6")
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--snapshot-every", type=int, default=20, help="Real league default; won't fire in a short bench.")
-    ap.add_argument("--gpu-threshold", type=int, default=None)
     args = ap.parse_args()
 
     print(f"true-training-loop benchmark: fresh (untrained) identical-config stack, seed={args.seed}, "
-          f"iterations={args.iterations} games/iter={args.games_per_iter} gpu_threshold={args.gpu_threshold}")
+          f"iterations={args.iterations} games/iter={args.games_per_iter}")
     results = {}
     for name in args.configs.split(","):
         print(f"\n########## config: {name} ##########", flush=True)
         results[name] = _run_config(name, args.iterations, args.games_per_iter, args.snapshot_every,
-                                    args.seed, args.gpu_threshold)
+                                    args.seed)
 
     print("\n===== SUMMARY (total wall-clock per config, whole training session) =====")
     base = results.get("seq")

@@ -51,8 +51,8 @@ from rl.deck import DeckNetwork
 from rl.league import LeaguePool
 from rl.pool import build_pool
 from rl.train import (
-    batch_size_for_iteration, collect_rollout_league, collect_rollout_league_batched,
-    collect_rollout_league_parallel, device_for_batch_size, move_optimizer_state, ppo_update, train_selfplay,
+    batch_size_for_iteration, collect_rollout_league,
+    collect_rollout_league_parallel, ppo_update, train_selfplay,
 )
 
 CHECKPOINT_DIR = "../checkpoints"
@@ -111,24 +111,9 @@ def _save_live_checkpoints(live_nets, optimizers, deck_names, session, session_p
         f.write(str(session))
 
 
-def _ppo_update_on_device(net, optimizer, buf, update_device, batch_size):
-    """One ppo_update, round-tripping the net + Adam state to GPU only for the
-    update when update_device is cuda (collection always needs the net on CPU),
-    then straight back. Used for a deck's own update AND each salvaged live-
-    opponent update (Path A)."""
-    if update_device == "cuda":
-        net.to("cuda")
-        move_optimizer_state(optimizer, "cuda")
-    out = ppo_update(net, [optimizer], buf, update_device, batch_size=batch_size)
-    if update_device == "cuda":
-        net.to("cpu")
-        move_optimizer_state(optimizer, "cpu")
-    return out
-
-
 def _run_session(n_iterations, games_per_iteration, snapshot_every, executor, n_workers,
-                  gpu_threshold=None, batch_size_start=32, batch_size_cap=2048, batch_size_steps=6,
-                  collect_batch_size=None, fresh_stack=False, league_dir=None, seed=None,
+                  batch_size_start=32, batch_size_cap=2048, batch_size_steps=6,
+                  fresh_stack=False, league_dir=None, seed=None,
                   salvage_opponents=True):
     # fresh_stack + league_dir + seed let the benchmark harness drive this EXACT
     # loop with untrained (but identical-config) models over a throwaway dir,
@@ -170,27 +155,16 @@ def _run_session(n_iterations, games_per_iteration, snapshot_every, executor, n_
 
     print(f"League session {session}: n_iterations={n_iterations} games_per_iteration={games_per_iteration} "
           f"snapshot_every={snapshot_every} decks={deck_names} n_workers={n_workers} "
-          f"batch_size={batch_size_start}->{batch_size_cap} ({batch_size_steps} steps) gpu_threshold={gpu_threshold}")
+          f"batch_size={batch_size_start}->{batch_size_cap} ({batch_size_steps} steps)")
     t0 = time.time()
     total_games = 0
     collect_time_total = 0.0
     update_time_total = 0.0
     for iteration in range(n_iterations):
         batch_size = batch_size_for_iteration(iteration, n_iterations, batch_size_start, batch_size_cap, batch_size_steps)
-        update_device = device_for_batch_size(batch_size, gpu_threshold)
         for name in deck_names:
             t_collect0 = time.time()
-            if collect_batch_size:
-                # In-process VECTORIZED collection: collect_batch_size games at
-                # once, ONE shared-stack forward per batch of decisions (see
-                # rl.train.collect_rollout_league_batched). Single process, so
-                # no executor -- an alternative to the --n-workers MP path.
-                buf, opp_buffers, played = collect_rollout_league_batched(
-                    name, live_nets[name], deck_ctxs[name], decklists[name], reward_fn,
-                    pool, decklists, deck_ctxs, live_nets, horizon, games_per_iteration, rng,
-                    device="cpu", batch_size=collect_batch_size,
-                )
-            elif executor is not None:
+            if executor is not None:
                 buf, opp_buffers, played = collect_rollout_league_parallel(
                     name, live_nets, reward_fn_name, league_dir, horizon, games_per_iteration,
                     executor, n_workers, SHARED_HPARAMS,
@@ -205,8 +179,8 @@ def _run_session(n_iterations, games_per_iteration, snapshot_every, executor, n_
             t_update0 = time.time()
             policy_loss = value_loss = entropy = 0.0
             if len(buf):
-                policy_loss, value_loss, entropy = _ppo_update_on_device(
-                    live_nets[name], optimizers[name], buf, update_device, batch_size)
+                policy_loss, value_loss, entropy = ppo_update(
+                    live_nets[name], [optimizers[name]], buf, "cpu", batch_size=batch_size)
             # Path A: also train each LIVE-opponent deck from the transitions it
             # generated this round. Those are on-policy for its net (its net was
             # constant across THIS deck's whole round), so this harvests the
@@ -218,11 +192,11 @@ def _run_session(n_iterations, games_per_iteration, snapshot_every, executor, n_
             if salvage_opponents:
                 for opp_name, opp_buf in opp_buffers.items():
                     if len(opp_buf):
-                        _ppo_update_on_device(live_nets[opp_name], optimizers[opp_name], opp_buf, update_device, batch_size)
+                        ppo_update(live_nets[opp_name], [optimizers[opp_name]], opp_buf, "cpu", batch_size=batch_size)
                         salvaged += len(opp_buf)
             update_time_total += time.time() - t_update0
             print(f"  iter {iteration} [{name}]: games={played} buf={len(buf)} salvaged={salvaged} batch_size={batch_size} "
-                  f"device={update_device} policy_loss={policy_loss:.4f} value_loss={value_loss:.4f}", flush=True)
+                  f"policy_loss={policy_loss:.4f} value_loss={value_loss:.4f}", flush=True)
 
         if (iteration + 1) % snapshot_every == 0:
             for name in deck_names:
@@ -331,21 +305,12 @@ def build_arg_parser():
     parser.add_argument("--games", type=int, default=50, help="Total games for --matchup mode.")
     parser.add_argument("--log", type=str, default=None, metavar="PATH",
                          help="Write the game engine's own event log for every game this session to PATH as JSON.")
-    parser.add_argument("--gpu-threshold", type=int, default=None, metavar="BATCH_SIZE",
-                         help="ppo_update batch_size at/above which to mechanically switch that update to GPU. "
-                              "Set from an empirically measured CPU/GPU crossover -- default None means "
-                              "always CPU (no threshold known/set).")
     parser.add_argument("--batch-size-start", type=int, default=32,
                          help="ppo_update batch_size at the first iteration (small/granular early).")
     parser.add_argument("--batch-size-cap", type=int, default=2048,
                          help="ppo_update batch_size ceiling by the end of the session.")
     parser.add_argument("--batch-size-steps", type=int, default=6,
                          help="Number of doublings from --batch-size-start to --batch-size-cap, spread evenly across the session.")
-    parser.add_argument("--collect-batch-size", type=int, default=None, metavar="K",
-                         help="Collect rollouts with in-process VECTORIZED play: K games at once, one shared-stack "
-                              "forward per batch of decisions (rl.train.collect_rollout_league_batched). Single "
-                              "process -- overrides --n-workers. Best paired with a GPU; on CPU the batch-of-1 path "
-                              "(with forced-move skipping) is already competitive.")
     parser.add_argument("--no-opponent-salvage", action="store_true",
                          help="Disable Path A: when the sampled opponent is another deck's LIVE net, train THAT deck "
                               "too from its (on-policy) transitions this round, at no extra collection cost -- on by "
@@ -365,14 +330,9 @@ def main():
         "collect_rollout_league (plain league opponent-sampling mode) doesn't forward it yet"
     )
     n_workers = args.n_workers
-    schedule_kwargs = dict(gpu_threshold=args.gpu_threshold, batch_size_start=args.batch_size_start,
+    schedule_kwargs = dict(batch_size_start=args.batch_size_start,
                             batch_size_cap=args.batch_size_cap, batch_size_steps=args.batch_size_steps,
                             salvage_opponents=not args.no_opponent_salvage)
-    if args.collect_batch_size and args.collect_batch_size > 1:
-        # Vectorized in-process collection -- single process, no executor.
-        _run_session(args.n_iterations, args.games_per_iteration, args.snapshot_every, None, 1,
-                     collect_batch_size=args.collect_batch_size, **schedule_kwargs)
-        return
     if n_workers > 1:
         # ONE executor for the whole session, reused across every
         # iteration -- process-spawn/import overhead (each worker

@@ -156,10 +156,9 @@ def _build_decision(state, seat, deck_ctx, horizon):
     """Everything a decision needs that does NOT require the (expensive) policy
     forward: the token set + scalar features and the legal-action mask (fixed
     half via ONE drl_env.legal_action_mask sweep, pointer half via
-    pointer_legal_mask). Forward-free by design so (a) a FORCED decision
+    pointer_legal_mask). Forward-free by design so a FORCED decision
     (n_legal == 1 -- overwhelmingly a priority Pass with nothing to play) skips
-    the network entirely, and (b) the batched collector can gather many
-    decisions' token sets and run ONE shared-stack forward across all of them.
+    the network entirely.
     identities is read straight off the token set (each token is (vocab_idx,
     feature_row, identity)); the pointer mask -- and its buffer-stored width --
     are the RAW token count, exactly what ppo_update re-pads per minibatch."""
@@ -291,116 +290,6 @@ def collect_rollout(seat_nets, decklists, reward_fns, deck_ctxs, horizon, n_game
     return buffers, games_played
 
 
-class _BatchedGame:
-    """One in-flight game for collect_rollout_batched: its own game_coroutine +
-    live state + per-seat buffers/pending, plus the nets/ctxs/reward_fns for
-    each seat. Advances lazily so the collector can interleave many of these and
-    batch their pending forwards. state is the SAME object game_coroutine
-    yields, mutated in place, so it always reflects the current decision."""
-
-    def __init__(self, spec, horizon, combat_enabled, rng):
-        seat_nets, decklists, deck_ctxs, reward_fns = spec
-        self.seat_nets, self.deck_ctxs, self.reward_fns = seat_nets, deck_ctxs, reward_fns
-        self.state = game.new_multiplayer_game_state(decklists, rng.randint(0, 1), rng)
-        self.gen = game.game_coroutine(self.state, horizon=horizon, combat_enabled=combat_enabled)
-        self.buffers = [RolloutBuffer(), RolloutBuffer()]
-        self.pending = [None, None]
-        self.alive = True
-        self.advance(None, first=True)
-
-    def advance(self, action, first=False):
-        try:
-            next(self.gen) if first else self.gen.send(action)
-        except StopIteration:
-            self.alive = False
-
-
-def _advance_to_real_decision(g, horizon):
-    """Send FORCED moves (one legal action -- no forward, no transition
-    recorded, exactly as _seat_step/collect_rollout do) until g is suspended at
-    a REAL decision (return its _Decision + seat) or the game ends (return
-    None). Leaves g suspended AT the real decision so the caller can batch its
-    forward and only then send the action."""
-    while g.alive:
-        seat = g.state.active_idx
-        dec = _build_decision(g.state, seat, g.deck_ctxs[seat], horizon)
-        if dec.sole_action is None:
-            return dec, seat
-        forced = _executor_for(g.state, dec.sole_action, dec.fixed_table, dec.identities)
-        g.advance(None if _is_pass(dec.sole_action, dec.fixed_table) else forced)
-    return None, None
-
-
-def _batched_forward(items, device):
-    """items: list of (net, _Decision). Every net shares ONE frozen shared_stack
-    instance, so the (expensive) shared-stack forward runs ONCE across all
-    items; the small per-deck heads run per item (they differ by deck and by
-    n_fixed). The SetTransformer masks padding in attention/pooling, so a game's
-    per-token reps are unaffected by which other games share the batch --
-    batching changes throughput, not each game's own policy. Returns
-    [(action_idx, logp, value)] aligned to items."""
-    shared = items[0][0].shared_stack
-    assert all(net.shared_stack is shared for net, _dec in items), (
-        "batched forward requires every net to share the SAME shared_stack instance"
-    )
-    vocab_idx, features, key_padding_mask, _identities = pad_token_batch([dec.tokens for _net, dec in items], device=device)
-    side_flag = features[:, :, -1]
-    n_padded = vocab_idx.shape[1]
-    results = []
-    with torch.inference_mode():
-        mine, theirs, token_reps = shared(vocab_idx, features, key_padding_mask, side_flag)
-        for i, (net, dec) in enumerate(items):
-            full_mask = _padded_full_mask(dec.full_mask, dec.n_fixed, n_padded, device).unsqueeze(0)
-            scalar_t = torch.as_tensor(dec.scalar, dtype=torch.float32, device=device).unsqueeze(0)
-            logits, value = net(mine[i:i + 1], theirs[i:i + 1], scalar_t, token_reps[i:i + 1], full_mask[:, dec.n_fixed:])
-            masked = logits.masked_fill(~full_mask, -1e8)
-            dist = torch.distributions.Categorical(logits=masked)
-            action = dist.sample()
-            results.append((int(action.item()), float(dist.log_prob(action).item()), float(value.item())))
-    return results
-
-
-def collect_rollout_batched(game_specs, horizon, rng, device="cpu", combat_enabled=True):
-    """Vectorized collect_rollout: plays len(game_specs) games CONCURRENTLY,
-    interleaving each to its next REAL (non-forced) decision, then running ONE
-    shared-stack forward across all their pending decisions -- instead of a
-    batch-of-1 forward per decision (~76% of collection wall-clock, see
-    benchmarking/profile_collection.py). Each spec is
-    (seat_nets, decklists, deck_ctxs, reward_fns), a 2-list each, the same
-    pairing collect_rollout takes for a single game.
-
-    Per-game/per-seat bookkeeping matches collect_rollout exactly: forced moves
-    record nothing, a real decision records the previous pending transition
-    (reward is terminal-only, so timing is irrelevant), and each seat's last
-    real decision receives the terminal reward at game end. Returns
-    ([per-game [buffer_seat0, buffer_seat1]], games_played)."""
-    games = [_BatchedGame(spec, horizon, combat_enabled, rng) for spec in game_specs]
-    while any(g.alive for g in games):
-        batch = []
-        for g in games:
-            if not g.alive:
-                continue
-            dec, seat = _advance_to_real_decision(g, horizon)
-            if dec is not None:
-                batch.append((g, seat, dec))
-        if not batch:
-            break
-        results = _batched_forward([(g.seat_nets[seat], dec) for g, seat, dec in batch], device)
-        for (g, seat, dec), (action_idx, logp, value) in zip(batch, results):
-            if g.pending[seat] is not None:
-                reward = _reward_for(g.state, seat, g.reward_fns[seat], horizon, False)
-                g.buffers[seat].add(*g.pending[seat], reward, False)
-            g.pending[seat] = (dec.tokens, dec.scalar, dec.full_mask, action_idx, logp, value)
-            executor = _executor_for(g.state, action_idx, dec.fixed_table, dec.identities)
-            g.advance(None if _is_pass(action_idx, dec.fixed_table) else executor)
-    for g in games:
-        for seat in (0, 1):
-            if g.pending[seat] is not None:
-                reward = _reward_for(g.state, seat, g.reward_fns[seat], horizon, True)
-                g.buffers[seat].add(*g.pending[seat], reward, True)
-    return [g.buffers for g in games], len(games)
-
-
 def collect_rollout_league(training_deck_name, training_net, training_ctx, training_decklist, reward_fn,
                             pool, decklists_by_name, ctxs_by_name, live_nets, horizon, n_games,
                             rng, device="cpu"):
@@ -447,9 +336,8 @@ def _league_pairing(training_deck_name, training_net, training_ctx, training_dec
     snapshot) and lay out the per-seat nets/decklists/ctxs/reward_fns for a
     single league game, randomizing which seat the training net takes. Returns
     those four 2-lists plus (training_seat, is_self, opponent_deck_name,
-    opponent_is_live). Shared by collect_rollout_league and
-    collect_rollout_league_batched so the opponent-sampling and which-seat-to-
-    record rules can never drift between the two.
+    opponent_is_live). Factored out of collect_rollout_league so the
+    opponent-sampling and which-seat-to-record rules live in one place.
 
     opponent_is_live: the opponent is ANOTHER deck's CURRENT live net (not a
     frozen snapshot, not the training net itself). Its transitions this game are
@@ -475,47 +363,6 @@ def _league_pairing(training_deck_name, training_net, training_ctx, training_dec
     ctxs[training_seat], ctxs[opponent_seat] = training_ctx, ctxs_by_name[opponent_deck_name]
     reward_fns[training_seat] = reward_fns[opponent_seat] = reward_fn
     return seat_nets, decklists, ctxs, reward_fns, training_seat, is_self, opponent_deck_name, opponent_is_live
-
-
-def collect_rollout_league_batched(training_deck_name, training_net, training_ctx, training_decklist, reward_fn,
-                                   pool, decklists_by_name, ctxs_by_name, live_nets, horizon, n_games,
-                                   rng, device="cpu", batch_size=None):
-    """Batched (vectorized) league collection: collect_rollout_league's record
-    rules (training seat only, or BOTH seats on a true mirror) over
-    collect_rollout_batched instead of one-game-at-a-time collect_rollout.
-    Samples all n_games opponents up front and plays them in concurrent batches
-    of batch_size (default: all at once), so each batch runs ONE shared-stack
-    forward per round of decisions instead of a batch-of-1 per decision. Every
-    league opponent -- the training net, another deck's live net, a frozen
-    snapshot -- shares the one frozen shared stack, exactly what
-    _batched_forward requires.
-
-    Returns (buf, opponent_buffers, games_played) -- same Path A salvage of
-    live-opponent transitions as collect_rollout_league (see its docstring)."""
-    batch_size = batch_size or n_games
-    buf = RolloutBuffer()
-    opponent_buffers = {}
-    games_played = 0
-    remaining = n_games
-    while remaining > 0:
-        k = min(batch_size, remaining)
-        specs, meta = [], []
-        for _ in range(k):
-            seat_nets, decklists, ctxs, reward_fns, training_seat, is_self, opp_name, opp_is_live = _league_pairing(
-                training_deck_name, training_net, training_ctx, training_decklist, reward_fn,
-                pool, decklists_by_name, ctxs_by_name, live_nets, rng,
-            )
-            specs.append((seat_nets, decklists, ctxs, reward_fns))
-            meta.append((training_seat, is_self, opp_name, opp_is_live))
-        per_game_buffers, played = collect_rollout_batched(specs, horizon, rng, device=device)
-        games_played += played
-        for (training_seat, is_self, opp_name, opp_is_live), game_buffers in zip(meta, per_game_buffers):
-            for seat in ((0, 1) if is_self else (training_seat,)):
-                buf.extend(game_buffers[seat])
-            if opp_is_live:
-                opponent_buffers.setdefault(opp_name, RolloutBuffer()).extend(game_buffers[1 - training_seat])
-        remaining -= k
-    return buf, opponent_buffers, games_played
 
 
 def _strip_identities(token_list):
@@ -825,34 +672,6 @@ def batch_size_for_iteration(iteration, n_iterations, start=32, cap=2048, n_step
     return min(start * (2 ** doublings), cap)
 
 
-def device_for_batch_size(batch_size, gpu_threshold):
-    """Mechanical CPU/GPU switch for ppo_update ONLY -- rollout collection
-    (batch-of-1 inference) stays CPU unconditionally regardless of this
-    schedule; that's a settled, batch-size-independent finding (GPU loses
-    on tiny per-decision batches no matter how large training's own
-    minibatch grows), not something this function touches. gpu_threshold:
-    set from an empirically measured CPU/GPU crossover -- never assume one.
-    None (not yet measured) or no CUDA -> always CPU."""
-    if gpu_threshold is None or not torch.cuda.is_available():
-        return "cpu"
-    return "cuda" if batch_size >= gpu_threshold else "cpu"
-
-
-def move_optimizer_state(optimizer, device):
-    """torch.optim.Optimizer has no built-in .to(device): net.to(device)
-    moves PARAMETERS but never touches an optimizer's own per-parameter
-    state (Adam's exp_avg/exp_avg_sq momentum buffers), which stay
-    wherever they were first created. Skipping this is not a performance
-    nitpick -- it's a correctness bug: the very next optimizer.step()
-    after switching a net's device raises a device-mismatch RuntimeError,
-    confirmed by tracing exactly what Adam's own step() does with stored
-    state tensors versus current parameter tensors."""
-    for state in optimizer.state.values():
-        for key, value in state.items():
-            if torch.is_tensor(value):
-                state[key] = value.to(device)
-
-
 def _pooled(buffers):
     merged = RolloutBuffer()
     for buf in buffers:
@@ -958,38 +777,6 @@ if __name__ == "__main__":
         assert torch.isfinite(p).all(), "a parameter went non-finite after the mirror PPO update"
     print(f"rl.train mirror smoke test: OK ({games_played} games, buf_sizes={len(buffers[0]), len(buffers[1])}, "
           f"policy_loss={policy_loss:.4f}, {time.time() - t0:.1f}s)")
-
-    # 1b) Batched (vectorized) collection smoke test -- collect_rollout_batched
-    # plays K games at once, batching every real decision's shared-stack forward
-    # into ONE call. Deliberately MIXES a mirror game (both seats net_a) with a
-    # cross-matchup game (net_a vs net_b) in the same batch, so a single batched
-    # forward spans two different per-deck heads over the one shared stack.
-    t0 = time.time()
-    batched_specs = [
-        ([net_a, net_a], [decklist_a, decklist_a], [deck_ctx_a, deck_ctx_a], [reward_fn, reward_fn]),
-        ([net_a, net_b], [decklist_a, decklist_b], [deck_ctx_a, deck_ctx_b], [reward_fn, reward_fn]),
-        ([net_a, net_a], [decklist_a, decklist_a], [deck_ctx_a, deck_ctx_a], [reward_fn, reward_fn]),
-    ]
-    per_game_buffers, played = collect_rollout_batched(batched_specs, horizon, rng, device=device)
-    assert played == len(batched_specs)
-    merged_a = RolloutBuffer()  # only net_a's own transitions -- net_b's belong to a different action space
-    for spec, game_buffers in zip(batched_specs, per_game_buffers):
-        seat_nets = spec[0]
-        for seat in (0, 1):
-            seat_buf = game_buffers[seat]
-            assert all(np.isfinite(v) for v in seat_buf.value), "batched values must be finite"
-            assert all(np.isfinite(r) for r in seat_buf.reward), "batched rewards must be finite"
-            if len(seat_buf):
-                assert seat_buf.done[-1] is True, "each non-empty seat buffer must end with a flushed terminal transition"
-            if seat_nets[seat] is net_a:
-                merged_a.extend(seat_buf)
-    assert len(merged_a) > 0, "batched collection recorded no net_a transitions"
-    policy_loss, value_loss, entropy = ppo_update(net_a, [opt_a], merged_a, device, n_epochs=1, batch_size=16)
-    assert np.isfinite(policy_loss) and np.isfinite(value_loss)
-    for p in net_a.parameters():
-        assert torch.isfinite(p).all(), "a parameter went non-finite after a batched-buffer PPO update"
-    print(f"rl.train batched-collection smoke test: OK ({played} games mixed mirror+cross in one batch, "
-          f"{len(merged_a)} net_a transitions, {time.time() - t0:.1f}s)")
 
     # 2) Cross-matchup smoke test -- net_a vs net_b, two independent
     # buffers/updates, exercises the "different decks/action spaces on each
@@ -1102,18 +889,6 @@ if __name__ == "__main__":
         assert played == 1 and len(buf_snap) > 0, "a frozen snapshot opponent must still record the training seat's own transitions"
         assert opp_snap == {}, "a frozen snapshot opponent is off-policy -- salvages nothing"
         assert snapshot_path in pool._net_cache, "load_snapshot_net must have populated the cache"
-
-        # Batched league collection over the same real pool: several games played
-        # concurrently (collect_rollout_league_batched), one shared-stack forward
-        # per batch, with the SAME Path A live-opponent salvage.
-        pool.sample_opponent = lambda training_deck_name, rng: ("b", None)  # all live-net opponents
-        buf_batched, opp_batched, played_b = collect_rollout_league_batched(
-            "a", net_a, deck_ctx_a, decklist_a, reward_fn, pool, decklists_by_name, ctxs_by_name,
-            live_nets, horizon, n_games=4, rng=rng, device=device, batch_size=2,
-        )
-        assert played_b == 4 and len(buf_batched) > 0, "batched league collection must record the training seat's transitions"
-        assert set(opp_batched) == {"b"} and len(opp_batched["b"]) > 0, "batched collection must salvage the live opponent's transitions too"
-        assert all(np.isfinite(v) for v in buf_batched.value) and all(np.isfinite(r) for r in buf_batched.reward)
 
         for buf in (buf_self, buf_cross, buf_snap):
             assert all(np.isfinite(v) for v in buf.value)

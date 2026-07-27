@@ -234,7 +234,7 @@ def _run_mulligan_gen(state):
     already points at (the real starting player) goes first. Runs entirely
     before turn 1 (state.turn_number is still 0, state.phase is still None)
     -- nothing here touches any turn-scoped field, so it's driven by
-    run_mulligan_phase below rather than folded into _run_turn_gen."""
+    game_coroutine (via _yield_decisions) rather than folded into _run_turn_gen."""
     starting_idx = state.active_idx
     order = [starting_idx] + [i for i in range(len(state.players)) if i != starting_idx]
     for idx in order:
@@ -245,19 +245,6 @@ def _run_mulligan_gen(state):
             state.players[state.active_idx].actions_taken += 1
             action()  # keep/mulligan/bottom -- None (Pass) is never expected, same as _declare_blockers_gen
     state.active_idx = starting_idx
-
-
-def run_mulligan_phase(state, choose_action):
-    """Synchronous driver for _run_mulligan_gen -- same run_turn/
-    _run_turn_gen pairing shape. Called once, by run_multiplayer_game
-    below, before its own turn loop starts."""
-    gen = _run_mulligan_gen(state)
-    try:
-        next(gen)
-        while True:
-            gen.send(choose_action(state))
-    except StopIteration:
-        pass
 
 
 def _declare_blockers_gen(state):
@@ -672,13 +659,10 @@ def game_coroutine(state, horizon=None, combat_enabled=False):
     the state at every point a player must choose (pregame mulligan, then every
     turn's priority/combat decisions) and expects the chosen action back via
     .send() -- the SAME value choose_action returns (None for a Pass, or a
-    zero-arg executor callable). run_multiplayer_game drives this synchronously
-    (so every existing caller and self-check exercises this exact path); the
-    batched rollout collector (rl.train.collect_rollout_batched) drives many of
-    these at once, running ONE network forward across all their pending
-    decisions instead of a batch-of-1 forward per decision. The turn loop here
-    mirrors run_multiplayer_game's own former inline loop verbatim -- same
-    horizon/turn_won/decked_out guard, same lazy active_idx flip."""
+    zero-arg executor callable). run_multiplayer_game drives this synchronously,
+    so every existing caller and self-check exercises this exact path. The turn
+    loop here mirrors run_multiplayer_game's own former inline loop verbatim --
+    same horizon/turn_won/decked_out guard, same lazy active_idx flip."""
     yield from _yield_decisions(_run_mulligan_gen(state), state)
     first_turn = True
     while (horizon is None or state.turn_number < horizon) and state.turn_won is None and not state.decked_out:

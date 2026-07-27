@@ -3,15 +3,13 @@
 A from-scratch **2-player Magic: The Gathering rules engine** for a curated
 subset of cards, plus a **token/attention deep-RL system** that trains a
 separate policy per deck by self-play and continuous league play against a
-pool of historical opponents. Everything — the engine, the card catalog, the
-neural architecture, the training loop, and a Cockatrice replay exporter —
-lives in this repo with essentially no framework dependencies beyond PyTorch.
+pool of historical opponents. The engine, the card catalog, the neural
+architecture, the training loop, and a Cockatrice replay exporter all live in
+this repo with essentially no framework dependencies beyond PyTorch.
 
 The project started life as a single-deck "Tron assembly" probability
 simulator; it has since grown into a general multi-deck engine and an
-adversarial RL agent. (Some in-code docstrings still reference the older
-1-player Tron pipeline and its now-deleted files — `harness.py`, `run.py`,
-`lean_ppo.py` — see [Project status](#project-status).)
+adversarial RL agent.
 
 ---
 
@@ -19,12 +17,17 @@ adversarial RL agent. (Some in-code docstrings still reference the older
 
 | Piece | Where | What it is |
 |-------|-------|------------|
-| **Game engine** | `src/game/` | A self-contained MTG-subset simulator: zones, turn/phase loop, priority, the stack, mana, combat, and ~130 card/token effects. No ML dependency. |
+| **Game engine** | `src/game/` | A self-contained MTG-subset simulator: zones, turn/phase loop, priority, the stack, mana, combat, and 150+ card/token effects. No ML dependency. |
 | **Card catalog** | `src/game/catalog/` | Card definitions grouped by color. Decks are just decklists resolved against this shared catalog — adding a deck from already-implemented cards needs no code. |
-| **Decks** | `data/*.txt` + `league_decks.json` | Five archetypes: `mono_red_madness`, `rakdos_madness`, `spy_combo`, `boggles`, `monster_tron`. |
-| **DRL architecture** | `src/token_*.py` | A shared Set-Transformer + FiLM perception stack, per-deck trunk/critic/pointer-network action heads, and a PPO self-play + league training loop. |
+| **Action space** | `src/drl_env/` | Turns a decklist + `EFFECT_REGISTRY` into a flat action table with per-action legality + execute closures and legal masks. Not a gym `Env`, just the assembly between engine and training loop. |
+| **DRL system** | `src/rl/` | A shared Set-Transformer + FiLM perception stack, per-deck trunk/critic/pointer-network action heads, and a PPO self-play + league training loop. |
+| **Decks** | `data/*.txt` + `league_decks.json` | An 11-deck roster (see below). |
 | **Training drivers** | `src/run_pretrain.py`, `src/run_league.py` | Two-phase pipeline: pretrain & freeze the shared stack, then train every deck continuously in a league. |
 | **Replay export** | `src/sim_replay_converter/` | Converts engine game logs into Cockatrice `.cor` replay files so games can be watched in Cockatrice's viewer. |
+
+**Roster** (`data/league_decks.json`): `mono_red_madness`, `rakdos_madness`,
+`spy_combo`, `boggles`, `monster_tron`, `dmir_terror`, `elves`,
+`grixis_affinity`, `jund_wildfire`, `mono_blue_terror`, `mono_red_rally`.
 
 ---
 
@@ -33,8 +36,9 @@ adversarial RL agent. (Some in-code docstrings still reference the older
 - **A faithful-enough MTG-subset engine** to run real 2-player games:
   phases, priority passing, the stack, combat with attackers/blockers/damage,
   and a broad set of real card mechanics (madness, plot, flashback, bestow/
-  auras, scry/surveil, fetch/search, token generation, mulligans, decking
-  out, state-based actions, life-total win checks).
+  auras, scry/surveil, fetch/search, token generation, initiative/Undercity,
+  mulligans, decking out, state-based actions, life-total win checks). Rules
+  fidelity is a standing project mandate (see `CLAUDE.md`).
 - **A card representation that generalizes across decks.** Rather than a
   fixed per-slot observation, each public-zone card becomes a *token* (a
   learned identity embedding + a hand-authored static feature vector), and a
@@ -54,66 +58,73 @@ adversarial RL agent. (Some in-code docstrings still reference the older
 
 ```
 src/
-  game/                    The engine (package, ~9k LOC). Zero ML deps.
-    state.py                 PlayerState + GameState: zones, turn/stack/
-                             pending-resolution bookkeeping. Proxies "my
-                             board" to whichever player has priority.
-    turn.py                  Phase enum + turn loop (untap→...→cleanup),
-                             priority rounds, 1p and 2p game drivers.
-    mana.py                  Mana pool, tapping, cost payment, Tron lands,
-                             flexible/filter mana sources.
-    resolution.py            Pending-resolution state machine (mulligan,
-                             scry/surveil, search/fetch, discard, targeting,
-                             trigger ordering, madness decisions, ...).
-    combat.py-adjacent       effects/combat.py: attackers, blockers, damage.
-    effects/                 Card-effect building blocks: casting, combat,
-                             stack, triggers, state-based actions, tokens,
-                             madness_and_plot, stats, win_check.
-    catalog/                 Card definitions by color (black/blue/green/red/
-                             white/colorless/multicolor).
-    registry.py              Unions every color catalog into CARD_DEFS +
-                             EFFECT_REGISTRY.
-    decklist.py, reporting.py, cards.py
+  game/                    The engine (package). Zero ML deps.
+    cards.py                 EffectId / CardType / CardDef — the shared card data model.
+    state.py                 PlayerState + GameState: zones, turn/stack/pending-
+                             resolution bookkeeping. Proxies "my board" to whichever
+                             player currently holds priority.
+    turn.py                  Phase/Speed enums; priority rounds; mulligan; the turn
+                             loop; game_coroutine + run_multiplayer_game (the 2-player
+                             driver the training loop drives).
+    mana.py                  Mana production, cost payment (batch and one-tap-at-a-time),
+                             pure payment planning / legality checks.
+    decklist.py              Parse data/*.txt decklists against CARD_DEFS.
+    registry.py              Union of every color catalog -> CARD_DEFS + EFFECT_REGISTRY;
+                             derive_pending_kinds.
+    catalog/                 Card definitions by color (black/blue/colorless/green/
+                             multicolor/red/white).
+    effects/                 Generic effect plumbing (each card catalog calls in):
+                             casting, combat, stack + triggers, state_based (SBAs +
+                             cleanup), stats (Aura/keyword/P/T), tokens, win_check,
+                             madness_and_plot, undercity (initiative), shared, and
+                             integration_check (cross-module engine self-check).
+    resolution/              Multi-step decisions the MODEL makes one action at a time
+                             (mulligan, scry/surveil, search/fetch, discard, targeting,
+                             trigger ordering, ...): _core (begin/complete state machine)
+                             + handlers (every concrete resolution kind).
 
-  drl_env.py               Action-table / legal-mask machinery: turns a
-                           decklist + EFFECT_REGISTRY into a legal action
-                           space (no gym Env of its own anymore).
-  rewards.py               Reward functions (win/loss with speed tiebreakers).
-  terminated.py            Win-condition ("terminated_fn") functions.
+  drl_env/                 Action-table / legal-mask machinery (a package, not a gym Env):
+    _actions.py              build_action_table + per-action legal/execute predicates.
+    _seat.py                 Per-seat helpers (_for_player, _lost).
+    _selfcheck.py            Assert-based checks (run via `python -m drl_env`).
 
-  token_features.py        Per-card tokenization: CardVocab (stable card→index)
-                           + static feature vectors + build_token_set.
-  token_arch.py            SetTransformer (embeddings + self-attention + two
-                           PMA pooling heads) and FiLM. The shared stack.
-  token_deck.py            DeckNetwork: per-deck trunk + critic + pointer-net
-                           action head on top of a shared stack.
-  token_action_bridge.py   Maps the network's combined (fixed + pointer)
-                           action space back to real engine calls.
-  token_train.py           Rollout collection + PPO update; mirror & cross
-                           self-play; parallel rollout collection.
-  token_pool.py            Builds the shared vocab + per-deck action tables
-                           from the league roster (data/league_decks.json).
-  token_league.py          LeaguePool: historical opponent snapshots, sampling,
-                           eviction, disk persistence.
+  rl/                      The token/attention DRL system:
+    features.py              CardVocab (stable card->index) + static per-token feature
+                             vectors + build_token_set.
+    arch.py                  SetTransformer (embeddings + self-attention + two PMA
+                             pooling heads) and FiLM — the shared perception stack.
+    deck.py                  DeckNetwork: per-deck trunk + critic + pointer-net action
+                             head on top of a shared stack.
+    action_bridge.py         Maps the network's combined (fixed + pointer) action space
+                             back to real engine calls.
+    train.py                 Rollout collection + PPO update; mirror & cross self-play;
+                             parallel and in-process-batched rollout collection.
+    pool.py                  Builds the shared vocab + per-deck action tables from the
+                             league roster (data/league_decks.json).
+    league.py                LeaguePool: historical opponent snapshots, sampling,
+                             eviction, disk persistence.
+    rewards.py               Reward functions (win/loss with a speed tiebreaker).
 
-  run_pretrain.py          Phase 4: pretrain + freeze the shared stack.
+  run_pretrain.py          Pretrain + freeze the shared stack.
   run_league.py            League driver (and a --matchup direct-pairing mode).
-  benchmark_*.py           Rollout-parallelism and PPO batch-size benchmarks.
-  generate_regression_snapshot.py
-
-  sim_replay_converter/    JSON game log → Cockatrice .cor replay.
+  benchmarking/            training_run.py (benchmarks the real league loop under
+                           different collection configs) + _common.py (path/stdout
+                           bootstrap it imports for its side effect).
+  sim_replay_converter/    JSON game log -> Cockatrice .cor replay (convert.py + a
+                           vendored copy of Cockatrice's .proto files under proto/).
 
 data/                      Decklists (*.txt) + league_decks.json roster.
 docs/                      Design/plan documents.
-checkpoints/               Trained weights (gitignored; see below).
+checkpoints/               Trained weights + vocab.json (gitignored; see below).
 logs/                      Game event logs from --log runs (gitignored).
 ```
 
-**Why the flat `src/` for the token modules?** They import each other
-directly (`import game`, `import drl_env`, ...), which works because Python
-adds a script's own directory to `sys.path`. The engine itself *is* a proper
-package (`game/`); the driver/training scripts are kept flat because they're
-only ever run from `src/`, never imported as a library.
+**Run scripts from `src/`.** The driver/training scripts (`run_pretrain.py`,
+`run_league.py`, `benchmarking/*`, `sim_replay_converter/convert.py`) use
+relative paths like `../data` and `../checkpoints`, and the `rl.*` modules
+import each other and `game`/`drl_env` by name — both of which resolve when
+you run from `src/` (Python puts the script's directory on `sys.path`). The
+engine itself (`game/`) is a proper importable package.
 
 ---
 
@@ -132,18 +143,20 @@ and play out matches on its own. Highlights:
 - **Mana.** A mana pool that must be spent by explicit actions, Tron-land
   detection, and flexible/filter mana sources.
 - **Card mechanics.** Madness, plot, flashback, auras/bestow, scry/surveil,
-  fetch/search, mulligans, token generation (Blood, Robot, Warrior, Eldrazi
-  Spawn), state-based actions, decking out, and life-total win checks.
+  fetch/search, initiative/Undercity, mulligans, token generation (Blood,
+  Robot, Warrior, Eldrazi Spawn, Food, Clue, Treasure, and more), affinity/
+  delve/escape cost reductions, state-based actions, decking out, and
+  life-total win checks.
 - **Hidden information is respected.** Hand and library contents stay hidden;
   only public zones (battlefield/graveyard/stack/exile) are ever encoded.
 
-Every module ships an `assert`-based self-check runnable directly, e.g.
-`python game/state.py` isn't wired that way but the token/engine-facing
-modules are (see [Self-checks](#tests--self-checks)).
+The engine's effect functions defensively handle a no-opponent (1-player)
+configuration — a remnant of the original single-deck Tron experiments — but
+the active surface, and everything the DRL system drives, is 2-player.
 
 ---
 
-## The DRL system (`src/token_*.py`)
+## The DRL system (`src/rl/`)
 
 The observation is a **variable-length set of card tokens**, one per
 public-zone card for both players. Each token = a learned **identity
@@ -154,28 +167,30 @@ mine/theirs side flag).
 
 The network is split into a **shared** stack and a **per-deck** head:
 
-- **`SetTransformer` (shared, `token_arch.py`)** — embeds + projects tokens,
+- **`SetTransformer` (shared, `rl/arch.py`)** — embeds + projects tokens,
   runs a joint self-attention encoder over *both* sides' tokens (so a token
   can attend across the mine/theirs boundary), then pools with two
   independent learned-query heads: a "mine" summary (trunk input) and a
   "theirs" summary (FiLM conditioning input). Pre-norm transformer for RL
-  stability.
+  stability. Uses `torch.nn.MultiheadAttention`/`TransformerEncoderLayer`
+  directly rather than hand-rolling attention.
 - **`FiLM` (shared)** — turns the "theirs" summary into per-layer
   (gamma, beta) modulations of the trunk, chosen over concatenation.
-- **`DeckNetwork` (per-deck, `token_deck.py`)** — a small trunk + critic +
+- **`DeckNetwork` (per-deck, `rl/deck.py`)** — a small trunk + critic +
   a **pointer-network action head**. The action space is the union of a
   **fixed table** of non-targeting actions (play land, cast X, pass, mana
   payments, mulligans, …) and a **pointer-scored** set of targeting actions
-  (attack / assign-blocker / choose-target), scored against the post-attention
-  token representations. Both halves feed **one combined softmax**, so a
-  masked-categorical sample over the true legal set is correct.
+  (attack / assign-blocker / choose-target), scored against the
+  post-attention token representations. Both halves feed **one combined
+  softmax**, so a masked-categorical sample over the true legal set is
+  correct.
 
-Training is **PPO self-play** (`token_train.py`). Mirror matches pool both
-seats into one buffer/update; cross-matchups give each net its own buffer,
-both learning from every game. Rollout collection parallelizes across worker
+Training is **PPO self-play** (`rl/train.py`). Mirror matches pool both seats
+into one buffer/update; cross-matchups give each net its own buffer, both
+learning from every game. Rollout collection parallelizes across worker
 processes (~3.2–3.5× on 6 physical cores).
 
-The **league** (`token_league.py`, `run_league.py`) keeps a rolling window of
+The **league** (`rl/league.py`, `run_league.py`) keeps a rolling window of
 historical snapshots per deck. Each game resamples an opponent two-level
 uniformly: pick a deck (including the training deck itself, for mirror play),
 then pick one of its snapshots (or its current live weights). No hardcoded
@@ -186,25 +201,23 @@ pool fills.
 
 ## Training pipeline
 
-Both phases assume **five decks** (`data/league_decks.json`) and one shared
-vocabulary/embedding table across all of them (`checkpoints/vocab.json`,
-append-only so old checkpoints stay valid).
-
-Run everything **from `src/`** (scripts use relative paths like `../data`,
-`../checkpoints`).
+Both phases share one vocabulary/embedding table across all decks
+(`checkpoints/vocab.json`, append-only so old checkpoints stay valid). Run
+everything **from `src/`**.
 
 ### 1. Pretrain & freeze the shared perception stack
 
 ```
 cd src
-python run_pretrain.py <n_iterations> <games_per_iteration>        # build up the shared stack
+python run_pretrain.py <n_iterations> <games_per_iteration>           # build up the shared stack
 python run_pretrain.py <n_iterations> <games_per_iteration> --freeze  # freeze once satisfied
 ```
 
 Runs mirror self-play for **every** deck each iteration, flowing gradients
 from a throwaway per-deck head into the one shared `SetTransformer`+`FiLM`.
-`--freeze` writes `checkpoints/shared_stack_frozen.pt`. Checkpointed and
-resumable between invocations — start small, watch for stalls, scale up.
+Checkpoints to `checkpoints/pretrain_shared_stack.pt` after every session
+(resumable). `--freeze` additionally writes
+`checkpoints/shared_stack_frozen.pt` — run it only once you're satisfied.
 
 ### 2. League training
 
@@ -215,43 +228,54 @@ python run_league.py --n-iterations N --games-per-iteration 6 --snapshot-every 1
 
 Every deck trains every iteration against a resampled league opponent, on top
 of the frozen shared stack. Each deck's live net/optimizer persists in
-`checkpoints/league/<deck>/live.pt`; snapshots live alongside. Resumable
-across sessions.
+`checkpoints/league/<deck>/live.pt`; snapshots live alongside, and a
+`session.txt` counter makes runs resumable across sessions.
 
-Key flags: `--n-workers` (parallel rollout processes; default 6, no reliable
-gain past physical core count), `--snapshot-every`, and a `--batch-size-*`
-schedule (small→large across the session). Training runs on **CPU** by design
-— the model is small (~200–250K params) and a batch-size sweep found no GPU
-crossover; `--gpu-threshold` exists but defaults to off.
+Key flags:
+- `--n-workers` — parallel rollout processes (default 6; no reliable gain past
+  physical core count).
+- `--snapshot-every` — iterations between registering a snapshot of every deck
+  and checkpointing live nets (default 20).
+- `--batch-size-start` / `--batch-size-cap` / `--batch-size-steps` — the PPO
+  minibatch schedule, doubling from start (32) toward the cap (2048) in a
+  fixed number of steps (6) across the session.
+- `--collect-batch-size K` — collect rollouts with in-process **vectorized**
+  play (K games at once, one shared-stack forward per batch of decisions);
+  single-process, overrides `--n-workers`.
+- `--no-opponent-salvage` — by default, when the sampled opponent is another
+  deck's **live** net, that deck is also trained from its (on-policy)
+  transitions this round at no extra collection cost; pass this to disable it.
+
+Training runs on **CPU** by design — the model is small (~200–250K params) and
+a batch-size sweep found no GPU crossover at this size.
 
 ### Direct matchup (no league sampling)
 
 ```
-python run_league.py --matchup DECK_A DECK_B --games 50 [--log path/to/games.json]
+python run_league.py --matchup DECK_A DECK_B [--games 50] [--log path/to/games.json]
 ```
 
 Runs a fixed pairing between two named decks, still updating and
 checkpointing both. `--log` captures the engine's own event log for every
-game as one JSON file — the input the replay converter consumes.
+game as one JSON file — the input the replay converter consumes. (`--log` is
+wired only through `--matchup` mode.)
 
-### Rewards & termination
+### Rewards & win condition
 
-- **Rewards** (`rewards.py`): win/loss with a speed tiebreaker. The league
-  default is `action_count_win_reward_200_floor02` — loss/draw → 0, win →
-  1.0 down to a 0.2 floor scaled by the *winning seat's* action count (so a
-  policy can't pad a turn with free actions).
-- **Termination** (`terminated.py`): league play uses `never_terminated` so
-  the only win condition is the engine's real one (opponent to 0 life, or
-  decking out). Other functions (Tron assembly, damage thresholds) are
-  1-player heuristics kept from the earlier pipeline.
+- **Rewards** (`rl/rewards.py`): the league uses
+  `action_count_win_reward_200_floor02` — loss/draw → `0.0`, win → `1.0` down
+  to a `0.2` floor scaled by the *winning seat's* action count (so a policy
+  can't pad a turn with free actions to inflate its reward).
+- **Win condition**: the engine's real one — an opponent's life total hitting
+  0, or a player decking out. There is no separate termination heuristic.
 
 ---
 
 ## Watching games in Cockatrice
 
-`src/sim_replay_converter/convert.py` turns an engine JSON log into a
-Cockatrice `.cor` replay so a game can be watched in Cockatrice's built-in
-replay viewer:
+`src/sim_replay_converter/convert.py` turns an engine JSON log (from a
+`--matchup --log` run) into a Cockatrice `.cor` replay so a game can be
+watched in Cockatrice's built-in replay viewer:
 
 ```
 cd src/sim_replay_converter
@@ -270,63 +294,65 @@ run, generates protobuf bindings from the vendored Cockatrice `.proto` files
 pip install -r requirements.txt
 ```
 
-`requirements.txt` pins a CUDA (cu128) PyTorch build, but **training runs on
-CPU** and doesn't need a GPU — the pinned wheel just prevents pip from
-silently swapping to a CPU-only build on a machine that does have one. The
-replay converter additionally needs `grpcio-tools` (for protobuf codegen).
+`requirements.txt` pins a CUDA (cu128) PyTorch build plus `numpy`, but
+**training runs on CPU** and doesn't need a GPU — the pinned wheel just
+prevents pip from silently swapping to a CPU-only build on a machine that does
+have one. The replay converter additionally needs `grpcio-tools` (for
+protobuf codegen).
 
 ---
 
 ## Tests / self-checks
 
 There's no test framework — each module carries an `assert`-based self-check
-you run directly (from `src/`). The important ones:
+you run directly **from `src/`**. The important ones:
 
 ```
 cd src
-python game/effects/integration_check.py   # engine integration checks
-python drl_env.py                           # action-table / legal-mask checks
-python token_features.py                    # tokenization + vocab persistence
-python token_arch.py                        # Set Transformer + FiLM (incl. permutation invariance)
-python token_deck.py                        # DeckNetwork + pointer masking
-python token_action_bridge.py               # action bridge on a real 2p game
-python token_pool.py                        # shared vocab / roster wiring
-python token_league.py                      # league sampling / eviction
-python token_train.py                       # rollout + PPO smoke test
-python rewards.py                           # reward functions
-python terminated.py                        # win conditions
+
+# Engine
+python -m game.effects.integration_check   # cross-module engine integration checks
+python -m game.state                        # zones + real-game event log
+python -m game.turn                         # 2-player turn loop, alternation, deck-out
+python -m game.mana                         # mana production / payment / filter mana
+python -m game.resolution.handlers          # pending-resolution kinds
+python -m game.catalog.red_cards            # per-color card checks (…blue_cards, green_cards, …)
+
+# Action table
+python -m drl_env                           # action-table / legal-mask checks
+
+# DRL
+python -m rl.features                        # tokenization + vocab persistence
+python -m rl.arch                            # Set Transformer + FiLM
+python -m rl.deck                            # DeckNetwork + pointer masking
+python -m rl.action_bridge                   # action bridge on a real 2p game
+python -m rl.pool                            # shared vocab / roster wiring
+python -m rl.league                          # league sampling / eviction
+python -m rl.train                           # rollout + PPO smoke test
+python -m rl.rewards                         # reward functions
 ```
 
-`benchmark_parallel.py` and `benchmark_ppo_batch_size.py` measure rollout
-parallelism and the PPO batch-size/device crossover;
-`generate_regression_snapshot.py` produces regression fixtures.
+`benchmarking/training_run.py` measures the real league loop under different
+collection configs (`seq`, `mp<N>`, `batch<K>`) over a fresh untrained stack.
 
 ---
 
 ## Generated artifacts (gitignored)
 
 `checkpoints/` (trained weights + `vocab.json`) and `logs/` (event logs from
-`--log` runs) are gitignored — regenerable by rerunning training. Old 2-deck
-weights are archived under `checkpoints/archive_2deck/`. (`.gitignore` also
-still lists `models/`/`reports/`/`graphify-out/` from earlier tooling; those
-reappear only if that tooling runs again.)
+`--log` runs) are gitignored — regenerable by rerunning training. `.gitignore`
+also lists `models/`, `reports/`, and `graphify-out/` from earlier tooling.
 
 ---
 
 ## Project status
 
-The engine and DRL architecture are the current, active surface. A few things
-to know:
+The engine and DRL architecture are the current, active surface.
 
-- **The DRL pipeline is 2-player only.** The engine still contains a
-  1-player mode (used by the original Tron experiments), but the token
-  architecture always encodes an opponent seat.
-- **Some docstrings are stale.** References in `game/__init__.py` and others
-  to `harness.py`, `run.py`, `lean_ppo.py`, and `configs/*.json` describe the
-  removed 1-player pipeline; those files no longer exist and `configs/` is
-  empty.
-- **Five-deck retrain.** `docs/FIVE_DECK_EXPANSION.md` describes the move from
-  a 2-deck to a 5-deck roster. The roster wiring (`league_decks.json`, all
-  token defs) is applied and the old 2-deck weights are archived; the fresh
-  5-deck shared stack + league weights are (re)generated by running the
-  pipeline above.
+- **The DRL pipeline is 2-player only.** The engine still tolerates a
+  no-opponent (1-player) configuration from the original Tron experiments, but
+  the token architecture always encodes an opponent seat.
+- **Some in-code docstrings/comments are stale.** A few still say "Phase 4",
+  "Stage 1/2", "5 decks", or reference `drl_env.py`/`token_*.py` by their
+  pre-refactor names; the code they describe now lives under `rl/`, the
+  `drl_env/` package, and an 11-deck roster.
