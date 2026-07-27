@@ -649,8 +649,9 @@ def cast_boulderbranch_prototype(state, card_def):
     "Boulderbranch Golem" actually sitting in hand (the normal {7} CardDef,
     same display name) -- so the hand card is found by NAME, not identity,
     same as Sagu Wildling's own Omen creature half."""
-    hand_card = next(c for c in state.hand if c.name == "Boulderbranch Golem")
-    state.hand.remove(hand_card)
+    hand_card = next((c for c in state.hand if c.name == "Boulderbranch Golem"), None)
+    if hand_card is not None:
+        state.hand.remove(hand_card)  # normally already removed at cast (_omen_cast_execute); tolerant for a direct call
     enters_battlefield(state, card_def)
 
 

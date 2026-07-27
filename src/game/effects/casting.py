@@ -77,9 +77,13 @@ def play_land_from_hand(state, card_def):
 
 
 def cast_permanent_from_hand(state, card_def):
-    """Artifacts/creatures with no additional cost beyond mana and no
-    target choices. Mana cost is paid by the caller first."""
-    state.hand.remove(card_def)
+    """Artifacts/creatures with no additional cost beyond mana and no target
+    choices. Run as the spell's resolve off the stack, so the card already left
+    hand at cast (push_to_stack) and enters the battlefield from the stack -- the
+    `if in hand` guard makes the removal a no-op then (and still lets a
+    self-check call this directly to drop a permanent onto the battlefield)."""
+    if card_def in state.hand:
+        state.hand.remove(card_def)
     return enters_battlefield(state, card_def, from_zone="hand")
 
 
@@ -203,11 +207,12 @@ def cast_aura(state, card_def, target_predicate, on_attached=None):
         captured = capture_any_target(state, target_descriptor)  # ("permanent-as-'creature'", perm) or None
 
         def _resolve(state, card_def):
-            # Still-in-hand-while-on-stack convention every other cast path
-            # here follows (see push_to_stack's own docstring) -- the target
-            # is already locked in via `captured`, captured at cast time,
-            # well before this ever runs.
-            state.hand.remove(card_def)
+            # Resolving off the stack: this aura left hand at cast
+            # (push_to_stack) and must not re-enter it -- the `if in hand` guard
+            # makes the removal a no-op here. The target was locked at cast
+            # (captured), well before this runs.
+            if card_def in state.hand:
+                state.hand.remove(card_def)
             if not target_still_legal(state, captured):
                 state.graveyard.append(card_def)
                 state.log_event("zone_move", card=card_def.name, from_zone="hand", to_zone="graveyard", reason="fizzle")
@@ -389,7 +394,7 @@ if __name__ == "__main__":
     assert resolution.choose_any_target_creature_options(state) == [(0, "Slippery Bogle", 1)]  # own creature, side 0
     resolution.execute_choose_any_target_creature(state, 0, "Slippery Bogle", 1)
     assert state.pending_resolution is None
-    assert state.hand == [rancor] and len(state.stack) == 1  # still in hand, sitting on the stack
+    assert state.hand == [] and len(state.stack) == 1  # left hand at cast, sitting on the stack
     resolve_top_of_stack(state)
     assert state.hand == []
     rancor_permanent = next(p for p in state.battlefield if p.card_def.name == "Rancor")

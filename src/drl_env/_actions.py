@@ -108,24 +108,16 @@ def _land_drop_execute(name):
 
 
 def _hand_count_available(state, name):
-    """How many copies of `name` in state.hand are actually still castable
-    right now. A cast-like resolve function only removes its card from hand
-    when it finally RUNS -- which, since push_to_stack (game.effects.stack)
-    defers it, can be well after the cost is paid -- so a copy already
-    pushed onto state.stack (paid for, awaiting resolution) is still
-    physically present in state.hand but must not count as available: an
-    action mask that let the model "cast" that same physical copy a second
-    time would push a second stack entry referencing it, and crash once
-    both entries eventually try to remove it from hand. Sorcery-speed cards
-    are already safe from this via speed_legal's own stack-emptiness check
-    (nothing sorcery-speed is ever legal again once anything -- even
-    itself -- sits unresolved on the stack); this only actually matters for
-    Speed.INSTANT cards, which the stack never blocks re-casting of, but is
-    correct (a no-op) to apply uniformly rather than special-casing speed
-    here too."""
-    hand_count = sum(1 for c in state.hand if c.name == name)
-    stacked_count = sum(1 for entry in state.stack if entry["card_def"].name == name and entry["reserves_hand_card"])
-    return hand_count - stacked_count
+    """How many copies of `name` in state.hand are castable right now -- just
+    the count in hand. A spell LEAVES hand the instant it is put on the stack
+    (game.effects.stack.push_to_stack removes it at cast), so a copy already
+    paid-for and awaiting resolution is simply no longer in state.hand and can't
+    be re-cast -- the card physically leaving hand IS the re-cast guard. (Before
+    that, a cast copy stayed in hand until its resolve ran, so this had to
+    subtract on-stack copies by hand to stop the model casting the same physical
+    copy twice -- which still crashed once two entries both tried to remove it.
+    That bookkeeping is now subsumed by the faithful zone move.)"""
+    return sum(1 for c in state.hand if c.name == name)
 
 
 def _effective_cast_cost(state, card_def):
@@ -1454,7 +1446,21 @@ def _omen_cast_execute(creature_card_def, cost, resolve):
     removal" convention every other cast path here follows."""
     def execute(state):
         game.on_cast_trigger(state, creature_card_def)  # no-op for a CREATURE card_def (on_cast_trigger only fires for INSTANT/SORCERY) -- called anyway for the same hygiene every other cast path here has
-        game.begin_pay_cost(state, cost, on_complete=lambda s: game.push_to_stack(s, creature_card_def, resolve))
+
+        def _after_pay(s):
+            # The physical hand card LEAVES hand at cast, like every other cast
+            # (game.push_to_stack) -- never re-entering hand. It shares
+            # creature_card_def's display name but is a DIFFERENT object (the
+            # hand card is the sorcery/normal side), so push_to_stack's own
+            # identity-based removal below misses it; remove it here by name.
+            # That is what makes the OTHER mode uncastable while this copy is on
+            # the stack, now that the card physically leaving hand is the sole
+            # re-cast guard (_hand_count_available is a plain hand tally).
+            hand_card = next((c for c in s.hand if c.name == creature_card_def.name), None)
+            if hand_card is not None:
+                s.hand.remove(hand_card)
+            game.push_to_stack(s, creature_card_def, resolve)
+        game.begin_pay_cost(state, cost, on_complete=_after_pay)
     return execute
 
 

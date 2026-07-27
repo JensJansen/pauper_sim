@@ -650,6 +650,44 @@ def run_turn(state, choose_action, combat_enabled=False):
         pass
 
 
+def _yield_decisions(inner, state):
+    """Adapt a choose_action-driven inner generator (_run_mulligan_gen /
+    _run_turn_gen -- each yields at a decision and expects the chosen action
+    back via .send()) into one that yields the live STATE outward and forwards
+    the action in. The inner's own yielded value was always ignored by its
+    synchronous driver (run_turn / run_mulligan_phase), so yielding `state`
+    instead -- what a driver actually needs to choose on -- changes nothing
+    about the decision sequence."""
+    try:
+        next(inner)
+        while True:
+            action = yield state
+            inner.send(action)
+    except StopIteration:
+        pass
+
+
+def game_coroutine(state, horizon=None, combat_enabled=False):
+    """run_multiplayer_game's decision flow as a resumable generator: yields
+    the state at every point a player must choose (pregame mulligan, then every
+    turn's priority/combat decisions) and expects the chosen action back via
+    .send() -- the SAME value choose_action returns (None for a Pass, or a
+    zero-arg executor callable). run_multiplayer_game drives this synchronously
+    (so every existing caller and self-check exercises this exact path); the
+    batched rollout collector (rl.train.collect_rollout_batched) drives many of
+    these at once, running ONE network forward across all their pending
+    decisions instead of a batch-of-1 forward per decision. The turn loop here
+    mirrors run_multiplayer_game's own former inline loop verbatim -- same
+    horizon/turn_won/decked_out guard, same lazy active_idx flip."""
+    yield from _yield_decisions(_run_mulligan_gen(state), state)
+    first_turn = True
+    while (horizon is None or state.turn_number < horizon) and state.turn_won is None and not state.decked_out:
+        if not first_turn:
+            state.active_idx = 1 - state.active_idx
+        first_turn = False
+        yield from _yield_decisions(_run_turn_gen(state, combat_enabled=combat_enabled), state)
+
+
 def run_multiplayer_game(decklists, rng, starting_player_idx, choose_action,
                           horizon=None, combat_enabled=False, event_log=None):
     """N-player entry point. Full
@@ -674,20 +712,19 @@ def run_multiplayer_game(decklists, rng, starting_player_idx, choose_action,
     who never actually got a turn, misattributing every state.hand/
     state.decked_out/etc. read a caller does on the returned state)."""
     state = new_multiplayer_game_state(decklists, starting_player_idx, rng, event_log=event_log)
-    run_mulligan_phase(state, choose_action)
-    first_turn = True
-    while (horizon is None or state.turn_number < horizon) and state.turn_won is None and not state.decked_out:
-        if not first_turn:
-            state.active_idx = 1 - state.active_idx
-        first_turn = False
-        # choose_action already dispatches on state.active_idx for the
-        # normal turn loop, so it's equally correct for every reactive
-        # priority window too -- no separate
-        # callable needed, per this function's own choose_action
-        # docstring above. run_turn's own generator now yields at EVERY
-        # decision point uniformly (not just blocking's), so this one
-        # closure already covers all of them.
-        run_turn(state, choose_action, combat_enabled=combat_enabled)
+    # Drive the game as a coroutine (game_coroutine) -- choose_action(state) is
+    # still called for EVERY decision regardless of whose it is, exactly as the
+    # former inline mulligan+turn loop did. The loop now lives in
+    # game_coroutine (single source of truth) so the batched rollout collector
+    # can interleave many games over the same generator; every existing caller
+    # keeps this identical synchronous behavior.
+    gen = game_coroutine(state, horizon=horizon, combat_enabled=combat_enabled)
+    try:
+        req_state = next(gen)
+        while True:
+            req_state = gen.send(choose_action(req_state))
+    except StopIteration:
+        pass
     return state
 
 

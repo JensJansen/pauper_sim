@@ -476,11 +476,11 @@ def _run_self_checks():
     assert set(game.choose_any_target_creature_options(state)) == {(0, "Slippery Bogle", 1), (0, "Slippery Bogle", 2)}
 
     game.execute_choose_any_target_creature(state, 0, "Slippery Bogle", 2)  # the SPECIFIC slot-2 bogle
-    # Target chosen -- pushed to the stack, not yet attached (still
-    # physically in hand, same "still in hand while on stack" convention
-    # every other cast path here follows).
+    # Target chosen -- pushed to the stack, not yet attached. The card LEFT
+    # hand at cast (push_to_stack), so it can't be re-cast off the stack;
+    # resolve_top_of_stack restores it transiently for the attach resolve.
     assert state.pending_resolution is None
-    assert state.hand == [rancor_card] and len(state.stack) == 1
+    assert state.hand == [] and len(state.stack) == 1
 
     game.resolve_top_of_stack(state)
     assert state.hand == []

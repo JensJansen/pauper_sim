@@ -269,8 +269,9 @@ def cast_roost_seek(state, card_def):
     hand, same as any ordinary card -- see EffectId.ROOST_SEEK's own
     "omen" registry spec / drl_env._omen_cast_legal for that second cast
     option, offered directly against state.hand, no exile involved."""
-    state.hand.remove(card_def)
-    state.library.append(card_def)
+    if card_def in state.hand:
+        state.hand.remove(card_def)  # normally already gone (removed at cast, push_to_stack); tolerant since this is the resolving spell
+    state.library.append(card_def)  # Omen: shuffles ITSELF into the LIBRARY (stack -> library), not graveyard
     resolution.begin_search_fetch(state, lambda c: c.card_type == CardType.LAND, find_to_hand)
 
 
@@ -284,8 +285,9 @@ def cast_sagu_wildling_creature(state, card_def):
     from whatever's actually sitting in state.hand (the sorcery side's own
     CardDef, despite sharing this display name) -- so the hand card has to
     be found by NAME, not identity."""
-    hand_card = next(c for c in state.hand if c.name == "Sagu Wildling")
-    state.hand.remove(hand_card)
+    hand_card = next((c for c in state.hand if c.name == "Sagu Wildling"), None)
+    if hand_card is not None:
+        state.hand.remove(hand_card)  # normally already removed at cast (_omen_cast_execute); tolerant for a direct call
     enters_battlefield(state, card_def)
 
 
@@ -1349,6 +1351,24 @@ if __name__ == "__main__":
     assert sagu_permanent.card_def is SAGU_WILDLING_CREATURE_CARD_DEF
     print("green_cards.py Sagu Wildling Omen self-check: OK")
 
+    # Full cast PATH (not just the resolve): _omen_cast_execute removes the
+    # physical hand card AT CAST (by name -- the creature side is a distinct
+    # CardDef), the creature-side def goes on the stack, and resolving it puts
+    # the creature on the battlefield. The card must NEVER re-enter hand, and
+    # cast_sagu_wildling_creature must be a no-op on the (already empty of it)
+    # hand. Mirrors _omen_cast_execute's own post-payment steps.
+    state = GameState(on_the_play=True)
+    state.hand = [CardDef("Sagu Wildling", CardType.SORCERY, {"G": 1}, EffectId.ROOST_SEEK),
+                  CardDef("Forest", CardType.LAND, None, EffectId.FOREST, basic=True)]
+    hc = next(c for c in state.hand if c.name == SAGU_WILDLING_CREATURE_CARD_DEF.name)
+    state.hand.remove(hc)  # _omen_cast_execute's cast-time by-name removal
+    push_to_stack(state, SAGU_WILDLING_CREATURE_CARD_DEF, cast_sagu_wildling_creature)
+    assert [c.name for c in state.hand] == ["Forest"] and len(state.stack) == 1  # Sagu left hand at cast; Forest untouched
+    resolve_top_of_stack(state)
+    assert [c.name for c in state.hand] == ["Forest"]  # never re-entered hand during/after resolution
+    assert any(p.card_def is SAGU_WILDLING_CREATURE_CARD_DEF for p in state.battlefield)  # creature resolved onto the battlefield
+    print("green_cards.py Sagu Wildling Omen full-cast-path self-check: OK")
+
     # Ram Through ({1}{G} Instant): one-sided fight -- target creature you
     # control deals its power to target creature you don't control, trample
     # overflow to that creature's controller. Two targets locked at cast,
@@ -1374,7 +1394,7 @@ if __name__ == "__main__":
     execute_choose_any_target_creature(state, 0, "My Beater", 1)  # source: creature I control
     assert state.pending_resolution["kind"] == "choose_any_target"
     execute_choose_any_target_creature(state, 1, "Their Bear", 1)  # target: creature I don't control
-    assert state.hand == [ram] and len(state.stack) == 1  # still in hand, on the stack
+    assert state.hand == [] and len(state.stack) == 1  # left hand at cast, on the stack
     resolve_top_of_stack(state)
     assert ram in state.graveyard
     assert theirs not in state.players[1].battlefield  # 3 >= 2 toughness -> dead
@@ -1609,7 +1629,7 @@ if __name__ == "__main__":
     cast_nyxborn_hydra_bestow(2)(state, hydra_card2)
     assert state.pending_resolution["kind"] == "choose_any_target"  # Bestow = cast_aura, now any-target
     resolution.execute_choose_any_target_creature(state, 0, "Target Creature", 1)  # side 0 (this 1-player fixture)
-    assert state.hand == [hydra_card2]  # still in hand -- sitting on the stack, unresolved
+    assert state.hand == []  # left hand at cast -- sitting on the stack, unresolved
     assert len(state.stack) == 1
     resolve_top_of_stack(state)
     assert state.hand == []

@@ -629,7 +629,7 @@ if __name__ == "__main__":
     cast_dread_return(state, dr)  # precast: begins the graveyard-target choice
     assert state.pending_resolution["kind"] == "choose_graveyard_card"
     resolution.execute_choose_graveyard_card_option(state, "Grizzly Bears")
-    assert state.hand == [dr] and len(state.stack) == 1  # Dread Return still in hand, on the stack
+    assert state.hand == [] and len(state.stack) == 1  # Dread Return LEFT hand at cast, now on the stack
     resolve_top_of_stack(state)
     assert dr in state.graveyard  # Dread Return resolved -> graveyard
     assert any(p.card_def is grizzly for p in state.battlefield) and grizzly not in state.graveyard  # reanimated

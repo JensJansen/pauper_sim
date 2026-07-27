@@ -371,6 +371,15 @@ class GameState:
         # game.effects.stack.push_to_stack/resolve_top_of_stack.
         self.stack = []
 
+        # The CardDef currently resolving off the stack, set by
+        # game.effects.stack.resolve_top_of_stack for the duration of that
+        # resolve. It left its controller's hand at cast (push_to_stack) and
+        # must NEVER re-enter hand, so its resolve's own "send this card to
+        # graveyard/battlefield" step (discard_from_hand_to_graveyard,
+        # cast_permanent_from_hand, cast_aura) checks identity against this
+        # instead of expecting the card in hand. None whenever nothing resolves.
+        self.resolving_card = None
+
     hand = _active_player_property("hand")
     battlefield = _active_player_property("battlefield")
     library = _active_player_property("library")

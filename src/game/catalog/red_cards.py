@@ -944,7 +944,7 @@ if __name__ == "__main__":
     state.players[1].battlefield = [opp_creature]
     cast_lightning_bolt(state, bolt)  # begins choose_any_target (precast)
     _res.execute_choose_any_target_creature(state, 1, "Grizzly Bears", 1)  # lock the opponent's creature
-    assert state.hand == [bolt]  # still in hand while paid-but-unresolved on the stack
+    assert state.hand == []  # left hand at cast, paid-but-unresolved on the stack
     resolve_top_of_stack(state)
     assert opp_creature.damage_marked == 3 and bolt in state.graveyard
 
@@ -1017,7 +1017,7 @@ if __name__ == "__main__":
     state.players[0].hand = [chain]
     cast_chain_lightning(state, chain)  # precast target choice
     _res.execute_choose_any_target_player(state, 1)  # caster targets the opponent
-    assert chain in state.players[0].hand  # in hand until it resolves
+    assert chain not in state.players[0].hand  # left hand at cast, now on the stack
     resolve_top_of_stack(state)
     assert state.players[1].life_total == 17 and chain in state.players[0].graveyard  # 3 to opp, itself to gy
     # rider FIRST "may": the affected player (opp, idx 1) may pay {R}{R}

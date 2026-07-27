@@ -61,7 +61,18 @@ def push_to_stack(state, card_def, resolve, reserves_hand_card=True, is_spell=Tr
         "card_def": card_def, "resolve": resolve, "controller": state.active_idx,
         "reserves_hand_card": reserves_hand_card, "is_spell": is_spell,
     })
-    state.log_event("zone_move", card=card_def.name, to_zone="stack", controller=state.active_idx)
+    # A normally-cast spell LEAVES its controller's hand the instant it goes on
+    # the stack (real Magic: a cast spell is a stack object, not a hand card),
+    # and NEVER re-enters hand. Removing it HERE -- at cast, not at resolution --
+    # is what prevents it being cast a SECOND time while the first copy still
+    # sits on the stack (the reserved-hand-card double-cast bug). Its resolve's
+    # own "send this card onward" step recognises it as the resolving spell (via
+    # state.resolving_card, set by resolve_top_of_stack) instead of expecting it
+    # in hand. reserves_hand_card=False (flashback/madness/plot/alt-cost) has
+    # already left its origin zone, so there is nothing to remove.
+    if reserves_hand_card and card_def in state.hand:
+        state.hand.remove(card_def)
+    state.log_event("zone_move", card=card_def.name, from_zone="hand", to_zone="stack", controller=state.active_idx)
 
 
 def push_ability_to_stack(state, source_card_def, effect):
@@ -78,9 +89,10 @@ def push_ability_to_stack(state, source_card_def, effect):
 def counter_spell(state, entry):
     """Counter a spell: remove its entry from the stack so it never resolves,
     and send its card to the right zone. A normally-cast spell
-    (reserves_hand_card -- the card is still physically in its controller's
-    hand while on the stack, see push_to_stack) goes to that controller's
-    graveyard (real Magic: a countered spell goes to its owner's graveyard).
+    (reserves_hand_card) already left its controller's hand at cast
+    (push_to_stack), so this just sends the on-stack card to that controller's
+    graveyard (real Magic: a countered spell goes to its owner's graveyard); the
+    `if cd in controller.hand` guard below is now only defensive.
     A spell cast from elsewhere (flashback/madness/plot/free-alt,
     reserves_hand_card=False) has already left its origin zone at cast time,
     so there's nothing to move -- it simply ceases (a flashback spell would
@@ -116,7 +128,18 @@ def resolve_top_of_stack(state):
     entry = state.stack.pop()
     state.active_idx = entry["controller"]
     state.log_event("zone_move", card=entry["card_def"].name, from_zone="stack", reason="resolve")
-    entry["resolve"](state, entry["card_def"])
+    # Mark the spell currently resolving so its resolve's own "send this card
+    # onward" step (discard_from_hand_to_graveyard / cast_permanent_from_hand /
+    # cast_aura) treats it as the resolving spell -- off hand since cast
+    # (push_to_stack) and NEVER to re-enter hand -- rather than expecting it in
+    # hand. Save/restore (not just clear) so a nested resolution, if one ever
+    # happens, can't strand the outer spell's marker.
+    prev_resolving = state.resolving_card
+    state.resolving_card = entry["card_def"]
+    try:
+        entry["resolve"](state, entry["card_def"])
+    finally:
+        state.resolving_card = prev_resolving
 
 
 if __name__ == "__main__":
@@ -131,6 +154,38 @@ if __name__ == "__main__":
     assert len(state.stack) == 1 and resolved == []
     resolve_top_of_stack(state)
     assert state.stack == [] and resolved == ["Fake Spell"]
+
+    # reserved-hand-card lifecycle (regression: the reserved-stack-card
+    # double-cast bug). A normally-cast spell must LEAVE hand at cast -- else it
+    # stays castable off the stack and a second copy's resolve finds it already
+    # gone (a real crash, Lorien Revealed ~turn 39 in league training). Cast it,
+    # confirm it left hand AT CAST, then resolve: resolve_top_of_stack
+    # transiently restores it so the unchanged resolve moves it to graveyard.
+    state_r = GameState(on_the_play=True)
+    spell = CardDef("Reserved Spell", CardType.INSTANT, {}, EffectId.FILLER)
+    state_r.hand.append(spell)
+    seen = {}
+
+    def _spell_resolve(s, c):
+        seen["in_hand_during_resolve"] = c in s.hand  # MUST be False -- never back in hand
+        s.graveyard.append(c)  # off hand since cast: stack -> graveyard
+
+    push_to_stack(state_r, spell, _spell_resolve)
+    assert spell not in state_r.hand, "a cast spell must leave hand AT CAST (else it stays re-castable off the stack)"
+    assert len(state_r.stack) == 1 and state_r.stack[0]["card_def"] is spell
+    resolve_top_of_stack(state_r)
+    assert seen["in_hand_during_resolve"] is False, "a resolving spell must NEVER be in hand during its own resolution"
+    assert spell not in state_r.hand and spell in state_r.graveyard, "a resolved spell ends in graveyard, not hand"
+
+    # A countered reserved-hand-card spell (already off hand at cast) still goes
+    # to its controller's graveyard exactly once, never stranded in hand.
+    state_c = GameState(on_the_play=True)
+    spell_c = CardDef("Countered Spell", CardType.INSTANT, {}, EffectId.FILLER)
+    state_c.hand.append(spell_c)
+    push_to_stack(state_c, spell_c, lambda s, c: None)
+    assert spell_c not in state_c.hand
+    assert counter_spell(state_c, state_c.stack[0]) is True
+    assert spell_c in state_c.graveyard and spell_c not in state_c.hand and state_c.stack == []
 
     # controller restoration: pushed while active_idx=1, resolved while
     # active_idx has since moved to 0 -- resolve must still see active_idx=1.

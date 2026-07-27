@@ -51,8 +51,8 @@ from rl.deck import DeckNetwork
 from rl.league import LeaguePool
 from rl.pool import build_pool
 from rl.train import (
-    batch_size_for_iteration, collect_rollout_league, collect_rollout_league_parallel, device_for_batch_size,
-    move_optimizer_state, ppo_update, train_selfplay,
+    batch_size_for_iteration, collect_rollout_league, collect_rollout_league_batched,
+    collect_rollout_league_parallel, device_for_batch_size, move_optimizer_state, ppo_update, train_selfplay,
 )
 
 CHECKPOINT_DIR = "../checkpoints"
@@ -79,7 +79,21 @@ def load_frozen_stack(vocab_size):
     return shared
 
 
-def _save_live_checkpoints(live_nets, optimizers, deck_names, session, session_path):
+def build_fresh_stack(vocab_size):
+    """A shared stack with the EXACT architecture/config of the real frozen
+    one (SHARED_HPARAMS) but random, UNTRAINED weights -- frozen + eval, same
+    as load_frozen_stack returns. Lets the benchmark harness drive the real
+    training loop (_run_session) without a trained shared_stack_frozen.pt on
+    disk: identical to the real league in every way except the weights aren't
+    trained, which is exactly the intended benchmarking difference."""
+    shared = SetTransformer(vocab_size, **SHARED_HPARAMS)
+    for p in shared.parameters():
+        p.requires_grad = False
+    shared.eval()
+    return shared
+
+
+def _save_live_checkpoints(live_nets, optimizers, deck_names, session, session_path, league_dir):
     """Persist every deck's current live net + optimizer + the session
     counter. Called at each snapshot point AND at session end -- NOT only
     at the end: a mid-session crash (a rare card-interaction bug ~2500
@@ -87,9 +101,9 @@ def _save_live_checkpoints(live_nets, optimizers, deck_names, session, session_p
     otherwise discard the whole session's live-net training, since only the
     periodic snapshots (historical opponents) get written incrementally.
     With this, a crash loses at most snapshot_every iterations."""
-    os.makedirs(LEAGUE_DIR, exist_ok=True)
+    os.makedirs(league_dir, exist_ok=True)
     for name in deck_names:
-        deck_dir = f"{LEAGUE_DIR}/{name}"
+        deck_dir = f"{league_dir}/{name}"
         os.makedirs(deck_dir, exist_ok=True)
         torch.save({"net": live_nets[name].state_dict(), "optimizer": optimizers[name].state_dict()},
                    f"{deck_dir}/live.pt")
@@ -98,15 +112,25 @@ def _save_live_checkpoints(live_nets, optimizers, deck_names, session, session_p
 
 
 def _run_session(n_iterations, games_per_iteration, snapshot_every, executor, n_workers,
-                  gpu_threshold=None, batch_size_start=32, batch_size_cap=2048, batch_size_steps=6):
+                  gpu_threshold=None, batch_size_start=32, batch_size_cap=2048, batch_size_steps=6,
+                  collect_batch_size=None, fresh_stack=False, league_dir=None, seed=None):
+    # fresh_stack + league_dir + seed let the benchmark harness drive this EXACT
+    # loop with untrained (but identical-config) models over a throwaway dir,
+    # reproducibly -- the only intended differences from a real training
+    # session. Defaults preserve the real run: load the trained frozen stack,
+    # checkpoint into LEAGUE_DIR, nondeterministic rng.
+    league_dir = league_dir or LEAGUE_DIR
+    if seed is not None:
+        torch.manual_seed(seed)  # identical fresh stack + in-process sampling across benchmark configs
+        random.seed(seed)  # collect_rollout_league_parallel draws its worker seeds from the global random module
     decklists, vocab, deck_ctxs, fixed_tables = build_pool()
     deck_names = list(decklists)
-    shared = load_frozen_stack(vocab.size)
+    shared = build_fresh_stack(vocab.size) if fresh_stack else load_frozen_stack(vocab.size)
 
     live_nets, optimizers = {}, {}
     for name in deck_names:
         net = DeckNetwork(shared, film_condition_dim=D_MODEL, non_targeting_n_actions=len(fixed_tables[name]))
-        live_path = f"{LEAGUE_DIR}/{name}/live.pt"
+        live_path = f"{league_dir}/{name}/live.pt"
         if os.path.exists(live_path):
             ckpt = torch.load(live_path, weights_only=True)
             net.load_state_dict(ckpt["net"])
@@ -116,14 +140,14 @@ def _run_session(n_iterations, games_per_iteration, snapshot_every, executor, n_
         live_nets[name] = net
         optimizers[name] = optimizer
 
-    pool = LeaguePool(LEAGUE_DIR, deck_names)
-    session_path = f"{LEAGUE_DIR}/session.txt"
+    pool = LeaguePool(league_dir, deck_names)
+    session_path = f"{league_dir}/session.txt"
     session = int(open(session_path).read()) + 1 if os.path.exists(session_path) else 0
     if session > 0:
         print(f"resumed league (session {session}); snapshots on disk: "
               f"{ {name: len(pool.snapshots[name]) for name in deck_names} }")
 
-    rng = random.Random()
+    rng = random.Random(seed)  # seed=None -> nondeterministic, identical to the prior random.Random()
     reward_fn = action_count_win_reward_200_floor02
     reward_fn_name = "action_count_win_reward_200_floor02"
     horizon = 120
@@ -140,9 +164,19 @@ def _run_session(n_iterations, games_per_iteration, snapshot_every, executor, n_
         update_device = device_for_batch_size(batch_size, gpu_threshold)
         for name in deck_names:
             t_collect0 = time.time()
-            if executor is not None:
+            if collect_batch_size:
+                # In-process VECTORIZED collection: collect_batch_size games at
+                # once, ONE shared-stack forward per batch of decisions (see
+                # rl.train.collect_rollout_league_batched). Single process, so
+                # no executor -- an alternative to the --n-workers MP path.
+                buf, played = collect_rollout_league_batched(
+                    name, live_nets[name], deck_ctxs[name], decklists[name], reward_fn,
+                    pool, decklists, deck_ctxs, live_nets, horizon, games_per_iteration, rng,
+                    device="cpu", batch_size=collect_batch_size,
+                )
+            elif executor is not None:
                 buf, played = collect_rollout_league_parallel(
-                    name, live_nets, reward_fn_name, LEAGUE_DIR, horizon, games_per_iteration,
+                    name, live_nets, reward_fn_name, league_dir, horizon, games_per_iteration,
                     executor, n_workers, SHARED_HPARAMS,
                 )
             else:
@@ -178,7 +212,7 @@ def _run_session(n_iterations, games_per_iteration, snapshot_every, executor, n_
         if (iteration + 1) % snapshot_every == 0:
             for name in deck_names:
                 pool.register_snapshot(name, live_nets[name])
-            _save_live_checkpoints(live_nets, optimizers, deck_names, session, session_path)
+            _save_live_checkpoints(live_nets, optimizers, deck_names, session, session_path, league_dir)
             print(f"  iter {iteration}: snapshotted all decks + saved live checkpoints "
                   f"(counts now: { {n: len(pool.snapshots[n]) for n in deck_names} })", flush=True)
 
@@ -187,7 +221,7 @@ def _run_session(n_iterations, games_per_iteration, snapshot_every, executor, n_
           f"collect={collect_time_total:.1f}s ({100 * collect_time_total / elapsed:.0f}%), "
           f"update={update_time_total:.1f}s ({100 * update_time_total / elapsed:.0f}%)")
 
-    _save_live_checkpoints(live_nets, optimizers, deck_names, session, session_path)
+    _save_live_checkpoints(live_nets, optimizers, deck_names, session, session_path, league_dir)
     print("live checkpoints saved for all decks")
 
 
@@ -292,6 +326,11 @@ def build_arg_parser():
                          help="ppo_update batch_size ceiling by the end of the session.")
     parser.add_argument("--batch-size-steps", type=int, default=6,
                          help="Number of doublings from --batch-size-start to --batch-size-cap, spread evenly across the session.")
+    parser.add_argument("--collect-batch-size", type=int, default=None, metavar="K",
+                         help="Collect rollouts with in-process VECTORIZED play: K games at once, one shared-stack "
+                              "forward per batch of decisions (rl.train.collect_rollout_league_batched). Single "
+                              "process -- overrides --n-workers. Best paired with a GPU; on CPU the batch-of-1 path "
+                              "(with forced-move skipping) is already competitive.")
     return parser
 
 
@@ -309,6 +348,11 @@ def main():
     n_workers = args.n_workers
     schedule_kwargs = dict(gpu_threshold=args.gpu_threshold, batch_size_start=args.batch_size_start,
                             batch_size_cap=args.batch_size_cap, batch_size_steps=args.batch_size_steps)
+    if args.collect_batch_size and args.collect_batch_size > 1:
+        # Vectorized in-process collection -- single process, no executor.
+        _run_session(args.n_iterations, args.games_per_iteration, args.snapshot_every, None, 1,
+                     collect_batch_size=args.collect_batch_size, **schedule_kwargs)
+        return
     if n_workers > 1:
         # ONE executor for the whole session, reused across every
         # iteration -- process-spawn/import overhead (each worker

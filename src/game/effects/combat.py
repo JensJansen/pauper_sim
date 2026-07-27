@@ -418,15 +418,29 @@ def enforce_menace(state):
 
 
 def has_unfulfilled_goad(state):
-    """True if the turn player controls a goaded creature that CAN attack but
-    isn't yet declared -- goad's "attacks each combat if able" then forbids
-    them ending their own declare-attackers step (drl_env._pass_legal gates
-    Pass on this during DECLARE_ATTACKERS). creature_attack_eligible already
-    excludes creatures that can't attack (tapped/summoning-sick) and ones
-    already in state.attackers, so a goaded creature that literally can't
-    attack -- or has been declared -- never blocks the Pass. In 2-player,
-    "attack a player other than you" is automatic (the sole opponent), so no
-    attack-target restriction is needed beyond forcing the declaration."""
+    """True if the TURN player, during their OWN declare-attackers step,
+    controls a goaded creature that CAN attack but isn't yet declared --
+    goad's "attacks each combat if able" then forbids them ending that step
+    (drl_env._pass_legal gates Pass on this during DECLARE_ATTACKERS).
+    creature_attack_eligible already excludes creatures that can't attack
+    (tapped/summoning-sick) and ones already in state.attackers, so a goaded
+    creature that literally can't attack -- or has been declared -- never
+    blocks the Pass. In 2-player, "attack a player other than you" is
+    automatic (the sole opponent), so no attack-target restriction is needed
+    beyond forcing the declaration.
+
+    Gated on active_idx == turn_player_idx: the obligation is a turn-based
+    action of the turn player alone. DECLARE_ATTACKERS also hands PRIORITY to
+    the NON-turn player (game.turn._run_priority_round_gen flips active_idx),
+    and state.battlefield proxies to active_idx -- so without this guard, a
+    non-turn player who controls a goaded creature (the turn player goaded it)
+    would have their priority-Pass blocked here while being unable to declare
+    an attacker at all (_attack_legal needs active_idx == turn_player_idx):
+    an all-False action mask, a real crash caught in rl.train._seat_step. Goad
+    binds a creature's controller on that controller's own combat, never a
+    reactive priority window."""
+    if state.active_idx != state.turn_player_idx:
+        return False
     return any(
         p.flags.get("goaded_by") is not None and creature_attack_eligible(state, p)
         for p in state.battlefield
@@ -797,6 +811,20 @@ if __name__ == "__main__":
     state.players[0].attackers = []
     goaded.tapped = True
     assert not has_unfulfilled_goad(state)
+
+    # Regression: goad binds the turn player during THEIR own declare step, not
+    # a NON-turn player who merely holds priority during DECLARE_ATTACKERS
+    # (game.turn._run_priority_round_gen flips active_idx to them). A forcing
+    # goaded creature under the non-turn player must NOT block their priority-
+    # Pass -- they cannot declare an attacker at all (_attack_legal needs
+    # active_idx == turn_player_idx), so blocking it left an all-False action
+    # mask (the rl.train._seat_step crash this guards). turn_player_idx stays 0.
+    nonturn_goaded = Permanent(CardDef("NonturnGoaded", CardType.CREATURE, None, _EID.FILLER, power=2, toughness=2))
+    nonturn_goaded.summoning_sick = False
+    nonturn_goaded.flags["goaded_by"] = 0  # goaded by the turn player (idx 0)
+    state.players[1].battlefield = [nonturn_goaded]
+    state.active_idx = 1  # non-turn player now holds priority
+    assert not has_unfulfilled_goad(state), "goad must never block a NON-turn player's priority-Pass"
     print("combat.py goad (forces declaration) self-check: OK")
 
     # Initiative transfer: the holder taking combat damage passes it to the

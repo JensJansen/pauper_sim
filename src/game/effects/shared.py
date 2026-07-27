@@ -135,19 +135,29 @@ def find_to_hand(state, name):
 
 
 def discard_from_hand_to_graveyard(state, card_def):
-    """Shared opening of nearly every cast_* function: leave hand, land in
-    the graveyard as a normally-resolved spell. Not for cards that instead
-    exile, get countered/fizzle, or resolve from somewhere other than
-    hand (Flashback/Plot/Madness's own resolve paths already skip this)."""
+    """Send a card to its controller's graveyard. Two distinct cases:
+
+    - The spell currently RESOLVING off the stack (state.resolving_card): it
+      left hand at cast (push_to_stack) and is now resolving, so it just lands
+      in the graveyard -- its hand was never touched here and MUST NOT be (a
+      same-named copy still in hand is a different physical card). This is the
+      "normally-resolved spell -> graveyard" step at the start of nearly every
+      cast_* resolve.
+    - Any OTHER card: a genuine discard-FROM-hand (a cost, a discard effect),
+      which must be physically in hand and is moved from there to the graveyard.
+
+    Not for cards that instead exile or resolve from somewhere other than hand
+    (Flashback/Plot/Madness's own resolve paths already skip this)."""
+    if card_def is state.resolving_card:
+        state.graveyard.append(card_def)  # the resolving spell: off hand since cast, stack -> graveyard
+        return
     if card_def not in state.hand:
-        # Should be unreachable -- every caller's own legality check
-        # guarantees this card is still in hand by the time its resolve
-        # runs. Fail loudly with the context needed to find which caller's
-        # guarantee actually broke, rather than a bare, contextless
-        # ValueError (same "fail loudly, not silently" precedent as
-        # drl_env._substitute_and_resolve's own empty-mask check).
+        # A non-resolving card must be in hand. If it isn't, a caller's own
+        # guarantee broke -- fail loudly with the context needed to find which,
+        # rather than a bare, contextless ValueError ("fail loudly, not
+        # silently", same precedent as drl_env._substitute_and_resolve).
         raise RuntimeError(
-            f"discard_from_hand_to_graveyard: {card_def.name!r} not in hand. "
+            f"discard_from_hand_to_graveyard: {card_def.name!r} not in hand and not the resolving spell. "
             f"active_idx={getattr(state, 'active_idx', None)!r} "
             f"turn_player_idx={getattr(state, 'turn_player_idx', None)!r} "
             f"turn_number={getattr(state, 'turn_number', None)!r} "
