@@ -124,7 +124,7 @@ def makeshift_munitions_activate(state, permanent):
     on the stack for its locked target."""
     def _after_pay(st):
         def _on_sac(st2, _ok):
-            _burn_choose_target_and_push(st2, permanent.card_def, 1, lambda s, c: None, reserves_hand_card=False)
+            _burn_choose_target_and_push(st2, permanent.card_def, 1, lambda s, c: None, reserves_hand_card=False, is_spell=False)
         resolution.begin_sacrifice(st, lambda p: p.card_type == CardType.CREATURE or is_artifact(p.card_def), 1, _on_sac)
 
     begin_pay_cost(state, {"generic": 1}, on_complete=_after_pay)
@@ -305,18 +305,22 @@ def _resolve_burn_damage(state, captured, amount, card_def):
         check_state_based_actions(state)
 
 
-def _burn_choose_target_and_push(state, card_def, amount, to_graveyard, reserves_hand_card=True):
-    """Shared faithful-burn cast tail for every "deal `amount` damage to any
-    target" spell (Lightning Bolt, Fiery Temper, Fireblast, Lava Dart). The
-    target (any creature on either battlefield -- hexproof/shroud aware -- or
-    either player, yourself legal) is chosen AS THE SPELL IS CAST and locked
-    onto the stack via capture_any_target; the effect waits on the stack and,
-    on resolution, hits that exact target or fizzles (a creature target gone
-    by then, rule 608.2b). Each cast MODE supplies how its card reaches the
-    graveyard on resolution -- `to_graveyard(state, card_def)` -- and whether
-    a same-named hand copy is still spoken for (`reserves_hand_card`): a
-    normal hand cast discards from hand and reserves; madness/flashback/alt
-    have already moved the card out of its prior zone by cast time."""
+def _burn_choose_target_and_push(state, card_def, amount, to_graveyard, reserves_hand_card=True, is_spell=True):
+    """Shared faithful-burn tail for every "deal `amount` damage to any target"
+    effect. Used both by burn SPELLS (Lightning Bolt, Fiery Temper, Fireblast,
+    Lava Dart -- is_spell=True) and by Makeshift Munitions' activated ABILITY
+    (is_spell=False -- an ability is not a Counterspell/Spell Pierce target, and
+    its source enchantment never leaves the battlefield). The target (any
+    creature on either battlefield -- hexproof/shroud aware -- or either player,
+    yourself legal) is chosen AS THE SPELL/ABILITY IS PUT ON THE STACK and locked
+    via capture_any_target; the effect waits on the stack and, on resolution,
+    hits that exact target or fizzles (a creature target gone by then, rule
+    608.2b). Each MODE supplies how its card reaches the graveyard on resolution
+    -- `to_graveyard(state, card_def)` (a no-op for the ability, whose source
+    stays put) -- and whether a same-named hand copy is still spoken for
+    (`reserves_hand_card`): a normal hand cast discards from hand and reserves;
+    madness/flashback/alt and the ability have already moved (or never had) the
+    card out of its prior zone by push time."""
     def _on_target(state, target):
         captured = capture_any_target(state, target)
 
@@ -324,7 +328,7 @@ def _burn_choose_target_and_push(state, card_def, amount, to_graveyard, reserves
             to_graveyard(state, card_def)
             _resolve_burn_damage(state, captured, amount, card_def)
 
-        push_to_stack(state, card_def, _resolve, reserves_hand_card=reserves_hand_card)
+        push_to_stack(state, card_def, _resolve, reserves_hand_card=reserves_hand_card, is_spell=is_spell)
 
     # "any target" creature candidates exclude what the caster can't legally
     # target: shroud (anyone) and opponent-controlled hexproof (can_be_targeted).

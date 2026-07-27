@@ -72,7 +72,20 @@ def push_to_stack(state, card_def, resolve, reserves_hand_card=True, is_spell=Tr
     # already left its origin zone, so there is nothing to remove.
     if reserves_hand_card and card_def in state.hand:
         state.hand.remove(card_def)
-    state.log_event("zone_move", card=card_def.name, from_zone="hand", to_zone="stack", controller=state.active_idx)
+    # Only a SPELL is a card that goes on the stack. An activated/triggered
+    # ability (is_spell=False) puts an ability object on the stack while its
+    # source card stays where it is -- NO card changes zones -- so it must not
+    # be logged as a card zone_move (logging one made the replay converter mint
+    # a phantom library copy for every activation: Makeshift Munitions,
+    # Krark-Clan Shaman, Nihil Spellbomb, ...). For a spell, from_zone is "hand"
+    # only when it actually just left hand here; a spell cast from graveyard/
+    # exile (Flashback/Madness/Plot/free alt-cost, reserves_hand_card=False)
+    # already left its origin zone before this push.
+    if is_spell:
+        state.log_event(
+            "zone_move", card=card_def.name, from_zone="hand" if reserves_hand_card else None,
+            to_zone="stack", controller=state.active_idx,
+        )
 
 
 def push_ability_to_stack(state, source_card_def, effect):
@@ -127,7 +140,10 @@ def resolve_top_of_stack(state):
     controller's own zone perspective regardless."""
     entry = state.stack.pop()
     state.active_idx = entry["controller"]
-    state.log_event("zone_move", card=entry["card_def"].name, from_zone="stack", reason="resolve")
+    # Only a spell is a card leaving the stack on resolution; an ability
+    # resolving moves no card (same is_spell reasoning as push_to_stack).
+    if entry["is_spell"]:
+        state.log_event("zone_move", card=entry["card_def"].name, from_zone="stack", reason="resolve")
     # Mark the spell currently resolving so its resolve's own "send this card
     # onward" step (discard_from_hand_to_graveyard / cast_permanent_from_hand /
     # cast_aura) treats it as the resolving spell -- off hand since cast
@@ -221,5 +237,30 @@ if __name__ == "__main__":
         assert state3.trigger_queue == [] and calls == ["Guttersnipe-like"]  # lands don't trigger on-cast hooks
     finally:
         registry.EFFECT_REGISTRY[EffectId.FILLER] = _filler_backup
+
+    # Regression (ability-logged-as-a-card-on-the-stack bug): an activated/
+    # triggered ability going on -- or resolving off -- the stack moves no card,
+    # so it must emit NO card zone_move. Emitting one made the replay converter
+    # mint a phantom library copy per activation (Makeshift Munitions,
+    # Krark-Clan Shaman, ...), inflating the shown deck size; and marking such an
+    # ability is_spell=True would also make it a wrongly-legal Counterspell
+    # target. A real spell still logs hand->stack then a stack resolution.
+    log = []
+    logged = GameState(on_the_play=True, event_log=log)
+    enchantment = CardDef("An Enchantment", CardType.ENCHANTMENT, {}, EffectId.FILLER)
+    push_ability_to_stack(logged, enchantment, lambda st: None)  # this enchantment's activated ability
+    assert logged.stack[-1]["is_spell"] is False
+    resolve_top_of_stack(logged)
+    assert not any(e["kind"] == "zone_move" and e.get("card") == "An Enchantment" for e in log), \
+        "an ability must not be logged as a card moving to/from the stack"
+    spell = CardDef("A Spell", CardType.INSTANT, {}, EffectId.FILLER)
+    logged.hand.append(spell)
+    push_to_stack(logged, spell, lambda s, c: None)
+    resolve_top_of_stack(logged)
+    spell_moves = [e for e in log if e["kind"] == "zone_move" and e.get("card") == "A Spell"]
+    assert any(e.get("from_zone") == "hand" and e.get("to_zone") == "stack" for e in spell_moves), \
+        "a spell cast from hand must log hand->stack"
+    assert any(e.get("from_zone") == "stack" and e.get("reason") == "resolve" for e in spell_moves), \
+        "a spell must log its stack resolution"
 
     print("stack.py self-check: OK")

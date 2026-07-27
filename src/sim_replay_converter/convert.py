@@ -167,8 +167,6 @@ class PlayerConv:
         self.name = name
         self.next_card_id = 0
         self.hand = []  # list of {"id", "name"}
-        self.hand_unknown = []  # event-stream format only: card ids in hand whose
-        # identity isn't known yet (drawn but not yet played/discarded/cast)
         self.graveyard = []
         self.exile = []
         self.stack = []  # event-stream format only: cards currently "on the stack"
@@ -660,63 +658,49 @@ JSON_ZONE_TO_COCKATRICE = {
 
 class EventStreamReplayBuilder(BaseReplayBuilder):
     """Event-stream format: an actual atomic event log (zone_move, mana_tap,
-    attack_declared, life_change, ...). Card identity in the stack/graveyard/exile
-    is only ever revealed at the moment a card leaves a zone (no explicit "cast"
-    event names its source), so those pools are built up lazily as names are
-    first referenced. life_change gives an authoritative running total for every
-    life change, combat or otherwise, so life tracking here is exact.
+    attack_declared, life_change, ...). Every draw is logged explicitly and by
+    name as a zone_move (library->hand, reason='draw'), so hand identity is known
+    the moment a card is drawn -- no lookahead needed. Card identity in the
+    stack/graveyard/exile is still only revealed as a card leaves a zone (no
+    explicit "cast" event names its source), so those pools are built up lazily
+    as names are first referenced. life_change gives an authoritative running
+    total for every life change, combat or otherwise, so life tracking is exact.
 
-    The opening hand is given directly (mulligan_hand, matched against any
-    mulligan_bottom put-backs for the final kept hand) -- but turn-by-turn draws
-    are still never logged, so hand identity for anything drawn mid-game is
-    reconstructed with a lookahead: this is an offline converter, so before the
-    real pass, a throwaway dry run walks the whole game recording, in order, the
-    name behind every card that ever leaves a hand. Since the "not yet revealed"
-    pool is a strict FIFO queue (append on draw, pop-oldest on reveal), the i-th
-    card drawn and the i-th name later revealed are mathematically the same slot
-    -- so the real pass replays that recorded order and reveals each card's name
-    at the moment it's drawn instead of the moment it's played. A card that's
-    still in hand, never played, when the recorded game ends has no name anywhere
-    in the log -- that one genuinely can't be known and is the sole remaining
-    exception. A card-draw effect beyond the normal one-per-turn draw (e.g. a
-    looting spell) isn't logged either, so it can undercount hand size; that's
-    handled by minting an extra placeholder on the spot rather than crashing.
+    Mulligans are logged as repeated full-hand 'draw' batches (one per attempt)
+    with the cards not kept logged as mulligan_take / mulligan_bottom put-backs;
+    __init__ nets these into the single kept opening hand rather than replaying
+    every round (an agent that mulligans to zero would otherwise dump ~100 churn
+    events at t=0).
     """
 
-    def __init__(self, game, meta, reveal_order=None):
+    def __init__(self, game, meta):
         super().__init__(game, meta)
         events = game["events"]
         self.starting_player_idx = next(e["turn_player_idx"] for e in events if e["kind"] == "turn_start")
         self._emit_initial_snapshot(self.starting_player_idx, {0: 20, 1: 20})
 
-        # reveal_order[player] is the queue of names discovered by an earlier dry
-        # run, in the exact order those players' hand cards were later revealed --
-        # see build_replay_for_game. None (the default, used for the dry run itself)
-        # means nothing is known yet, so cards stay genuinely anonymous until played.
-        self.reveal_order = reveal_order or {}
-        self.reveal_index = {0: 0, 1: 0}
-        self.hand_reveal_log = {0: [], 1: []}
-
-        # Starting hand: mulligan_hand gives the full 7-card draw for every
-        # mulligan attempt (mulligans_taken counts up each redraw); the last one
-        # seen per player is the one they kept. mulligan_bottom then names exactly
-        # which cards from that kept draw get put on the bottom (one event each),
-        # leaving the real final hand -- no lookahead needed for this part.
-        last_mulligan_hand = {}
-        for e in events:
-            if e["kind"] == "mulligan_hand":
-                p_idx = e["active_idx"]
-                if p_idx not in last_mulligan_hand or e["mulligans_taken"] > last_mulligan_hand[p_idx][0]:
-                    last_mulligan_hand[p_idx] = (e["mulligans_taken"], list(e["cards"]))
-        bottomed = {0: Counter(), 1: Counter()}
-        for e in events:
-            if e.get("reason") == "mulligan_bottom":
-                bottomed[e["active_idx"]][e["card"]] += 1
+        # Everything before the first turn_start is the opening-hand / mulligan
+        # sequence: each mulligan attempt is logged as a fresh full-hand 'draw'
+        # (library->hand), with the cards not kept logged as mulligan_take /
+        # mulligan_bottom put-backs (hand->library). Net those out per player to
+        # get the actual kept opening hand and render it as a single shuffle +
+        # draw, the way a live server does. Post-first-turn events (self.main_events)
+        # are the real game and are replayed verbatim by process_events.
+        first_turn = next(i for i, e in enumerate(events) if e["kind"] == "turn_start")
+        self.main_events = events[first_turn:]
+        opening = {0: Counter(), 1: Counter()}
+        for e in events[:first_turn]:
+            if e["kind"] != "zone_move":
+                continue
+            names = e.get("cards") or ([e["card"]] if e.get("card") else [])
+            reason = e.get("reason")
+            if reason == "draw":
+                opening[e["active_idx"]] += Counter(names)
+            elif reason in ("mulligan_take", "mulligan_bottom"):
+                opening[e["active_idx"]] -= Counter(names)
 
         for p in self.players:
-            _, drawn = last_mulligan_hand.get(p.idx, (0, []))
-            kept = Counter(drawn) - bottomed[p.idx]
-            hand = list(kept.elements())
+            hand = list(opening[p.idx].elements())
             if not hand:
                 continue
             cont = self._new_container()
@@ -724,36 +708,17 @@ class EventStreamReplayBuilder(BaseReplayBuilder):
             sh.zone_name = Z_DECK
             self._draw_cards(cont, p, hand)
 
-    def _add_anonymous_to_hand(self, p):
-        card_id = self._mint_from_library(p)
-        idx = self.reveal_index[p.idx]
-        self.reveal_index[p.idx] += 1
-        queue = self.reveal_order.get(p.idx) or []
-        name = queue[idx] if idx < len(queue) else None
-        cont = self._new_container()
-        self._move(cont, p, Z_DECK, p, Z_HAND, 0, card_id, card_name=name)
-        if name is not None:
-            p.hand.append({"id": card_id, "name": name})
-        else:
-            p.hand_unknown.append(card_id)
-
     def _resolve_hand_card(self, p, name):
         """Get (card_id, revealed_name_or_None) for a specific named card about to
-        leave hand: reuse a matching named entry if this exact card is already
-        known (already revealed by the lookahead, or bounced back earlier), else
-        reveal an existing anonymous hand placeholder (only happens on the dry
-        run, or if hand-size tracking undercounted), else mint fresh as a last
-        resort."""
+        leave hand: reuse the matching hand entry (revealed when it was drawn),
+        else mint fresh as a last resort if hand tracking somehow undercounted."""
         c = pop_by_name(p.hand, name)
         if c is not None:
             return c["id"], None
-        if p.hand_unknown:
-            self.hand_reveal_log[p.idx].append(name)
-            return p.hand_unknown.pop(0), name
         return self._mint_from_library(p), name
 
     def process_events(self):
-        for e in self.game["events"]:
+        for e in self.main_events:
             kind = e["kind"]
             handler = self._HANDLERS.get(kind)
             if handler is not None:
@@ -800,12 +765,8 @@ class EventStreamReplayBuilder(BaseReplayBuilder):
         if phase_idx != PHASE_BY_NAME["declare_blockers"]:
             self._clear_arrows(cont)
         self._flush_pending_resolutions(cont)
-
-        # a real draw happened: the player going first skips the draw step of
-        # their very first turn, per normal Magic rules -- every other draw-phase
-        # transition is a genuine draw and grows hand size by one placeholder.
-        if e["phase"] == "draw" and not (e["turn"] == 1 and e["turn_player_idx"] == self.starting_player_idx):
-            self._add_anonymous_to_hand(self.players[e["turn_player_idx"]])
+        # Draws are NOT synthesized here: this format logs every draw explicitly
+        # as a named library->hand zone_move (handled by _handle_card_move).
 
     def _handle_mana_tap(self, e):
         p = self.players[e["active_idx"]]
@@ -985,13 +946,8 @@ class EventStreamReplayBuilder(BaseReplayBuilder):
         c = pop_by_name(p.exile, name)
         if c:
             return c["id"], Z_EXILE, None
-        # not tracked anywhere -- this event never states a from_zone at all, but a
-        # cast overwhelmingly likely came from hand; reveal an existing placeholder
-        # (or mint fresh as a last resort) rather than jumping straight from the
-        # library to the stack.
-        if p.hand_unknown:
-            self.hand_reveal_log[p.idx].append(name)
-            return p.hand_unknown.pop(0), Z_HAND, name
+        # not tracked anywhere -- came straight from the hidden deck zone,
+        # revealing its name for the first time now.
         return self._mint_from_library(p), Z_DECK, name
 
     def _handle_card_move(self, e, name, from_zone, to_zone):
@@ -1014,17 +970,9 @@ class EventStreamReplayBuilder(BaseReplayBuilder):
             return
 
         p = self.players[e["active_idx"]]
-
-        if to_zone in ("library", "library_bottom"):
-            # mulligan bookkeeping (100% of these are reason='mulligan_take'/
-            # 'mulligan_bottom'): fully accounted for up front by the mulligan_hand
-            # pre-scan in __init__, which seeds hand directly with the final kept
-            # cards. Reprocessing these here against that already-final p.hand is
-            # actively wrong, not just redundant -- a discarded draw and the kept
-            # one often share a card name (e.g. both include a "Mountain"), and
-            # pop_by_name can't tell them apart, so it would rip a real kept card
-            # out of hand thinking it's the discarded one.
-            return
+        # (Pre-game mulligan put-backs to the library are consumed in __init__ and
+        # never reach here; a to-library move in-game is real play -- a Lembas-style
+        # graveyard shuffle, a Brainstorm put-back, etc. -- and is rendered below.)
 
         if from_zone == "hand":
             card_id, reveal = self._resolve_hand_card(p, name)
@@ -1053,6 +1001,9 @@ class EventStreamReplayBuilder(BaseReplayBuilder):
         dst_pool = {"hand": p.hand, "graveyard": p.graveyard, "exile": p.exile}.get(to_zone)
         if dst_pool is not None:
             dst_pool.append({"id": card_id, "name": name})
+        elif to_zone in ("library", "library_bottom"):
+            # card put back into the deck -- un-count it so the displayed deck size stays right
+            p.library_draws = max(0, p.library_draws - 1)
 
     _HANDLERS = {
         "turn_start": _handle_turn_start,
@@ -1071,12 +1022,7 @@ class EventStreamReplayBuilder(BaseReplayBuilder):
 
 def build_replay_for_game(game, meta):
     if "events" in game:
-        # throwaway dry run: discovers the name behind every card that ever leaves
-        # a hand, in order, so the real pass can reveal identities at draw time
-        # instead of at play time (see EventStreamReplayBuilder's docstring).
-        dry_run = EventStreamReplayBuilder(game, meta)
-        dry_run.process_events()
-        rb = EventStreamReplayBuilder(game, meta, reveal_order=dry_run.hand_reveal_log)
+        rb = EventStreamReplayBuilder(game, meta)
         rb.process_events()
     else:
         rb = ReplayBuilder(game, meta)

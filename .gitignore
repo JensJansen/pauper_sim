@@ -11,3 +11,8 @@ __pycache__/
 *.pyc
 
 graphify-out/
+_pb2_cache/
+
+# Local planning notes -- never committed.
+planning/
+replays/

@@ -1125,7 +1125,8 @@ def execute_order_triggers_option(state, name):
     entry["reserves_hand_card"] = False
     entry["is_spell"] = False  # a triggered ability, not a spell -- never a Counterspell target
     state.stack.append(entry)  # already the stack's own native {"card_def", "resolve"} shape
-    state.log_event("zone_move", card=entry["card_def"].name, from_zone="trigger_queue", to_zone="stack")
+    # A triggered ability going on the stack moves no card (is_spell=False), so
+    # emit no card zone_move -- same reasoning as push_to_stack / resolve_top_of_stack.
     if not pending["remaining"]:
         complete_resolution(state)
 
