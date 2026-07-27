@@ -1,14 +1,9 @@
 """Mana system: what a permanent produces, paying a cost (batch and
 interactive/one-tap-at-a-time), and pure payment planning/legality checks.
 
-References game.registry's EFFECT_REGISTRY and its derived views
-(SIMPLE_MANA_SOURCE_EFFECTS, _FLEXIBLE_SOURCE_CHOICES) only from inside
-function bodies, via `registry.NAME` -- never as a bare name imported at
-module load time. registry.py imports the deck modules, which don't
-import mana.py directly, so this isn't strictly part of that cycle today,
-but keeping the same lazy-lookup convention here too means mana.py stays
-safe to import from anywhere without caring about ordering.
-"""
+References registry.EFFECT_REGISTRY + its derived views only inside function
+bodies (the lazy-lookup convention every submodule here uses -- keeps mana.py
+import-order-safe from anywhere)."""
 
 from . import registry
 from .cards import CardType, EffectId

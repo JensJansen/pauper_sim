@@ -488,7 +488,7 @@ def _run_priority_round_gen(state):
 def _run_turn_gen(state, combat_enabled=False):
     """Generator form of one full turn -- the single implementation shared
     by run_turn's synchronous choose_action loop below and the token
-    training pipeline's own per-seat driver (token_train.py). Iterates FULL_PHASES or
+    training pipeline's own per-seat driver (rl.train). Iterates FULL_PHASES or
     MINIMAL_PHASES depending on combat_enabled; for each phase, runs that
     phase's own turn-based automatic effect (if any), then a real
     priority round -- except Untap (never any

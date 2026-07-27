@@ -1,23 +1,17 @@
-"""Battlefield entry and the cast paths that put something there directly:
-playing a land, casting a plain permanent, casting an Aura (with its own
-choose-target-then-resolve dance), and one ETB effect (land bounce)
-generic enough to live beside enters_battlefield rather than in a color
-catalog. tokens.py builds on enters_battlefield too (see that module).
+"""Battlefield entry and the direct cast paths: playing a land, casting a
+plain permanent, casting an Aura (choose-target-then-resolve), and one ETB
+(land bounce) generic enough to live here. tokens.py builds on
+enters_battlefield too.
 
-Depends on stack.py for push_to_stack (cast_aura's targeted spell still
-goes through the stack like any other cast) and win_check.py for the
-game-end check every battlefield change can newly trigger. Does NOT
-depend on triggers.py -- triggers.promote_triggers_to_stack needs
-enters_battlefield (an automatic trigger can return a card to the
-battlefield), so that dependency has to point the other way, or the two
-modules would need each other. See triggers.py's own module docstring.
+Depends on stack.py (push_to_stack) and win_check.py (the game-end check every
+board change can trigger). Does NOT depend on triggers.py -- that dependency
+points the other way (promote_triggers_to_stack needs enters_battlefield), so
+triggers.py sits above this module.
 
-References game.registry.EFFECT_REGISTRY only from inside function
-bodies, via `registry.EFFECT_REGISTRY` -- registry.py imports the catalog
-modules, which import this module, so a `from .registry import
-EFFECT_REGISTRY` here would try to bind a name that doesn't exist yet.
-Deferring the lookup to call time breaks the cycle. See game/registry.py's
-own module docstring."""
+References registry.EFFECT_REGISTRY only inside function bodies (registry.py
+imports the catalogs, which import this module, so a top-level `from .registry
+import EFFECT_REGISTRY` would bind a not-yet-built name) -- see
+game/registry.py's docstring."""
 
 from .. import registry
 from ..cards import CardType

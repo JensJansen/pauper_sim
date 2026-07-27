@@ -67,7 +67,7 @@ class CardVocab:
     def __init__(self, decklists, token_card_defs=(), vocab_path=None):
         """vocab_path: optional JSON file persisting name -> index across
         separate runs/deck rosters (the league's own use -- see
-        token_pool.py). Append-only: an index a persisted file already gave
+        rl.pool). Append-only: an index a persisted file already gave
         a name is NEVER reassigned, since that would silently invalidate
         every existing checkpoint's embedding table the moment a new deck
         introduces a new card that happens to sort earlier. New names get
@@ -211,7 +211,7 @@ def build_token_set(state, my_seat_idx, vocab):
     reproducibility.
 
     identity: the live Permanent object for a battlefield token, else None
-    -- the pointer-network action head (token_deck.py) matches a legal
+    -- the pointer-network action head (rl.deck) matches a legal
     target (game.choose_permanent_options et al. already return/operate on
     these same Permanent objects, id()-based, same convention this engine
     already uses throughout -- e.g. enchanting_by_target below) back to
@@ -257,7 +257,7 @@ def build_token_set(state, my_seat_idx, vocab):
 
 
 if __name__ == "__main__":
-    # ponytail self-check: run via `python token_features.py` from src/.
+    # ponytail self-check: run via `python rl.features` from src/.
     from game.state import GameState, PlayerState, Permanent
 
     decklist_a = game.parse_decklist_file("../data/mono_red_madness.txt")
@@ -311,7 +311,7 @@ if __name__ == "__main__":
     shared_names = ({n for n, *_r in decklist_a} & {n for n, *_r in decklist_b})
     assert "Lightning Bolt" in shared_names and len(shared_names) == 8
 
-    print(f"token_features.py self-check: OK (vocab_size={vocab.size}, static_feature_dim={STATIC_FEATURE_DIM}, "
+    print(f"rl.features self-check: OK (vocab_size={vocab.size}, static_feature_dim={STATIC_FEATURE_DIM}, "
           f"keywords={KEYWORD_VOCAB})")
 
     # build_token_set, against a hand-built two-seat state covering every
@@ -373,7 +373,7 @@ if __name__ == "__main__":
         stack_row = next(row for idx, row, ident in tokens if idx == vocab.index("Fiery Temper"))
         assert stack_row[-1] == (1.0 if my_seat == 1 else 0.0)
 
-    print("token_features.py build_token_set self-check: OK (both seats' own perspective, all 4 public zones)")
+    print("rl.features build_token_set self-check: OK (both seats' own perspective, all 4 public zones)")
 
     # CardVocab persistence: append-only across separate construction calls
     # -- existing names must NEVER change index once a 3rd deck introduces
@@ -405,4 +405,4 @@ if __name__ == "__main__":
     finally:
         shutil.rmtree(tmp_dir)
 
-    print("token_features.py CardVocab persistence self-check: OK (append-only across separate construction calls)")
+    print("rl.features CardVocab persistence self-check: OK (append-only across separate construction calls)")

@@ -11,7 +11,7 @@ does reusing a card across multiple decks.
 
 Every submodule is re-exported here flat (game.CARD_DEFS, game.GameState,
 game.play_land_from_hand, ...) so every existing `import game; game.X`
-caller (drl_env.py, rewards.py, and the token_*.py training pipeline)
+caller (drl_env, rl.rewards, and the rl.* training pipeline)
 keeps working unchanged.
 
 Import order matters: `from . import registry` first is what actually

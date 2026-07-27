@@ -1,26 +1,16 @@
-"""Zone & state model: PlayerState (one player's battlefield/hand/library/
-graveyard/mana pool/life total) plus GameState (the shared turn/stack/
-pending-resolution bookkeeping and a list of PlayerStates).
+"""Zone & state model: PlayerState (one player's zones + life) plus GameState
+(shared turn/stack/pending-resolution bookkeeping + a list of PlayerStates).
 
-GameState exposes
-every zone (hand/battlefield/library/graveyard/exile/mana_pool/
-trigger_queue/lands_played_this_turn/cards_drawn_this_turn/decked_out/
-attackers/on_the_play/life_total) as a property
-that reads/writes state.players[state.active_idx] -- the player whose turn
-it currently is. This is what lets every existing card-effect function and
-all of mana.py/resolution.py/game/effects/*.py keep working completely
-unchanged: they only ever meant "my own board" to begin with, and the
-proxy makes that automatically correct for whichever player has priority,
-in both 1-player (a single PlayerState, active_idx never leaves 0) and
-2-player games. state.opponent is the one accessor genuinely-
-opponent-facing code (game.effects.win_check.deal_damage_to_opponent) needs.
+GameState exposes every zone (hand/battlefield/library/graveyard/exile/
+mana_pool/trigger_queue/attackers/... ) as a property proxying to
+state.players[state.active_idx] -- whoever currently holds priority. This is
+what lets every card-effect function + mana/resolution/effects stay unchanged:
+they only ever meant "my own board," and the proxy makes that correct for the
+active player in both 1- and 2-player games. state.opponent is the one
+opponent-facing accessor (win_check.deal_damage_to_opponent).
 
-mana_pool holds mana tapped-but-not-yet-spent (e.g. a tap that produces more
-than a cost's live needs) -- spending it, even toward a cost it could cover,
-is always its own explicit model action, never automatic. Cleared at the
-start of each turn (see turn.untap_step); see game.mana for how it's filled
-and spent.
-"""
+mana_pool holds tapped-but-unspent mana; spending it is always an explicit
+model action, never automatic, and it clears each turn (turn.untap_step)."""
 
 import random
 
@@ -242,7 +232,7 @@ class PlayerState:
         # step count a --log JSON records (which likewise never records a
         # Pass), just
         # persisted onto the player instead of a transient loop variable, so
-        # a reward_fn (rewards.py) can read it mid-game. 2-player only --
+        # a reward_fn (rl.rewards) can read it mid-game. 2-player only --
         # unused/inert in 1-player mode (nothing there currently reads it).
         self.actions_taken = 0
 
@@ -346,7 +336,7 @@ class GameState:
         # state.players) won it -- None/None while the game is still in
         # progress. turn_won's meaning is unchanged from before the
         # multiplayer refactor (every existing reader -- game/effects/*.py,
-        # drl_env.py, rewards.py -- keeps working unmodified); winner is the
+        # drl_env.py, rl.rewards -- keeps working unmodified); winner is the
         # new field 2-player games need to say *who*.
         # winner stays None for a bare failure (horizon reached in
         # 1-player, or -- 1-player only -- decking out with no opponent to

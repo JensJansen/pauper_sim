@@ -1,6 +1,6 @@
 """Self-play rollout collection + PPO update for the token/attention
-architecture (token_features.py + token_arch.py + token_deck.py +
-token_action_bridge.py) -- the piece that actually trains a DeckNetwork.
+architecture (rl.features + rl.arch + rl.deck +
+rl.action_bridge) -- the piece that actually trains a DeckNetwork.
 
 One orchestration primitive, train_selfplay, covers both training regimes
 this architecture needs:
@@ -33,11 +33,11 @@ import torch
 
 import drl_env
 import game
-from token_action_bridge import (
+from rl.action_bridge import (
     any_pointer_legal, build_fixed_action_table, execute_pointer_choice, pointer_legal_mask,
 )
-from token_arch import pad_token_batch
-from token_features import build_token_set
+from rl.arch import pad_token_batch
+from rl.features import build_token_set
 
 
 class RolloutBuffer:
@@ -85,7 +85,7 @@ def _reward_for(state, seat, reward_fn, horizon, done):
 def _scalar_features(state, seat_idx, horizon):
     """Non-tokenized globals -- turn number, lands-played, mulligans, am-I-
     turn-player, floating mana pool, phase one-hot, my/opponent life. Same
-    composition token_deck.SCALAR_FEATURE_DIM documents (mana-pool cap of 8,
+    composition rl.deck.SCALAR_FEATURE_DIM documents (mana-pool cap of 8,
     matched here). state.mana_pool is a
     GameState property proxying to state.players[state.active_idx]
     (game/state.py's _active_player_property) -- read unconditionally, not
@@ -292,7 +292,7 @@ def _league_rollout_worker(training_deck_name, all_state_dicts, all_trunk_hidden
     the "spawn" start method, no fork, so this re-imports the whole module
     graph from scratch rather than inheriting any parent-process memory).
     Must be a module-level function: ProcessPoolExecutor on spawn needs to
-    locate it by import path (token_train._league_rollout_worker), not a
+    locate it by import path (rl.train._league_rollout_worker), not a
     closure or lambda.
 
     Rebuilds decklists/vocab/deck_ctxs/fixed_tables locally via
@@ -302,17 +302,17 @@ def _league_rollout_worker(training_deck_name, all_state_dicts, all_trunk_hidden
     `def execute(state): ...`), which the standard pickle module cannot
     serialize at all. Only plain tensors (state_dicts), scalars, and
     strings actually cross the process boundary; reward_fn is passed BY
-    NAME for the identical reason (rewards.py's own named instances, e.g.
+    NAME for the identical reason (rl.rewards's own named instances, e.g.
     action_count_win_reward_200_floor02, are themselves closures returned
     by action_count_win_reward(...)). league_root_dir is passed explicitly
     rather than imported from run_league.py to avoid a circular import
     (run_league.py already imports FROM this module at module scope)."""
     torch.set_num_threads(1)  # this worker IS the unit of parallelism -- it must not also spawn its own intra-op thread pool and oversubscribe the physical cores every other worker is also competing for
-    import rewards as rewards_module
-    from token_arch import SetTransformer
-    from token_deck import DeckNetwork
-    from token_league import LeaguePool
-    from token_pool import build_pool
+    import rl.rewards as rewards_module
+    from rl.arch import SetTransformer
+    from rl.deck import DeckNetwork
+    from rl.league import LeaguePool
+    from rl.pool import build_pool
 
     reward_fn = getattr(rewards_module, reward_fn_name)
     decklists, vocab, deck_ctxs, fixed_tables = build_pool()
@@ -577,7 +577,7 @@ def train_selfplay(net_a, deck_ctx_a, decklist_a, reward_fn_a, net_b, deck_ctx_b
 
 
 if __name__ == "__main__":
-    # ponytail self-check: run via `python token_train.py` from src/. Tiny
+    # ponytail self-check: run via `python rl.train` from src/. Tiny
     # end-to-end smoke test -- real 2-player games (mono_red_madness mirror,
     # a genuine cross-matchup vs rakdos_madness), tiny network dims, few
     # games/iterations, just enough to prove the whole pipeline (rollout
@@ -587,11 +587,11 @@ if __name__ == "__main__":
     import time
 
     import game
-    from rewards import action_count_win_reward_200_floor02
-    from token_arch import SetTransformer
-    from token_deck import DeckNetwork
-    from token_features import CardVocab
-    from token_action_bridge import build_fixed_action_table
+    from rl.rewards import action_count_win_reward_200_floor02
+    from rl.arch import SetTransformer
+    from rl.deck import DeckNetwork
+    from rl.features import CardVocab
+    from rl.action_bridge import build_fixed_action_table
 
     device = "cpu"
     decklist_a = game.parse_decklist_file("../data/mono_red_madness.txt")
@@ -640,7 +640,7 @@ if __name__ == "__main__":
     assert np.isfinite(policy_loss) and np.isfinite(value_loss) and np.isfinite(entropy)
     for p in net_a.parameters():
         assert torch.isfinite(p).all(), "a parameter went non-finite after the mirror PPO update"
-    print(f"token_train.py mirror smoke test: OK ({games_played} games, buf_sizes={len(buffers[0]), len(buffers[1])}, "
+    print(f"rl.train mirror smoke test: OK ({games_played} games, buf_sizes={len(buffers[0]), len(buffers[1])}, "
           f"policy_loss={policy_loss:.4f}, {time.time() - t0:.1f}s)")
 
     # 2) Cross-matchup smoke test -- net_a vs net_b, two independent
@@ -655,7 +655,7 @@ if __name__ == "__main__":
     for net in (net_a, net_b):
         for p in net.parameters():
             assert torch.isfinite(p).all(), "a parameter went non-finite after the cross-matchup PPO update"
-    print(f"token_train.py cross-matchup smoke test: OK ({time.time() - t0:.1f}s)")
+    print(f"rl.train cross-matchup smoke test: OK ({time.time() - t0:.1f}s)")
 
     # 2b) game_logs smoke test -- wiring the game engine's OWN existing
     # event_log (game/state.py's log_event, already instrumented across
@@ -674,7 +674,7 @@ if __name__ == "__main__":
             assert "kind" in event and "turn" in event and "phase" in event, "every event must carry log_event's own envelope"
     kinds_seen = {event["kind"] for one_game_events in game_logs for event in one_game_events}
     assert "turn_start" in kinds_seen, "a multi-turn game must log at least one turn_start event"
-    print(f"token_train.py game_logs smoke test: OK ({sum(len(g) for g in game_logs)} events across {played} games, "
+    print(f"rl.train game_logs smoke test: OK ({sum(len(g) for g in game_logs)} events across {played} games, "
           f"kinds={sorted(kinds_seen)})")
 
     # 3) Split-optimizer smoke test -- the actual pattern run_pretrain.py
@@ -707,7 +707,7 @@ if __name__ == "__main__":
     for net in (net_a2, net_b2):
         for p in net.parameters():
             assert torch.isfinite(p).all(), "a parameter went non-finite after the split-optimizer PPO update"
-    print(f"token_train.py split-optimizer (Phase 4 pattern) smoke test: OK ({time.time() - t0:.1f}s)")
+    print(f"rl.train split-optimizer (Phase 4 pattern) smoke test: OK ({time.time() - t0:.1f}s)")
 
     # 4) League smoke test -- collect_rollout_league against a REAL
     # LeaguePool, exercising all three opponent kinds it must handle:
@@ -719,7 +719,7 @@ if __name__ == "__main__":
     import shutil
     import tempfile
 
-    from token_league import LeaguePool
+    from rl.league import LeaguePool
 
     t0 = time.time()
     live_nets = {"a": net_a, "b": net_b}
@@ -761,4 +761,4 @@ if __name__ == "__main__":
     finally:
         shutil.rmtree(tmp_dir)
 
-    print(f"token_train.py league smoke test: OK (mirror/cross-deck/snapshot opponents all exercised, {time.time() - t0:.1f}s)")
+    print(f"rl.train league smoke test: OK (mirror/cross-deck/snapshot opponents all exercised, {time.time() - t0:.1f}s)")

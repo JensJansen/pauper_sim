@@ -1,17 +1,10 @@
-"""A creature's effective power/toughness/keywords -- its own base stats
-plus every Aura currently enchanting it. Owner-agnostic throughout:
-combat.py's combat_damage_step always runs with state.active_idx on the
-ATTACKER, but still needs a BLOCKER's (the defender's own creature)
-correct effective stats, so every function here searches state.players
-directly rather than the active-player-proxied state.battlefield.
+"""A creature's effective power/toughness/keywords -- base stats plus every
+enchanting Aura. Owner-agnostic: combat_damage_step runs with active_idx on
+the ATTACKER but needs a BLOCKER's stats too, so functions here search
+state.players directly, not the active-player-proxied state.battlefield.
 
-References game.registry.EFFECT_REGISTRY only from inside function
-bodies, via `registry.EFFECT_REGISTRY` -- registry.py imports the catalog
-modules, which import this module (via casting.py/combat.py), so a
-`from .registry import EFFECT_REGISTRY` here would try to bind a name
-that doesn't exist yet. Deferring the lookup to call time breaks the
-cycle. See game/registry.py's own module docstring.
-"""
+References registry.EFFECT_REGISTRY only inside function bodies -- see
+game/registry.py's docstring."""
 
 from .. import registry
 from ..cards import CardType

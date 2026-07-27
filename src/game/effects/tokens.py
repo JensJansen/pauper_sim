@@ -1,10 +1,7 @@
-"""Token creation, the two token-specific activated abilities, and the
-token CardDefs themselves -- Melded Moxite's Robot, Voldaren Epicure/
-Vampire's Kiss's Blood, Cartouche of Solidarity's Warrior, Malevolent
-Rumble's Eldrazi Spawn. Builds on
-casting.enters_battlefield for the actual battlefield-entry mechanics --
-a token entering is exactly as real as any other permanent from there on;
-only its creation (no hand/library removal beforehand) differs."""
+"""Token creation, the token-specific activated abilities (Blood/Food/Clue/Map
+sac abilities, Eldrazi Spawn's sac-for-{C}), and the token CardDefs themselves.
+Builds on casting.enters_battlefield -- a token entering is as real as any
+permanent; only its creation (no prior hand/library removal) differs."""
 
 from . import casting
 from .stack import push_ability_to_stack

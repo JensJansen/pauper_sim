@@ -1,13 +1,9 @@
-"""Red-identity card catalog: every card whose real mana cost is
-mono-red (or, for lands with no cost, whose only mana output is red).
-Every card's cost/type/oracle-text below is a direct Scryfall pull,
-except creature power/toughness, which is a design choice, not Scryfall
-data. Breath Weapon (Tron filler, real cost {2}{R}) files here rather
-than colorless_cards.py -- verified via Scryfall, not guessed; its real
-"non-Dragon" filter is dropped in cast_breath_weapon below (no card in
-this entire catalog is ever a Dragon -- a checked invariant, not a
-guess), so it's implemented as a real, symmetric "2 damage to every
-creature in play" board wipe, this deck's own creatures included."""
+"""Red-identity card catalog: every card whose real mana cost is mono-red (or,
+for a cost-less land, whose only mana output is red). Costs/types/oracle text
+are direct Scryfall pulls; creature power/toughness is a design choice. Breath
+Weapon (real {2}{R}) files here despite being Tron filler; its "non-Dragon"
+filter is dropped as a checked invariant (no Dragon exists in this catalog), so
+cast_breath_weapon is a symmetric "2 damage to each creature" wipe."""
 
 from .. import resolution
 from ..cards import CardDef, CardType, EffectId

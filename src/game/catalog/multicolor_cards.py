@@ -20,7 +20,7 @@ a guess (real cost verified via Scryfall)."""
 from .. import resolution
 from ..cards import CardDef, CardType, EffectId
 from ..effects.casting import (
-    _log_target_fizzle, bounce_land_etb, capture_any_target, cast_aura, cast_permanent_from_hand,
+    bounce_land_etb, capture_any_target, cast_aura, cast_permanent_from_hand,
     cast_targeting_creature, has_creature_target, target_still_legal,
 )
 from ..effects.shared import any_creature_on_battlefield, card_subtypes, discard_from_hand_to_graveyard

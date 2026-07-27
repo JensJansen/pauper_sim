@@ -1,10 +1,8 @@
 """The trigger queue: moving a queued trigger (Sneaky Snacker's automatic
-return, a Madness decision) onto the real priority stack. Sits above both
-casting.py and stack.py -- _trigger_resolve's "automatic" branch needs
-casting.enters_battlefield (an automatic trigger can put a card back onto
-the battlefield), so this module can't live underneath casting.py the way
-stack.py does. See casting.py's own module docstring for why that
-dependency has to point this direction."""
+return, a Madness decision, an ETB/LTB/upkeep/venture/Ward/cast ability) onto
+the priority stack. Sits ABOVE casting.py and stack.py -- _trigger_resolve's
+"automatic" branch needs casting.enters_battlefield, so it can't live under
+casting.py the way stack.py does (see casting.py's docstring)."""
 
 from . import casting
 from .stack import counter_spell, push_to_stack
@@ -12,24 +10,16 @@ from .. import registry, resolution
 
 
 def _trigger_resolve(entry):
-    """Builds the stack entry's own resolve(state, card_def) function for
-    one queued trigger -- deferred until
-    THIS SPECIFIC stack entry actually resolves, instead of running the
-    instant the trigger was queued (real Magic: triggered abilities go on
-    the stack and can be responded to, same as a cast spell).
+    """Build the resolve(state, card_def) for one queued trigger, deferred
+    until THIS stack entry resolves (real Magic: a triggered ability goes on
+    the stack and can be responded to, like a spell). Branches on entry["type"]:
 
-    "automatic" (Sneaky Snacker's on-draw-count return): runs the exact
-    effect this engine always ran immediately before this plan.
-    "decision" (Madness): now OPENS the cast-or-decline choice only here,
-    matching real Magic's "you may cast it as this ability resolves"
-    wording -- not the instant the card was discarded, which is what lets
-    an opponent get a real priority window (a chance to respond to the
-    trigger itself) before the decision is even offered. Its own
-    on_complete is a no-op: the old recursive "keep draining" continuation
-    isn't needed anymore -- promote_triggers_to_stack (below) is called
-    fresh at the start of every priority round, so anything left queued
-    (or queued anew) is picked up there instead of needing to be chained
-    through by hand."""
+    "automatic" (Sneaky Snacker's on-draw return): runs the effect directly.
+    "decision" (Madness): opens the cast-or-decline choice only here, matching
+    "you may cast it as this ability resolves" -- so an opponent gets a
+    priority window on the trigger before the choice is offered. on_complete is
+    a no-op; promote_triggers_to_stack runs fresh each priority round, so
+    anything still (or newly) queued is picked up there."""
     if entry["type"] == "etb":
         # An enters-the-battlefield triggered ability (casting.enters_
         # battlefield queued it). The registry etb_trigger hook takes

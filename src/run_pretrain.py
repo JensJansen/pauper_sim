@@ -29,11 +29,11 @@ import time
 
 import torch
 
-from rewards import action_count_win_reward_200_floor02
-from token_arch import SetTransformer
-from token_deck import DeckNetwork
-from token_pool import build_pool
-from token_train import train_selfplay
+from rl.rewards import action_count_win_reward_200_floor02
+from rl.arch import SetTransformer
+from rl.deck import DeckNetwork
+from rl.pool import build_pool
+from rl.train import train_selfplay
 
 CHECKPOINT_DIR = "../checkpoints"
 CHECKPOINT = f"{CHECKPOINT_DIR}/pretrain_shared_stack.pt"

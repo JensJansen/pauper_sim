@@ -45,12 +45,12 @@ from concurrent.futures import ProcessPoolExecutor
 
 import torch
 
-from rewards import action_count_win_reward_200_floor02
-from token_arch import SetTransformer
-from token_deck import DeckNetwork
-from token_league import LeaguePool
-from token_pool import build_pool
-from token_train import (
+from rl.rewards import action_count_win_reward_200_floor02
+from rl.arch import SetTransformer
+from rl.deck import DeckNetwork
+from rl.league import LeaguePool
+from rl.pool import build_pool
+from rl.train import (
     batch_size_for_iteration, collect_rollout_league, collect_rollout_league_parallel, device_for_batch_size,
     move_optimizer_state, ppo_update, train_selfplay,
 )

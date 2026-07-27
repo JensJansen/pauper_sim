@@ -1,23 +1,14 @@
-"""Win-condition checking and the one function that can trigger it via
-damage. Split out of the old effects_common.py because both casting.py
-(enters_battlefield runs a co-located end-of-game check after a board
-mutation) and combat.py (damage can drop life_total to 0) need to reach
-_check_end_of_game, but neither of those two needs the other -- keeping
-the check here, as a shared leaf both depend on, avoids duplicating it or
-merging casting and combat back into one module."""
+"""Win-condition checking + the one damage function that can trigger it. A
+shared leaf both casting.py (enters_battlefield's co-located end-of-game check)
+and combat.py (damage can drop life to 0) reach without needing each other."""
 
 
 def _check_end_of_game(state):
-    """Central check for every way the game can end -- called from every
-    place board state can change enough to matter: casting.enters_
-    battlefield, combat.combat_damage_step, deal_damage_to_opponent, and
-    lose_life below. Replaces what used to be the same two lines duplicated
-    at each of those call sites .
-
-    Two independent ways to win: -- 2-player only -- the opponent's
-    life_total hitting 0; or the active player's OWN life hitting 0
-    (opponent wins, 2-player; a bare failure with no winner in 1-player).
-    No-ops once the game has already ended."""
+    """Central end-of-game check, called wherever board state can change enough
+    to matter (enters_battlefield, combat_damage_step, deal_damage_to_opponent,
+    lose_life). Two win paths (2-player only): the opponent's life hits 0, or the
+    active player's OWN life hits 0 (opponent wins; a bare no-winner failure in
+    1-player). No-op once the game has ended."""
     if state.turn_won is not None:
         return
     active_idx = state.active_idx
@@ -38,16 +29,11 @@ def _check_end_of_game(state):
 
 
 def _apply_life(state, player_idx, delta, reason):
-    """The single choke point EVERY life-total change flows through, so one
-    log_event here captures all of them -- combat, burn, lifegain, and life
-    paid as a cost (lose_life). Previously each direction mutated life_total
-    itself and only combat happened to emit an event, leaving burn and
-    lifegain invisible in the log; funnelling the mutation through here
-    fixes that at the source. `reason` is the free-text category ("gain",
-    "damage", "cost", ...) a log reader uses to tell the changes apart -- a
-    combat life loss also has its own co-located combat_damage event while a
-    burn one does not, which is how those two "damage" cases stay
-    distinguishable without a distinct reason each."""
+    """The single choke point every life-total change flows through, so one
+    log_event here captures all of them (combat, burn, lifegain, life paid as a
+    cost). `reason` ("gain"/"damage"/"cost"/...) lets a log reader tell them
+    apart -- a combat loss also carries its own co-located combat_damage event,
+    so the two "damage" cases stay distinguishable."""
     if not delta:
         return  # a 0-life change is a no-op -- skip it (combat's own
                 # deal_damage_to_opponent(0) when nothing connects would

@@ -1,81 +1,12 @@
-"""Pending resolution: a decision point that takes more than one action to
-fully resolve -- paying a cost one tap at a time, walking a scry/surveil,
-choosing a search target -- because the model, not an automatic solver,
-makes every one of these choices.
+"""Every deck-agnostic pending-resolution handler (search_fetch,
+choose_permanent, scry/surveil, discard, sacrifice, combat-damage
+assignment, ...): each kind's begin_/options/execute_ trio. Split out of
+resolution.py unchanged; re-exported via game.resolution so
+`from ..resolution import X` in the catalogs keeps resolving."""
 
-This module holds the generic core (begin_resolution/complete_resolution)
-plus every deck-agnostic resolution kind: search_fetch, choose_permanent,
-choose_graveyard_card (Dread Return's own reanimation-target pick
-originally, promoted here once Relic of Progenitus' repeatable exile
-ability needed the identical primitive too), scry/surveil, discard,
-discard_or_sacrifice (Highway Robbery's own "discard a card or sacrifice
-a land" -- two different cost shapes under one optional decision),
-madness_decision, sacrifice (predicate-based -- Dread Return's creature
-sacrifice and Fireblast/Lava Dart/Highway Robbery's land sacrifice are
-the same primitive, different predicates). Deck-specific kinds (Ancient Stirrings' take-one-or-decline, Lead the
-Stampede's select_to_hand) still live with their owning deck instead,
-since nothing else currently reuses them -- the exact bar
-choose_graveyard_card/discard_or_sacrifice both just crossed.
-
-References game.registry.EFFECT_REGISTRY only from inside function
-bodies, via `registry.EFFECT_REGISTRY` -- same lazy-lookup convention
-mana.py/several of game/effects/*.py already use, for the same reason
-(registry.py's own import chain reaches this module before EFFECT_REGISTRY
-exists). Deliberately does NOT import game.mana (mana.py imports THIS
-module at its own top level; the reverse import would cycle) -- so the
-madness "cast for its madness cost" path's cost payment lives in
-game/effects/madness_and_plot.py instead, which is free to depend on both
-this module and mana.py.  """
-
-from . import registry
-from .cards import CardDef, CardType
-
-
-def begin_resolution(state, kind, on_complete, **fields):
-    """Start a pending resolution. on_complete(state) runs once it's fully
-    resolved (via repeated calls into that kind's own option/execute
-    functions) -- it may itself begin a further resolution, so multi-step
-    effects chain naturally through nested callbacks rather than needing a
-    single monolithic resolution type."""
-    state.pending_resolution = {"kind": kind, "on_complete": on_complete, **fields}
-    # Generic catch-all covering every resolution kind (pay_cost, scry/
-    # surveil, choose_permanent, search_fetch, sacrifice, ...) from ONE
-    # instrumentation point -- "a decision window of this kind just
-    # opened," never the specific zone-move that eventually results from
-    # it (that's each kind's own execute_*/on_complete's job to log).
-    state.log_event("resolution_begin", resolution_kind=kind)
-
-
-def _loggable(value):
-    """complete_resolution's own *args can carry raw CardDef objects
-    directly -- e.g. execute_discard_option's own discarded_cards list
-    (appends the real card, never just its name, since _discard_one and
-    the madness trigger queue both need the actual object) -- not
-    JSON-serializable, confirmed the hard way: a real 50-game mono_red_
-    madness/rakdos_madness match (both madness decks, discarding
-    constantly) crashed run_league.py's own event-log write on exactly
-    this path. Converts a CardDef (or a list of them) to its own .name;
-    every other args shape already used elsewhere (strings, (name, slot)
-    tuples, bools, ints, None, plain lists of those) passes through
-    unchanged -- this only ever touches the LOGGED copy, never what
-    on_complete actually receives."""
-    if isinstance(value, CardDef):
-        return value.name
-    if isinstance(value, list):
-        return [_loggable(v) for v in value]
-    return value
-
-
-def complete_resolution(state, *args):
-    """*args is an optional payload for kinds whose completion carries a
-    result the caller needs (e.g. search_fetch's chosen card name) --
-    on_complete(state) for kinds that don't (e.g. pay_cost)."""
-    kind = state.pending_resolution["kind"]
-    on_complete = state.pending_resolution["on_complete"]
-    state.pending_resolution = None
-    logged_result = [_loggable(a) for a in args] if args else None
-    state.log_event("resolution_complete", resolution_kind=kind, result=logged_result)
-    on_complete(state, *args)
+from .. import registry
+from ..cards import CardDef, CardType
+from ._core import begin_resolution, complete_resolution
 
 
 def begin_search_fetch(state, predicate, on_complete, optional=False):
@@ -259,7 +190,7 @@ def choose_any_target_creature_options(state):
     """The (side, name, slot) creature half of a choose_any_target -- every
     matching creature on EITHER battlefield. Split out from the player half
     so the action layer can route creatures through the identity pointer
-    scheme (token_action_bridge) and players through fixed actions."""
+    scheme (rl.action_bridge) and players through fixed actions."""
     predicate = state.pending_resolution["predicate"]
     return sorted(
         (side, p.card_def.name, p.slot)
@@ -680,7 +611,7 @@ def pay_unless_pay(state):
     """The payer chose to pay: hand off to begin_pay_cost (active_idx stays on
     the payer so they tap their OWN sources); once the mana is paid, restore
     active_idx and report paid=True."""
-    from .mana import begin_pay_cost  # call-time import -- mana imports resolution, so avoid a load cycle
+    from ..mana import begin_pay_cost  # call-time import -- mana imports resolution, so avoid a load cycle
 
     pending = state.pending_resolution
     cost, on_result, original = pending["cost"], pending["on_result"], pending["original_idx"]
@@ -1247,7 +1178,7 @@ def execute_sacrifice_option(state, name):
     ltb_spec = registry.EFFECT_REGISTRY.get(permanent.card_def.effect_id, {})
     if ltb_spec.get("ltb_trigger") is not None:
         state.trigger_queue.append({"type": "ltb", "card_def": permanent.card_def, "permanent": permanent})
-    from .effects.shared import fire_sacrifice_triggers
+    from ..effects.shared import fire_sacrifice_triggers
     fire_sacrifice_triggers(state, state.active_idx, permanent.card_def)  # Gixian Infiltrator / Writhing Chrysalis
     pending["remaining"] -= 1
     if pending["remaining"] <= 0:
@@ -1260,8 +1191,8 @@ if __name__ == "__main__":
     # from src/. Exercises begin_discard directly against a hand-built
     # state, bypassing drl_env.py entirely (no card wires into this
     # primitive yet -- deck assembly is out of scope for this plan).
-    from .cards import CardDef, CardType
-    from .state import GameState
+    from ..cards import CardDef, CardType
+    from ..state import GameState
 
     def _card(name):
         return CardDef(name, CardType.SORCERY, {"generic": 1}, None)
@@ -1379,7 +1310,7 @@ if __name__ == "__main__":
     # No real madness card exists yet (deck assembly is out of scope), so
     # this borrows EffectId.FILLER for the duration of the check, saving
     # and restoring its real (empty) registry entry around it.
-    from .cards import EffectId
+    from ..cards import EffectId
 
     _filler_entry_backup = registry.EFFECT_REGISTRY[EffectId.FILLER]
     registry.EFFECT_REGISTRY[EffectId.FILLER] = {"madness": {"cost": {"R": 1}, "resolve": lambda s, c: None}}
@@ -1413,7 +1344,7 @@ if __name__ == "__main__":
     # exercise both a creature predicate (Dread Return's own shape, post-
     # migration) and a land predicate (Fireblast/Lava Dart's shape,
     #) against the same primitive.
-    from .state import Permanent
+    from ..state import Permanent
 
     def _permanent(name, card_type):
         return Permanent(CardDef(name, card_type, None, None))
@@ -1452,7 +1383,7 @@ if __name__ == "__main__":
     # active one (blocking's own defender-decision channel flips
     # active_idx before ever calling this) -- simulated here by setting
     # active_idx directly to "the defender," same as that channel would.
-    from .state import PlayerState
+    from ..state import PlayerState
 
     attacker_bogle_1 = _permanent("Slippery Bogle", CardType.CREATURE)
     attacker_bogle_2 = _permanent("Slippery Bogle", CardType.CREATURE)
@@ -1649,7 +1580,7 @@ if __name__ == "__main__":
     # explore (Map token / Fanatical Offering): a land on top goes to hand; a
     # nonland puts a +1/+1 counter on the exploring creature, then surveil 1
     # (keep on top or bin) on that same card.
-    from .state import Permanent as _Perm
+    from ..state import Permanent as _Perm
 
     state = GameState(on_the_play=True)
     creature = _Perm(CardDef("Explorer", CardType.CREATURE, None, None, power=1, toughness=1))

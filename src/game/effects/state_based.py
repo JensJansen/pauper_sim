@@ -1,8 +1,6 @@
-"""State-based actions (creature death) and end-of-turn cleanup. Depends
-on stats.py for effective toughness, and on registry.py's own CARD_DEFS/
-EFFECT_REGISTRY (lazily, same convention as every other submodule here --
-see game/registry.py's own module docstring) to tell a real card apart
-from a token and to look up an orphaned Aura's own return-to-hand flag."""
+"""State-based actions (creature death) and end-of-turn cleanup. Depends on
+stats.py for effective toughness and on registry (lazily) to tell a real card
+from a token and to read an orphaned Aura's return-to-hand flag."""
 
 from . import stats
 from .. import registry, resolution
@@ -12,34 +10,18 @@ HAND_SIZE_LIMIT = 7  # real Magic's own rule -- not a per-config tunable, no car
 
 
 def check_state_based_actions(state):
-    """Creature-death check: every
-    creature on EITHER player's battlefield with damage_marked >= its own
-    effective permanent_toughness dies -- removed to the graveyard, its
-    own attached Aura(s) orphaned along with it (Aura-orphaning:
-    casting.cast_aura's own docstring flagged this as unreachable before
-    combat death existed to trigger it). Collects every dead creature
-    FIRST, then removes all of them -- matches real Magic's simultaneous
-    state-based-action semantics, not a one-at-a-time recheck that could
-    let removing one change whether another is considered dead.
-
-    Scans the whole battlefield rather than a passed-in candidate list
-    (an earlier, narrower version of this function only checked whichever
-    creatures had just taken combat damage) -- simpler and provably
-    correct: a creature that wasn't just damaged can't have newly crossed
-    its own lethal threshold, so scanning everyone is a strict superset,
-    never wrong, and cheap given how few creatures are ever in play at
-    once. Needed once this runs unconditionally before every priority
-    round, not just once per combat, since there's no single "what just
-    changed" set to narrow to anymore."""
+    """Creature-death check: every creature on either battlefield with lethal
+    marked damage (>= effective toughness), or any damage from a deathtouch
+    source, dies -- to the graveyard, its Aura(s) orphaned. Collects all dead
+    FIRST, then removes them (real Magic's simultaneous SBA semantics, not a
+    one-at-a-time recheck). Scans the whole battlefield -- a strict, cheap
+    superset of "just-damaged," needed now that this runs before every priority
+    round, not just once per combat."""
     candidates = [
         p for player in state.players for p in player.battlefield if p.card_type == CardType.CREATURE
     ]
-    # A creature dies if it has lethal marked damage (>= effective toughness),
-    # OR any marked damage from a deathtouch source (704.5h) -- combat.py sets
-    # flags["deathtouched"] only when a deathtouch source actually dealt it
-    # damage, so that flag alone already implies damage was dealt. Toughness
-    # <= 0 (e.g. Agony Warp's -0/-3 to a 3-toughness creature) is caught by
-    # the >= check too: 0 marked damage >= 0 toughness.
+    # flags["deathtouched"] (set by combat only on a real deathtouch hit)
+    # implies damage was dealt (704.5h); toughness <= 0 is caught too (0 >= 0).
     dead = [
         p for p in candidates
         if p.damage_marked >= stats.permanent_toughness(state, p) or p.flags.get("deathtouched")
@@ -71,45 +53,22 @@ def _queue_leave_triggers(state, permanent):
 
 
 def _destroy_creature(state, permanent):
-    """One creature's actual death: battlefield -> graveyard, plus
-    orphaning whatever Aura(s) were enchanting it. Operates on whichever
-    PlayerState actually owns `permanent` (found by membership, not
-    state.battlefield/state.graveyard/state.hand) -- combat.combat_damage_
-    step always runs with state.active_idx on the ATTACKER, but a dying
-    permanent can just as easily be the DEFENDER's own blocker, whose
-    zones the active-player-proxied accessors would silently get wrong
-    (or, for battlefield.remove, raise ValueError outright, since the
-    blocker was never in the attacker's own list). An orphaned Aura goes
-    to its controller's graveyard by default (every real-Magic Aura's
-    default behavior) -- Rancor is the one exception in this card pool
-    (returns to hand instead), flagged via a static
-    "returns_to_hand_when_orphaned" registry key rather than a callback,
-    since it's a fixed per-card fact, never something that needs to be
-    computed.
+    """One creature's death: battlefield -> graveyard, orphaning its Aura(s).
+    Finds the owning PlayerState by membership, NOT the active-player proxy --
+    combat runs with active_idx on the ATTACKER, but the dying creature can be
+    the DEFENDER's blocker, whose zones the proxy would get wrong (or raise on
+    battlefield.remove).
 
-    A TOKEN creature (name absent from registry.CARD_DEFS -- the same
-    membership check TOKEN_LIMIT's own accounting uses) never goes to the
-    graveyard: real Magic's own rule is that a token ceases to exist
-    entirely once it leaves the battlefield, matching every existing
-    token-removal path (tokens.activate_blood_sac's own docstring says
-    this explicitly). The observation encoding keys graveyard cards by
-    real decklist names, so appending a token's card_def would have broken
-    the very next observation build, caught by a live training smoke test with real
-    token-creating cards (boggles' own Malevolent Rumble/Cartouche of
-    Solidarity) rather than any narrower unit self-check.
+    A TOKEN (name not in registry.CARD_DEFS) ceases to exist -- never added to
+    a graveyard (real Magic; the observation encoding also keys graveyards by
+    real decklist names, so a token there would corrupt the next obs).
 
-    A Bestowed permanent (Nyxborn Hydra) is a third, distinct orphan
-    outcome, real Magic's own Bestow fall-off rule: instead of moving to
-    any zone at all, it just STAYS on the battlefield and becomes a
-    creature again -- flagged via "becomes_creature_when_orphaned" (a fixed
-    per-card fact, same shape as "returns_to_hand_when_orphaned"), checked
-    first since it's mutually exclusive with the graveyard/hand branches
-    below (an orphaned permanent either changes zones or doesn't). Clearing
-    type_override back to None is enough on its own -- Nyxborn Hydra's own
-    card_def.card_type is already CREATURE, so there's nothing else to
-    restore it to. Its own counters (the +1/+1s Bestow entered with) are
-    untouched, matching "maintain its own +1/+1s" -- this function never
-    touches permanent.counters at all."""
+    Three orphan outcomes, each a fixed per-card registry flag: a Bestowed
+    permanent (Nyxborn Hydra, "becomes_creature_when_orphaned") STAYS and
+    reverts to a creature (clear type_override; counters untouched) -- checked
+    first, mutually exclusive with the zone moves; Rancor
+    ("returns_to_hand_when_orphaned") returns to hand; every other Aura goes to
+    its controller's graveyard (the default)."""
     owner = next(player for player in state.players if permanent in player.battlefield)
     owner_idx = state.players.index(owner)
     owner.battlefield.remove(permanent)

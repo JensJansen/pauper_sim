@@ -17,8 +17,8 @@ old checkpoints' embedding tables stay valid prefixes of any larger one."""
 import json
 
 import game
-from token_action_bridge import build_fixed_action_table
-from token_features import CardVocab
+from rl.action_bridge import build_fixed_action_table
+from rl.features import CardVocab
 
 # EVERY token/pseudo-card the engine can put on a battlefield or the stack,
 # across the whole 11-deck league -- registered unconditionally regardless of
@@ -50,7 +50,7 @@ def build_pool(manifest_path=DECK_MANIFEST, vocab_path=VOCAB_PATH, token_defs=TO
     """Returns (decklists, vocab, deck_ctxs, fixed_tables) -- all dicts
     keyed by deck name, plus the one shared (persisted, append-only) vocab.
     deck_ctxs[name] = (vocab, fixed_table, pending_kinds), the exact tuple
-    token_train._seat_step expects.
+    rl.train._seat_step expects.
 
     token_defs: the token/pseudo-card CardDefs to reserve vocab indices +
     choosable-name actions for (defaults to the league's TOKEN_DEFS). A pool
@@ -99,7 +99,7 @@ def build_pool(manifest_path=DECK_MANIFEST, vocab_path=VOCAB_PATH, token_defs=TO
 
 
 if __name__ == "__main__":
-    # ponytail self-check: run via `python token_pool.py` from src/.
+    # ponytail self-check: run via `python rl.pool` from src/.
     decklists, vocab, deck_ctxs, fixed_tables = build_pool()
     # Roster-agnostic (reads whatever data/league_decks.json currently lists)
     # -- must include at least the two madness decks that are always present.
@@ -122,5 +122,5 @@ if __name__ == "__main__":
         if name in vocab1.name_to_index:
             assert vocab1.name_to_index[name] == idx, f"single-deck roster reassigned {name!r}'s persisted index"
 
-    print(f"token_pool.py self-check: OK (vocab_size={vocab.size}, "
+    print(f"rl.pool self-check: OK (vocab_size={vocab.size}, "
           f"fixed_table_sizes={[len(t) for t in fixed_tables.values()]})")

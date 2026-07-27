@@ -282,53 +282,23 @@ def attackers_needing_damage_assignment(state):
 
 
 def combat_damage_step(state):
-    """game.turn.Phase.COMBAT_DAMAGE: total power (stats.permanent_power(
-    state, p) -- base card_def.extra["power"] plus any attached Auras' own
-    "pt_bonus") of state.attackers NOT present in state.blocked_by
-    (declared in DECLARE_ATTACKERS via declare_attacker; assigned a
-    blocker, if any, during the defending player's own consult --
-   ) hits the opponent via deal_damage_to_opponent
-    once; a creature with neither power nor an Aura set (e.g. an
-    untracked-stats vanilla from another deck) contributes 0.
+    """game.turn.Phase.COMBAT_DAMAGE. Unblocked attackers (in state.attackers,
+    not in state.blocked_by) deal their total power to the opponent at once; an
+    untracked-stats vanilla contributes 0.
 
-    Every blocked attacker/blocker pair fights in up to two sub-steps,
-    real Magic's own first-strike ordering: first, whichever side(s) of
-    each pair have first_strike (Cartouche of Solidarity, Ethereal Armor)
-    deal their damage and a state-based-action check runs -- a first-
-    strike kill here means the victim is already gone before the regular
-    sub-step, so it never deals damage back. Then, whichever side(s)
-    DON'T have first strike deal their damage (their only shot -- a
-    first-strike side already had its one shot above), but only if both
-    it and its target are still alive, followed by a second SBA check.
-    With no first strike anywhere in a given combat this collapses to the
-    exact same single simultaneous exchange as before first strike
-    existed (every pair's damage all lands in the "regular" sub-step).
+    Blocked pairs fight in up to two sub-steps (real Magic first-strike order):
+    first-strikers deal, then an SBA check clears the dead (a first-strike kill
+    never deals back); then the non-first-strikers deal, if both are still
+    alive, and a second SBA check. With no first strike this collapses to one
+    simultaneous exchange.
 
-    "lifelink" on an unblocked attacker: gained all at once here (summed
-    across every unblocked lifelinker, same batching deal_damage_to_
-    opponent's own unblocked_total already does) rather than inside
-    _attacker_deal_damage -- there's no blocker/trample math to share per-
-    creature here, unblocked damage is already just `power` per attacker.
-    Each attacker's own power is multiplied by its own stats.lifelink_count
-    (2 Cloaks on one attacker = 2x that attacker's own contribution), not
-    just added once per lifelinking attacker.
+    lifelink on an unblocked attacker is gained here, batched, each attacker's
+    power x its lifelink_count (2 Cloaks = 2x).
 
-    Every combatant's own {power, toughness, first_strike, trample,
-    lifelink_count} is fetched exactly ONCE here, up front, and reused
-    everywhere below -- profiled: this used to call stats.permanent_power
-    twice for the same unblocked attacker (unblocked_total and
-    lifelink_total, back to back), and stats.has_keyword(..., "first_
-    strike") twice per blocked pair (once per sub-step loop, even though
-    first-strike status can't change between them -- nothing runs in
-    between except a state-based-action check, which only removes dead
-    creatures). Each of those was its own independent stats.py call, each
-    independently re-scanning state.players for that creature's own Auras
-    via stats._enchanting_auras -- up to ~8-10 redundant scans per blocked
-    pair for what's really only 8 distinct facts (4 per creature). Safe to
-    prefetch once for the whole call: nothing in this function casts a new
-    spell or attaches/detaches an Aura mid-resolution, so no combatant's
-    own facts can change during it (damage_marked does change, but that's
-    read fresh off the permanent itself everywhere, never cached here)."""
+    Every combatant's {power, toughness, first_strike, trample, deathtouch,
+    lifelink_count} is fetched ONCE up front and reused (profiled: avoids ~8-10
+    redundant per-pair Aura scans). Safe because nothing here casts or
+    (de)attaches an Aura mid-resolution; damage_marked is read fresh."""
     # The Initiative (Avenging Hunter): "Whenever one or more creatures a
     # player controls deal combat damage to you, that player takes the
     # initiative." Snapshot the defending player's life now so any net combat-

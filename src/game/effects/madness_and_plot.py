@@ -1,45 +1,24 @@
-"""The Madness "cast for its madness cost" path and the Plot "pay cost,
-exile instead of resolving" path -- these need game.mana.begin_pay_cost,
-which game.resolution can't import (mana.py imports resolution.py at its
-own top level; the reverse would cycle). This module is free to depend on
-both resolution.py and mana.py, so it's where that orchestration lives
-instead.  This is the one
-piece of the old effects_common.py that module's own docstring was
-actually about -- everything else that used to share the file with it
-(combat, casting, the stack, ...) has moved to its own module."""
+"""The Madness "cast for its madness cost" and Plot "pay cost, exile instead
+of resolving" paths -- both need mana.begin_pay_cost, which resolution.py can't
+import (mana imports resolution; the reverse would cycle). This module depends
+on both, so the orchestration lives here."""
 
 from .. import mana, registry, resolution
 from .stack import push_to_stack
 
 
 def execute_madness_cast(state):
-    """Model chose "cast" for a pending madness_decision (itself now only
-    ever offered from inside the madness trigger's own stack resolve, see
-    triggers._trigger_resolve): pay the
-    card's madness cost, then push its effect onto the stack (see
-    stack.push_to_stack) instead of resolving it immediately -- a real,
-    independent stack entry that gets its own priority round before it
-    resolves, same as any other cast. Then calls the enclosing
-    madness_decision's own on_complete, a no-op today (see
-    triggers._trigger_resolve's own docstring for why the old recursive
-    "keep draining" continuation isn't needed anymore).
+    """Model chose "cast" for a pending madness_decision (offered from inside
+    the madness trigger's own stack resolve): pay the madness cost, then push
+    the effect onto the stack (its own priority round, like any cast), then call
+    the decision's on_complete (a no-op today). Captures card_def/on_complete
+    before begin_pay_cost overwrites pending with its own "pay_cost".
 
-    Captures card_def/on_complete from the CURRENT pending_resolution
-    before begin_pay_cost overwrites it with its own "pay_cost" one --
-    same nested-callback shape flashback_dread_return
-    (game.catalog.black_cards) already uses for its own multi-step
-    chain.
-
-    Exile removal happens in _after_pay, NOT here before begin_pay_cost --
-    matching the same "never touch a zone until on_complete fires" contract
-    every other begin_pay_cost caller in this codebase already follows
-    (drl_env._cast_execute leaves the card in hand until _after_pay, same
-    reasoning). mana.abandon_pay_cost's own docstring says undoing taps
-    alone is a complete, correct undo BECAUSE callers keep that contract --
-    removing the card here, before payment is irreversible, broke it: a
-    model that chose Cast then Abandon payment made the card disappear
-    from every zone (not exile, not hand, not graveyard) instead of simply
-    leaving it exiled, same as if Cast had never been chosen."""
+    Exile removal happens in _after_pay, NOT before begin_pay_cost -- the same
+    "never touch a zone until on_complete fires" contract every begin_pay_cost
+    caller keeps, so abandon_pay_cost (which undoes only taps) stays a complete
+    undo. Removing the card early broke it: Cast-then-Abandon made the card
+    vanish from every zone instead of staying exiled."""
     pending = state.pending_resolution
     card_def = pending["card_def"]
     outer_on_complete = pending["on_complete"]

@@ -1,9 +1,9 @@
-"""Set Transformer encoder + FiLM conditioning over token_features.py's
+"""Set Transformer encoder + FiLM conditioning over rl.features's
 per-token representation -- the shared perception stack (docs discussion on
 the attention-opponent-encoding branch): card identity embeddings, a
 self-attention encoder over the variable-length token set, and a FiLM
 conditioner. Deliberately does NOT include a trunk, critic, or action head
--- those are per-deck (see token_deck.py), not shared.
+-- those are per-deck (see rl.deck), not shared.
 
 Uses torch.nn.MultiheadAttention/TransformerEncoderLayer directly (already
 a torch dependency, no new library) rather than hand-rolling attention --
@@ -23,7 +23,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 
-from token_features import TOKEN_FEATURE_DIM
+from rl.features import TOKEN_FEATURE_DIM
 
 
 def pad_token_batch(token_lists, device="cpu"):
@@ -100,14 +100,14 @@ class SetTransformer(nn.Module):
 
     def forward(self, vocab_idx, features, key_padding_mask, side_flag):
         """side_flag: [B, T] float, 1.0 for "mine" tokens, 0.0 for "theirs"
-        -- token_features.build_token_set's own last feature column, passed
+        -- rl.features.build_token_set's own last feature column, passed
         separately (not re-derived from `features`) so pooling's own
         mine/theirs mask stays explicit and doesn't rely on remembering
         which column index it lives at.
 
         Returns (mine_summary [B, d_model], theirs_summary [B, d_model],
         token_reps [B, T, d_model]) -- token_reps is exposed for the
-        pointer-network action head (token_deck.py), which scores actions
+        pointer-network action head (rl.deck), which scores actions
         against these SAME post-attention representations, not the raw
         pre-attention embeddings, so a token's scoring already reflects
         everything else on the board.
@@ -179,9 +179,9 @@ class FiLM(nn.Module):
 
 
 if __name__ == "__main__":
-    # ponytail self-check: run via `python token_arch.py` from src/.
+    # ponytail self-check: run via `python rl.arch` from src/.
     import game
-    from token_features import CardVocab, build_token_set
+    from rl.features import CardVocab, build_token_set
     from game.state import GameState, PlayerState, Permanent
 
     decklist_a = game.parse_decklist_file("../data/mono_red_madness.txt")
@@ -202,7 +202,7 @@ if __name__ == "__main__":
     tokens_b = build_token_set(state_b, 0, vocab)
     assert len(tokens_a) == 3 and len(tokens_b) == 0, "fixture sanity: expected 3 tokens and 0 tokens respectively"
 
-    from token_arch import pad_token_batch
+    from rl.arch import pad_token_batch
     vocab_idx, features, mask, identities = pad_token_batch([tokens_a, tokens_b])
     assert identities[0][0] is seat0.battlefield[0], "battlefield token identity must survive padding"
     assert identities[1][0] is None, "the empty-board batch element's padded identity slots must be None"
@@ -249,5 +249,5 @@ if __name__ == "__main__":
     # At a freshly-initialized net (raw output near 0), gamma should start near 1.0 (identity modulation).
     assert torch.allclose(params[0][0].mean(), torch.tensor(1.0), atol=0.5)
 
-    print(f"token_arch.py self-check: OK (mine_summary={mine_summary.shape}, theirs_summary={theirs_summary.shape}, "
+    print(f"rl.arch self-check: OK (mine_summary={mine_summary.shape}, theirs_summary={theirs_summary.shape}, "
           f"token_reps={token_reps.shape})")

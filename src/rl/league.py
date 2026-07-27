@@ -17,7 +17,7 @@ import os
 
 import torch
 
-from token_deck import DeckNetwork
+from rl.deck import DeckNetwork
 
 # ponytail: fixed rolling window per deck, oldest evicted first. Revisit
 # (e.g. keep-most-diverse instead of keep-most-recent) if a shallow window
@@ -52,7 +52,7 @@ class LeaguePool:
         caller ever builds decks with a non-default trunk_hidden (caught
         the hard way: this module's own self-check missed it because it
         never actually round-tripped a snapshot with a non-default trunk;
-        token_train.py's smoke test, which does, is what caught it)."""
+        rl.train's smoke test, which does, is what caught it)."""
         deck_dir = os.path.join(self.root_dir, deck_name)
         os.makedirs(deck_dir, exist_ok=True)
         next_id = (self.snapshots[deck_name][-1][0] + 1) if self.snapshots[deck_name] else 0
@@ -96,16 +96,16 @@ class LeaguePool:
 
 
 if __name__ == "__main__":
-    # ponytail self-check: run via `python token_league.py` from src/. No
+    # ponytail self-check: run via `python rl.league` from src/. No
     # real game simulation needed here -- this module's own logic (sampling
     # distribution, snapshot eviction, cache invalidation) is what's under
-    # test, not the token architecture (already covered by token_deck.py/
-    # token_arch.py's own self-checks).
+    # test, not the token architecture (already covered by rl.deck/
+    # rl.arch's own self-checks).
     import random
     import shutil
     import tempfile
 
-    from token_arch import SetTransformer
+    from rl.arch import SetTransformer
 
     tmp_dir = tempfile.mkdtemp()
     try:
@@ -160,4 +160,4 @@ if __name__ == "__main__":
     finally:
         shutil.rmtree(tmp_dir)
 
-    print("token_league.py self-check: OK (sampling, eviction, disk rediscovery, cache invalidation)")
+    print("rl.league self-check: OK (sampling, eviction, disk rediscovery, cache invalidation)")

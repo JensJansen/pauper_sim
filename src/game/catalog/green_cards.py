@@ -1,21 +1,11 @@
-"""Green-identity card catalog: every card whose real mana cost is
-mono-green (or, for lands with no cost, whose only mana output is green).
-Every card's cost/type/oracle-text below is a direct Scryfall pull,
-except creature power/toughness, which is a design choice, not Scryfall
-data. Bramble Wurm (Tron filler, real cost {6}{G}) files here rather
-than colorless_cards.py -- verified via Scryfall, not guessed; its real
-"{2}{G}, Exile this card from your graveyard: gain 5 life" ability is a
-new "graveyard_ability" registry spec (drl_env.build_action_table),
-generic plumbing mirroring forestcycle's own hand-zone/cost-key/card_def
-shape, just sourced from state.graveyard instead of state.hand. Sagu
-Wildling's sorcery half (Roost Seek) now shuffles itself into the
-LIBRARY, not the graveyard, on resolution (real Omen -- unlike real
-Adventure, no exile step at all), enabling its own "omen" registry spec
-(also on ROOST_SEEK, also new generic plumbing) to offer the real
-creature half as a second cast option once the same physical card is
-redrawn into hand -- see cast_roost_seek's own docstring. "defender"
-marks the four defender creatures Overgrown Battlement's own mana ability
-counts (itself included)."""
+"""Green-identity card catalog: every card whose real mana cost is mono-green
+(or, for a cost-less land, whose only mana output is green). Costs/types/oracle
+text are direct Scryfall pulls; creature power/toughness is a design choice.
+Bramble Wurm (real {6}{G}) files here rather than colorless_cards despite being
+Tron filler. Same GREEN_CARD_CATALOG / GREEN_EFFECT_REGISTRY shape as every
+color file, unioned by game/registry.py (per-card mechanics -- Bramble Wurm's
+graveyard ability, Sagu Wildling's Omen, the defender flag -- are documented at
+their own registry entries below)."""
 
 from .. import resolution
 from ..cards import CardDef, CardType, EffectId

@@ -80,7 +80,7 @@ from ..effects.stack import push_ability_to_stack, push_to_stack
 from ..effects.shared import affinity_reduction, discard_from_hand_to_graveyard, find_and_remove_by_name, find_to_hand
 from ..effects.state_based import check_state_based_actions, sacrifice_to_graveyard
 from ..effects.stats import can_be_targeted, permanent_power
-from ..effects.tokens import MAP_TOKEN_CARD_DEF, activate_blood_sac, activate_clue_sac, activate_map_sac
+from ..effects.tokens import activate_blood_sac, activate_clue_sac, activate_map_sac
 from ..effects.win_check import gain_life
 from ..mana import COLORS
 from ..resolution import (

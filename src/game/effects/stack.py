@@ -1,37 +1,25 @@
-"""The priority stack itself: push, pop-and-resolve, and the one cast-time
-trigger hook. Deliberately dumb -- these three functions never inspect
-what `resolve` does, so this module has no dependency on casting.py even
-though casting.cast_aura is one of its callers. triggers.py (queued
-triggers -> stack entries) sits ABOVE this module instead, since
-_trigger_resolve's "automatic" branch needs casting.enters_battlefield --
-putting that here would recreate a real cycle (casting needs push_to_stack
-from here; here would need enters_battlefield from casting).
+"""The priority stack: push, pop-and-resolve, and the one cast-time trigger
+hook. Deliberately dumb -- these functions never inspect what `resolve` does,
+so this module doesn't depend on casting.py (even though cast_aura calls
+push_to_stack). triggers.py sits ABOVE it instead: _trigger_resolve's
+"automatic" branch needs casting.enters_battlefield, which put here would
+recreate a cycle.
 
-References game.registry.EFFECT_REGISTRY only from inside function
-bodies, via `registry.EFFECT_REGISTRY` -- see game/registry.py's own
-module docstring for why."""
+References registry.EFFECT_REGISTRY only inside function bodies -- see
+game/registry.py's docstring for why."""
 
 from .. import registry
 from ..cards import CardType
 
 
 def on_cast_trigger(state, card_def):
-    """A "whenever you cast an instant/sorcery" ability (Guttersnipe)
-    TRIGGERS at cast time -- but, faithfully (real Magic 603.3), a triggered
-    ability doesn't take effect the instant it triggers: it goes on the
-    stack the next time a player would receive priority, ABOVE the spell it
-    triggered off (so it resolves first), and both players get a window
-    before it does. So this only QUEUES the trigger (state.trigger_queue);
-    game.turn's own priority round promotes it onto the stack once the
-    triggering cast is fully done -- deliberately only at a priority point,
-    never mid-cast, so it lands above the spell rather than under a target
-    choice that hasn't pushed the spell yet (see game.turn's promote gate
-    and game.effects.triggers._trigger_resolve's own "cast_trigger" branch).
-
-    Every cast path (normal cast, alt_cast, Flashback, Plot's cast-from-
-    exile) calls this identically, from inside drl_env.py's own per-path
-    wrapper functions -- so Guttersnipe fires the same regardless of which
-    path cast the triggering spell.  """
+    """A "whenever you cast an instant/sorcery" ability (Guttersnipe). Real
+    Magic 603.3: a triggered ability doesn't take effect when it triggers -- it
+    goes on the stack at the next priority point, ABOVE the triggering spell,
+    with a response window. So this only QUEUES it (state.trigger_queue);
+    game.turn's priority round promotes it once the cast is fully done (never
+    mid-cast, or it'd land under a spell not yet pushed). Every cast path
+    (normal / alt_cast / Flashback / Plot) calls this identically."""
     if card_def.card_type not in (CardType.INSTANT, CardType.SORCERY):
         return
     for permanent in state.battlefield:
@@ -45,53 +33,30 @@ def on_cast_trigger(state, card_def):
 
 
 def push_to_stack(state, card_def, resolve, reserves_hand_card=True, is_spell=True):
-    """A spell is fully paid for (mana or an alternate cost) but not yet
-    resolved -- defer `resolve(state, card_def)` onto state.stack instead of
-    calling it now, giving the model a chance to respond (cast another
-    instant-speed spell) before it resolves. Every cast-like top-level
-    action (normal cast, cast_modes, alt_cast, Flashback, Plot's cast-from-
-    exile, Madness) pushes here once its own cost-payment is fully done --
-    never before (a card whose alt cost is itself a resolution, e.g.
-    Fireblast's sacrifice-2-Mountains, must push only from that
-    resolution's own on_complete, not from inside the sacrifice itself).
+    """Defer `resolve(state, card_def)` onto state.stack instead of running it
+    now, giving both players a priority window before it resolves. Pushed only
+    once the spell's cost is fully paid -- never mid-payment (an alt cost that
+    is itself a resolution, e.g. Fireblast's sacrifice-2-Mountains, pushes from
+    that resolution's own on_complete).
 
-    A pushed card's own hand/graveyard/exile removal still happens inside
-    `resolve` itself (unchanged from before the stack existed), not here --
-    so a card sitting on the stack, paid for but unresolved, is still
-    physically present in whatever zone it came from until it actually
-    resolves. Two places correct for that instead of treating it as
-    "available": drl_env._hand_count_available (cast legality) and
-    resolution.discard_options (an instant-speed activated ability, e.g.
-    Blood's sac-for-a-card, isn't blocked by a non-empty stack the way a
-    sorcery-speed cast is, so it can still be offered a card that's
-    actually already spoken for by an unresolved stack entry) -- both scan
-    state.stack by name and must only count entries where a same-named
-    hand card is genuinely still spoken for.
+    A pushed card stays physically in its origin zone until `resolve` moves it
+    (resolve does its own hand/graveyard/exile removal, not here) -- so a paid-
+    but-unresolved card is still "in hand." Two places must NOT count it as
+    available: drl_env._hand_count_available (cast legality) and
+    resolution.discard_options (instant-speed discard) -- both subtract
+    same-named stack entries still reserving a hand card.
 
-    reserves_hand_card=False for any push whose card is NOT sitting in the
-    caster's hand awaiting this entry's own removal -- Flashback/reanimate
-    (already removed from graveyard before the push), Plot/Adventure/Madness
-    cast-from-exile (already removed from exile), an alt-cost path that
-    eagerly discards before paying its cost (Fireblast's sacrifice-2-
-    Mountains, Crop Rotation), or a promoted trigger (triggers.py -- an
-    automatic return never touched hand at all, and a Madness decision's
-    card already left hand the instant it was discarded, not when this
-    entry resolves). Confirmed live via mono_red_madness_mirror training:
-    Faithless Looting discarding two copies of the same Madness card
-    back-to-back left the first copy's already-promoted decision entry on
-    the stack while the second copy was still the ONLY card in hand still
-    needing to be discarded -- discard_options's default True (before this
-    parameter existed) miscounted that unrelated stack entry as "this hand
-    card is already spoken for," excluding the only legal discard and
-    leaving no action, not even Pass, legal.
+    reserves_hand_card=False when the card is NOT awaiting removal from the
+    caster's hand: Flashback/reanimate (already out of the graveyard),
+    Plot/Adventure/Madness cast-from-exile (already out of exile), an alt cost
+    that discards eagerly (Fireblast, Crop Rotation), or a promoted trigger.
+    (Confirmed live: two same-named Madness cards discarded back-to-back --
+    default True miscounted the first's promoted entry as reserving the second,
+    still-in-hand copy, leaving zero legal actions.)
 
-    Records state.active_idx as this entry's own controller (docs/
-   ): a real priority round can flip active_idx through
-    both players (whoever's currently deciding to act/pass) between now
-    and whenever this entry actually resolves, but state.hand/graveyard/
-    battlefield (state.py's own active_idx-proxy) must still resolve
-    against the CASTER's zones, not whoever last happened to hold
-    priority -- resolve_top_of_stack restores it below."""
+    Records active_idx as the entry's controller: a priority round can flip
+    active_idx before this resolves, but resolve must run against the CASTER's
+    zones (state.py's active_idx proxy) -- resolve_top_of_stack restores it."""
     state.stack.append({
         "card_def": card_def, "resolve": resolve, "controller": state.active_idx,
         "reserves_hand_card": reserves_hand_card, "is_spell": is_spell,
@@ -100,18 +65,13 @@ def push_to_stack(state, card_def, resolve, reserves_hand_card=True, is_spell=Tr
 
 
 def push_ability_to_stack(state, source_card_def, effect):
-    """Put a NON-MANA ability's effect onto the stack -- real Magic: activated
-    and triggered abilities go on the stack, get a priority window (both
-    players may respond), and resolve later; only MANA abilities skip the
-    stack (rule 605). `source_card_def` labels the entry (the ability's
-    source, for logging/observation); `effect(state)` is what happens when
-    this entry resolves. Any COSTS (mana/tap/sacrifice/discard) and any
-    TARGETS are already paid/chosen by the caller at activation/trigger time,
-    before this push -- only the effect waits here. reserves_hand_card=False:
-    an ability's source is on the battlefield (or its trigger already fired),
-    never a hand card awaiting this entry's own removal. is_spell=False: an
-    ability is NOT a spell, so it's not a legal target for Counterspell/
-    Dispel/Spell Pierce (which counter spells, not abilities)."""
+    """Put a NON-MANA ability's effect on the stack (real Magic 605: activated/
+    triggered abilities use the stack + a priority window; only mana abilities
+    skip it). `source_card_def` labels the entry; `effect(state)` runs on
+    resolution. Costs and targets are already paid/chosen before this push.
+    reserves_hand_card=False (source is on the battlefield, not a hand card);
+    is_spell=False (an ability isn't a legal Counterspell/Dispel/Spell Pierce
+    target)."""
     push_to_stack(state, source_card_def, lambda st, cd: effect(st), reserves_hand_card=False, is_spell=False)
 
 

@@ -1,4 +1,4 @@
-"""Bridges token_deck.py's combined (fixed-table + pointer-head) action
+"""Bridges rl.deck's combined (fixed-table + pointer-head) action
 space to the REAL game engine -- the piece that determines whether any of
 this can actually drive a game. Two halves:
 
@@ -174,7 +174,7 @@ def execute_pointer_choice(state, permanent):
 
 
 if __name__ == "__main__":
-    # ponytail self-check: run via `python token_action_bridge.py` from src/.
+    # ponytail self-check: run via `python rl.action_bridge` from src/.
     decklist = game.parse_decklist_file("../data/mono_red_madness.txt")
     pending_kinds = game.derive_pending_kinds(decklist)
     # mono_red_madness creates BOTH of these mid-game (Blood from madness
@@ -192,7 +192,7 @@ if __name__ == "__main__":
     assert "Pass" in fixed_names
     assert any(name.startswith("Play land:") for name in fixed_names)
     assert any(name.startswith("Cast ") for name in fixed_names)
-    print(f"token_action_bridge.py build_fixed_action_table self-check: OK ({len(fixed_table)} fixed actions)")
+    print(f"rl.action_bridge build_fixed_action_table self-check: OK ({len(fixed_table)} fixed actions)")
 
     # pointer_legal_mask / execute_pointer_choice against a REAL 2-PLAYER
     # game (build_token_set is inherently 2-player -- it always indexes an
@@ -205,7 +205,7 @@ if __name__ == "__main__":
     # exercises attacking, blocking, AND the cross-player "Choose
     # opponent's" consult nested inside blocking, across real turns.
     import random
-    from token_features import CardVocab, build_token_set
+    from rl.features import CardVocab, build_token_set
 
     vocab = CardVocab([decklist], token_card_defs=token_defs)
     pass_action = next(i for i, (name, _l, _e) in enumerate(fixed_table) if name == "Pass")
@@ -276,5 +276,5 @@ if __name__ == "__main__":
     assert saw_attack[0], "expected at least one real declare-attackers window across 10 real 2p games"
     assert saw_block[0], "expected at least one real declare-blockers window across 10 real 2p games"
     assert saw_choose_opponent[0], "expected at least one real cross-player 'Choose opponent's' consult across 10 real 2p games"
-    print("token_action_bridge.py pointer_legal_mask/execute_pointer_choice self-check: OK "
+    print("rl.action_bridge pointer_legal_mask/execute_pointer_choice self-check: OK "
           "(real 2-player game -- attack, block, and cross-player targeting all exercised)")

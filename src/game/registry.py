@@ -1,36 +1,21 @@
 """Card catalog + effect registry, merged across every color identity.
 
 CARD_DEFS: one shared name->CardDef catalog, the union of every color
-catalog's own XXX_CARD_CATALOG fragment (a card's definition -- type,
-cost, effect, extra -- is fixed metadata, defined exactly once regardless
-of how many decks play it). This is the single source of truth for "what
-is card X" -- a deck's own decklist (parsed from data/*.txt by
-game.decklist) supplies only names and quantities, looking up everything
-else here.
+catalog's XXX_CARD_CATALOG (a card's definition is fixed metadata, defined
+once regardless of how many decks play it). The single source of truth for
+"what is card X"; a decklist supplies only names + quantities.
 
-EFFECT_REGISTRY: one EffectId->spec dict, the union of all 7 color
-catalogs' own XXX_EFFECT_REGISTRY fragments. An EffectId present here is
-"already implemented" -- this is what makes a card reusable by a future
-deck without new code. Cards are no longer deck-scoped at all
- -- a card lives exactly once, in the one
-catalog file matching its real color identity, regardless of how many
-decklists name it.
+EFFECT_REGISTRY: one EffectId->spec dict, the union of all 7 color catalogs'
+XXX_EFFECT_REGISTRY. An EffectId present here is "already implemented" -- what
+lets a card be reused by a future deck without new code.
 
-Importing this module is what actually triggers loading every catalog
-module (and, transitively, most of game/effects/*.py, plus mana/
-resolution/state/cards) -- several of those submodules (whichever ones
-catalog files import directly, or that those in turn depend on: casting,
-tokens, stack, state_based, madness_and_plot, stats) reference
-`registry.EFFECT_REGISTRY` / `registry.CARD_DEFS` etc. only from inside
-function bodies, never as a bare attribute-access at module load time, for
-the same reason -- this module's own import of `catalog` hasn't finished
-building these dicts yet by the time those modules are first loaded.
-Importing the `registry` module OBJECT at their own top level is still
-safe (and is what all of them do) -- only binding a *specific name off
-it* (`from .registry import EFFECT_REGISTRY`) at that point would fail;
-deferring the dot-access to call time, by which point game/__init__.py
-has finished importing every submodule, breaks the cycle.
-"""
+Importing this module triggers loading every catalog (and transitively most of
+game/effects, mana, resolution, state, cards). Those submodules reference
+`registry.EFFECT_REGISTRY`/`CARD_DEFS` only inside function bodies: this
+module's `catalog` import hasn't built these dicts yet when they first load, so
+a top-level `from .registry import EFFECT_REGISTRY` would bind a not-yet-built
+name -- importing the `registry` module object is fine, deferring the dot-access
+to call time breaks the cycle."""
 
 from .catalog import black_cards, blue_cards, colorless_cards, green_cards, multicolor_cards, red_cards, white_cards
 
@@ -55,7 +40,7 @@ EFFECT_REGISTRY = {
 }
 
 # Derived views: kept as module-level names for backward compatibility with
-# every existing caller (game.mana, rewards.py's resource_quality_components).
+# every existing caller (game.mana, rl.rewards's resource_quality_components).
 SIMPLE_MANA_SOURCE_EFFECTS = {
     effect_id for effect_id, spec in EFFECT_REGISTRY.items() if spec.get("mana") is not None
 }

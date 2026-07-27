@@ -55,7 +55,7 @@ def action_count_win_reward(plateau_actions=80, max_actions=200, min_reward=0.25
 
 
 # Pre-baked named instance (callers reference reward_fns by plain name via
-# getattr off this module -- see token_train's own reward_fn_name plumbing).
+# getattr off this module -- see rl.train's own reward_fn_name plumbing).
 # Floor lowered to 0.2 (vs. the default 0.25) per the "sliding scale from
 # 1 - 0.2" spec -- this is the reward league self-play (run_league.py) uses.
 action_count_win_reward_200_floor02 = action_count_win_reward(min_reward=0.2)

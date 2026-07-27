@@ -711,7 +711,7 @@ if __name__ == "__main__":
     # --- G4 counters & permission ---
     from ..effects.stack import push_to_stack as _push
     from ..resolution import (
-        choose_stack_target_options, execute_choose_stack_target_option, pay_unless_decline, pay_unless_pay,
+        execute_choose_stack_target_option, pay_unless_decline, pay_unless_pay,
     )
 
     def _stack_spell(st, name, controller=1):

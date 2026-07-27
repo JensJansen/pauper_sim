@@ -1,5 +1,5 @@
 """Per-deck trunk + critic + pointer-network action head, sitting on top of
-a SHARED SetTransformer+FiLM perception stack (token_arch.py) that this
+a SHARED SetTransformer+FiLM perception stack (rl.arch) that this
 module reuses, never owns (Phase 4's pretrain-then-freeze design: one
 shared stack, N independent per-deck DeckNetwork instances built on top of
 it).
@@ -52,7 +52,7 @@ class DeckNetwork(nn.Module):
         [B, SCALAR_FEATURE_DIM] -- the non-tokenized globals (life totals,
         turn number, phase one-hot, pending-kind one-hot, mana pool -- the
         same non-per-card globals the scalar-feature builder
-        (token_train._scalar_features) carries). pointer_token_mask:
+        (rl.train._scalar_features) carries). pointer_token_mask:
         [B, T] bool, True where a token is a currently-legal POINTER TARGET
         for whatever specific resolution is pending right now (Attack-
         eligible creature, block-eligible creature, etc.) -- this is
@@ -89,16 +89,16 @@ class DeckNetwork(nn.Module):
 # phase one-hot (len(Phase)) -- genuinely scalar/global facts, deliberately
 # NOT re-derived via tokens since they aren't per-card ones.
 import game  # noqa: E402
-from token_arch import FiLM  # noqa: E402
+from rl.arch import FiLM  # noqa: E402
 
 SCALAR_FEATURE_DIM = 4 + len(game.POOL_COLORS) + len(game.turn.Phase) + 2  # 4 = turn/lands/mulligans/am-i-turn-player, +2 = my/opponent life totals
 
 
 if __name__ == "__main__":
-    # ponytail self-check: run via `python token_deck.py` from src/.
+    # ponytail self-check: run via `python rl.deck` from src/.
     import game as _game
-    from token_features import CardVocab, build_token_set
-    from token_arch import SetTransformer, pad_token_batch
+    from rl.features import CardVocab, build_token_set
+    from rl.arch import SetTransformer, pad_token_batch
     from game.state import GameState, PlayerState, Permanent
 
     decklist_a = _game.parse_decklist_file("../data/mono_red_madness.txt")
@@ -155,4 +155,4 @@ if __name__ == "__main__":
         action = dist.sample()
         assert full_mask[0, action.item()], f"sampled an illegal combined action index {action.item()}"
 
-    print(f"token_deck.py self-check: OK (combined_logits={logits.shape}, value={value.shape})")
+    print(f"rl.deck self-check: OK (combined_logits={logits.shape}, value={value.shape})")
