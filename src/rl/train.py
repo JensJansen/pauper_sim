@@ -27,19 +27,15 @@ game loop's own semantics for any reward function that isn't already
 win/loss-gated."""
 
 import random
-from collections import namedtuple
 
 import numpy as np
 import torch
 
 import drl_env
 import game
-from rl.action_bridge import (
-    any_pointer_legal, build_fixed_action_table, execute_pointer_choice, pointer_legal_mask,
-)
 from rl.arch import pad_token_batch
-from rl.features import build_token_set
 from rl import mulligan as mulligan_mod
+from rl.agent import SeatAgent, AlwaysKeep
 
 
 class RolloutBuffer:
@@ -86,203 +82,84 @@ def _reward_for(state, seat, reward_fn, horizon, done):
     return reward_fn(state, False, horizon)
 
 
-def _scalar_features(state, seat_idx, horizon):
-    """Non-tokenized globals -- turn number, lands-played, mulligans, am-I-
-    turn-player, floating mana pool, phase one-hot, my/opponent life. Same
-    composition rl.deck.SCALAR_FEATURE_DIM documents (mana-pool cap of 8,
-    matched here). state.mana_pool is a
-    GameState property proxying to state.players[state.active_idx]
-    (game/state.py's _active_player_property) -- read unconditionally, not
-    gated, since _for_player below already guarantees active_idx == seat_idx
-    for the whole duration of _read."""
-    def _read(s):
-        me = s.players[seat_idx]
-        other = s.players[1 - seat_idx]
-        out = [
-            min(s.turn_number / horizon, 1.0),
-            1.0 if s.lands_played_this_turn > 0 else 0.0,
-            min(s.mulligans_taken, 7) / 7,
-            1.0 if s.active_idx == s.turn_player_idx else 0.0,
-        ]
-        for color in game.POOL_COLORS:
-            out.append(min(s.mana_pool.get(color, 0), 8) / 8)
-        for phase in game.turn.Phase:
-            out.append(1.0 if phase == s.phase else 0.0)
-        out.append(max(me.life_total, 0) / game.state.STARTING_LIFE)
-        out.append(max(other.life_total, 0) / game.state.STARTING_LIFE)
-        return out
-    return drl_env._for_player(state, seat_idx, _read)
+# The per-seat DECISION primitives (_seat_step, _build_decision,
+# _scalar_features, _executor_for, _padded_full_mask, _Decision,
+# _raise_all_false, _is_pass) now live in rl.agent -- collect_rollout drives
+# them through SeatAgent.decide, so nothing here calls them directly anymore.
+# _reward_for stays: it's ATTRIBUTION (a rollout concern), not decision.
 
 
-# A decision's forward-FREE part: everything needed to (a) tell whether it's
-# forced and (b) later run the policy forward, without having run it yet.
-# full_mask is the raw-width (n_fixed + raw_token_count) legal mask, the exact
-# array stored in the buffer and re-padded by ppo_update. sole_action is the
-# lone legal index when n_legal == 1 (a forced move), else None.
-_Decision = namedtuple("_Decision", "tokens scalar full_mask identities fixed_table n_fixed n_legal sole_action")
+def _constant_pairing(agents, decklists, reward_fns, record_as):
+    """A pairing that yields the SAME layout every game -- mirror, cross-matchup,
+    or a fixed A-vs-B matchup. (League resampling is _make_league_pairing.)"""
+    def pairing(rng):
+        return agents, decklists, reward_fns, record_as
+    return pairing
 
 
-def _raise_all_false(state, seat):
-    # DIAGNOSTIC (temporary): an all-False mask means the engine reached a
-    # decision state the action space can't represent AT ALL -- a real gap.
-    # masked_fill(-1e8) then Categorical would otherwise sample UNIFORMLY over
-    # every (illegal) position and crash downstream (execute_pointer_choice)
-    # with a misleading error. Surface the true culprit precisely instead.
-    pend = state.pending_resolution
-    print("  *** ALL-FALSE MASK ***", flush=True)
-    print(f"    pending_kind={pend['kind'] if pend else None} phase={state.phase} seat={seat}", flush=True)
-    if pend:
-        print(f"    pending keys={list(pend.keys())}", flush=True)
-        for k in ("remaining", "ordered", "kept", "disposed"):
-            if k in pend:
-                v = pend[k]
-                print(f"    pending[{k}]={[getattr(c, 'name', c) for c in v] if isinstance(v, list) else v}", flush=True)
-    raise RuntimeError(f"all-False action mask for pending kind {pend['kind'] if pend else None!r}")
+def collect_rollout(pairing, n_games, horizon, rng, device="cpu", record=True, greedy=False, game_logs=None):
+    """The ONE game loop. Plays n_games real self-play games
+    (game.run_multiplayer_game); a per-game `pairing(rng)` supplies that game's
+    layout, and the SeatAgents it returns own the mulligan-vs-policy dispatch
+    (rl.agent). This function owns only ATTRIBUTION (bandit mulligan reward +
+    per-decision terminal-flush PPO reward) and bucketing.
 
+    pairing(rng) -> (agents, decklists, reward_fns, record_as):
+      agents[seat]      -- SeatAgent making seat `seat`'s decisions
+      decklists[seat]   -- that seat's decklist (for run_multiplayer_game)
+      reward_fns[seat]  -- that seat's reward_fn (may be None when record=False)
+      record_as[seat]   -- the deck-name BUCKET to record this seat's transitions
+                           into, or None to record nothing for that seat (a
+                           frozen-snapshot / off-policy opponent, or eval).
 
-def _executor_for(state, action_idx, fixed_table, identities):
-    """The zero-arg callable that applies action_idx: a fixed-table entry's own
-    execute closure, or execute_pointer_choice on the chosen permanent (pointer
-    half, indexed past the fixed table)."""
-    if action_idx < len(fixed_table):
-        execute_fn = fixed_table[action_idx][2]
-        return (lambda state=state, execute_fn=execute_fn: execute_fn(state))
-    chosen = identities[action_idx - len(fixed_table)]
-    return (lambda state=state, chosen=chosen: execute_pointer_choice(state, chosen))
+    record=False -> pure play (eval / log generation), buffers nothing;
+    reward_fns may be None. greedy=True -> deterministic argmax (eval). game_logs:
+    optional list, one engine event_log appended per game (game/state.py's
+    log_event -- already instrumented; zero-cost when None).
 
-
-def _is_pass(action_idx, fixed_table):
-    return action_idx < len(fixed_table) and fixed_table[action_idx][0] == "Pass"
-
-
-def _build_decision(state, seat, deck_ctx, horizon):
-    """Everything a decision needs that does NOT require the (expensive) policy
-    forward: the token set + scalar features and the legal-action mask (fixed
-    half via ONE drl_env.legal_action_mask sweep, pointer half via
-    pointer_legal_mask). Forward-free by design so a FORCED decision
-    (n_legal == 1 -- overwhelmingly a priority Pass with nothing to play) skips
-    the network entirely.
-    identities is read straight off the token set (each token is (vocab_idx,
-    feature_row, identity)); the pointer mask -- and its buffer-stored width --
-    are the RAW token count, exactly what ppo_update re-pads per minibatch."""
-    vocab, fixed_table, _pending_kinds = deck_ctx
-    tokens = build_token_set(state, seat, vocab)
-    scalar = _scalar_features(state, seat, horizon)
-    identities = [identity for _idx, _row, identity in tokens]
-
-    fixed_mask = np.asarray(drl_env.legal_action_mask(state, fixed_table), dtype=bool)
-    pointer_mask = pointer_legal_mask(state, identities) if any_pointer_legal(state) else [False] * len(identities)
-    full_mask = np.concatenate([fixed_mask, np.asarray(pointer_mask, dtype=bool)])
-
-    legal = np.flatnonzero(full_mask)
-    if legal.size == 0:
-        _raise_all_false(state, seat)
-    sole = int(legal[0]) if legal.size == 1 else None
-    return _Decision(tokens, scalar, full_mask, identities, fixed_table, len(fixed_table), int(legal.size), sole)
-
-
-def _padded_full_mask(full_mask_np, n_fixed, n_padded_tokens, device):
-    """Widen a decision's raw full_mask (n_fixed + raw_token_count) to the
-    padded token width the network's logits actually span (n_fixed +
-    n_padded_tokens), padding the extra token slots False -- the same
-    convention ppo_update uses to rebuild a minibatch mask, and the reason the
-    empty-board case (pad_token_batch pads 0 tokens to 1 dummy slot) is safe."""
-    out = torch.zeros((n_fixed + n_padded_tokens,), dtype=torch.bool, device=device)
-    out[:n_fixed] = torch.as_tensor(full_mask_np[:n_fixed], dtype=torch.bool, device=device)
-    ptr = full_mask_np[n_fixed:]
-    out[n_fixed:n_fixed + len(ptr)] = torch.as_tensor(ptr, dtype=torch.bool, device=device)
-    return out
-
-
-def _seat_step(state, seat, deck_ctx, net, horizon, device):
-    """One seat's decision, batch-of-1 (the sequential collector). Builds the
-    decision (mask first -- see _build_decision), takes the sole legal action
-    WITHOUT a forward when the state is forced, else runs the shared stack +
-    per-deck net, masks, and samples. Returns (executor, buffer_entry, is_pass);
-    buffer_entry is None for a forced move (record nothing)."""
-    dec = _build_decision(state, seat, deck_ctx, horizon)
-    if dec.sole_action is not None:
-        return (_executor_for(state, dec.sole_action, dec.fixed_table, dec.identities), None,
-                _is_pass(dec.sole_action, dec.fixed_table))
-
-    vocab_idx, features, key_padding_mask, _identities = pad_token_batch([dec.tokens], device=device)
-    side_flag = features[:, :, -1]
-    full_mask = _padded_full_mask(dec.full_mask, dec.n_fixed, vocab_idx.shape[1], device).unsqueeze(0)
-    with torch.inference_mode():
-        mine_summary, theirs_summary, token_reps = net.shared_stack(vocab_idx, features, key_padding_mask, side_flag)
-        scalar_t = torch.as_tensor(dec.scalar, dtype=torch.float32, device=device).unsqueeze(0)
-        logits, value = net(mine_summary, theirs_summary, scalar_t, token_reps, full_mask[:, dec.n_fixed:])
-        masked_logits = logits.masked_fill(~full_mask, -1e8)
-        dist = torch.distributions.Categorical(logits=masked_logits)
-        action = dist.sample()
-        logp = dist.log_prob(action)
-
-    action_idx = int(action.item())
-    buffer_entry = (dec.tokens, dec.scalar, dec.full_mask, action_idx, float(logp.item()), float(value.item()))
-    return (_executor_for(state, action_idx, dec.fixed_table, dec.identities), buffer_entry,
-            _is_pass(action_idx, dec.fixed_table))
-
-
-def collect_rollout(seat_nets, decklists, reward_fns, deck_ctxs, horizon, n_games, rng, device="cpu",
-                     game_logs=None, mulligan_ctx=None):
-    """Plays n_games real self-play games (game.run_multiplayer_game),
-    recording a transition into whichever seat's own buffer made each
-    decision -- 100% utilization, same core mechanism validated for the
-    flat-MLP architecture (the prior flat-MLP trainer), now over the token/pointer
-    representation. seat_nets[i]/deck_ctxs[i]: seat i's own DeckNetwork and
-    (vocab, fixed_table, pending_kinds) -- may be the SAME object for both
-    seats (mirror self-play, Stage 1) or different (Stage 2).
-
-    game_logs: optional list -- if given, one fresh event_log list gets
-    appended per game played, threaded straight through to game.
-    run_multiplayer_game's own event_log param (game/state.py's
-    GameState.log_event -- already-instrumented across mana.py/turn.py/
-    resolution.py/game/effects/*.py). No new logging: this only wires the
-    engine's own existing, zero-cost-when-off event log into the training
-    rollout path, exactly as it already works for the game loop/
-    run_multiplayer_game's other callers."""
-    buffers = [RolloutBuffer(), RolloutBuffer()]
-    pending = [None, None]
-    mull_game = [[], []]  # this game's mulligan-model transitions per seat (reward filled at game end)
-
-    def choose_action(state):
-        seat = state.active_idx
-        # Pregame mulligan phase (keep/mulligan + London bottoming) is owned by the
-        # separate deck-specific mulligan model, trained by its own REINFORCE with a
-        # direct game-outcome reward (rl.mulligan) -- NOT the main policy. Route those
-        # decisions there and record a transition; the main net never sees them.
-        if mulligan_ctx is not None:
-            pend = state.pending_resolution
-            if pend is not None and pend["kind"] in ("mulligan_decision", "mulligan_bottom"):
-                return mulligan_mod.decide(mulligan_ctx["nets"][seat], mulligan_ctx["vocab"], state, seat,
-                                           mull_game[seat].append)
-        executor, entry, is_pass = _seat_step(state, seat, deck_ctxs[seat], seat_nets[seat], horizon, device)
-        # entry is None for a FORCED decision (_seat_step took the sole legal
-        # action without a policy forward). Record nothing and leave pending
-        # untouched: no choice was made, and the last REAL decision must stay
-        # pending so the terminal reward still attaches to it (the game-end
-        # flush below), not vanish behind a forced move. Reward is terminal-
-        # only, so recording the previous decision's reward now (at this real
-        # decision) vs. earlier loses nothing.
-        if entry is not None:
-            if pending[seat] is not None:
-                reward = _reward_for(state, seat, reward_fns[seat], horizon, False)
-                tokens, scalar, mask, action_idx, logp, value = pending[seat]
-                buffers[seat].add(tokens, scalar, mask, action_idx, logp, value, reward, False)
-            pending[seat] = entry
-        return None if is_pass else executor
+    Returns (buffers_by_deck, mull_by_deck, games_played): dicts keyed by the
+    deck-name buckets from record_as. A mirror routes BOTH seats to one bucket
+    (pooled single-policy self-play); a live cross-deck opponent routes its own
+    seat to its own bucket (the former Path-A salvage, now uniform). Each seat's
+    per-game trajectory is appended to its bucket CONTIGUOUSLY and ends done=True,
+    so a later GAE pass never bootstraps across a trajectory boundary."""
+    buffers_by_deck = {}   # bucket -> RolloutBuffer (main PPO transitions)
+    mull_by_deck = {}      # bucket -> list of mulligan transitions (bandit)
+    games_played = 0
 
     # Batch-of-1 rollout inference: torch's intra-op threading is pure overhead
-    # on these tiny per-decision forwards (a single 1-thread worker measured
-    # ~1.66x over the default-threaded sequential path, benchmarking/
+    # on these tiny per-decision forwards (~1.66x measured, benchmarking/
     # mp_scaling.py). Force one thread for the whole game loop, then restore --
     # so the BATCHED ppo_update that follows still gets every core. No-op inside
     # a parallel worker, which already ran torch.set_num_threads(1) at startup.
     prev_threads = torch.get_num_threads()
     torch.set_num_threads(1)
-    games_played = 0
     try:
         for _ in range(n_games):
+            agents, decklists, reward_fns, record_as = pairing(rng)
+            game_buffers = [RolloutBuffer(), RolloutBuffer()]  # per-game per-seat, kept contiguous
+            pending = [None, None]
+            mull_game = [[], []]
+
+            def choose_action(state, agents=agents, reward_fns=reward_fns, record_as=record_as,
+                              game_buffers=game_buffers, pending=pending, mull_game=mull_game):
+                seat = state.active_idx
+                dr = agents[seat].decide(state, seat, horizon, device, greedy=greedy)
+                if record and record_as[seat] is not None:
+                    # Mulligan transition: whole-game bandit reward, filled at game end.
+                    if dr.mull_entry is not None:
+                        mull_game[seat].append(dr.mull_entry)
+                    # Main-policy transition: ppo_entry is None for a FORCED decision
+                    # (sole legal action) OR a pregame decision (mulligan-owned) --
+                    # record nothing and leave pending untouched, so the last REAL
+                    # decision stays pending for the terminal reward (flushed below).
+                    if dr.ppo_entry is not None:
+                        if pending[seat] is not None:
+                            reward = _reward_for(state, seat, reward_fns[seat], horizon, False)
+                            game_buffers[seat].add(*pending[seat], reward, False)
+                        pending[seat] = dr.ppo_entry
+                return None if dr.is_pass else dr.executor
+
             starting_idx = rng.randint(0, 1)
             event_log = [] if game_logs is not None else None
             state = game.run_multiplayer_game(
@@ -291,114 +168,95 @@ def collect_rollout(seat_nets, decklists, reward_fns, deck_ctxs, horizon, n_game
             )
             if game_logs is not None:
                 game_logs.append(event_log)
-            for seat in (0, 1):
-                if pending[seat] is not None:
-                    reward = _reward_for(state, seat, reward_fns[seat], horizon, True)
-                    tokens, scalar, mask, action_idx, logp, value = pending[seat]
-                    buffers[seat].add(tokens, scalar, mask, action_idx, logp, value, reward, True)
-                    pending[seat] = None
-            if mulligan_ctx is not None:
-                # Attribute the whole-game outcome directly to this game's mulligan
-                # decisions (the bandit reward -- no discounting through gameplay).
+            if record:
                 for seat in (0, 1):
-                    r = mulligan_mod.mulligan_reward(state.winner == seat, state.players[seat].mulligans_taken)
-                    for entry in mull_game[seat]:
-                        entry[5] = r
-                    mulligan_ctx["out"][seat].extend(mull_game[seat])
-                    mull_game[seat] = []
+                    bucket = record_as[seat]
+                    if bucket is None:
+                        continue
+                    if pending[seat] is not None:  # terminal flush for this seat's last real decision
+                        reward = _reward_for(state, seat, reward_fns[seat], horizon, True)
+                        game_buffers[seat].add(*pending[seat], reward, True)
+                    if len(game_buffers[seat]):  # append this seat's whole (contiguous) trajectory to its bucket
+                        buffers_by_deck.setdefault(bucket, RolloutBuffer()).extend(game_buffers[seat])
+                    if mull_game[seat]:  # attribute the game's outcome to this seat's mulligan picks (bandit)
+                        r = mulligan_mod.mulligan_reward(state.winner == seat, state.players[seat].mulligans_taken)
+                        for entry in mull_game[seat]:
+                            entry[5] = r
+                        mull_by_deck.setdefault(bucket, []).extend(mull_game[seat])
             games_played += 1
     finally:
         torch.set_num_threads(prev_threads)
-    return buffers, games_played
+    return buffers_by_deck, mull_by_deck, games_played
 
 
-def collect_rollout_league(training_deck_name, training_net, training_ctx, training_decklist, reward_fn,
-                            pool, decklists_by_name, ctxs_by_name, live_nets, horizon, n_games,
-                            rng, device="cpu", mulligan_nets=None):
-    """League-play counterpart to collect_rollout: RESAMPLES the opponent
-    from `pool` before every single game (not once for the whole call) --
-    the actual mechanism league training needs instead of a fixed pairing.
-    Reuses collect_rollout unchanged, one real game (n_games=1) at a time,
-    rather than duplicating its pending-transition bookkeeping.
+def collect_rollout_league(training_deck_name, live_nets, mulligan_nets, deck_ctxs, decklists_by_name,
+                            pool, reward_fn, horizon, n_games, rng, device="cpu", record=True, game_logs=None):
+    """League collection: builds a pairing that RESAMPLES the opponent from
+    `pool` before every game (true mirror / another deck's live net / a frozen
+    snapshot), then runs the ONE loop (collect_rollout). Returns
+    (buffers_by_deck, mull_by_deck, games_played) keyed by deck name -- the
+    training deck's bucket (training seat always; BOTH seats on a mirror) plus,
+    for any game whose opponent was another deck's CURRENT live net, that deck's
+    own bucket (on-policy for it -- the former Path-A salvage, now just another
+    bucket). A frozen-snapshot opponent is off-policy and records nothing.
 
-    live_nets: dict deck_name -> that deck's own CURRENT (being-trained)
-    DeckNetwork -- needed because a sampled opponent may be "some OTHER
-    deck's live net", not just training_net or a frozen snapshot.
-
-    Returns (buf, opponent_buffers, games_played). buf is the training deck's
-    transitions (training seat always; both seats on a true mirror, matching the
-    old mirror-mode data efficiency). opponent_buffers is Path A's salvage: a
-    dict {live_opponent_deck_name -> RolloutBuffer} holding the OPPONENT seat's
-    transitions from games where the opponent was another deck's CURRENT live
-    net -- on-policy for that deck (its net is constant across this whole round),
-    so the caller can train that deck from them too, harvesting the ~half of
-    each live-vs-live game's signal that used to be discarded. A frozen snapshot
-    opponent is off-policy and still contributes nothing."""
-    buf = RolloutBuffer()
-    opponent_buffers = {}
-    mull_training = []          # training deck's mulligan-model transitions (both seats on a mirror)
-    mull_opponents = {}         # Path A salvage: live-opponent deck name -> its mulligan transitions
-    games_played = 0
-    for _ in range(n_games):
-        seat_nets, decklists, ctxs, reward_fns, training_seat, is_self, opp_name, opp_is_live = _league_pairing(
-            training_deck_name, training_net, training_ctx, training_decklist, reward_fn,
-            pool, decklists_by_name, ctxs_by_name, live_nets, rng,
-        )
-        mull_ctx = None
-        if mulligan_nets is not None:
-            opp_seat = 1 - training_seat
-            seat_mull = [None, None]
-            seat_mull[training_seat] = mulligan_nets[training_deck_name]
-            seat_mull[opp_seat] = mulligan_nets[opp_name]
-            mull_ctx = {"nets": seat_mull, "vocab": training_ctx[0], "out": [[], []]}  # training_ctx = (vocab, fixed_table, pending_kinds)
-        buffers, played = collect_rollout(seat_nets, decklists, reward_fns, ctxs, horizon,
-                                           n_games=1, rng=rng, device=device, mulligan_ctx=mull_ctx)
-        games_played += played
-        for seat in ((0, 1) if is_self else (training_seat,)):
-            buf.extend(buffers[seat])
-        if opp_is_live:
-            opponent_buffers.setdefault(opp_name, RolloutBuffer()).extend(buffers[1 - training_seat])
-        if mull_ctx is not None:  # mirror the buffer-salvage rules for the mulligan transitions
-            for seat in ((0, 1) if is_self else (training_seat,)):
-                mull_training.extend(mull_ctx["out"][seat])
-            if opp_is_live:
-                mull_opponents.setdefault(opp_name, []).extend(mull_ctx["out"][1 - training_seat])
-    return buf, opponent_buffers, mull_training, mull_opponents, games_played
+    live_nets / mulligan_nets / deck_ctxs / decklists_by_name: dicts keyed by
+    deck name over the WHOLE roster (an opponent may be any other deck's live
+    net). mulligan_nets=None -> every seat uses AlwaysKeep (no mulligan dispatch/
+    training), e.g. a matchup or deck-only collection."""
+    pairing = _make_league_pairing(training_deck_name, live_nets, mulligan_nets, deck_ctxs,
+                                    decklists_by_name, pool, reward_fn)
+    return collect_rollout(pairing, n_games, horizon, rng, device=device, record=record, game_logs=game_logs)
 
 
-def _league_pairing(training_deck_name, training_net, training_ctx, training_decklist, reward_fn,
-                    pool, decklists_by_name, ctxs_by_name, live_nets, rng):
-    """Sample one opponent (true mirror / another deck's live net / a frozen
-    snapshot) and lay out the per-seat nets/decklists/ctxs/reward_fns for a
-    single league game, randomizing which seat the training net takes. Returns
-    those four 2-lists plus (training_seat, is_self, opponent_deck_name,
-    opponent_is_live). Factored out of collect_rollout_league so the
-    opponent-sampling and which-seat-to-record rules live in one place.
+def _make_league_pairing(training_deck_name, live_nets, mulligan_nets, deck_ctxs, decklists_by_name, pool, reward_fn):
+    """Builds a pairing closure: samples one opponent per game, randomizes which
+    seat the training deck takes, wraps each side as a SeatAgent (its live/loaded
+    DeckNetwork + its mulligan decider), and sets record_as -- the training
+    deck's name for its seat; the opponent's name only if the opponent is a
+    mirror (pooled into the training bucket) or another deck's LIVE net (its own
+    bucket -- salvage); None for a frozen snapshot (off-policy). Opponent-sampling
+    and which-seat-to-record rules live here, in one place."""
+    training_net = live_nets[training_deck_name]
+    training_ctx = deck_ctxs[training_deck_name]
+    training_decklist = decklists_by_name[training_deck_name]
 
-    opponent_is_live: the opponent is ANOTHER deck's CURRENT live net (not a
-    frozen snapshot, not the training net itself). Its transitions this game are
-    on-policy for ITS net, so they can be salvaged to train that deck too (Path
-    A -- see collect_rollout_league / run_league._run_session). A snapshot
-    opponent is off-policy (frozen old weights) and a mirror is the same net
-    already pooled into the training buffer, so both are False here."""
-    opponent_deck_name, snapshot_path = pool.sample_opponent(training_deck_name, rng)
-    is_self = snapshot_path is None and opponent_deck_name == training_deck_name
-    if is_self:
-        opponent_net = training_net
-    elif snapshot_path is None:
-        opponent_net = live_nets[opponent_deck_name]
-    else:
-        opponent_net = pool.load_snapshot_net(snapshot_path, training_net.shared_stack, ctxs_by_name[opponent_deck_name])
-    opponent_is_live = snapshot_path is None and not is_self  # another deck's current net -> its transitions are salvageable
+    def _mull(name):
+        return mulligan_nets[name] if mulligan_nets is not None else AlwaysKeep()
 
-    training_seat = rng.randint(0, 1)  # randomized so the training net isn't always seat 0/1
-    opponent_seat = 1 - training_seat
-    seat_nets, decklists, ctxs, reward_fns = [None, None], [None, None], [None, None], [None, None]
-    seat_nets[training_seat], seat_nets[opponent_seat] = training_net, opponent_net
-    decklists[training_seat], decklists[opponent_seat] = training_decklist, decklists_by_name[opponent_deck_name]
-    ctxs[training_seat], ctxs[opponent_seat] = training_ctx, ctxs_by_name[opponent_deck_name]
-    reward_fns[training_seat] = reward_fns[opponent_seat] = reward_fn
-    return seat_nets, decklists, ctxs, reward_fns, training_seat, is_self, opponent_deck_name, opponent_is_live
+    def pairing(rng):
+        opp_name, snapshot_path = pool.sample_opponent(training_deck_name, rng)
+        is_self = snapshot_path is None and opp_name == training_deck_name
+        opp_is_live = snapshot_path is None and not is_self  # another deck's current net -> salvageable
+
+        train_agent = SeatAgent(training_net, _mull(training_deck_name), training_ctx)
+        if is_self:
+            opp_agent = train_agent  # true mirror: same net + mulligan on both seats
+        elif snapshot_path is None:
+            opp_agent = SeatAgent(live_nets[opp_name], _mull(opp_name), deck_ctxs[opp_name])
+        else:
+            # A frozen snapshot loads as a whole frozen SeatAgent (deck + its
+            # era-matched mulligan, or AlwaysKeep for a pre-refactor snapshot).
+            opp_agent = pool.load_snapshot_agent(snapshot_path, training_net.shared_stack, deck_ctxs[opp_name])
+
+        training_seat = rng.randint(0, 1)  # randomized so the training net isn't always seat 0/1
+        opp_seat = 1 - training_seat
+        agents = [None, None]
+        decklists = [None, None]
+        reward_fns = [None, None]
+        record_as = [None, None]
+        agents[training_seat], agents[opp_seat] = train_agent, opp_agent
+        decklists[training_seat], decklists[opp_seat] = training_decklist, decklists_by_name[opp_name]
+        reward_fns[training_seat] = reward_fns[opp_seat] = reward_fn
+        record_as[training_seat] = training_deck_name
+        if is_self:
+            record_as[opp_seat] = training_deck_name  # mirror -> both seats pooled into the training bucket
+        elif opp_is_live:
+            record_as[opp_seat] = opp_name             # another deck's live net -> salvage under its own name
+        # else: frozen snapshot -> record_as[opp_seat] stays None (off-policy)
+        return agents, decklists, reward_fns, record_as
+
+    return pairing
 
 
 def _strip_identities(token_list):
@@ -431,9 +289,27 @@ def _extend_buffer_from_entries(buf, entries):
     return buf
 
 
+def _sanitize_events(game_logs):
+    """Deep-convert event-log values to picklable primitives before they cross a
+    process boundary -- a few log_event fields can hold a card closure/lambda (the
+    same non-serializable case run_league._json_default guards at JSON-write time),
+    which pickle can't ship from an MP worker. Converts an unknown object to its
+    string .name if it has one, else repr(); leaves primitives/containers intact."""
+    def conv(v):
+        if isinstance(v, (str, int, float, bool)) or v is None:
+            return v
+        if isinstance(v, dict):
+            return {k: conv(x) for k, x in v.items()}
+        if isinstance(v, (list, tuple)):
+            return [conv(x) for x in v]
+        name = getattr(v, "name", None)
+        return name if isinstance(name, str) else repr(v)
+    return [[conv(event) for event in one_game] for one_game in game_logs]
+
+
 def _league_rollout_worker(training_deck_name, all_state_dicts, all_trunk_hidden, shared_state_dict,
                             shared_hparams, reward_fn_name, league_root_dir, horizon, n_games, seed,
-                            mulligan_state_dicts=None):
+                            mulligan_state_dicts=None, collect_logs=False):
     """Runs in a SEPARATE PROCESS (spawned fresh -- Windows only supports
     the "spawn" start method, no fork, so this re-imports the whole module
     graph from scratch rather than inheriting any parent-process memory).
@@ -490,19 +366,21 @@ def _league_rollout_worker(training_deck_name, all_state_dicts, all_trunk_hidden
             mn.eval()
             mulligan_nets[name] = mn
 
-    buf, opponent_buffers, mull_training, mull_opponents, played = collect_rollout_league(
-        training_deck_name, live_nets[training_deck_name], deck_ctxs[training_deck_name], decklists[training_deck_name],
-        reward_fn, pool, decklists, deck_ctxs, live_nets, horizon, n_games, rng, device="cpu",
-        mulligan_nets=mulligan_nets,
+    worker_logs = [] if collect_logs else None  # engine event logs are plain dicts -> picklable, cross the boundary as-is
+    buffers_by_deck, mull_by_deck, played = collect_rollout_league(
+        training_deck_name, live_nets, mulligan_nets, deck_ctxs, decklists, pool, reward_fn,
+        horizon, n_games, rng, device="cpu", game_logs=worker_logs,
     )
-    entries = _buffer_to_entries(buf)
-    opponent_entries = {opp: _buffer_to_entries(ob) for opp, ob in opponent_buffers.items()}  # Path A salvage, per live opponent
-    # mulligan transitions are plain data (no live-object identities) -> cross the process boundary as-is
-    return entries, opponent_entries, mull_training, mull_opponents, played
+    # Serialize each deck's buffer to picklable entries (identities stripped);
+    # mulligan transitions and event logs are already plain data.
+    entries_by_deck = {name: _buffer_to_entries(buf) for name, buf in buffers_by_deck.items()}
+    if worker_logs:
+        worker_logs = _sanitize_events(worker_logs)  # strip unpicklable closures before crossing the boundary
+    return entries_by_deck, mull_by_deck, worker_logs, played
 
 
 def collect_rollout_league_parallel(training_deck_name, live_nets, reward_fn_name, league_root_dir, horizon, n_games,
-                                     executor, n_workers, shared_hparams, mulligan_state_dicts=None):
+                                     executor, n_workers, shared_hparams, mulligan_state_dicts=None, game_logs=None):
     """Orchestrator (runs in the MAIN process): splits n_games across
     n_workers, submits one _league_rollout_worker task per worker via the
     given (already-created, reused-across-calls) ProcessPoolExecutor --
@@ -522,27 +400,26 @@ def collect_rollout_league_parallel(training_deck_name, live_nets, reward_fn_nam
     remainder = n_games % n_workers
     chunks = [base + (1 if i < remainder else 0) for i in range(n_workers)]
 
+    collect_logs = game_logs is not None
     futures = [
         executor.submit(_league_rollout_worker, training_deck_name, all_state_dicts, all_trunk_hidden,
                          shared_state_dict, shared_hparams, reward_fn_name, league_root_dir, horizon, chunk,
-                         random.randrange(2 ** 31), mulligan_state_dicts)
+                         random.randrange(2 ** 31), mulligan_state_dicts, collect_logs)
         for chunk in chunks if chunk > 0
     ]
-    buf = RolloutBuffer()
-    opponent_buffers = {}  # Path A: live-opponent deck name -> salvaged transitions, merged across workers
-    mull_training = []           # training deck's mulligan transitions, merged across workers
-    mull_opponents = {}          # Path A for the mulligan model: live-opponent deck -> its transitions
+    buffers_by_deck = {}   # deck name -> merged RolloutBuffer across workers
+    mull_by_deck = {}      # deck name -> merged mulligan transitions across workers
     games_played = 0
     for future in futures:
-        entries, opponent_entries, mt, mo, played = future.result()
+        entries_by_deck, worker_mull_by_deck, worker_logs, played = future.result()
         games_played += played
-        _extend_buffer_from_entries(buf, entries)
-        for opp, opp_entries in opponent_entries.items():
-            _extend_buffer_from_entries(opponent_buffers.setdefault(opp, RolloutBuffer()), opp_entries)
-        mull_training.extend(mt)
-        for opp, tr in mo.items():
-            mull_opponents.setdefault(opp, []).extend(tr)
-    return buf, opponent_buffers, mull_training, mull_opponents, games_played
+        for name, entries in entries_by_deck.items():
+            _extend_buffer_from_entries(buffers_by_deck.setdefault(name, RolloutBuffer()), entries)
+        for name, tr in worker_mull_by_deck.items():
+            mull_by_deck.setdefault(name, []).extend(tr)
+        if game_logs is not None and worker_logs:  # one event_log per game, merged across workers
+            game_logs.extend(worker_logs)
+    return buffers_by_deck, mull_by_deck, games_played
 
 
 def _compute_gae(rewards_, values_, dones_, gamma, gae_lambda):
@@ -726,13 +603,6 @@ def batch_size_for_iteration(iteration, n_iterations, start=32, cap=2048, n_step
     return min(start * (2 ** doublings), cap)
 
 
-def _pooled(buffers):
-    merged = RolloutBuffer()
-    for buf in buffers:
-        merged.extend(buf)
-    return merged
-
-
 def train_selfplay(net_a, deck_ctx_a, decklist_a, reward_fn_a, net_b, deck_ctx_b, decklist_b, reward_fn_b,
                     optimizers_a, optimizers_b, horizon, n_iterations, games_per_iteration,
                     rng, device="cpu", game_logs=None):
@@ -747,20 +617,27 @@ def train_selfplay(net_a, deck_ctx_a, decklist_a, reward_fn_a, net_b, deck_ctx_b
     already uses. game_logs: forwarded straight to collect_rollout (see its
     own docstring) -- one entry appended per game, across every iteration."""
     mirror = net_a is net_b
+    # AlwaysKeep pregame: train_selfplay trains only the main policy (pretrain /
+    # a plain matchup), never a mulligan model. A mirror pools BOTH seats into
+    # bucket "a" (single-policy self-play); a cross-matchup keeps "a"/"b".
+    agent_a = SeatAgent(net_a, AlwaysKeep(), deck_ctx_a)
+    agent_b = agent_a if mirror else SeatAgent(net_b, AlwaysKeep(), deck_ctx_b)
+    record_as = ["a", "a"] if mirror else ["a", "b"]
+    pairing = _constant_pairing([agent_a, agent_b], [decklist_a, decklist_b],
+                                [reward_fn_a, reward_fn_b], record_as)
     for iteration in range(n_iterations):
-        buffers, games_played = collect_rollout(
-            [net_a, net_b], [decklist_a, decklist_b], [reward_fn_a, reward_fn_b],
-            [deck_ctx_a, deck_ctx_b], horizon, games_per_iteration, rng, device=device, game_logs=game_logs,
-        )
+        buffers_by_deck, _mull, games_played = collect_rollout(
+            pairing, games_per_iteration, horizon, rng, device=device, game_logs=game_logs)
+        buf_a = buffers_by_deck.get("a", RolloutBuffer())
+        buf_b = buffers_by_deck.get("b", RolloutBuffer())
+        stats_a = ppo_update(net_a, optimizers_a, buf_a, device) if len(buf_a) else (0.0, 0.0, 0.0)
         if mirror:
-            merged = _pooled(buffers)
-            stats_a = stats_b = ppo_update(net_a, optimizers_a, merged, device) if len(merged) else (0.0, 0.0, 0.0)
+            stats_b = stats_a
         else:
-            stats_a = ppo_update(net_a, optimizers_a, buffers[0], device) if len(buffers[0]) else (0.0, 0.0, 0.0)
-            stats_b = ppo_update(net_b, optimizers_b, buffers[1], device) if len(buffers[1]) else (0.0, 0.0, 0.0)
-        mean_r_a = float(np.mean(buffers[0].reward)) if len(buffers[0]) else 0.0
-        mean_r_b = float(np.mean(buffers[1].reward)) if len(buffers[1]) else 0.0
-        print(f"  iter {iteration}: games={games_played} buf=({len(buffers[0])},{len(buffers[1])}) "
+            stats_b = ppo_update(net_b, optimizers_b, buf_b, device) if len(buf_b) else (0.0, 0.0, 0.0)
+        mean_r_a = float(np.mean(buf_a.reward)) if len(buf_a) else 0.0
+        mean_r_b = float(np.mean(buf_b.reward)) if len(buf_b) else 0.0
+        print(f"  iter {iteration}: games={games_played} buf=({len(buf_a)},{len(buf_b)}) "
               f"mean_reward=({mean_r_a:.3f},{mean_r_b:.3f}) "
               f"policy_loss=({stats_a[0]:.4f},{stats_b[0]:.4f}) value_loss=({stats_a[1]:.4f},{stats_b[1]:.4f})")
 
@@ -811,25 +688,26 @@ if __name__ == "__main__":
     rng = _random.Random(0)
     horizon = 20
 
-    # 1) Mirror self-play smoke test -- net_a plays itself, one pooled
-    # update, exercises the "same weights both seats" path.
+    # 1) Mirror self-play smoke test -- net_a plays itself, BOTH seats pooled
+    # into one bucket ("m"), one update; exercises the "same weights both seats"
+    # path and the pairing-driven collect_rollout + AlwaysKeep pregame.
     t0 = time.time()
-    buffers, games_played = collect_rollout(
-        [net_a, net_a], [decklist_a, decklist_a], [reward_fn, reward_fn],
-        [deck_ctx_a, deck_ctx_a], horizon, n_games=2, rng=rng, device=device,
-    )
+    agent_a = SeatAgent(net_a, AlwaysKeep(), deck_ctx_a)
+    mirror_pairing = _constant_pairing([agent_a, agent_a], [decklist_a, decklist_a],
+                                       [reward_fn, reward_fn], ["m", "m"])
+    buffers_by_deck, _mull, games_played = collect_rollout(mirror_pairing, 2, horizon, rng, device=device)
     assert games_played == 2
-    assert len(buffers[0]) > 0 and len(buffers[1]) > 0, "both seats must have recorded at least one transition"
-    for buf in buffers:
-        assert all(np.isfinite(v) for v in buf.value), "collected values must be finite"
-        assert all(np.isfinite(r) for r in buf.reward), "collected rewards must be finite"
-        assert buf.done[-1] is True, "every buffer must end with a flushed terminal transition"
-    merged = _pooled(buffers)
-    policy_loss, value_loss, entropy = ppo_update(net_a, [opt_a], merged, device, n_epochs=2, batch_size=16)
+    assert set(buffers_by_deck) == {"m"}, "a mirror pools both seats into ONE bucket"
+    buf = buffers_by_deck["m"]
+    assert len(buf) > 0, "the pooled mirror bucket must have recorded transitions from both seats"
+    assert all(np.isfinite(v) for v in buf.value), "collected values must be finite"
+    assert all(np.isfinite(r) for r in buf.reward), "collected rewards must be finite"
+    assert buf.done[-1] is True, "the bucket must end with a flushed terminal transition"
+    policy_loss, value_loss, entropy = ppo_update(net_a, [opt_a], buf, device, n_epochs=2, batch_size=16)
     assert np.isfinite(policy_loss) and np.isfinite(value_loss) and np.isfinite(entropy)
     for p in net_a.parameters():
         assert torch.isfinite(p).all(), "a parameter went non-finite after the mirror PPO update"
-    print(f"rl.train mirror smoke test: OK ({games_played} games, buf_sizes={len(buffers[0]), len(buffers[1])}, "
+    print(f"rl.train mirror smoke test: OK ({games_played} games, buf_size={len(buf)}, "
           f"policy_loss={policy_loss:.4f}, {time.time() - t0:.1f}s)")
 
     # 2) Cross-matchup smoke test -- net_a vs net_b, two independent
@@ -852,10 +730,7 @@ if __name__ == "__main__":
     # collect_rollout, not any new logging. One entry per game played,
     # each a real list of structured event dicts.
     game_logs = []
-    _buffers, played = collect_rollout(
-        [net_a, net_a], [decklist_a, decklist_a], [reward_fn, reward_fn],
-        [deck_ctx_a, deck_ctx_a], horizon, n_games=2, rng=rng, device=device, game_logs=game_logs,
-    )
+    _bufs, _mull, played = collect_rollout(mirror_pairing, 2, horizon, rng, device=device, game_logs=game_logs)
     assert len(game_logs) == played == 2, "one event_log entry must be appended per game played"
     for one_game_events in game_logs:
         assert len(one_game_events) > 0, "a real game must produce at least one engine event"
@@ -921,30 +796,28 @@ if __name__ == "__main__":
         snapshot_path = pool.snapshots["a"][0][1]
 
         pool.sample_opponent = lambda training_deck_name, rng: ("a", None)  # true mirror
-        buf_self, opp_self, played = collect_rollout_league("a", net_a, deck_ctx_a, decklist_a, reward_fn, pool,
-                                                            decklists_by_name, ctxs_by_name, live_nets,
-                                                            horizon, n_games=1, rng=rng, device=device)
-        assert played == 1 and len(buf_self) > 0, "true mirror must record a non-empty pooled buffer"
-        assert opp_self == {}, "a true mirror salvages NO separate opponent buffer (both seats already pooled into buf_self)"
+        bufs_self, _mull, played = collect_rollout_league("a", live_nets, None, ctxs_by_name, decklists_by_name,
+                                                          pool, reward_fn, horizon, n_games=1, rng=rng, device=device)
+        assert played == 1 and len(bufs_self.get("a", RolloutBuffer())) > 0, "true mirror must record a non-empty 'a' bucket"
+        assert set(bufs_self) == {"a"}, "a true mirror records ONLY the training bucket (both seats pooled into it)"
+        buf_self = bufs_self["a"]
 
         pool.sample_opponent = lambda training_deck_name, rng: ("b", None)  # another deck's live net
-        buf_cross, opp_cross, played = collect_rollout_league("a", net_a, deck_ctx_a, decklist_a, reward_fn, pool,
-                                                              decklists_by_name, ctxs_by_name, live_nets,
-                                                              horizon, n_games=1, rng=rng, device=device)
-        assert played == 1 and len(buf_cross) > 0, "cross-deck opponent must still record the training seat's own transitions"
-        # Path A: a LIVE-net opponent's transitions are salvaged under its deck name.
-        assert set(opp_cross) == {"b"} and len(opp_cross["b"]) > 0, "a live-net opponent must salvage its own on-policy transitions"
-        assert all(np.isfinite(v) for v in opp_cross["b"].value) and all(np.isfinite(r) for r in opp_cross["b"].reward)
+        bufs_cross, _mull, played = collect_rollout_league("a", live_nets, None, ctxs_by_name, decklists_by_name,
+                                                           pool, reward_fn, horizon, n_games=1, rng=rng, device=device)
+        assert played == 1 and len(bufs_cross.get("a", RolloutBuffer())) > 0, "cross-deck opponent must record the training bucket"
+        # A LIVE-net opponent's transitions are salvaged under its own deck name ('b').
+        assert "b" in bufs_cross and len(bufs_cross["b"]) > 0, "a live-net opponent must salvage its own bucket 'b'"
+        assert all(np.isfinite(v) for v in bufs_cross["b"].value) and all(np.isfinite(r) for r in bufs_cross["b"].reward)
 
         pool.sample_opponent = lambda training_deck_name, rng: ("a", snapshot_path)  # frozen snapshot of self
-        buf_snap, opp_snap, played = collect_rollout_league("a", net_a, deck_ctx_a, decklist_a, reward_fn, pool,
-                                                            decklists_by_name, ctxs_by_name, live_nets,
-                                                            horizon, n_games=1, rng=rng, device=device)
-        assert played == 1 and len(buf_snap) > 0, "a frozen snapshot opponent must still record the training seat's own transitions"
-        assert opp_snap == {}, "a frozen snapshot opponent is off-policy -- salvages nothing"
+        bufs_snap, _mull, played = collect_rollout_league("a", live_nets, None, ctxs_by_name, decklists_by_name,
+                                                          pool, reward_fn, horizon, n_games=1, rng=rng, device=device)
+        assert played == 1 and len(bufs_snap.get("a", RolloutBuffer())) > 0, "a frozen snapshot opponent still records the training bucket"
+        assert set(bufs_snap) == {"a"}, "a frozen snapshot opponent is off-policy -- only the training bucket, nothing salvaged"
         assert snapshot_path in pool._net_cache, "load_snapshot_net must have populated the cache"
 
-        for buf in (buf_self, buf_cross, buf_snap):
+        for buf in (bufs_self["a"], bufs_cross["a"], bufs_snap["a"]):
             assert all(np.isfinite(v) for v in buf.value)
             assert all(np.isfinite(r) for r in buf.reward)
 
@@ -978,3 +851,18 @@ if __name__ == "__main__":
     for p in net_a.parameters():
         assert torch.isfinite(p).all(), "a parameter went non-finite after the cached ppo_update"
     print(f"rl.train frozen-cache ppo_update smoke test: OK (shared stack untouched, head trained, {time.time() - t0:.1f}s)")
+
+    # 6) Eval / record=False smoke test -- the ANTI-DRIFT invariant. The SAME
+    # collect_rollout drives eval and training; only `record` differs. With
+    # record=False it must produce NO training buffers (nothing recorded) yet
+    # still yield one event_log per game -- "one loop, faithful logging". Also
+    # exercises greedy=True (the eval default is sampled, but greedy must run).
+    t0 = time.time()
+    eval_logs = []
+    bufs, mull, played = collect_rollout(mirror_pairing, 2, horizon, rng, device=device,
+                                         record=False, greedy=True, game_logs=eval_logs)
+    assert played == 2
+    assert bufs == {} and mull == {}, "record=False must produce NO training buffers"
+    assert len(eval_logs) == 2 and all(len(g) > 0 for g in eval_logs), "record=False must still produce event logs"
+    print(f"rl.train eval/record=False smoke test: OK (no buffers, {sum(len(g) for g in eval_logs)} events logged, "
+          f"{time.time() - t0:.1f}s)")

@@ -214,6 +214,12 @@ if __name__ == "__main__":
     def make_choose_action(rng):
         def choose_action(state):
             seat = state.active_idx
+            pend = state.pending_resolution
+            if pend is not None and pend["kind"] in ("mulligan_decision", "mulligan_bottom"):
+                # Pregame is no longer in the fixed table (owned by the mulligan model
+                # in real play -- harness refactor Phase 4). Keep every hand here so
+                # this self-check's random fixed/pointer play still reaches real turns.
+                return lambda state=state: game.execute_mulligan_keep(state)
             if any_pointer_legal(state):
                 tokens = build_token_set(state, seat, vocab)
                 identities_row = [ident for _idx, _row, ident in tokens]

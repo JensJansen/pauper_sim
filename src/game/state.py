@@ -470,13 +470,29 @@ class GameState:
         engine step caused it."""
         if self.event_log is None:
             return
+        # Sanitize field values AT THE SOURCE so no event ever carries a raw
+        # engine object -- a CardDef, or a card-effect closure/lambda -- which
+        # would break the JSON write (run_league._json_default) or an MP worker's
+        # pickle (rl.train._sanitize_events). Those two remain only as backstops.
+        # Runs only when logging is ON (the early-return above), so the default
+        # training path pays nothing. Primitives pass through; an object becomes
+        # its string .name if it has one, else a short repr; containers recurse.
+        def _safe(value):
+            if isinstance(value, (str, int, float, bool)) or value is None:
+                return value
+            if isinstance(value, dict):
+                return {k: _safe(v) for k, v in value.items()}
+            if isinstance(value, (list, tuple)):
+                return [_safe(v) for v in value]
+            name = getattr(value, "name", None)
+            return name if isinstance(name, str) else repr(value)
         self.event_log.append({
             "kind": kind,
             "turn": self.turn_number,
             "phase": self.phase.value if self.phase is not None else None,
             "active_idx": self.active_idx,
             "turn_player_idx": self.turn_player_idx,
-            **fields,
+            **{k: _safe(v) for k, v in fields.items()},
         })
 
 

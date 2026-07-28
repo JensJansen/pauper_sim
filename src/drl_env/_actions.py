@@ -429,8 +429,6 @@ def _choose_name_options(state):
         # in play) -- two different action strings, never one bare name
         # that could mean either.
         return game.discard_or_sacrifice_discard_options(state)
-    if kind == "mulligan_bottom":
-        return game.bottom_options(state)
     if kind == "ancient_stirrings":
         return [n for n in game.ancient_stirrings_options(state) if n != "decline"]
     if kind == "malevolent_rumble":
@@ -457,7 +455,7 @@ def _choose_name_legal(name):
     # every pending kind that function ever returns a non-empty list for.
     legal._pending_gate = frozenset({
         "pay_cost", "search_fetch", "throne_reveal", "choose_graveyard_card", "sacrifice", "discard",
-        "discard_or_sacrifice", "mulligan_bottom", "ancient_stirrings", "malevolent_rumble", "scry", "surveil",
+        "discard_or_sacrifice", "ancient_stirrings", "malevolent_rumble", "scry", "surveil",
         "select_to_hand", "order_triggers", "put_on_top", "ponder", "choose_stack_target",
     })
     return legal
@@ -480,8 +478,6 @@ def _choose_name_execute(name):
             game.execute_discard_option(state, name)
         elif kind == "discard_or_sacrifice":
             game.execute_discard_or_sacrifice_option(state, "discard", name)
-        elif kind == "mulligan_bottom":
-            game.execute_bottom_option(state, name)
         elif kind == "ancient_stirrings":
             game.execute_ancient_stirrings_option(state, name)
         elif kind == "malevolent_rumble":
@@ -767,36 +763,11 @@ def _dispose_execute(state):
     game.execute_scry_surveil_option(state, "dispose")
 
 
-def _mulligan_decision_legal(state):
-    pending = state.pending_resolution
-    return pending is not None and pending["kind"] == "mulligan_decision"
-
-
-_mulligan_decision_legal._pending_gate = frozenset({"mulligan_decision"})
-
-
-def _mulligan_take_legal(state):
-    # Caps London Mulligan at HAND_SIZE_LIMIT (7): execute_mulligan_take
-    # never runs out of library to bound itself (mulliganed cards go back
-    # into the library before the redraw), so a deterministically-evaluated
-    # policy that argmaxes to "Mulligan" regardless of hand quality would
-    # otherwise retake it forever -- confirmed live (a barely-trained
-    # MaskablePPO checkpoint did exactly this during evaluate_two_player).
-    # Past 7 mulligans, "Keep hand" becomes the only legal action, same
-    # illegal-action-gets-substituted fallback every other action already
-    # relies on (see model_choose_action).
-    return _mulligan_decision_legal(state) and state.mulligans_taken < game.HAND_SIZE_LIMIT
-
-
-_mulligan_take_legal._pending_gate = frozenset({"mulligan_decision"})
-
-
-def _mulligan_keep_execute(state):
-    game.execute_mulligan_keep(state)
-
-
-def _mulligan_take_execute(state):
-    game.execute_mulligan_take(state)
+# NOTE: the _mulligan_decision_legal / _mulligan_take_legal / _mulligan_keep_execute
+# / _mulligan_take_execute helpers were removed with the pregame fixed-table actions
+# (harness refactor Phase 4) -- the MulliganNet (rl.mulligan) owns the pregame phase
+# now, so nothing in the action table references them. The engine's own mulligan
+# (game.execute_mulligan_keep/take, game.turn.run_mulligan_phase) is untouched.
 
 
 def _decline_legal(state):
@@ -1974,14 +1945,14 @@ def build_action_table(decklist, registry, token_card_defs=(), pending_kinds=(),
         # mandatory (Dread Return, Relic), same footing as "Decline (search)".
         actions.append(("Decline (graveyard)", _decline_graveyard_card_legal, _decline_graveyard_card_execute))
     actions.append(("Abandon payment", _abandon_payment_legal, _abandon_payment_execute))  # pay_cost is baseline, always present
-    # mulligan_decision/mulligan_bottom are baseline too (BASELINE_PENDING_KINDS,
-    # game.turn.run_mulligan_phase) -- every deck goes through the pregame
-    # mulligan phase, so these are unconditional, same footing as "Abandon
-    # payment" above. Bottoming itself reuses the existing "Choose: X"
-    # action (_choose_name_options/_choose_name_execute's own "mulligan_bottom"
-    # branch) -- no separate action needed for it.
-    actions.append(("Keep hand", _mulligan_decision_legal, _mulligan_keep_execute))
-    actions.append(("Mulligan", _mulligan_take_legal, _mulligan_take_execute))
+    # NOTE: the pregame mulligan actions ("Keep hand" / "Mulligan") and the
+    # "mulligan_bottom" branch of the generic "Choose: X" action were REMOVED from
+    # this table (harness refactor Phase 4). The per-deck MulliganNet (rl.mulligan)
+    # now OWNS every pregame decision -- rl.agent.SeatAgent intercepts the pregame
+    # pending kinds before the main net's forward -- so the main policy's action
+    # space contains ZERO pregame actions and a game can never fall back to a
+    # fixed-table mulligan. The _mulligan_*_legal/_execute helpers are retained
+    # (still exported) but no longer wired into any table.
     if "discard" in pending_kinds:
         actions.append(("Decline (discard)", _decline_discard_legal, _decline_discard_execute))
     if "discard_or_sacrifice" in pending_kinds:
@@ -2182,10 +2153,6 @@ __all__ = [
     '_keep_dispose_legal',
     '_keep_execute',
     '_dispose_execute',
-    '_mulligan_decision_legal',
-    '_mulligan_take_legal',
-    '_mulligan_keep_execute',
-    '_mulligan_take_execute',
     '_decline_legal',
     '_decline_execute',
     '_decline_malevolent_rumble_legal',

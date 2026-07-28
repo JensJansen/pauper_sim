@@ -50,9 +50,10 @@ from rl.arch import SetTransformer
 from rl.deck import DeckNetwork
 from rl.league import LeaguePool
 from rl.pool import build_pool
+from rl.agent import SeatAgent
 from rl.train import (
-    batch_size_for_iteration, collect_rollout_league,
-    collect_rollout_league_parallel, ppo_update, train_selfplay,
+    batch_size_for_iteration, collect_rollout, collect_rollout_league,
+    collect_rollout_league_parallel, ppo_update, _constant_pairing, RolloutBuffer,
 )
 from rl.mulligan import MulliganNet, update as mulligan_update
 
@@ -119,18 +120,37 @@ def _save_live_checkpoints(live_nets, optimizers, deck_names, session, session_p
 def _run_session(n_iterations, games_per_iteration, snapshot_every, executor, n_workers,
                   batch_size_start=32, batch_size_cap=2048, batch_size_steps=6,
                   fresh_stack=False, league_dir=None, seed=None,
-                  salvage_opponents=True):
+                  salvage_opponents=True, train_deck=True, train_mulligan=True, train_decks=None,
+                  matchup=None, game_logs=None, batched_collect=False):
     # fresh_stack + league_dir + seed let the benchmark harness drive this EXACT
     # loop with untrained (but identical-config) models over a throwaway dir,
     # reproducibly -- the only intended differences from a real training
     # session. Defaults preserve the real run: load the trained frozen stack,
     # checkpoint into LEAGUE_DIR, nondeterministic rng.
+    #
+    # Independent per-layer / per-deck training (freeze modes): train_deck /
+    # train_mulligan gate which LAYER updates; train_decks (a subset, default the
+    # whole roster) gates which DECKS train -- the rest stay loaded as FROZEN
+    # opponents (never updated / snapshotted), which is exactly onboarding a new
+    # deck against an established field. "Frozen" needs no requires_grad juggling:
+    # collection is inference_mode, so a deck simply doesn't move if we never call
+    # its update. Every deck's mulligan/deck net is still loaded so it can PLAY.
     league_dir = league_dir or LEAGUE_DIR
     if seed is not None:
         torch.manual_seed(seed)  # identical fresh stack + in-process sampling across benchmark configs
         random.seed(seed)  # collect_rollout_league_parallel draws its worker seeds from the global random module
     decklists, vocab, deck_ctxs, fixed_tables = build_pool()
     deck_names = list(decklists)
+    # matchup = (A, B): a fixed A-vs-B pairing instead of league opponent sampling
+    # (snapshotting off); it trains exactly those two decks, so it IS a train_decks
+    # subset. Both share the SAME loading/optimizer/checkpoint setup below -- no
+    # separate matchup driver.
+    if matchup is not None:
+        assert len(matchup) == 2, "matchup must name exactly two decks"
+        train_decks = list(matchup)
+    train_decks = list(train_decks) if train_decks is not None else deck_names
+    assert set(train_decks) <= set(deck_names), f"train_decks {train_decks} not all in roster {deck_names}"
+    train_set = set(train_decks)
     shared = build_fresh_stack(vocab.size) if fresh_stack else load_frozen_stack(vocab.size)
 
     live_nets, optimizers = {}, {}
@@ -141,7 +161,7 @@ def _run_session(n_iterations, games_per_iteration, snapshot_every, executor, n_
             ckpt = torch.load(live_path, weights_only=True)
             net.load_state_dict(ckpt["net"])
         optimizer = torch.optim.Adam([p for p in net.parameters() if p.requires_grad], lr=3e-4)
-        if os.path.exists(live_path):
+        if os.path.exists(live_path) and "optimizer" in ckpt:  # migrated live.pt drops optimizer -> fresh Adam
             optimizer.load_state_dict(ckpt["optimizer"])
         live_nets[name] = net
         optimizers[name] = optimizer
@@ -175,78 +195,122 @@ def _run_session(n_iterations, games_per_iteration, snapshot_every, executor, n_
     reward_fn_name = "deploy_reward_v1"
     horizon = 120
 
+    mode = []
+    if not train_deck:
+        mode.append("deck FROZEN")
+    if not train_mulligan:
+        mode.append("mulligan FROZEN")
+    if train_set != set(deck_names):
+        mode.append(f"train_decks={train_decks}")
     print(f"League session {session}: n_iterations={n_iterations} games_per_iteration={games_per_iteration} "
           f"snapshot_every={snapshot_every} decks={deck_names} n_workers={n_workers} "
-          f"batch_size={batch_size_start}->{batch_size_cap} ({batch_size_steps} steps)")
+          f"batch_size={batch_size_start}->{batch_size_cap} ({batch_size_steps} steps)"
+          f"{' [' + ', '.join(mode) + ']' if mode else ''}")
     t0 = time.time()
     total_games = 0
     collect_time_total = 0.0
     update_time_total = 0.0
     for iteration in range(n_iterations):
         batch_size = batch_size_for_iteration(iteration, n_iterations, batch_size_start, batch_size_cap, batch_size_steps)
-        mull_by_deck = {name: [] for name in deck_names}  # mulligan transitions accumulated across this iteration
-        # Snapshot the mulligan nets for the workers now; they're updated once after
-        # the whole deck-loop (on-policy within the iteration, same as the main nets).
+        mull_by_deck_iter = {name: [] for name in train_decks}  # mulligan transitions accumulated across this iteration
+        iter_buffers = {}  # batched mode: deck -> PPO transitions merged across ALL this iteration's rounds
+        # Snapshot the mulligan nets for the workers now (ALL decks -- a frozen
+        # opponent still needs its mulligan net to play). Updated once after the
+        # deck-loop (on-policy within the iteration, same as the main nets).
         mulligan_state_dicts = {n: mulligan_nets[n].state_dict() for n in deck_names}
-        for name in deck_names:
+        for name in train_decks:  # only TRAIN decks get a round; the rest are frozen opponents
             t_collect0 = time.time()
-            if executor is not None:
-                buf, opp_buffers, mull_training, mull_opp, played = collect_rollout_league_parallel(
+            if matchup is not None:
+                # Fixed pairing: this deck vs the OTHER named deck (no opponent
+                # sampling), both sides carrying their REAL mulligan models via the
+                # unified loop -- so logged matchup games use the same pregame policy
+                # training does. game_logs (if given) accumulates across every round.
+                opp = matchup[1] if name == matchup[0] else matchup[0]
+                pairing = _constant_pairing(
+                    [SeatAgent(live_nets[name], mulligan_nets[name], deck_ctxs[name]),
+                     SeatAgent(live_nets[opp], mulligan_nets[opp], deck_ctxs[opp])],
+                    [decklists[name], decklists[opp]], [reward_fn, reward_fn], [name, opp])
+                buffers_by_deck, mull_by_deck, played = collect_rollout(
+                    pairing, games_per_iteration, horizon, rng, device="cpu", game_logs=game_logs)
+            elif executor is not None:
+                buffers_by_deck, mull_by_deck, played = collect_rollout_league_parallel(
                     name, live_nets, reward_fn_name, league_dir, horizon, games_per_iteration,
-                    executor, n_workers, SHARED_HPARAMS, mulligan_state_dicts,
+                    executor, n_workers, SHARED_HPARAMS, mulligan_state_dicts, game_logs=game_logs,
                 )
             else:
-                buf, opp_buffers, mull_training, mull_opp, played = collect_rollout_league(
-                    name, live_nets[name], deck_ctxs[name], decklists[name], reward_fn,
-                    pool, decklists, deck_ctxs, live_nets, horizon, games_per_iteration, rng, device="cpu",
-                    mulligan_nets=mulligan_nets,
+                buffers_by_deck, mull_by_deck, played = collect_rollout_league(
+                    name, live_nets, mulligan_nets, deck_ctxs, decklists, pool, reward_fn,
+                    horizon, games_per_iteration, rng, device="cpu", game_logs=game_logs,
                 )
-            mull_by_deck[name].extend(mull_training)
-            for opp_deck, tr in mull_opp.items():  # Path A salvage for the mulligan model too
-                mull_by_deck[opp_deck].extend(tr)
             collect_time_total += time.time() - t_collect0
             total_games += played
+            # Accumulate mulligan transitions for each TRAIN deck that generated
+            # some this round (training deck + any live-opponent salvage); a frozen
+            # opponent's are discarded (it isn't being trained).
+            for deck_name, tr in mull_by_deck.items():
+                if deck_name in train_set:
+                    mull_by_deck_iter[deck_name].extend(tr)
             t_update0 = time.time()
+            # PPO-update every TRAIN deck that received transitions this round (only
+            # when deck training is on). The training deck's own bucket always; a
+            # live-opponent bucket only when salvage_opponents. A frozen deck / a
+            # non-subset opponent is never updated -- just an opponent.
             policy_loss = value_loss = entropy = 0.0
-            if len(buf):
-                policy_loss, value_loss, entropy = ppo_update(
-                    live_nets[name], [optimizers[name]], buf, "cpu", batch_size=batch_size)
-            # Path A: also train each LIVE-opponent deck from the transitions it
-            # generated this round. Those are on-policy for its net (its net was
-            # constant across THIS deck's whole round), so this harvests the
-            # ~half of each live-vs-live game's signal that used to be discarded,
-            # with NO extra collection. Snapshot/mirror opponents contribute
-            # nothing (off-policy / already pooled into buf). opp_buffers is {}
-            # when salvage is off or no live opponent was sampled.
             salvaged = 0
-            if salvage_opponents:
-                for opp_name, opp_buf in opp_buffers.items():
-                    if len(opp_buf):
-                        ppo_update(live_nets[opp_name], [optimizers[opp_name]], opp_buf, "cpu", batch_size=batch_size)
-                        salvaged += len(opp_buf)
+            if batched_collect:
+                # Phase 8: DEFER updates -- accumulate this round's buckets and update
+                # once after the whole deck-loop, so all data is collected under the
+                # SAME start-of-iteration weights (cleaner on-policy; no intra-iteration
+                # drift). Every train-deck bucket is kept (its own + salvage).
+                for deck_name, buf in buffers_by_deck.items():
+                    if len(buf) and deck_name in train_set:
+                        iter_buffers.setdefault(deck_name, RolloutBuffer()).extend(buf)
+            elif train_deck:  # per-round (default): update immediately, then the next deck collects
+                for deck_name, buf in buffers_by_deck.items():
+                    if not len(buf) or deck_name not in train_set:
+                        continue
+                    if deck_name == name:
+                        policy_loss, value_loss, entropy = ppo_update(
+                            live_nets[name], [optimizers[name]], buf, "cpu", batch_size=batch_size)
+                    elif salvage_opponents:
+                        ppo_update(live_nets[deck_name], [optimizers[deck_name]], buf, "cpu", batch_size=batch_size)
+                        salvaged += len(buf)
             update_time_total += time.time() - t_update0
-            print(f"  iter {iteration} [{name}]: games={played} buf={len(buf)} salvaged={salvaged} batch_size={batch_size} "
+            print(f"  iter {iteration} [{name}]: games={played} buf={len(buffers_by_deck.get(name, ()))} "
+                  f"salvaged={salvaged} batch_size={batch_size} "
                   f"policy_loss={policy_loss:.4f} value_loss={value_loss:.4f}", flush=True)
 
-        # Mulligan-model REINFORCE: one step per deck on its own transitions this
-        # iteration (its games + Path A salvage from live opponents). Decoupled
-        # from the main PPO updates above -- its own optimizer, its own reward.
+        # Batched mode (Phase 8): ONE PPO update per train deck on ALL its transitions
+        # this iteration, collected under start-of-iteration weights.
+        if batched_collect and train_deck:
+            t_update0 = time.time()
+            for deck_name, buf in iter_buffers.items():
+                if len(buf):
+                    pl, vl, _en = ppo_update(live_nets[deck_name], [optimizers[deck_name]], buf, "cpu", batch_size=batch_size)
+                    print(f"  iter {iteration} [{deck_name}] (batched update): buf={len(buf)} "
+                          f"batch_size={batch_size} policy_loss={pl:.4f} value_loss={vl:.4f}", flush=True)
+            update_time_total += time.time() - t_update0
+
+        # Mulligan-model REINFORCE: one step per TRAIN deck on its own transitions
+        # this iteration (its games + live-opponent salvage). Gated on train_mulligan;
+        # decoupled from the main PPO updates above -- its own optimizer, its own reward.
         mull_stats = {}
-        for name in deck_names:
-            if mull_by_deck[name]:
-                mull_stats[name] = mulligan_update(mulligan_nets[name], mulligan_optimizers[name], mull_by_deck[name])
-        if mull_stats:  # readout so the new mulligan subsystem is visible while it trains
+        if train_mulligan:
+            for name in train_decks:
+                if mull_by_deck_iter[name]:
+                    mull_stats[name] = mulligan_update(mulligan_nets[name], mulligan_optimizers[name], mull_by_deck_iter[name])
+        if mull_stats:  # readout so the mulligan subsystem is visible while it trains
             total_n = sum(s["n"] for s in mull_stats.values())
             mean_loss = sum(s["loss"] for s in mull_stats.values()) / len(mull_stats)
             print(f"  iter {iteration}: mulligan model -- {total_n} transitions across {len(mull_stats)} decks, "
                   f"mean REINFORCE loss {mean_loss:.4f}", flush=True)
 
-        if (iteration + 1) % snapshot_every == 0:
-            for name in deck_names:
-                pool.register_snapshot(name, live_nets[name])
+        if matchup is None and (iteration + 1) % snapshot_every == 0:  # matchup: no historical snapshots
+            for name in train_decks:  # only TRAIN decks change -> only they need new snapshots
+                pool.register_snapshot(name, live_nets[name], mulligan_nets[name])
             _save_live_checkpoints(live_nets, optimizers, deck_names, session, session_path, league_dir,
                                    mulligan_nets, mulligan_optimizers)
-            print(f"  iter {iteration}: snapshotted all decks + saved live checkpoints "
+            print(f"  iter {iteration}: snapshotted {len(train_decks)} train deck(s) + saved live checkpoints "
                   f"(counts now: { {n: len(pool.snapshots[n]) for n in deck_names} })", flush=True)
 
     elapsed = time.time() - t0
@@ -257,6 +321,59 @@ def _run_session(n_iterations, games_per_iteration, snapshot_every, executor, n_
     _save_live_checkpoints(live_nets, optimizers, deck_names, session, session_path, league_dir,
                            mulligan_nets, mulligan_optimizers)
     print("live checkpoints saved for all decks")
+
+
+def _run_eval(eval_decks, games_per_pairing, greedy, seed, game_logs, matchup=None,
+              fresh_stack=False, league_dir=None):
+    """Eval / faithful log generation: play games with NO training (record=False,
+    no updates, no checkpointing) over the CURRENT live agents (deck net + its
+    mulligan model -- so logged games use the same pregame policy training does).
+    Pairing is a round-robin with mirrors (combinations_with_replacement) over
+    eval_decks, or a single A-vs-B pairing when `matchup` is given. Sampled by
+    default; greedy=True argmaxes. game_logs (a list) collects one engine
+    event_log per game."""
+    import itertools
+    league_dir = league_dir or LEAGUE_DIR
+    decklists, vocab, deck_ctxs, fixed_tables = build_pool()
+    deck_names = list(decklists)
+    eval_decks = list(matchup) if matchup else (list(eval_decks) if eval_decks else deck_names)
+    assert set(eval_decks) <= set(deck_names), f"eval decks {eval_decks} not all in roster {deck_names}"
+    pairings = [tuple(matchup)] if matchup else list(itertools.combinations_with_replacement(eval_decks, 2))
+    shared = build_fresh_stack(vocab.size) if fresh_stack else load_frozen_stack(vocab.size)
+    rng = random.Random(seed)
+    horizon = 120
+
+    live_nets, mulligan_nets = {}, {}
+    for name in set(eval_decks):
+        net = DeckNetwork(shared, film_condition_dim=D_MODEL, non_targeting_n_actions=len(fixed_tables[name]))
+        live_path = f"{league_dir}/{name}/live.pt"
+        if os.path.exists(live_path):
+            net.load_state_dict(torch.load(live_path, weights_only=True)["net"])
+        net.eval()
+        live_nets[name] = net
+        mnet = MulliganNet(shared)
+        mull_path = f"{league_dir}/{name}/mulligan.pt"
+        if os.path.exists(mull_path):
+            mnet.load_state_dict(torch.load(mull_path, weights_only=True)["net"])
+        mnet.eval()
+        mulligan_nets[name] = mnet
+
+    print(f"Eval: {len(pairings)} pairing(s) x {games_per_pairing} games "
+          f"({'greedy' if greedy else 'sampled'}, seed={seed}) over decks={eval_decks}")
+    t0 = time.time()
+    total = 0
+    for a, b in pairings:
+        # record_as = [None, None] and reward_fns = [None, None]: pure play, no
+        # buffers, no reward -- record=False ignores them entirely.
+        pairing = _constant_pairing(
+            [SeatAgent(live_nets[a], mulligan_nets[a], deck_ctxs[a]),
+             SeatAgent(live_nets[b], mulligan_nets[b], deck_ctxs[b])],
+            [decklists[a], decklists[b]], [None, None], [None, None])
+        _bufs, _mull, played = collect_rollout(pairing, games_per_pairing, horizon, rng, device="cpu",
+                                               record=False, greedy=greedy, game_logs=game_logs)
+        total += played
+        print(f"  {a} vs {b}: {played} games", flush=True)
+    print(f"eval done: {total} games in {time.time() - t0:.1f}s")
 
 
 def _json_default(obj):
@@ -278,65 +395,17 @@ def _json_default(obj):
     return repr(obj)
 
 
-def _run_matchup_session(deck_a_name, deck_b_name, total_games, log_path):
-    decklists, vocab, deck_ctxs, fixed_tables = build_pool()
-    for name in (deck_a_name, deck_b_name):
-        assert name in decklists, f"unknown deck {name!r}, expected one of {list(decklists)}"
-    shared = load_frozen_stack(vocab.size)
-
-    live_nets, optimizers = {}, {}
-    for name in (deck_a_name, deck_b_name):
-        net = DeckNetwork(shared, film_condition_dim=D_MODEL, non_targeting_n_actions=len(fixed_tables[name]))
-        live_path = f"{LEAGUE_DIR}/{name}/live.pt"
-        if os.path.exists(live_path):
-            ckpt = torch.load(live_path, weights_only=True)
-            net.load_state_dict(ckpt["net"])
-        optimizer = torch.optim.Adam([p for p in net.parameters() if p.requires_grad], lr=3e-4)
-        if os.path.exists(live_path):
-            optimizer.load_state_dict(ckpt["optimizer"])
-        live_nets[name] = net
-        optimizers[name] = optimizer
-
-    rng = random.Random()
-    reward_fn = deploy_reward_v1
-    horizon = 120
-
-    games_per_iteration = min(10, total_games)
-    n_iterations = max(1, total_games // games_per_iteration)
-    actual_total = n_iterations * games_per_iteration
-    game_logs = [] if log_path else None
-
-    print(f"Direct matchup: {deck_a_name} vs {deck_b_name}, {actual_total} games "
-          f"({n_iterations} iterations x {games_per_iteration} games/iteration), logging={'on' if log_path else 'off'}")
-    t0 = time.time()
-    train_selfplay(
-        live_nets[deck_a_name], deck_ctxs[deck_a_name], decklists[deck_a_name], reward_fn,
-        live_nets[deck_b_name], deck_ctxs[deck_b_name], decklists[deck_b_name], reward_fn,
-        [optimizers[deck_a_name]], [optimizers[deck_b_name]], horizon,
-        n_iterations=n_iterations, games_per_iteration=games_per_iteration, rng=rng, device="cpu", game_logs=game_logs,
-    )
-    elapsed = time.time() - t0
-    print(f"matchup session done in {elapsed:.1f}s ({elapsed / actual_total:.2f}s/game across {actual_total} games)")
-
-    os.makedirs(LEAGUE_DIR, exist_ok=True)
-    for name in (deck_a_name, deck_b_name):
-        deck_dir = f"{LEAGUE_DIR}/{name}"
-        os.makedirs(deck_dir, exist_ok=True)
-        torch.save({"net": live_nets[name].state_dict(), "optimizer": optimizers[name].state_dict()},
-                   f"{deck_dir}/live.pt")
-    print("live checkpoints saved for both decks")
-
-    if log_path:
-        os.makedirs(os.path.dirname(log_path) or ".", exist_ok=True)
-        doc = {
-            "meta": {"deck_a": deck_a_name, "deck_b": deck_b_name, "horizon": horizon, "n_games": actual_total},
-            "games": [{"game_index": i, "events": events} for i, events in enumerate(game_logs)],
-        }
-        with open(log_path, "w") as f:
-            json.dump(doc, f, default=_json_default)  # compact (no indent) -- the earlier oversized-log issue was pretty-printed output; avoiding that even at this modest scale
-        size_kb = os.path.getsize(log_path) / 1024
-        print(f"event log written to {log_path} ({len(game_logs)} games, "
-              f"{sum(len(g) for g in game_logs)} total events, {size_kb:.1f} KB)")
+def _write_event_log(log_path, game_logs, meta):
+    """Write the engine event logs collected this session to PATH as one compact
+    JSON doc (no indent -- an earlier oversized-log issue was pretty-printed
+    output). _json_default salvages any stray non-serializable field."""
+    os.makedirs(os.path.dirname(log_path) or ".", exist_ok=True)
+    doc = {"meta": meta, "games": [{"game_index": i, "events": ev} for i, ev in enumerate(game_logs)]}
+    with open(log_path, "w") as f:
+        json.dump(doc, f, default=_json_default)
+    size_kb = os.path.getsize(log_path) / 1024
+    print(f"event log written to {log_path} ({len(game_logs)} games, "
+          f"{sum(len(g) for g in game_logs)} total events, {size_kb:.1f} KB)")
 
 
 def build_arg_parser():
@@ -346,16 +415,37 @@ def build_arg_parser():
     parser.add_argument("--snapshot-every", type=int, default=20)
     parser.add_argument("--n-workers", type=int, default=6)
     parser.add_argument("--matchup", nargs=2, metavar=("DECK_A", "DECK_B"), default=None,
-                         help="Direct fixed pairing instead of league opponent sampling.")
-    parser.add_argument("--games", type=int, default=50, help="Total games for --matchup mode.")
+                         help="Fixed A-vs-B pairing instead of league opponent sampling (snapshotting off). Trains "
+                              "both decks with their real mulligan models via the unified loop.")
+    parser.add_argument("--games", type=int, default=50, help="Total games (per deck round) for --matchup mode.")
+    parser.add_argument("--decks", type=str, default=None, metavar="A,B,...",
+                         help="Train only this comma-separated subset of the roster; the rest stay loaded as FROZEN "
+                              "opponents (onboarding a new deck / targeted retraining). Default: the whole roster.")
+    parser.add_argument("--train-deck-only", action="store_true",
+                         help="Train the per-deck policies only; freeze the mulligan models.")
+    parser.add_argument("--train-mulligan-only", action="store_true",
+                         help="Train the mulligan models only; freeze the per-deck policies (a clean bandit vs fixed skill).")
+    parser.add_argument("--eval", action="store_true",
+                         help="Eval / log-generation: play games with NO training over the current live agents "
+                              "(round-robin with mirrors over --decks, or one A-vs-B pairing with --matchup). "
+                              "--games games per pairing.")
+    parser.add_argument("--greedy", action="store_true",
+                         help="Eval: argmax the policy instead of sampling (default: sampled, matching trained behavior).")
+    parser.add_argument("--seed", type=int, default=None,
+                         help="Seed the rng (reproducible eval logs; also reproducible training sampling).")
     parser.add_argument("--log", type=str, default=None, metavar="PATH",
-                         help="Write the game engine's own event log for every game this session to PATH as JSON.")
+                         help="Write the game engine's own event log for every game this session to PATH as JSON "
+                              "(sequential collection only).")
     parser.add_argument("--batch-size-start", type=int, default=32,
                          help="ppo_update batch_size at the first iteration (small/granular early).")
     parser.add_argument("--batch-size-cap", type=int, default=2048,
                          help="ppo_update batch_size ceiling by the end of the session.")
     parser.add_argument("--batch-size-steps", type=int, default=6,
                          help="Number of doublings from --batch-size-start to --batch-size-cap, spread evenly across the session.")
+    parser.add_argument("--batched-collect", action="store_true",
+                         help="Phase 8 (experimental, benchmark before adopting): collect ALL decks' games under the "
+                              "start-of-iteration weights, then one PPO update per deck -- cleaner on-policy, removes "
+                              "intra-iteration drift. Default off (per-round update, current dynamics).")
     parser.add_argument("--no-opponent-salvage", action="store_true",
                          help="Disable Path A: when the sampled opponent is another deck's LIVE net, train THAT deck "
                               "too from its (on-policy) transitions this round, at no extra collection cost -- on by "
@@ -366,29 +456,47 @@ def build_arg_parser():
 def main():
     args = build_arg_parser().parse_args()
 
-    if args.matchup:
-        _run_matchup_session(args.matchup[0], args.matchup[1], args.games, args.log)
+    train_deck = not args.train_mulligan_only
+    train_mulligan = not args.train_deck_only
+    assert train_deck or train_mulligan, "cannot freeze BOTH layers (--train-deck-only + --train-mulligan-only)"
+    train_decks = args.decks.split(",") if args.decks else None
+    matchup = tuple(args.matchup) if args.matchup else None
+    game_logs = [] if args.log else None
+
+    if args.eval:  # no training: round-robin (or single matchup) over current live agents
+        _run_eval(train_decks, args.games, args.greedy, args.seed, game_logs, matchup=matchup)
+        if args.log:
+            _write_event_log(args.log, game_logs, {"mode": "eval", "matchup": list(matchup) if matchup else None,
+                                                   "decks": train_decks, "greedy": args.greedy, "games_logged": len(game_logs)})
         return
 
-    assert args.log is None, (
-        "--log is only wired through --matchup mode right now (train_selfplay's game_logs param) -- "
-        "collect_rollout_league (plain league opponent-sampling mode) doesn't forward it yet"
-    )
-    n_workers = args.n_workers
+    # --matchup counts by --games (per deck round), otherwise by --n-iterations x
+    # --games-per-iteration. Logging is threaded through BOTH the sequential and MP
+    # league paths (event dicts are picklable), so --log no longer forces sequential.
+    n_iterations, games_per_iteration = args.n_iterations, args.games_per_iteration
+    if matchup is not None:
+        games_per_iteration = min(max(args.games_per_iteration, 10), args.games)
+        n_iterations = max(1, args.games // games_per_iteration)
+
     schedule_kwargs = dict(batch_size_start=args.batch_size_start,
                             batch_size_cap=args.batch_size_cap, batch_size_steps=args.batch_size_steps,
-                            salvage_opponents=not args.no_opponent_salvage)
-    if n_workers > 1:
-        # ONE executor for the whole session, reused across every
-        # iteration -- process-spawn/import overhead (each worker
-        # re-importing torch + the game engine) is paid once here, not
-        # once per collection round. n_workers > 6 (this machine's
-        # physical core count) measured no reliable further speedup.
-        with ProcessPoolExecutor(max_workers=n_workers) as executor:
-            _run_session(args.n_iterations, args.games_per_iteration, args.snapshot_every, executor, n_workers,
-                         **schedule_kwargs)
+                            salvage_opponents=not args.no_opponent_salvage, seed=args.seed,
+                            train_deck=train_deck, train_mulligan=train_mulligan, train_decks=train_decks,
+                            matchup=matchup, game_logs=game_logs, batched_collect=args.batched_collect)
+
+    sequential = matchup is not None or args.n_workers <= 1  # matchup uses collect_rollout directly (no worker path)
+    if not sequential:
+        # ONE executor for the whole session, reused across every iteration --
+        # process-spawn/import overhead is paid once, not per collection round.
+        with ProcessPoolExecutor(max_workers=args.n_workers) as executor:
+            _run_session(n_iterations, games_per_iteration, args.snapshot_every, executor, args.n_workers, **schedule_kwargs)
     else:
-        _run_session(args.n_iterations, args.games_per_iteration, args.snapshot_every, None, n_workers, **schedule_kwargs)
+        _run_session(n_iterations, games_per_iteration, args.snapshot_every, None, 1, **schedule_kwargs)
+
+    if args.log:
+        meta = {"mode": "matchup" if matchup else "league", "matchup": list(matchup) if matchup else None,
+                "train_decks": train_decks, "games_logged": len(game_logs)}
+        _write_event_log(args.log, game_logs, meta)
 
 
 if __name__ == "__main__":

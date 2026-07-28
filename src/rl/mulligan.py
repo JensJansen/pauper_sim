@@ -209,6 +209,9 @@ if __name__ == "__main__":
     from rl.features import CardVocab
     import game as _game
 
+    torch.manual_seed(0)  # deterministic net init -- the REINFORCE learning asserts below
+    random.seed(0)        # are otherwise flaky (~1-in-several spurious failures on random init)
+
     # 1) reward shape: big win, CONVEX per-mulligan cost, negative on mull-heavy loss
     assert abs(mulligan_reward(True, 0) - 1.0) < 1e-9
     assert abs(mulligan_reward(True, 3) - (1.0 - MULLIGAN_COST * 9)) < 1e-9   # quadratic penalty
