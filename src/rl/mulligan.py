@@ -11,13 +11,13 @@ This model OWNS the pregame phase (rl.train routes mulligan_decision /
 mulligan_bottom decisions here instead of the main net) and is trained by
 REINFORCE with its OWN reward, decoupled from the main PPO update:
 
-    reward(seat) = WIN_REWARD * (1 if seat won else 0)  -  MULLIGAN_COST * mulligans_taken
+    reward(seat) = WIN_REWARD * (1 if seat won else 0)  -  MULLIGAN_COST * mulligans_taken**2
 
-WIN_REWARD (1.0) dominates so "mulligan to win" stays strongly reinforced even
-after several mulligans; MULLIGAN_COST (small) is the only thing discouraging a
-needless mulligan, so the model mulligans a hand iff doing so raises its win
-probability by more than the per-mulligan cost. The reward goes NEGATIVE on a
-mulligan-heavy loss -- that is the whole point.
+WIN_REWARD (1.0) dominates so "mulligan to win" stays reinforced; the penalty is
+CONVEX (quadratic) so the 1st mulligan is nearly free but each further one hurts
+more than the last -- the model mulligans a hand iff doing so raises its win
+probability by more than that (rising) marginal cost, and mulliganing toward zero
+is strongly discouraged. The reward goes NEGATIVE on a mulligan-heavy loss.
 
 It reuses the frozen shared stack's card embeddings to represent the hand (so it
 inherits the card semantics the stack already learned); everything else is a
@@ -31,14 +31,19 @@ import torch.nn as nn
 
 HAND = game.HAND_SIZE_LIMIT  # 7 -- London mulligan cap and hand-size normalizer
 WIN_REWARD = 1.0
-MULLIGAN_COST = 0.03
+# Convex (quadratic) per-mulligan penalty: total = MULLIGAN_COST * mulligans**2, so
+# the marginal cost of the Nth mulligan grows ~linearly and the 1st is nearly free.
+# 1->0.02, 2->0.08, 3->0.18, 4->0.32, 5->0.50, 6->0.72, 7->0.98 (~the whole win).
+MULLIGAN_COST = 0.02
 ENTROPY_COEF = 0.01  # keep some exploration so the keep/mull head doesn't re-collapse
 
 
 def mulligan_reward(won, mulligans_taken):
     """This seat's terminal reward for its pregame decisions: a big win payout
-    minus a small per-mulligan cost (may be negative on a mulligan-heavy loss)."""
-    return WIN_REWARD * (1.0 if won else 0.0) - MULLIGAN_COST * mulligans_taken
+    minus a CONVEX per-mulligan penalty (quadratic, so each extra mulligan costs
+    more than the last). Negative on a mulligan-heavy loss; a win stays >=0 even
+    at the 7-mulligan cap."""
+    return WIN_REWARD * (1.0 if won else 0.0) - MULLIGAN_COST * mulligans_taken ** 2
 
 
 class MulliganNet(nn.Module):
@@ -204,11 +209,15 @@ if __name__ == "__main__":
     from rl.features import CardVocab
     import game as _game
 
-    # 1) reward shape: big win, small per-mulligan cost, negative on mull-heavy loss
+    # 1) reward shape: big win, CONVEX per-mulligan cost, negative on mull-heavy loss
     assert abs(mulligan_reward(True, 0) - 1.0) < 1e-9
-    assert abs(mulligan_reward(True, 3) - (1.0 - 3 * MULLIGAN_COST)) < 1e-9  # win-after-mulligans still ~1
-    assert mulligan_reward(False, 3) < 0                                     # loss-after-mulligans is negative
-    assert abs(mulligan_reward(False, 0)) < 1e-9                             # kept-and-lost is neutral
+    assert abs(mulligan_reward(True, 3) - (1.0 - MULLIGAN_COST * 9)) < 1e-9   # quadratic penalty
+    assert mulligan_reward(False, 3) < 0                                      # loss-after-mulligans is negative
+    assert abs(mulligan_reward(False, 0)) < 1e-9                              # kept-and-lost is neutral
+    assert mulligan_reward(True, 7) >= 0                                      # a win survives even at the cap
+    # convexity: the Nth mulligan must hurt strictly MORE than the (N-1)th
+    marg = [mulligan_reward(False, m) - mulligan_reward(False, m + 1) for m in range(7)]
+    assert all(marg[i] < marg[i + 1] for i in range(len(marg) - 1)), marg
 
     decklist = _game.parse_decklist_file("../data/mono_blue_terror.txt")
     vocab = CardVocab([decklist])
