@@ -59,7 +59,7 @@ clause is a deliberate, documented drop rather than a guess:
   eligibility, state-based death, Saruli/Quirion/Dread Return's own
   "another creature" checks) with no Kill-Ship-specific code at any of
   those call sites. The ETB reuses begin_choose_opponent_permanent
-  (resolution.py), which already auto-no-ops with zero legal targets -- so
+  (resolution), which already auto-no-ops with zero legal targets -- so
   it's a correct, harmless no-op in every current (1-player, no opponent)
   Tron config, and becomes a real removal spell the instant a 2-player Tron
   config exists to reach it.

@@ -1,6 +1,6 @@
-"""Phase 4 driver: pretrain the shared perception stack (embeddings +
+"""Pretrain driver: pretrain the shared perception stack (embeddings +
 SetTransformer + FiLM) with a throwaway DeckNetwork per pool deck -- real
-mirror self-play games run through token_train.train_selfplay for EVERY
+mirror self-play games run through rl.train.train_selfplay for EVERY
 deck in the roster (data/league_decks.json), each deck in turn every
 iteration, so the shared stack sees all decks' worth of real board states
 every round rather than one deck exhausted before the next starts.
@@ -8,8 +8,8 @@ Gradients from every throwaway net flow into the ONE shared
 SetTransformer+FiLM instance -- exactly the "pretrain the shared layers
 with junk [per-deck heads], then freeze" design. Generalized over an
 arbitrary roster (was hardcoded to 2 decks) so the shared stack's embedding
-table + attention actually learn representations for all 5 decks' cards,
-not just 2.
+table + attention actually learn representations for every deck's cards,
+not just a hardcoded subset.
 
 Checkpointed after every session (resumable across separate invocations)
 so this can be run in small batches per the explicit instruction: start
@@ -19,8 +19,8 @@ runs are healthy.
 Usage: python run_pretrain.py [n_iterations] [games_per_iteration] [--freeze]
 --freeze: after this session's training, freeze the shared stack
 (requires_grad=False, eval mode) and write the frozen weights to
-../checkpoints/shared_stack_frozen.pt for Stage 1/2 to load -- run this
-only once satisfied pretraining is done, not on every intermediate batch.
+../checkpoints/shared_stack_frozen.pt for league training to load -- run
+this only once satisfied pretraining is done, not on every intermediate batch.
 """
 import os
 import random
@@ -56,7 +56,7 @@ def main():
     # would give the shared stack's identical parameter tensors N
     # independent Adam instances with unsynchronized momentum/variance
     # state, stepping on them in alternation (confirmed the hard way, see
-    # git history and token_train.ppo_update's own docstring).
+    # git history and rl.train.ppo_update's own docstring).
     opt_shared = torch.optim.Adam(shared.parameters(), lr=3e-4)
     nets, head_opts = {}, {}
     for name in deck_names:
@@ -84,7 +84,7 @@ def main():
     horizon = 120
 
     total_games = n_iterations * games_per_iteration * len(deck_names)
-    print(f"Phase 4 pretrain session {session}: n_iterations={n_iterations} games_per_iteration={games_per_iteration} "
+    print(f"pretrain session {session}: n_iterations={n_iterations} games_per_iteration={games_per_iteration} "
           f"decks={deck_names} (={total_games} total games across all pool decks)")
     t0 = time.time()
     for i in range(n_iterations):

@@ -638,7 +638,7 @@ def _assign_blocker_execute(name, slot):
     blocker is actually allowed to block: flying's own restriction
     means an attacker with flying can only be
     chosen here if `blocker` itself also has flying (game.has_keyword --
-    resolution.py can't compute this itself, see declare_blocker_
+    resolution can't compute this itself, see declare_blocker_
     assignment's own docstring for why the predicate has to come from
     here instead). Once that completes, re-opens begin_declare_blockers
     (via the captured outer on_complete) so the defender can assign
@@ -765,7 +765,7 @@ def _dispose_execute(state):
 
 # NOTE: the _mulligan_decision_legal / _mulligan_take_legal / _mulligan_keep_execute
 # / _mulligan_take_execute helpers were removed with the pregame fixed-table actions
-# (harness refactor Phase 4) -- the MulliganNet (rl.mulligan) owns the pregame phase
+# (the harness refactor) -- the MulliganNet (rl.mulligan) owns the pregame phase
 # now, so nothing in the action table references them. The engine's own mulligan
 # (game.execute_mulligan_keep/take, game.turn.run_mulligan_phase) is untouched.
 
@@ -1947,7 +1947,7 @@ def build_action_table(decklist, registry, token_card_defs=(), pending_kinds=(),
     actions.append(("Abandon payment", _abandon_payment_legal, _abandon_payment_execute))  # pay_cost is baseline, always present
     # NOTE: the pregame mulligan actions ("Keep hand" / "Mulligan") and the
     # "mulligan_bottom" branch of the generic "Choose: X" action were REMOVED from
-    # this table (harness refactor Phase 4). The per-deck MulliganNet (rl.mulligan)
+    # this table (the harness refactor). The per-deck MulliganNet (rl.mulligan)
     # now OWNS every pregame decision -- rl.agent.SeatAgent intercepts the pregame
     # pending kinds before the main net's forward -- so the main policy's action
     # space contains ZERO pregame actions and a game can never fall back to a

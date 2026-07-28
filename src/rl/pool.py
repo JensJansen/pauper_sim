@@ -50,13 +50,12 @@ def build_pool(manifest_path=DECK_MANIFEST, vocab_path=VOCAB_PATH, token_defs=TO
     """Returns (decklists, vocab, deck_ctxs, fixed_tables) -- all dicts
     keyed by deck name, plus the one shared (persisted, append-only) vocab.
     deck_ctxs[name] = (vocab, fixed_table, pending_kinds), the exact tuple
-    rl.train._seat_step expects.
+    rl.agent._seat_step expects.
 
     token_defs: the token/pseudo-card CardDefs to reserve vocab indices +
     choosable-name actions for (defaults to the league's TOKEN_DEFS). A pool
     that runs cards making other tokens -- or the Undercity initiative marker,
-    a pseudo-card that appears on the stack -- must pass the fuller set (see
-    token_new_decks.py).
+    a pseudo-card that appears on the stack -- must pass the fuller set.
 
     union_pending (default True): every deck's fixed table is built from the
     UNION of all decks' pending-resolution kinds, not just its own. A 2-player
@@ -99,7 +98,7 @@ def build_pool(manifest_path=DECK_MANIFEST, vocab_path=VOCAB_PATH, token_defs=TO
 
 
 if __name__ == "__main__":
-    # ponytail self-check: run via `python rl.pool` from src/.
+    # ponytail self-check: run via `python -m rl.pool` from src/.
     decklists, vocab, deck_ctxs, fixed_tables = build_pool()
     # Roster-agnostic (reads whatever data/league_decks.json currently lists)
     # -- must include at least the two madness decks that are always present.

@@ -1,19 +1,19 @@
-"""League driver: replaces run_stage1.py + run_stage2.py's discrete
-"mirror baseline, then one pairwise fine-tune" curriculum with one
-continuous loop. Every deck in the roster (data/league_decks.json) trains
-every round, against an opponent RESAMPLED each game from a LeaguePool
-(token_league.py) -- historical snapshots of every deck plus everyone's
-current live weights, picked uniformly. No separate "Stage 1"/"Stage 2":
+"""League driver: one continuous training loop in place of a discrete
+"mirror baseline, then one pairwise fine-tune" curriculum. Every deck in
+the roster (data/league_decks.json) trains every round, against an
+opponent RESAMPLED each game from a LeaguePool (rl.league) -- historical
+snapshots of every deck plus everyone's current live weights, picked
+uniformly. No separate "Stage 1"/"Stage 2":
 early on, with few decks and no snapshots yet, most games are naturally
 close to mirror play; cross-deck and cross-snapshot exposure grows
 organically as the pool fills in, without a hardcoded phase boundary.
 
-Same frozen shared stack as before (Phase 4's shared_stack_frozen.pt,
+Same frozen shared stack as before (pretraining's shared_stack_frozen.pt,
 unaffected by this change). Each deck's own live net/optimizer persists
 in checkpoints/league/<deck_name>/live.pt; historical opponents live
 alongside as snapshot_<id>.pt (LeaguePool's own concern).
 
-Parallel rollout collection (token_train.collect_rollout_league_parallel)
+Parallel rollout collection (rl.train.collect_rollout_league_parallel)
 is used whenever n_workers > 1 -- benchmarked at ~3.2-3.5x wall-clock
 speedup at 6-8 worker processes on this machine (6 physical cores),
 plateauing beyond that (hyperthreaded/logical cores past the physical
@@ -27,10 +27,10 @@ sampling entirely -- runs N games as a DIRECT, fixed pairing between two
 named decks (train_selfplay's cross-matchup path), still updating and
 checkpointing both decks' live nets normally. --log PATH captures the
 game engine's own existing event log (game/state.py's GameState.
-log_event, already instrumented across mana.py/turn.py/resolution.py/
-game/effects/*.py -- see token_train.collect_rollout's own docstring) for
-every game played, written as one JSON file. Logging is not yet threaded
-through the parallel worker path, so --log forces sequential collection.
+log_event, already instrumented across mana.py/turn.py/resolution/*.py/
+game/effects/*.py -- see rl.train.collect_rollout's own docstring) for
+every game played, written as one JSON file. Logging is threaded through
+both the sequential and parallel worker paths (event dicts are picklable).
 
 Usage:
   python run_league.py [--n-iterations N] [--games-per-iteration N] [--snapshot-every N] [--n-workers N]
@@ -53,7 +53,7 @@ from rl.pool import build_pool
 from rl.agent import SeatAgent
 from rl.train import (
     batch_size_for_iteration, collect_rollout, collect_rollout_league,
-    collect_rollout_league_parallel, ppo_update, _constant_pairing, RolloutBuffer,
+    collect_rollout_league_parallel, ppo_update, _constant_pairing,
 )
 from rl.mulligan import MulliganNet, update as mulligan_update
 
@@ -66,12 +66,12 @@ SHARED_HPARAMS = {"d_model": D_MODEL, "n_heads": 4, "n_layers": 2, "dim_feedforw
 
 def load_frozen_stack(vocab_size):
     assert os.path.exists(FROZEN_STACK), (
-        f"{FROZEN_STACK} not found -- run `python run_pretrain.py ... --freeze` (Phase 4) first"
+        f"{FROZEN_STACK} not found -- run `python run_pretrain.py ... --freeze` (pretrain) first"
     )
     ckpt = torch.load(FROZEN_STACK, weights_only=True)
     assert ckpt["vocab_size"] == vocab_size, (
         f"frozen stack was built with vocab_size={ckpt['vocab_size']}, current pool vocab is {vocab_size} -- "
-        "the deck roster changed since Phase 4 ran; re-run Phase 4 or fix the mismatch before continuing"
+        "the deck roster changed since pretraining ran; re-run pretraining or fix the mismatch before continuing"
     )
     shared = SetTransformer(vocab_size, d_model=ckpt["d_model"], n_heads=4, n_layers=2, dim_feedforward=128)
     shared.load_state_dict(ckpt["shared"])
@@ -121,7 +121,7 @@ def _run_session(n_iterations, games_per_iteration, snapshot_every, executor, n_
                   batch_size_start=32, batch_size_cap=2048, batch_size_steps=6,
                   fresh_stack=False, league_dir=None, seed=None,
                   salvage_opponents=True, train_deck=True, train_mulligan=True, train_decks=None,
-                  matchup=None, game_logs=None, batched_collect=False):
+                  matchup=None, game_logs=None):
     # fresh_stack + league_dir + seed let the benchmark harness drive this EXACT
     # loop with untrained (but identical-config) models over a throwaway dir,
     # reproducibly -- the only intended differences from a real training
@@ -213,7 +213,6 @@ def _run_session(n_iterations, games_per_iteration, snapshot_every, executor, n_
     for iteration in range(n_iterations):
         batch_size = batch_size_for_iteration(iteration, n_iterations, batch_size_start, batch_size_cap, batch_size_steps)
         mull_by_deck_iter = {name: [] for name in train_decks}  # mulligan transitions accumulated across this iteration
-        iter_buffers = {}  # batched mode: deck -> PPO transitions merged across ALL this iteration's rounds
         # Snapshot the mulligan nets for the workers now (ALL decks -- a frozen
         # opponent still needs its mulligan net to play). Updated once after the
         # deck-loop (on-policy within the iteration, same as the main nets).
@@ -257,15 +256,7 @@ def _run_session(n_iterations, games_per_iteration, snapshot_every, executor, n_
             # non-subset opponent is never updated -- just an opponent.
             policy_loss = value_loss = entropy = 0.0
             salvaged = 0
-            if batched_collect:
-                # Phase 8: DEFER updates -- accumulate this round's buckets and update
-                # once after the whole deck-loop, so all data is collected under the
-                # SAME start-of-iteration weights (cleaner on-policy; no intra-iteration
-                # drift). Every train-deck bucket is kept (its own + salvage).
-                for deck_name, buf in buffers_by_deck.items():
-                    if len(buf) and deck_name in train_set:
-                        iter_buffers.setdefault(deck_name, RolloutBuffer()).extend(buf)
-            elif train_deck:  # per-round (default): update immediately, then the next deck collects
+            if train_deck:
                 for deck_name, buf in buffers_by_deck.items():
                     if not len(buf) or deck_name not in train_set:
                         continue
@@ -279,17 +270,6 @@ def _run_session(n_iterations, games_per_iteration, snapshot_every, executor, n_
             print(f"  iter {iteration} [{name}]: games={played} buf={len(buffers_by_deck.get(name, ()))} "
                   f"salvaged={salvaged} batch_size={batch_size} "
                   f"policy_loss={policy_loss:.4f} value_loss={value_loss:.4f}", flush=True)
-
-        # Batched mode (Phase 8): ONE PPO update per train deck on ALL its transitions
-        # this iteration, collected under start-of-iteration weights.
-        if batched_collect and train_deck:
-            t_update0 = time.time()
-            for deck_name, buf in iter_buffers.items():
-                if len(buf):
-                    pl, vl, _en = ppo_update(live_nets[deck_name], [optimizers[deck_name]], buf, "cpu", batch_size=batch_size)
-                    print(f"  iter {iteration} [{deck_name}] (batched update): buf={len(buf)} "
-                          f"batch_size={batch_size} policy_loss={pl:.4f} value_loss={vl:.4f}", flush=True)
-            update_time_total += time.time() - t_update0
 
         # Mulligan-model REINFORCE: one step per TRAIN deck on its own transitions
         # this iteration (its games + live-opponent salvage). Gated on train_mulligan;
@@ -442,10 +422,6 @@ def build_arg_parser():
                          help="ppo_update batch_size ceiling by the end of the session.")
     parser.add_argument("--batch-size-steps", type=int, default=6,
                          help="Number of doublings from --batch-size-start to --batch-size-cap, spread evenly across the session.")
-    parser.add_argument("--batched-collect", action="store_true",
-                         help="Phase 8 (experimental, benchmark before adopting): collect ALL decks' games under the "
-                              "start-of-iteration weights, then one PPO update per deck -- cleaner on-policy, removes "
-                              "intra-iteration drift. Default off (per-round update, current dynamics).")
     parser.add_argument("--no-opponent-salvage", action="store_true",
                          help="Disable Path A: when the sampled opponent is another deck's LIVE net, train THAT deck "
                               "too from its (on-policy) transitions this round, at no extra collection cost -- on by "
@@ -482,7 +458,7 @@ def main():
                             batch_size_cap=args.batch_size_cap, batch_size_steps=args.batch_size_steps,
                             salvage_opponents=not args.no_opponent_salvage, seed=args.seed,
                             train_deck=train_deck, train_mulligan=train_mulligan, train_decks=train_decks,
-                            matchup=matchup, game_logs=game_logs, batched_collect=args.batched_collect)
+                            matchup=matchup, game_logs=game_logs)
 
     sequential = matchup is not None or args.n_workers <= 1  # matchup uses collect_rollout directly (no worker path)
     if not sequential:

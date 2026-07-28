@@ -38,11 +38,11 @@ def _parse_config(name):
     raise SystemExit(f"unknown config {name!r} (want seq | mp<N>)")
 
 
-def _run_config(name, iters, gpi, snapshot_every, seed, batched=False):
+def _run_config(name, iters, gpi, snapshot_every, seed):
     workers = _parse_config(name)
     import tempfile
     league_dir = tempfile.mkdtemp(prefix=f"bench_train_{name}_")
-    kwargs = dict(fresh_stack=True, league_dir=league_dir, seed=seed, batched_collect=batched)
+    kwargs = dict(fresh_stack=True, league_dir=league_dir, seed=seed)
     t0 = time.perf_counter()
     try:
         if workers and workers > 1:
@@ -62,18 +62,15 @@ def main():
     ap.add_argument("--configs", type=str, default="seq,mp6")
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--snapshot-every", type=int, default=20, help="Real league default; won't fire in a short bench.")
-    ap.add_argument("--batched", action="store_true",
-                    help="Phase 8: run with batched collect-then-update instead of per-round (A/B the timing).")
     args = ap.parse_args()
 
     print(f"true-training-loop benchmark: fresh (untrained) identical-config stack, seed={args.seed}, "
-          f"iterations={args.iterations} games/iter={args.games_per_iter}, "
-          f"{'BATCHED' if args.batched else 'per-round'} updates")
+          f"iterations={args.iterations} games/iter={args.games_per_iter}")
     results = {}
     for name in args.configs.split(","):
         print(f"\n########## config: {name} ##########", flush=True)
         results[name] = _run_config(name, args.iterations, args.games_per_iter, args.snapshot_every,
-                                    args.seed, batched=args.batched)
+                                    args.seed)
 
     print("\n===== SUMMARY (total wall-clock per config, whole training session) =====")
     base = results.get("seq")

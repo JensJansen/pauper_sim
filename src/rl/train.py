@@ -7,17 +7,14 @@ this architecture needs:
 - Mirror self-play (net_a is net_b, same object/weights): both seats'
   transitions get pooled into ONE buffer and ONE ppo_update call -- true
   single-policy self-play, not two independently-updated copies of the same
-  weights drifting apart mid-iteration. Used for Phase 4 (a throwaway
+  weights drifting apart mid-iteration. Used for pretraining (a throwaway
   DeckNetwork per pool deck, all sharing one SetTransformer+FiLM instance so
-  gradients warm up the shared stack from every deck) and for Stage 1 (one
-  deck's own real trunk/critic/pointer head, mirror-only, against a FROZEN
-  shared stack).
+  gradients warm up the shared stack from every deck) and for the league's
+  mirror games (one deck's own real trunk/critic/pointer head, mirror-only,
+  against a FROZEN shared stack).
 - Cross-matchup (net_a is not net_b): each net keeps its own buffer and gets
-  its own independent ppo_update call, both learning from every game -- the
-  same "both models learn from every game" mechanism the prior flat-MLP trainer's
-  train_simultaneous_selfplay already validated for the flat-MLP
-  architecture (Effort A), now over the token/pointer representation. Used
-  for Stage 2.
+  its own independent ppo_update call, both learning from every game. Used
+  for the league's cross-deck games.
 
 Reward attribution is computed directly: 0.0 if drl_env._lost(state, seat)
 else reward_fn(state, done, horizon), _for_player-flipped at the true end.
@@ -128,8 +125,8 @@ def collect_rollout(pairing, n_games, horizon, rng, device="cpu", record=True, g
     games_played = 0
 
     # Batch-of-1 rollout inference: torch's intra-op threading is pure overhead
-    # on these tiny per-decision forwards (~1.66x measured, benchmarking/
-    # mp_scaling.py). Force one thread for the whole game loop, then restore --
+    # on these tiny per-decision forwards (~1.66x measured). Force one thread
+    # for the whole game loop, then restore --
     # so the BATCHED ppo_update that follows still gets every core. No-op inside
     # a parallel worker, which already ran torch.set_num_threads(1) at startup.
     prev_threads = torch.get_num_threads()
@@ -478,15 +475,15 @@ def ppo_update(net, optimizers, buf, device, n_epochs=4, batch_size=64, gamma=0.
     optimizers: a LIST of optimizers, all zero_grad'd before and step'd
     after the SAME backward() call -- never one optimizer per net.
     Needed because a DeckNetwork's shared_stack is a REFERENCE to a module
-    shared across multiple nets (Phase 4's per-deck throwaway heads all
+    shared across multiple nets (pretraining's per-deck throwaway heads all
     point at the same SetTransformer+FiLM instance); giving each net's
     call site its own single optimizer over net.parameters() would create
     TWO independent Adam instances tracking separate, unsynchronized
     momentum/variance state for the identical shared_stack tensors,
     stepping on them in alternation -- confirmed the hard way (see git
     history) as the exact bug this signature change fixes. Passing a
-    single-net-only optimizer as [optimizer] (Stage 1/2, where the shared
-    stack is frozen and only one optimizer ever touches this net's own
+    single-net-only optimizer as [optimizer] (league training, where the
+    shared stack is frozen and only one optimizer ever touches this net's own
     params) still works unchanged."""
     values = np.array(buf.value, dtype=np.float32)
     rewards_ = np.array(buf.reward, dtype=np.float32)
@@ -608,13 +605,12 @@ def train_selfplay(net_a, deck_ctx_a, decklist_a, reward_fn_a, net_b, deck_ctx_b
                     rng, device="cpu", game_logs=None):
     """Runs n_iterations rounds of collect_rollout (games_per_iteration real
     games each) + ppo_update. See this module's own docstring for when
-    net_a is net_b (mirror self-play, one pooled update) vs. not (Stage 2
-    cross-matchup, two independent updates). optimizers_a/optimizers_b:
+    net_a is net_b (mirror self-play, one pooled update) vs. not (cross-matchup,
+    two independent updates). optimizers_a/optimizers_b:
     LISTS of optimizers (see ppo_update's own docstring for why -- a net's
     shared_stack may need its own separate optimizer from the net's own
     head). Returns nothing -- both nets and all optimizers are updated in
-    place, same convention the prior flat-MLP trainer's train_simultaneous_selfplay
-    already uses. game_logs: forwarded straight to collect_rollout (see its
+    place. game_logs: forwarded straight to collect_rollout (see its
     own docstring) -- one entry appended per game, across every iteration."""
     mirror = net_a is net_b
     # AlwaysKeep pregame: train_selfplay trains only the main policy (pretrain /
@@ -643,7 +639,7 @@ def train_selfplay(net_a, deck_ctx_a, decklist_a, reward_fn_a, net_b, deck_ctx_b
 
 
 if __name__ == "__main__":
-    # ponytail self-check: run via `python rl.train` from src/. Tiny
+    # ponytail self-check: run via `python -m rl.train` from src/. Tiny
     # end-to-end smoke test -- real 2-player games (mono_red_madness mirror,
     # a genuine cross-matchup vs rakdos_madness), tiny network dims, few
     # games/iterations, just enough to prove the whole pipeline (rollout
@@ -712,8 +708,7 @@ if __name__ == "__main__":
 
     # 2) Cross-matchup smoke test -- net_a vs net_b, two independent
     # buffers/updates, exercises the "different decks/action spaces on each
-    # seat" path (this is what Stage 2, and pretrain_shared_stack's
-    # cross-deck gradient flow into the shared stack, actually rely on).
+    # seat" path (this is what the league's cross-deck games rely on).
     t0 = time.time()
     train_selfplay(
         net_a, deck_ctx_a, decklist_a, reward_fn, net_b, deck_ctx_b, decklist_b, reward_fn,
@@ -726,7 +721,7 @@ if __name__ == "__main__":
 
     # 2b) game_logs smoke test -- wiring the game engine's OWN existing
     # event_log (game/state.py's log_event, already instrumented across
-    # mana.py/turn.py/resolution.py/game/effects/*.py) through to
+    # mana.py/turn.py/resolution/*.py/game/effects/*.py) through to
     # collect_rollout, not any new logging. One entry per game played,
     # each a real list of structured event dicts.
     game_logs = []
@@ -771,7 +766,7 @@ if __name__ == "__main__":
     for net in (net_a2, net_b2):
         for p in net.parameters():
             assert torch.isfinite(p).all(), "a parameter went non-finite after the split-optimizer PPO update"
-    print(f"rl.train split-optimizer (Phase 4 pattern) smoke test: OK ({time.time() - t0:.1f}s)")
+    print(f"rl.train split-optimizer (pretrain pattern) smoke test: OK ({time.time() - t0:.1f}s)")
 
     # 4) League smoke test -- collect_rollout_league against a REAL
     # LeaguePool, exercising all three opponent kinds it must handle:

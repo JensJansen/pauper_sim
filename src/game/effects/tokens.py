@@ -36,7 +36,7 @@ def create_token(state, card_def, tapped=False):
 def activate_blood_sac(state, permanent):
     """Blood's {1}, {T}, Discard a card, Sacrifice this token: Draw a
     card. The {1} mana and the untapped precondition are both already
-    handled generically by drl_env.py's cost_key-based activated-ability
+    handled generically by drl_env's cost_key-based activated-ability
     wiring (same as Candy Trail's own sac ability, which has no {T}
     symbol at all yet gets the identical untapped check for free today)
     -- this only covers what's specific to Blood: sacrifice (a token
@@ -105,7 +105,7 @@ def activate_clue_sac(state, permanent):
 def activate_food_sac(state, permanent):
     """Food's "{2}, {T}, Sacrifice this token: You gain 3 life" (Generous
     Ent's ETB makes one). The {2} mana and the untapped precondition are
-    handled generically by drl_env.py's cost_key-based activated-ability
+    handled generically by drl_env's cost_key-based activated-ability
     wiring (same as Candy Trail's own sac ability). Sacrifice a TOKEN (ceases
     to exist, never a graveyard trip -- unlike Candy Trail, a real card), then
     the gain-3 is the effect and goes on the stack (push_ability_to_stack),
@@ -193,7 +193,7 @@ if __name__ == "__main__":
         state.library = [CardDef("Library Card", CardType.SORCERY, {}, None)]
 
         drawn_before = len(state.hand)
-        activate_blood_sac(state, blood)  # cost payment ({1} mana) is drl_env.py's concern, not this function's
+        activate_blood_sac(state, blood)  # cost payment ({1} mana) is drl_env's concern, not this function's
         assert state.pending_resolution["kind"] == "discard"
         assert resolution.discard_options(state) == ["Fake Madness Card"]
         resolution.execute_discard_option(state, "Fake Madness Card")

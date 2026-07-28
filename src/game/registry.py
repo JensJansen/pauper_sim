@@ -68,7 +68,7 @@ def derive_pending_kinds(decklist):
     explicit "pending_kinds" registry annotation.
 
     Not inferred from other spec keys ("cast"/"madness"/"flashback"/
-    "alt_cast"/"plot"): several of those call into resolution.py's generic
+    "alt_cast"/"plot"): several of those call into resolution's generic
     primitives (begin_discard, begin_sacrifice, ...) from inside a
     hand-written Python function, which isn't statically inspectable --
     e.g. a "flashback" spec might or might not itself need "sacrifice"

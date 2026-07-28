@@ -99,8 +99,7 @@ def creature_block_eligible(state, permanent):
 
 def declare_attacker(state, permanent):
     """Model chose to attack with this specific creature -- addressed by
-    (name, slot) at the drl_env.py action-table layer
-   , so the caller has
+    (name, slot) at the drl_env action-table layer, so the caller has
     already picked the exact physical copy it means, not an arbitrary
     same-named match. Tapped here, at declaration, same as real Magic --
     an attacking creature is unavailable for a mana ability etc. for the
@@ -436,7 +435,7 @@ def has_unfulfilled_goad(state):
     non-turn player who controls a goaded creature (the turn player goaded it)
     would have their priority-Pass blocked here while being unable to declare
     an attacker at all (_attack_legal needs active_idx == turn_player_idx):
-    an all-False action mask, a real crash caught in rl.train._seat_step. Goad
+    an all-False action mask, a real crash caught in rl.agent._seat_step. Goad
     binds a creature's controller on that controller's own combat, never a
     reactive priority window."""
     if state.active_idx != state.turn_player_idx:
@@ -818,7 +817,7 @@ if __name__ == "__main__":
     # goaded creature under the non-turn player must NOT block their priority-
     # Pass -- they cannot declare an attacker at all (_attack_legal needs
     # active_idx == turn_player_idx), so blocking it left an all-False action
-    # mask (the rl.train._seat_step crash this guards). turn_player_idx stays 0.
+    # mask (the rl.agent._seat_step crash this guards). turn_player_idx stays 0.
     nonturn_goaded = Permanent(CardDef("NonturnGoaded", CardType.CREATURE, None, _EID.FILLER, power=2, toughness=2))
     nonturn_goaded.summoning_sick = False
     nonturn_goaded.flags["goaded_by"] = 0  # goaded by the turn player (idx 0)

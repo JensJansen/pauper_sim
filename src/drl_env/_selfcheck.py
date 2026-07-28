@@ -127,7 +127,7 @@ def _run_self_checks():
         game.EFFECT_REGISTRY[EffectId.FILLER] = _filler_backup
         game.EFFECT_REGISTRY[EffectId.GENEROUS_ENT] = _generous_ent_backup
 
-    print("drl_env.py Plot + on-cast-trigger self-check: OK")
+    print("drl_env Plot + on-cast-trigger self-check: OK")
 
     # Regression: on_cast_trigger (Guttersnipe) must only fire once a
     # spell's cost is actually, irreversibly paid. Casting a spell and
@@ -199,7 +199,7 @@ def _run_self_checks():
         game.EFFECT_REGISTRY[EffectId.FILLER] = _filler_backup
         game.EFFECT_REGISTRY[EffectId.GENEROUS_ENT] = _generous_ent_backup
 
-    print("drl_env.py abandon-payment on-cast-trigger regression: OK")
+    print("drl_env abandon-payment on-cast-trigger regression: OK")
 
     # Tokens (item 8): build_action_table's token_card_defs param is what
     # actually makes "Activate Blood (sac)" exist as an action at all --
@@ -241,7 +241,7 @@ def _run_self_checks():
     game.resolve_top_of_stack(state)
     assert [c.name for c in state.hand] == ["Library Card"]  # discarded one, drew one
 
-    print("drl_env.py tokens self-check: OK")
+    print("drl_env tokens self-check: OK")
 
 
     # Cross-player targeting: build_action_table's
@@ -290,7 +290,7 @@ def _run_self_checks():
     assert completed == [("Slippery Bogle", 2)]  # the specific slot targeted, not an arbitrary same-named match
     assert not legal_slot_2(state)  # resolution is complete, nothing pending anymore
 
-    print("drl_env.py cross-player targeting self-check: OK")
+    print("drl_env cross-player targeting self-check: OK")
 
     # Turn-owner / priority-holder split:
     # _land_drop_legal (via speed_legal) and _attack_legal must both
@@ -327,7 +327,7 @@ def _run_self_checks():
     turn_owner_state.players[1].battlefield = [non_turn_bogle]  # even with their OWN eligible creature at the same (name, slot)
     assert not attack_bogle_legal(turn_owner_state)  # refused -- declaring attackers is the turn player's own special action
 
-    print("drl_env.py turn-owner (land drop / declare attacker) self-check: OK")
+    print("drl_env turn-owner (land drop / declare attacker) self-check: OK")
 
 
     # Blocking: build_action_table's "Assign Blocker:
@@ -381,7 +381,7 @@ def _run_self_checks():
     assert state.players[0].blocked_by == {atk_bogle_1: [defender_bogle]}
 
 
-    print("drl_env.py blocking self-check: OK")
+    print("drl_env blocking self-check: OK")
 
     # Flying: _assign_blocker_execute's own
     # extra_predicate (game.has_keyword), end to end through the REAL
@@ -429,7 +429,7 @@ def _run_self_checks():
     game.execute_choose_opponent_permanent_option(state, "Silhana Ledgewalker", 1)
     assert state.players[0].blocked_by == {attacking_ledgewalker: [defending_imp]}
 
-    print("drl_env.py flying self-check: OK")
+    print("drl_env flying self-check: OK")
 
     # Targeting (real MTG rule, per drl_env._precast_choice_execute /
     # game.effects.casting.cast_aura's own docstrings): a target is chosen once,
@@ -487,7 +487,7 @@ def _run_self_checks():
     rancor_permanent = next(p for p in state.battlefield if p.card_def.name == "Rancor")
     assert rancor_permanent.flags["enchanting"] is bogle_2  # the SPECIFIC one chosen -- not bogle_1, despite the identical name
 
-    print("drl_env.py Aura targeting (exact slot addressing) self-check: OK")
+    print("drl_env Aura targeting (exact slot addressing) self-check: OK")
 
     # Fizzle, same end-to-end path: the exact chosen permanent (bogle_1
     # this time) is gone by the time the cast resolves -- the whole spell
@@ -511,14 +511,14 @@ def _run_self_checks():
     assert rancor_card in state.graveyard
     assert not any(p.card_def.name == "Rancor" for p in state.battlefield)
 
-    print("drl_env.py Aura target-fizzle (end to end) self-check: OK")
+    print("drl_env Aura target-fizzle (end to end) self-check: OK")
 
     # _lost: true once someone has won and it wasn't seat_idx -- still used
     # directly by rl.train's own reward attribution.
     assert _lost(type("S", (), {"winner": 1})(), 0) is True
     assert _lost(type("S", (), {"winner": 0})(), 0) is False
     assert _lost(type("S", (), {"winner": None})(), 0) is False
-    print("drl_env.py _lost self-check: OK")
+    print("drl_env _lost self-check: OK")
 
     # tap_cost_options memoization never returns a stale answer (docs/
     #): build a pay_cost resolution with exactly 1
@@ -542,4 +542,4 @@ def _run_self_checks():
     assert game.tap_cost_options(perf_state) == []  # ground truth: nothing left to tap
     assert not legal_action_mask(perf_state, perf_actions)[perf_choose_mountain]  # would be wrongly True if the first sweep's stale cache leaked through
 
-    print("drl_env.py tap_cost_options cache self-check: OK")
+    print("drl_env tap_cost_options cache self-check: OK")

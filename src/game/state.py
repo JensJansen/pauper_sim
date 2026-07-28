@@ -283,7 +283,7 @@ def _active_player_property(attr):
     """One GameState property per PlayerState field, reading/writing
     state.players[state.active_idx].<attr> -- see this module's own
     docstring for why this is the load-bearing trick that lets every
-    existing card-effect function and mana.py/resolution.py/
+    existing card-effect function and mana.py/resolution/*.py/
     game/effects/*.py stay unchanged under a 2-player game."""
     def getter(self):
         return getattr(self.players[self.active_idx], attr)
@@ -319,11 +319,11 @@ class GameState:
 
         # None (the default -- every existing caller) means "logging is
         # off," checked first thing in log_event below so every
-        # instrumented call site across mana.py/turn.py/resolution.py/
+        # instrumented call site across mana.py/turn.py/resolution/*.py/
         # game/effects/*.py costs one attribute read on the hot training
         # path, never a dict build. Pass a plain list to turn logging on
         # for one game (e.g. `GameState(..., event_log=[])`, or via
-        # new_game_state/new_multiplayer_game_state's own event_log param)
+        # new_multiplayer_game_state's own event_log param)
         # -- log_event appends one structured dict per instrumented state
         # change, in occurrence order, which is what makes the whole game
         # reconstructible afterward (see log_event's own docstring for the
@@ -352,7 +352,7 @@ class GameState:
         # state.players) won it -- None/None while the game is still in
         # progress. turn_won's meaning is unchanged from before the
         # multiplayer refactor (every existing reader -- game/effects/*.py,
-        # drl_env.py, rl.rewards -- keeps working unmodified); winner is the
+        # drl_env, rl.rewards -- keeps working unmodified); winner is the
         # new field 2-player games need to say *who*.
         # winner stays None for a bare failure (horizon reached in
         # 1-player, or -- 1-player only -- decking out with no opponent to
@@ -448,7 +448,7 @@ class GameState:
         """Appends one structured event to self.event_log, if logging is on
         (see __init__'s own event_log docstring) -- else an immediate
         no-op, so every instrumented call site across mana.py/turn.py/
-        resolution.py/game/effects/*.py costs exactly one attribute check
+        resolution/*.py/game/effects/*.py costs exactly one attribute check
         when logging is off (the default, and every existing bulk-training
         path).
 
@@ -562,12 +562,14 @@ if __name__ == "__main__":
     on_state.log_event("tap", permanent=("Mountain", 1))
     assert len(log) == 1
     event = log[0]
-    assert event["kind"] == "tap" and event["permanent"] == ("Mountain", 1)
+    # _safe() normalizes tuples -> lists (JSON has no tuple type), so the
+    # (name, slot) comes back as a list, not the tuple that was passed in.
+    assert event["kind"] == "tap" and event["permanent"] == ["Mountain", 1]
     assert event["turn"] == 3 and event["active_idx"] == 0 and event["turn_player_idx"] == 0
     print("state.py log_event envelope self-check: OK")
 
     # End to end through a REAL 2-player game (run_multiplayer_game -> every
-    # instrumented mutation site across mana.py/turn.py/resolution.py/
+    # instrumented mutation site across mana.py/turn.py/resolution/*.py/
     # game/effects/*.py) -- player 0 taps a Mountain, casts Lightning Bolt at
     # player 1, and lets it resolve; player 1 only ever passes. This is
     # exactly the scenario the removed earlier snapshot-based game logger got wrong:

@@ -81,7 +81,7 @@ SORCERY_SPEED_PHASES = {Phase.MAIN1, Phase.MAIN2}
 
 
 def speed_legal(state, speed):
-    """The one gate every timing-restricted legal_fn in drl_env.py calls
+    """The one gate every timing-restricted legal_fn in drl_env calls
     into.
 
     Real Magic's sorcery-speed rule is "your main phase, empty stack, you
@@ -227,7 +227,7 @@ _PHASE_AUTO_EFFECTS = {
 
 def _run_mulligan_gen(state):
     """Pregame: every player decides keep-or-mulligan for their own opening
-    hand (already dealt by state.new_game_state/new_multiplayer_game_state's
+    hand (already dealt by state.new_multiplayer_game_state's
     own eager draw(7)), one player fully at a time -- same per-player
     active_idx flip pattern as _declare_blockers_gen, just scoped to the
     whole pregame instead of one phase. APNAP order: whoever active_idx
@@ -906,7 +906,7 @@ if __name__ == "__main__":
 
     # -- _declare_blockers_gen: the defender's own consult, active_idx flip
     # --.
-    # resolution.py's own self-check already covers begin_declare_blockers/
+    # handlers.py's own self-check already covers begin_declare_blockers/
     # declare_blocker_assignment directly; this one is specifically about
     # the flip-drive-restore shape unique to this generator, driven the
     # same way drl_env._assign_blocker_execute's own nested on_complete

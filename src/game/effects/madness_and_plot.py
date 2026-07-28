@@ -1,5 +1,5 @@
 """The Madness "cast for its madness cost" and Plot "pay cost, exile instead
-of resolving" paths -- both need mana.begin_pay_cost, which resolution.py can't
+of resolving" paths -- both need mana.begin_pay_cost, which resolution can't
 import (mana imports resolution; the reverse would cycle). This module depends
 on both, so the orchestration lives here."""
 

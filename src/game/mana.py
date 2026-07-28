@@ -72,7 +72,7 @@ def _enchanting(state, permanent):
     on which cost is being tested, so it was identical, wasted work
     repeated by every one of those ~20 calls. Cached per state object,
     same scope as _cached_battlefield_lookup/_cached_tap_cost_options in
-    drl_env.py: safe because a legal_action_mask sweep only ever calls
+    drl_env: safe because a legal_action_mask sweep only ever calls
     legal_fns, never an execute_fn, so state can't mutate mid-sweep.
     Reset by drl_env.legal_action_mask before AND after its own sweep
     (see reset_mana_cache below) -- not by watching for mutation, so it
@@ -707,7 +707,7 @@ if __name__ == "__main__":
     # SIMPLE_MANA_SOURCE_EFFECTS is also a derived view frozen once at
     # import time (registry.py) -- unlike EFFECT_REGISTRY itself, patching
     # it back to reflect FILLER's fake "mana" spec needs its own explicit
-    # (temporary) update, same lesson drl_env.py's Plot self-check hit
+    # (temporary) update, same lesson drl_env's Plot self-check hit
     # first for _FIXED_SOURCE_COLOR before that view got deleted outright.
     _was_simple_source = _EffectId.FILLER in _registry.SIMPLE_MANA_SOURCE_EFFECTS
     _registry.SIMPLE_MANA_SOURCE_EFFECTS.add(_EffectId.FILLER)

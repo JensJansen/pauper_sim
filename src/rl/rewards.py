@@ -9,11 +9,13 @@ action was applied. A sparse reward function returns 0.0 unless `done`;
 a dense one could return something every call. No base class -- any
 matching callable works.
 
-Only WIN/LOSS rewards live here: a loss, draw, or horizon cutoff is always
-0.0; a win's own value is scaled by how efficiently it was reached. The old
-single-player Tron-era heuristics (resource-quality tie-breakers) and the
-turn-decay fast_win_reward went away with the 1-player pipeline -- league
-self-play uses action_count_win_reward_200_floor02.
+Only WIN/LOSS rewards live here (no dense shaping): a win is scaled by how
+efficiently it was reached; a loss/timeout is either a flat 0.0
+(action_count_win_reward) or a small floor scaled down by wasted cards
+(deploy_reward). The old single-player Tron-era heuristics (resource-quality
+tie-breakers) and the turn-decay fast_win_reward went away with the 1-player
+pipeline. Pretraining uses action_count_win_reward_200_floor02; league
+self-play uses deploy_reward_v1.
 """
 
 
@@ -98,17 +100,17 @@ def deploy_reward(plateau_actions=80, max_actions=200, win_floor=0.5, loss_defau
 # Pre-baked named instance (callers reference reward_fns by plain name via
 # getattr off this module -- see rl.train's own reward_fn_name plumbing).
 # Floor lowered to 0.2 (vs. the default 0.25) per the "sliding scale from
-# 1 - 0.2" spec -- this is the reward league self-play (run_league.py) uses.
+# 1 - 0.2" spec -- this is the reward pretraining (run_pretrain.py) uses.
 action_count_win_reward_200_floor02 = action_count_win_reward(min_reward=0.2)
 
 # The reward league self-play uses now (run_league.py). Win band 0.5->1.0 by
-# gameplay efficiency; loss band 0.25 minus 0.05 per cleanup-discard turn and
-# 0.05 per mulligan, floored at 0.
+# gameplay efficiency; loss band 0.25 minus 0.05 per cleanup-discard turn,
+# floored at 0.
 deploy_reward_v1 = deploy_reward()
 
 
 if __name__ == "__main__":
-    # ponytail self-check: run via `python rewards.py` from src/.
+    # ponytail self-check: run via `python -m rl.rewards` from src/.
     # action_count_win_reward: per-seat (state.players[winner].actions_taken),
     # not turn_number -- a real 2-player state (state.winner needs a second
     # seat to mean anything).
@@ -149,8 +151,8 @@ if __name__ == "__main__":
     win_past_cap = rf(state2, done=True, horizon=120)
     assert win_at_cap == win_past_cap  # bottomed out -- doesn't keep decaying below this
 
-    # legacy reward now self-contains the loser gate (rl.train._lost is gone):
-    # a non-winning seat (state.winner != state.active_idx) scores 0 on its own.
+    # legacy reward now self-contains the loser gate (the external loser gate is
+    # gone): a non-winning seat (state.winner != state.active_idx) scores 0 on its own.
     state2.active_idx = 1  # score seat 1; winner is 0 -> a loss for this seat
     assert rf(state2, done=True, horizon=120) == 0.0
     state2.active_idx = 0

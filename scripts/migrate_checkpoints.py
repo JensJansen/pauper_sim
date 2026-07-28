@@ -1,5 +1,5 @@
-"""One-time checkpoint migration for the pregame-action removal (harness refactor
-Phase 4). BEHAVIORALLY LOSSLESS: the two DeckNetwork head rows for "Keep hand" /
+"""One-time checkpoint migration for the pregame-action removal (the harness
+refactor). BEHAVIORALLY LOSSLESS: the two DeckNetwork head rows for "Keep hand" /
 "Mulligan" never trained in league (the mulligan model intercepts every pregame
 decision before the main net's forward), so dropping them changes no behavior.
 

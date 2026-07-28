@@ -7,7 +7,7 @@ turns "the hand I kept" into a single number -- unlike the main in-game policy,
 whose terminal reward has to survive ~100 steps of GAE discounting to reach the
 mulligan choice (why the in-reward mulligan penalty never worked: rl.rewards).
 
-This model OWNS the pregame phase (rl.train routes mulligan_decision /
+This model OWNS the pregame phase (rl.agent.SeatAgent routes mulligan_decision /
 mulligan_bottom decisions here instead of the main net) and is trained by
 REINFORCE with its OWN reward, decoupled from the main PPO update:
 
@@ -101,7 +101,7 @@ def _scalars(state, seat):
 def decide(net, vocab, state, seat, record, greedy=False):
     """Make the pending mulligan-phase decision with `net`, append a plain-data
     transition via record(entry), and return the zero-arg executor that applies
-    it. Called by rl.train's choose_action when the pending kind is
+    it. Called by rl.agent.SeatAgent.decide when the pending kind is
     mulligan_decision / mulligan_bottom. Samples during training (exploration);
     greedy=True (argmax) for evaluation. `record` gets a tuple whose reward slot
     is filled in later (finish, at game end); pass a no-op to just evaluate."""

@@ -54,7 +54,7 @@ def pointer_legal_mask(state, identities_row):
     for whichever ONE of the four targeting categories actually applies
     right now (at most one ever does, by construction of this engine's own
     turn/resolution state machine -- see each branch's own gate below,
-    mirroring drl_env.py's own _attack_legal/_assign_blocker_legal/
+    mirroring drl_env's own _attack_legal/_assign_blocker_legal/
     _choose_permanent_legal/_choose_opponent_permanent_legal exactly)."""
     pending = state.pending_resolution
     mask = [False] * len(identities_row)
@@ -140,7 +140,7 @@ def any_pointer_legal(state):
     category applies at all right now -- lets a caller skip building
     identities/mask work entirely on the (common) steps where it's not
     even relevant, same "cheap gate before the expensive check" shape
-    drl_env.py's own _pending_gate convention already uses throughout."""
+    drl_env's own _pending_gate convention already uses throughout."""
     pending = state.pending_resolution
     if pending is None:
         return state.phase is game.turn.Phase.DECLARE_ATTACKERS and state.active_idx == state.turn_player_idx
@@ -174,7 +174,7 @@ def execute_pointer_choice(state, permanent):
 
 
 if __name__ == "__main__":
-    # ponytail self-check: run via `python rl.action_bridge` from src/.
+    # ponytail self-check: run via `python -m rl.action_bridge` from src/.
     decklist = game.parse_decklist_file("../data/mono_red_madness.txt")
     pending_kinds = game.derive_pending_kinds(decklist)
     # mono_red_madness creates BOTH of these mid-game (Blood from madness
@@ -217,7 +217,7 @@ if __name__ == "__main__":
             pend = state.pending_resolution
             if pend is not None and pend["kind"] in ("mulligan_decision", "mulligan_bottom"):
                 # Pregame is no longer in the fixed table (owned by the mulligan model
-                # in real play -- harness refactor Phase 4). Keep every hand here so
+                # in real play -- the harness refactor). Keep every hand here so
                 # this self-check's random fixed/pointer play still reaches real turns.
                 return lambda state=state: game.execute_mulligan_keep(state)
             if any_pointer_legal(state):
@@ -248,7 +248,7 @@ if __name__ == "__main__":
             # Legality via ONE drl_env.legal_action_mask sweep, never by
             # calling each action's own legal_fn independently -- also
             # confirmed the hard way: _tap_cost_options_cache is explicitly
-            # documented (drl_env.py) as "valid only for the duration of
+            # documented (drl_env) as "valid only for the duration of
             # one legal_action_mask sweep," and calling legal_fn ad hoc,
             # action by action, outside that sweep produced a real crash
             # (max() on an empty sequence inside execute_tap_cost_option)

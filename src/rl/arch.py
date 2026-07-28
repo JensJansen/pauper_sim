@@ -8,8 +8,8 @@ conditioner. Deliberately does NOT include a trunk, critic, or action head
 Uses torch.nn.MultiheadAttention/TransformerEncoderLayer directly (already
 a torch dependency, no new library) rather than hand-rolling attention --
 same "stdlib/already-installed dependency before custom code" reasoning
-this codebase already applies elsewhere (e.g. the prior flat-MLP trainer reusing
-torch.distributions.Categorical instead of a hand-rolled categorical).
+this codebase already applies elsewhere (e.g. torch.distributions.Categorical
+in the PPO update instead of a hand-rolled categorical).
 
 Padding/masking: a batch of games has a variable number of tokens per
 game (different board states). Every function here takes a PADDED batch
@@ -37,8 +37,8 @@ def pad_token_batch(token_lists, device="cpu"):
     the pointer-network action head to map a legal target back to its own
     row). T = the longest token list in this specific batch, not a fixed
     constant -- every batch pads to its own max, matching how PPO rollout
-    batches already vary in size elsewhere in this codebase (the prior flat-MLP trainer's
-    own final minibatch can be shorter than batch_size)."""
+    minibatches already vary in size (the final minibatch can be shorter
+    than batch_size)."""
     batch_size = len(token_lists)
     max_len = max((len(tl) for tl in token_lists), default=1)
     max_len = max(max_len, 1)  # a batch element with ZERO tokens (empty board) still needs one padded slot
@@ -179,7 +179,7 @@ class FiLM(nn.Module):
 
 
 if __name__ == "__main__":
-    # ponytail self-check: run via `python rl.arch` from src/.
+    # ponytail self-check: run via `python -m rl.arch` from src/.
     import game
     from rl.features import CardVocab, build_token_set
     from game.state import GameState, PlayerState, Permanent

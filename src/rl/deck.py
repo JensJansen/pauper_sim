@@ -1,6 +1,6 @@
 """Per-deck trunk + critic + pointer-network action head, sitting on top of
 a SHARED SetTransformer+FiLM perception stack (rl.arch) that this
-module reuses, never owns (Phase 4's pretrain-then-freeze design: one
+module reuses, never owns (the pretrain-then-freeze design: one
 shared stack, N independent per-deck DeckNetwork instances built on top of
 it).
 
@@ -52,7 +52,7 @@ class DeckNetwork(nn.Module):
         [B, SCALAR_FEATURE_DIM] -- the non-tokenized globals (life totals,
         turn number, phase one-hot, pending-kind one-hot, mana pool -- the
         same non-per-card globals the scalar-feature builder
-        (rl.train._scalar_features) carries). pointer_token_mask:
+        (rl.agent._scalar_features) carries). pointer_token_mask:
         [B, T] bool, True where a token is a currently-legal POINTER TARGET
         for whatever specific resolution is pending right now (Attack-
         eligible creature, block-eligible creature, etc.) -- this is
@@ -63,7 +63,7 @@ class DeckNetwork(nn.Module):
         Returns (combined_logits [B, non_targeting_n_actions + T],
         value [B]) -- combined_logits' first non_targeting_n_actions
         entries are the fixed-table actions (masked externally by the
-        caller, same legal_action_mask contract drl_env.py already uses for
+        caller, same legal_action_mask contract drl_env already uses for
         that half), the remaining T entries are one pointer score per token
         position (masked here internally via pointer_token_mask, since
         those aren't a fixed-identity action table the caller can mask by
@@ -95,7 +95,7 @@ SCALAR_FEATURE_DIM = 4 + len(game.POOL_COLORS) + len(game.turn.Phase) + 2  # 4 =
 
 
 if __name__ == "__main__":
-    # ponytail self-check: run via `python rl.deck` from src/.
+    # ponytail self-check: run via `python -m rl.deck` from src/.
     import game as _game
     from rl.features import CardVocab, build_token_set
     from rl.arch import SetTransformer, pad_token_batch

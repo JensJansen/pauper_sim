@@ -95,6 +95,9 @@ src/
                              pooling heads) and FiLM — the shared perception stack.
     deck.py                  DeckNetwork: per-deck trunk + critic + pointer-net action
                              head on top of a shared stack.
+    mulligan.py              Per-deck pregame mulligan model + its REINFORCE trainer.
+    agent.py                 SeatAgent: per-seat decision dispatch (pregame ->
+                             mulligan model, everything else -> DeckNetwork).
     action_bridge.py         Maps the network's combined (fixed + pointer) action space
                              back to real engine calls.
     train.py                 Rollout collection + PPO update; mirror & cross self-play;
@@ -184,6 +187,12 @@ The network is split into a **shared** stack and a **per-deck** head:
   post-attention token representations. Both halves feed **one combined
   softmax**, so a masked-categorical sample over the true legal set is
   correct.
+- **Pregame mulligan model (per-deck, `rl/mulligan.py`)** — a separate small
+  head on the same shared stack that owns every pregame keep/mulligan/bottom
+  decision. A `SeatAgent` (`rl/agent.py`) routes pregame decisions to it and
+  everything else to the `DeckNetwork`. It trains by its own REINFORCE with a
+  direct whole-game reward, decoupled from the main PPO update — a mulligan is a
+  near-bandit: one pregame choice, the game's outcome as its number.
 
 Training is **PPO self-play** (`rl/train.py`). Mirror matches pool both seats
 into one buffer/update; cross-matchups give each net its own buffer, both
@@ -239,9 +248,9 @@ Key flags:
 - `--batch-size-start` / `--batch-size-cap` / `--batch-size-steps` — the PPO
   minibatch schedule, doubling from start (32) toward the cap (2048) in a
   fixed number of steps (6) across the session.
-- `--collect-batch-size K` — collect rollouts with in-process **vectorized**
-  play (K games at once, one shared-stack forward per batch of decisions);
-  single-process, overrides `--n-workers`.
+- `--batched-collect` — collect every deck's games under the start-of-iteration
+  weights, then do one PPO update per deck (cleaner on-policy, removes
+  intra-iteration drift). Experimental; benchmark before adopting.
 - `--no-opponent-salvage` — by default, when the sampled opponent is another
   deck's **live** net, that deck is also trained from its (on-policy)
   transitions this round at no extra collection cost; pass this to disable it.
@@ -262,10 +271,16 @@ wired only through `--matchup` mode.)
 
 ### Rewards & win condition
 
-- **Rewards** (`rl/rewards.py`): the league uses
+- **Rewards** (`rl/rewards.py`): **pretraining** uses
   `action_count_win_reward_200_floor02` — loss/draw → `0.0`, win → `1.0` down
   to a `0.2` floor scaled by the *winning seat's* action count (so a policy
-  can't pad a turn with free actions to inflate its reward).
+  can't pad a turn with free actions to inflate its reward). **League** play
+  uses `deploy_reward_v1`, a two-band terminal reward: a win scores `0.5`→`1.0`
+  by gameplay efficiency (actions taken minus pregame mulligan picks), a loss
+  scores a `0.25` floor decremented per turn the seat discarded to cleanup
+  (punishing hoarding), so every win outscores every loss. The **mulligan
+  model** trains on its own reward (`rl/mulligan.py`): win payout minus a convex
+  (quadratic) per-mulligan penalty.
 - **Win condition**: the engine's real one — an opponent's life total hitting
   0, or a player decking out. There is no separate termination heuristic.
 
@@ -325,6 +340,8 @@ python -m drl_env                           # action-table / legal-mask checks
 python -m rl.features                        # tokenization + vocab persistence
 python -m rl.arch                            # Set Transformer + FiLM
 python -m rl.deck                            # DeckNetwork + pointer masking
+python -m rl.mulligan                        # mulligan model + REINFORCE learning
+python -m rl.agent                           # per-seat decision dispatch
 python -m rl.action_bridge                   # action bridge on a real 2p game
 python -m rl.pool                            # shared vocab / roster wiring
 python -m rl.league                          # league sampling / eviction
@@ -333,7 +350,8 @@ python -m rl.rewards                         # reward functions
 ```
 
 `benchmarking/training_run.py` measures the real league loop under different
-collection configs (`seq`, `mp<N>`, `batch<K>`) over a fresh untrained stack.
+collection configs (`seq`, `mp<N>`, plus a `--batched` toggle) over a fresh
+untrained stack.
 
 ---
 
@@ -352,7 +370,3 @@ The engine and DRL architecture are the current, active surface.
 - **The DRL pipeline is 2-player only.** The engine still tolerates a
   no-opponent (1-player) configuration from the original Tron experiments, but
   the token architecture always encodes an opponent seat.
-- **Some in-code docstrings/comments are stale.** A few still say "Phase 4",
-  "Stage 1/2", "5 decks", or reference `drl_env.py`/`token_*.py` by their
-  pre-refactor names; the code they describe now lives under `rl/`, the
-  `drl_env/` package, and an 11-deck roster.

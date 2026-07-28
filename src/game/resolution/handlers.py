@@ -261,7 +261,7 @@ def begin_declare_blockers(state, on_complete):
     """The defending player assigns 0+ of their own untapped creatures to
     block the active player's declared attackers, one assignment at a
     time -- each pairing an "Assign Blocker: <name> (slot j)" action
-    (drl_env.py, picks one of THIS player's own untapped, not-yet-used
+    (drl_env, picks one of THIS player's own untapped, not-yet-used
     creatures) with a nested begin_choose_opponent_permanent picking
     which of the attacker's declared attackers it blocks -- until the
     defender chooses Done. Gang-blocking IS allowed:
@@ -287,19 +287,19 @@ def begin_declare_blockers(state, on_complete):
 
 def declare_blocker_assignment(state, blocker, on_complete, extra_predicate=lambda p: True):
     """One "Assign Blocker: <name> (slot j)" action's actual effect
-    (drl_env.py already picked the specific eligible `blocker` permanent):
+    (drl_env already picked the specific eligible `blocker` permanent):
     nests a begin_choose_opponent_permanent choosing which of the
     attacker's declared, not-yet-blocked attackers this blocker is
     assigned to (or None, if none remain -- shouldn't happen given the
     action's own legality check, but never crashes either way), appends the
     blocker to state.opponent.blocked_by[attacker] (a LIST -- gang-blocking),
     then calls
-    on_complete -- which drl_env.py uses to re-open begin_declare_blockers
+    on_complete -- which drl_env uses to re-open begin_declare_blockers
     so the defender can assign another blocker or finish.
 
     extra_predicate(attacker) -> bool: an additional restriction beyond
     "is a currently-unblocked attacker" -- e.g. flying's own blocking
-    restriction. Supplied by the CALLER (drl_env.py)
+    restriction. Supplied by the CALLER (drl_env)
     rather than computed here: this module stays effect-agnostic (see its
     own module docstring) and doesn't import game.effects.stats itself, so
     it has no way to ask "does this creature have flying" on its own.
@@ -956,7 +956,7 @@ def execute_discard_or_sacrifice_decline(state):
 
 def begin_mulligan(state, on_complete):
     """Pregame: this player already has an opening 7-card hand (dealt by
-    state.new_game_state/new_multiplayer_game_state's own eager draw(7)) --
+    state.new_multiplayer_game_state's own eager draw(7)) --
     decide keep or mulligan (London Mulligan). Driven by
     game.turn.run_mulligan_phase/_run_mulligan_gen, once per player, before
     turn 1 ever starts.
@@ -1174,7 +1174,7 @@ def execute_sacrifice_option(state, name):
     )
     # Leaves-the-battlefield triggered ability (Mesmeric Fiend, sacrificed --
     # e.g. to Dread Return's Flashback). Same three lines as state_based.
-    # _queue_leave_triggers, inlined here because resolution.py can't import
+    # _queue_leave_triggers, inlined here because resolution can't import
     # state_based without a cycle (state_based imports resolution).
     ltb_spec = registry.EFFECT_REGISTRY.get(permanent.card_def.effect_id, {})
     if ltb_spec.get("ltb_trigger") is not None:
@@ -1188,9 +1188,9 @@ def execute_sacrifice_option(state, name):
 
 if __name__ == "__main__":
     # ponytail self-check: no pytest in this project, mirrors the
-    # assert-based demo convention -- run via `python -m game.resolution`
+    # assert-based demo convention -- run via `python -m game.resolution.handlers`
     # from src/. Exercises begin_discard directly against a hand-built
-    # state, bypassing drl_env.py entirely (no card wires into this
+    # state, bypassing drl_env entirely (no card wires into this
     # primitive yet -- deck assembly is out of scope for this plan).
     from ..cards import CardDef, CardType
     from ..state import GameState
@@ -1304,7 +1304,7 @@ if __name__ == "__main__":
     assert state.pending_resolution is None
     assert len(state.hand) == 7
 
-    print("resolution.py mulligan self-check: OK")
+    print("handlers.py mulligan self-check: OK")
 
     # Madness routing: a discarded card whose EffectId has a "madness"
     # registry spec goes to exile + the trigger queue, not the graveyard.
@@ -1375,7 +1375,7 @@ if __name__ == "__main__":
     assert completed == [True]
     assert [p.card_def.name for p in state.battlefield] == ["Bear"]
 
-    print("resolution.py discard self-check: OK")
+    print("handlers.py discard self-check: OK")
 
     # Cross-player targeting: begin_choose_opponent_permanent
     # targets state.opponent's battlefield, addressed by (name, slot) --
@@ -1413,7 +1413,7 @@ if __name__ == "__main__":
     )
     assert completed == [None]
 
-    print("resolution.py cross-player targeting self-check: OK")
+    print("handlers.py cross-player targeting self-check: OK")
 
     # "Any target" (begin_choose_any_target): a single target spanning BOTH
     # battlefields' creatures plus either player -- real Magic's "any
@@ -1451,15 +1451,15 @@ if __name__ == "__main__":
     begin_choose_any_target(state, lambda p: p.card_type == CardType.CREATURE, lambda s, t: None, allow_players=False)
     assert all(o[0] == "creature" for o in choose_any_target_options(state))
 
-    print("resolution.py any-target self-check: OK")
+    print("handlers.py any-target self-check: OK")
 
     # Blocking: begin_declare_blockers/
     # declare_blocker_assignment, driven directly against a hand-built
     # state (bypassing game.turn._declare_blockers_gen's active_idx-flip --
     # simulated here the same way the cross-player check above does, by
     # setting active_idx to "the defender" up front). Also bypasses
-    # drl_env.py's own _assign_blocker_legal eligibility gate -- this
-    # exercises the resolution.py primitives directly, so a "re-open
+    # drl_env's own _assign_blocker_legal eligibility gate -- this
+    # exercises the resolution primitives directly, so a "re-open
     # begin_declare_blockers after each assignment" step is done by hand
     # here rather than relying on drl_env._assign_blocker_execute's own
     # nested on_complete to do it.
@@ -1501,7 +1501,7 @@ if __name__ == "__main__":
     assert step2_done == [True]
     assert state.players[0].blocked_by == {bear: [grizzly, panther]}  # two blockers on one attacker
 
-    # "Done blocking" (drl_env.py's action): closes a still-open
+    # "Done blocking" (drl_env's action): closes a still-open
     # declare_blockers resolution outright, no assignment required.
     completed = []
     begin_declare_blockers(state, on_complete=lambda s: completed.append(True))
@@ -1516,7 +1516,7 @@ if __name__ == "__main__":
     begin_declare_blockers(state, on_complete=lambda s: completed.append(True))
     assert completed == [True]
 
-    print("resolution.py blocking self-check: OK")
+    print("handlers.py blocking self-check: OK")
 
     # declare_blocker_assignment's extra_predicate: this module stays effect-agnostic (see
     # its own module docstring) and doesn't import game.effects.stats
@@ -1544,7 +1544,7 @@ if __name__ == "__main__":
     assert completed == [True]
     assert state.players[0].blocked_by == {grounded: [non_flying_blocker]}
 
-    print("resolution.py extra_predicate (flying-restriction wiring) self-check: OK")
+    print("handlers.py extra_predicate (flying-restriction wiring) self-check: OK")
 
     # begin_order_triggers: 2+ simultaneous
     # triggers get a real placement-order choice -- PLACEMENT order, not
@@ -1576,7 +1576,7 @@ if __name__ == "__main__":
         entry["resolve"](state, entry["card_def"])
     assert resolved_order == ["Trigger B", "Trigger A"]
 
-    print("resolution.py begin_order_triggers self-check: OK")
+    print("handlers.py begin_order_triggers self-check: OK")
 
     # explore (Map token / Fanatical Offering): a land on top goes to hand; a
     # nonland puts a +1/+1 counter on the exploring creature, then surveil 1
@@ -1600,4 +1600,4 @@ if __name__ == "__main__":
     assert state.pending_resolution["kind"] == "surveil"  # then "may put it in graveyard"
     execute_scry_surveil_option(state, "dispose")
     assert [c.name for c in state.graveyard] == ["A Spell"]
-    print("resolution.py explore self-check: OK")
+    print("handlers.py explore self-check: OK")

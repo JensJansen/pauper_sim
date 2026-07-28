@@ -11,7 +11,7 @@ from ..cards import CardDef, CardType, EffectId
 from ..state import GameState, Permanent, PlayerState
 
 # -- Madness chain end to end: triggers.py + stack.py + madness_and_plot.py
-# + mana.py + resolution.py, all in one pass (discard -> exile + queue ->
+# + mana.py + resolution, all in one pass (discard -> exile + queue ->
 # drain -> decision -> pay madness cost -> resolve -> drain again). No real
 # madness card exists yet (deck assembly out of scope), so this borrows
 # EffectId.FILLER for the fake spell, saving/restoring its real (empty)

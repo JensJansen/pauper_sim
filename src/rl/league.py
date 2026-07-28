@@ -1,10 +1,9 @@
-"""Opponent pool for league-style training (replaces the old pairwise
-Stage 1/Stage 2 scripts) -- per confirmed design: historical checkpoint
+"""Opponent pool for league-style training (in place of the old pairwise
+Stage 1/Stage 2 curriculum) -- per confirmed design: historical checkpoint
 snapshots per deck (not latest-only, so a deck can't quietly drift away
 from skills it needed against an opponent's earlier self), sampled
-uniformly (not skill-weighted -- no meaningful signal to weight by yet
-with only a couple of decks in the roster; revisit once the league is
-bigger).
+uniformly (not skill-weighted -- no reliable skill signal to weight by
+yet; revisit if that changes).
 
 Sampling is two-level uniform: pick a deck uniformly from the whole
 roster (including the training deck itself, for mirror play), then pick
@@ -115,7 +114,7 @@ class LeaguePool:
 
 
 if __name__ == "__main__":
-    # ponytail self-check: run via `python rl.league` from src/. No
+    # ponytail self-check: run via `python -m rl.league` from src/. No
     # real game simulation needed here -- this module's own logic (sampling
     # distribution, snapshot eviction, cache invalidation) is what's under
     # test, not the token architecture (already covered by rl.deck/

@@ -1,6 +1,6 @@
 """Per-card, per-token feature extraction for the attention-based observation
 encoding (docs discussed on the attention-opponent-encoding branch -- full
-per-card fidelity instead of drl_env.py's fixed per-(name, slot) observation
+per-card fidelity instead of the old fixed per-(name, slot) observation
 slots). Two independent pieces per token, deliberately kept separate:
 
 1. A card VOCABULARY INDEX (this module's CardVocab) -- looked up by the
@@ -35,9 +35,8 @@ KEYWORD_VOCAB = tuple(sorted({
 
 CARD_TYPES = tuple(game.CardType)
 
-# Same fixed-cap-then-normalize idiom drl_env.py already uses throughout
-# (POOL_CAP, PER_CREATURE_POWER_CAP, ...) -- kept consistent rather than
-# inventing a new normalization convention for this module.
+# Fixed-cap-then-normalize idiom: clamp a raw value to a cap, then divide to
+# [0,1], rather than inventing a new normalization convention per feature.
 MANA_PIP_CAP = 6
 POWER_TOUGHNESS_CAP = 10
 
@@ -58,11 +57,11 @@ class CardVocab:
     the hard way: the first version of this module assumed every
     battlefield permanent's name resolves via game.CARD_DEFS[name] and
     crashed with a KeyError the first time a mono_red_madness game actually
-    created a Blood token). drl_env.py's own fixed-slot observation just
-    drops tokens from the encoding entirely (its own documented "a token
-    has no observation representation at all" choice) -- reproducing that
-    gap here would be a real, avoidable fidelity loss this migration exists
-    to remove, not a corner worth cutting again."""
+    created a Blood token). The old fixed-slot observation just dropped
+    tokens from the encoding entirely (a token had no observation
+    representation at all) -- reproducing that gap here would be a real,
+    avoidable fidelity loss this token encoding exists to remove, not a
+    corner worth cutting again."""
 
     def __init__(self, decklists, token_card_defs=(), vocab_path=None):
         """vocab_path: optional JSON file persisting name -> index across
@@ -145,7 +144,7 @@ def cached_static_card_features(name, vocab):
 # ---------------------------------------------------------------------------
 # Tokenization: turn each PUBLIC zone (battlefield/graveyard/stack/exile,
 # both seats) into a variable-length list of per-token feature rows, instead
-# of drl_env.py's fixed per-(name, slot) observation slots. Deliberately
+# of the old fixed per-(name, slot) observation slots. Deliberately
 # does NOT touch hand or library -- those stay hidden (aggregate count only),
 # preserving the existing
 # hidden-information guarantee. See this module's own docstring for the
@@ -160,7 +159,7 @@ ZONES = ("battlefield", "graveyard", "stack", "exile")
 DYNAMIC_FEATURE_DIM = 6 + len(ZONES) + 1
 TOKEN_FEATURE_DIM = STATIC_FEATURE_DIM + DYNAMIC_FEATURE_DIM
 
-PER_CREATURE_POWER_CAP = 20  # matches drl_env.PER_CREATURE_POWER_CAP -- same cap, same reasoning
+PER_CREATURE_POWER_CAP = 20  # clamp before normalizing to [0,1]; 20 covers this card subset's creatures
 PER_CREATURE_TOUGHNESS_CAP = 20
 
 
@@ -168,8 +167,7 @@ def _token_row(name, zone, is_mine, vocab, permanent=None, owner_idx=None, encha
     """One token's full feature row: static card identity/stats (always
     present) + dynamic per-instance state (mostly zero outside battlefield,
     since graveyard/stack/exile cards aren't permanents with tapped/combat
-    state -- same "inert, not padded-away" convention drl_env.py's own
-    creature-slot block uses for an absent slot).
+    state -- inert values, not padded away).
 
     owner_idx: this permanent's OWN true seat (0 or 1) -- NOT derivable from
     is_mine alone, since is_mine is relative to whichever seat's own
@@ -257,7 +255,7 @@ def build_token_set(state, my_seat_idx, vocab):
 
 
 if __name__ == "__main__":
-    # ponytail self-check: run via `python rl.features` from src/.
+    # ponytail self-check: run via `python -m rl.features` from src/.
     from game.state import GameState, PlayerState, Permanent
 
     decklist_a = game.parse_decklist_file("../data/mono_red_madness.txt")
