@@ -236,7 +236,7 @@ def mesmeric_fiend_ltb(state, permanent):
     )
 
 
-def _dread_return_choose_and_push(state, card_def, to_graveyard, reserves_hand_card):
+def _dread_return_choose_and_push(state, card_def, to_graveyard, reserves_hand_card, exiles_on_resolve=False):
     """Choose the reanimation target -- a creature card in your graveyard --
     as Dread Return is put on the stack, lock it, and push the reanimation
     resolve. On resolution the chosen card returns from the graveyard to the
@@ -262,7 +262,7 @@ def _dread_return_choose_and_push(state, card_def, to_graveyard, reserves_hand_c
             state.graveyard.remove(captured)
             enters_battlefield(state, captured, from_zone="graveyard")
 
-        push_to_stack(state, card_def, _resolve, reserves_hand_card=reserves_hand_card)
+        push_to_stack(state, card_def, _resolve, reserves_hand_card=reserves_hand_card, exiles_on_resolve=exiles_on_resolve)
 
     resolution.begin_choose_graveyard_card(state, lambda c: c.card_type == CardType.CREATURE, _on_chosen)
 
@@ -286,7 +286,7 @@ def flashback_dread_return(state, card_def):
     resolution.begin_sacrifice(
         state, lambda p: p.card_type == CardType.CREATURE, 3,
         on_complete=lambda s, ok: _dread_return_choose_and_push(
-            s, card_def, to_graveyard=lambda st, cd: None, reserves_hand_card=False,
+            s, card_def, to_graveyard=lambda st, cd: None, reserves_hand_card=False, exiles_on_resolve=True,
         ) if ok else None,
     )
 
@@ -394,7 +394,7 @@ def flashback_eviscerators_insight(state, card_def):
     state.graveyard.remove(card_def)  # leaves gy; exiled after resolution
 
     def _after_sac(state, _sacced):
-        push_to_stack(state, card_def, lambda st, cd: st.draw(2), reserves_hand_card=False)
+        push_to_stack(state, card_def, lambda st, cd: st.draw(2), reserves_hand_card=False, exiles_on_resolve=True)
 
     _sac_artifact_or_creature(state, _after_sac)
 

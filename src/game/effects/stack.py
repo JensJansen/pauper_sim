@@ -32,7 +32,7 @@ def on_cast_trigger(state, card_def):
             state.trigger_queue.append({"type": "cast_trigger", "card_def": permanent.card_def, "permanent": permanent})
 
 
-def push_to_stack(state, card_def, resolve, reserves_hand_card=True, is_spell=True):
+def push_to_stack(state, card_def, resolve, reserves_hand_card=True, is_spell=True, exiles_on_resolve=False):
     """Defer `resolve(state, card_def)` onto state.stack instead of running it
     now, giving both players a priority window before it resolves. Pushed only
     once the spell's cost is fully paid -- never mid-payment (an alt cost that
@@ -60,6 +60,10 @@ def push_to_stack(state, card_def, resolve, reserves_hand_card=True, is_spell=Tr
     state.stack.append({
         "card_def": card_def, "resolve": resolve, "controller": state.active_idx,
         "reserves_hand_card": reserves_hand_card, "is_spell": is_spell,
+        # Flashback (702.34): the spell is EXILED as it leaves the stack, not put
+        # into the graveyard. resolve_top_of_stack does that exile (+ logs it), so
+        # every Flashback push sets this instead of leaving the card untracked.
+        "exiles_on_resolve": exiles_on_resolve,
     })
     # A normally-cast spell LEAVES its controller's hand the instant it goes on
     # the stack (real Magic: a cast spell is a stack object, not a hand card),
@@ -141,9 +145,15 @@ def resolve_top_of_stack(state):
     entry = state.stack.pop()
     state.active_idx = entry["controller"]
     # Only a spell is a card leaving the stack on resolution; an ability
-    # resolving moves no card (same is_spell reasoning as push_to_stack).
+    # resolving moves no card (same is_spell reasoning as push_to_stack). A
+    # Flashback spell is EXILED as it leaves the stack (702.34), not put into the
+    # graveyard -- log that explicit destination (the exile itself happens below,
+    # after the effect resolves), so the replay shows exile, not the graveyard.
     if entry["is_spell"]:
-        state.log_event("zone_move", card=entry["card_def"].name, from_zone="stack", reason="resolve")
+        if entry.get("exiles_on_resolve"):
+            state.log_event("zone_move", card=entry["card_def"].name, from_zone="stack", to_zone="exile", reason="flashback")
+        else:
+            state.log_event("zone_move", card=entry["card_def"].name, from_zone="stack", reason="resolve")
     # Mark the spell currently resolving so its resolve's own "send this card
     # onward" step (discard_from_hand_to_graveyard / cast_permanent_from_hand /
     # cast_aura) treats it as the resolving spell -- off hand since cast
@@ -156,6 +166,15 @@ def resolve_top_of_stack(state):
         entry["resolve"](state, entry["card_def"])
     finally:
         state.resolving_card = prev_resolving
+    # Flashback exile (702.34): the card was removed from the graveyard at cast
+    # and its resolve never re-homes it, so it is now gone from every zone -- it
+    # cannot be flashed back again (out of the graveyard) and stays out of the
+    # graveyard for good. state.exile here is the CASTABLE exile zone (Plot/
+    # Madness/Adventure, stored as (card_def, turn) tuples) -- a flashback card is
+    # NOT castable-from-exile, so it must not be added there; leaving it untracked
+    # is the faithful representation given no plain-exile zone exists. The
+    # stack->exile zone_move logged above is what makes the replay render it as
+    # exiled rather than defaulting it to the graveyard.
 
 
 if __name__ == "__main__":

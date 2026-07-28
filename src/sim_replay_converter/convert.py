@@ -373,17 +373,22 @@ class BaseReplayBuilder:
             ai.target_zone = Z_TABLE
             ai.target_card_id = target_card_id
         ai.arrow_color.r, ai.arrow_color.g, ai.arrow_color.b = 255, 0, 0
-        self.live_arrow_ids.append(arrow_id)
+        # Track the owner (the player CREATE_ARROW was dispatched to): Cockatrice
+        # stores each arrow in that player's own arrow map, so the matching
+        # DELETE_ARROW must be dispatched to the SAME player to remove it.
+        self.live_arrow_ids.append((arrow_id, start_p.idx))
 
     def _clear_arrows(self, cont):
         if not self.live_arrow_ids:
             return
         # DELETE_ARROW isn't one of GameEventHandler's specially-routed event types --
-        # it falls through to the generic per-player dispatch, which requires
-        # event.player_id() to resolve to a real PlayerLogic (unlike
-        # SET_ACTIVE_PLAYER/SET_ACTIVE_PHASE, -1/unset gets silently dropped).
-        for arrow_id in self.live_arrow_ids:
-            da = add_event(cont, self.players[0].idx, pb_deletearrow.Event_DeleteArrow.ext)
+        # it falls through to the generic per-player dispatch, which deletes the
+        # arrow from THAT player's own arrow map. So each delete must be dispatched
+        # to the arrow's owner (start_p.idx at creation), not a fixed player -- a
+        # player-1-owned attack arrow deleted under player 0 simply never clears
+        # (it lingered across every later phase for the seat-1 attacker).
+        for arrow_id, owner_idx in self.live_arrow_ids:
+            da = add_event(cont, owner_idx, pb_deletearrow.Event_DeleteArrow.ext)
             da.arrow_id = arrow_id
         self.live_arrow_ids = []
 
@@ -1005,6 +1010,23 @@ class EventStreamReplayBuilder(BaseReplayBuilder):
             # card put back into the deck -- un-count it so the displayed deck size stays right
             p.library_draws = max(0, p.library_draws - 1)
 
+    def _handle_countered(self, e):
+        # A countered spell goes to its owner's graveyard (real Magic 701.5b). The
+        # engine records this only as a bare "countered" event (card + controller),
+        # never a zone_move, so render the move here: take the card off ITS
+        # CONTROLLER's stack (not the counterer's -- controller, not active_idx)
+        # into their graveyard. Without this the countered card lingered on the
+        # stack and never reached the graveyard, so a graveyard-counting cost
+        # reducer (Cryptic Serpent / Tolarian Terror) looked cheaper in the replay
+        # than the visible graveyard justified.
+        p = self.players[e.get("controller", e["active_idx"])]
+        c = pop_by_name(p.stack, e["card"])
+        if c is None:
+            return
+        cont = self._new_container()
+        self._move(cont, p, Z_STACK, p, Z_GRAVE, c["id"], c["id"])
+        p.graveyard.append({"id": c["id"], "name": c["name"]})
+
     _HANDLERS = {
         "turn_start": _handle_turn_start,
         "phase_change": _handle_phase_change,
@@ -1017,6 +1039,7 @@ class EventStreamReplayBuilder(BaseReplayBuilder):
         "block_assigned": _handle_block_assigned,
         "life_change": _handle_life_change,
         "state_based_death": _handle_state_based_death,
+        "countered": _handle_countered,
     }
 
 

@@ -45,7 +45,7 @@ from concurrent.futures import ProcessPoolExecutor
 
 import torch
 
-from rl.rewards import action_count_win_reward_200_floor02
+from rl.rewards import deploy_reward_v1
 from rl.arch import SetTransformer
 from rl.deck import DeckNetwork
 from rl.league import LeaguePool
@@ -149,8 +149,8 @@ def _run_session(n_iterations, games_per_iteration, snapshot_every, executor, n_
               f"{ {name: len(pool.snapshots[name]) for name in deck_names} }")
 
     rng = random.Random(seed)  # seed=None -> nondeterministic, identical to the prior random.Random()
-    reward_fn = action_count_win_reward_200_floor02
-    reward_fn_name = "action_count_win_reward_200_floor02"
+    reward_fn = deploy_reward_v1
+    reward_fn_name = "deploy_reward_v1"
     horizon = 120
 
     print(f"League session {session}: n_iterations={n_iterations} games_per_iteration={games_per_iteration} "
@@ -253,7 +253,7 @@ def _run_matchup_session(deck_a_name, deck_b_name, total_games, log_path):
         optimizers[name] = optimizer
 
     rng = random.Random()
-    reward_fn = action_count_win_reward_200_floor02
+    reward_fn = deploy_reward_v1
     horizon = 120
 
     games_per_iteration = min(10, total_games)

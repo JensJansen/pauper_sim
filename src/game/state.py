@@ -236,6 +236,22 @@ class PlayerState:
         # unused/inert in 1-player mode (nothing there currently reads it).
         self.actions_taken = 0
 
+        # actions_taken as it stood the instant the pregame mulligan phase
+        # finished (snapshotted in game.turn.game_coroutine). Lets a reward
+        # measure GAMEPLAY actions only -- actions_taken counts every mulligan/
+        # keep/bottom pick too (game.turn._run_mulligan_gen), which would
+        # otherwise inflate a mulligan-heavy winner's action count and wrongly
+        # dock its efficiency reward. 0 until that snapshot (and for any state
+        # that never runs the pregame phase).
+        self.pregame_actions = 0
+
+        # Number of TURNS this player discarded to hand size at its own cleanup
+        # (game.effects.state_based.cleanup_step) -- a per-turn count, not per
+        # card. A proxy for hoarding drawn cards it never deployed; read by the
+        # loss band of rl.rewards.deploy_reward. Only the hand-size cleanup
+        # discard bumps this, never any other discard effect.
+        self.cleanup_discard_turns = 0
+
     def draw(self, n=1):
         """Real Magic: attempting to draw from an empty library is an
         instant loss, mid-effect -- sets decked_out, then raises DeckedOut

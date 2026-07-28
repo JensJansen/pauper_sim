@@ -392,7 +392,7 @@ def flashback_deep_analysis(state, card_def):
     legal predicate."""
     state.graveyard.remove(card_def)
     lose_life(state, 3, reason="deep_analysis_flashback")
-    push_to_stack(state, card_def, _deep_analysis_effect, reserves_hand_card=False)
+    push_to_stack(state, card_def, _deep_analysis_effect, reserves_hand_card=False, exiles_on_resolve=True)
 
 
 def delver_upkeep(state, permanent):

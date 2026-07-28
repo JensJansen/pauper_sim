@@ -199,6 +199,11 @@ def cleanup_step(state):
     if damaged:
         state.log_event("cleanup_damage_cleared", permanents=damaged)
     n = max(0, len(state.hand) - HAND_SIZE_LIMIT)
+    if n > 0:
+        # One count per TURN this player over-drew and had to pitch the excess
+        # (hoarding proxy for rl.rewards.deploy_reward's loss band) -- only the
+        # hand-size cleanup discard, never any other discard effect.
+        state.players[state.active_idx].cleanup_discard_turns += 1
     resolution.begin_discard(state, n, optional=False, on_complete=lambda s, _cards: None)
 
 

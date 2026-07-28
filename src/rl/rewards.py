@@ -41,9 +41,59 @@ def action_count_win_reward(plateau_actions=80, max_actions=200, min_reward=0.25
     def reward_fn(state, done, horizon):
         if not done or state.turn_won is None:
             return 0.0
+        # Self-contained loser gate: rl.train._reward_for used to zero the loser
+        # externally (drl_env._lost) before ever calling this. That gate is gone
+        # now (deploy_reward needs the loser to reach its own loss band), so this
+        # legacy reward must decide it itself -- a non-winning seat still scores 0.
+        # state.active_idx is the seat being scored (rl.train._reward_for flips it).
+        if state.winner != state.active_idx:
+            return 0.0
         winner_actions = state.players[state.winner].actions_taken
         over_plateau = min(max(0, winner_actions - plateau_actions), span)
         return 1.0 - over_plateau / span * (1.0 - min_reward)
+    return reward_fn
+
+
+def deploy_reward(plateau_actions=80, max_actions=200, win_floor=0.5, loss_default=0.25,
+                  discard_penalty=0.05, mulligan_penalty=0.05):
+    """Two-band terminal reward. Scored PER SEAT: rl.train._reward_for flips
+    state.active_idx to the seat being scored (via drl_env._for_player) and no
+    longer zeroes the loser first, so this callable decides win vs loss itself.
+
+    WIN (state.winner == this seat): win_floor (0.5) -> 1.0, scaled by the
+    winner's own GAMEPLAY efficiency -- actions_taken MINUS pregame_actions (the
+    mulligan/keep/bottom picks are excluded so a winner that had to mulligan
+    isn't docked for it): <= plateau_actions (80) gameplay actions -> 1.0 (a fast
+    win), >= max_actions (200) -> win_floor (a long, grindy win); linear between.
+    Every win outscores every loss (win_floor > loss_default).
+
+    LOSS or no-winner timeout (state.winner != this seat, including None -- the
+    only non-win 2-player outcome, a horizon cap; genuine draws can't happen,
+    win_check awards every life/deck-out end to a seat): loss_default (0.25)
+    DECREMENTED by this seat's own wasted resources -- discard_penalty (0.05) per
+    turn it discarded to cleanup (hoarded cards it never played) and
+    mulligan_penalty (0.05) per mulligan it took (a thrown-away opening hand).
+    Floored at 0, so a do-nothing hoarder (mulligan to zero and/or discard every
+    turn) bottoms out at exactly 0, while a deck that deployed its hand and lost
+    keeps 0.25. Both penalties read per-seat counters (cleanup_discard_turns,
+    mulligans_taken), so the opponent's play can never move this seat's score.
+
+    Terminal only (0.0 until done). The empty-hand line (mulligan to zero) is the
+    one hole worth naming: it hoards nothing, so the discard term can't touch it
+    -- the mulligan penalty is exactly what keeps it from being a free 0.25."""
+    span = max_actions - plateau_actions
+    win_span = 1.0 - win_floor
+    def reward_fn(state, done, horizon):
+        if not done:
+            return 0.0
+        seat = state.active_idx  # the seat being scored (rl.train._reward_for flipped it here)
+        p = state.players[seat]
+        if state.winner == seat:
+            gameplay_actions = p.actions_taken - p.pregame_actions
+            over = min(max(0, gameplay_actions - plateau_actions), span)
+            return win_floor + win_span * (1.0 - over / span)
+        penalty = discard_penalty * p.cleanup_discard_turns + mulligan_penalty * p.mulligans_taken
+        return max(0.0, loss_default - penalty)
     return reward_fn
 
 
@@ -52,6 +102,11 @@ def action_count_win_reward(plateau_actions=80, max_actions=200, min_reward=0.25
 # Floor lowered to 0.2 (vs. the default 0.25) per the "sliding scale from
 # 1 - 0.2" spec -- this is the reward league self-play (run_league.py) uses.
 action_count_win_reward_200_floor02 = action_count_win_reward(min_reward=0.2)
+
+# The reward league self-play uses now (run_league.py). Win band 0.5->1.0 by
+# gameplay efficiency; loss band 0.25 minus 0.05 per cleanup-discard turn and
+# 0.05 per mulligan, floored at 0.
+deploy_reward_v1 = deploy_reward()
 
 
 if __name__ == "__main__":
@@ -96,4 +151,58 @@ if __name__ == "__main__":
     win_past_cap = rf(state2, done=True, horizon=120)
     assert win_at_cap == win_past_cap  # bottomed out -- doesn't keep decaying below this
 
+    # legacy reward now self-contains the loser gate (rl.train._lost is gone):
+    # a non-winning seat (state.winner != state.active_idx) scores 0 on its own.
+    state2.active_idx = 1  # score seat 1; winner is 0 -> a loss for this seat
+    assert rf(state2, done=True, horizon=120) == 0.0
+    state2.active_idx = 0
+
     print("rewards.py action_count_win_reward self-check: OK")
+
+    # --- deploy_reward: two-band terminal reward, scored per seat ---
+    dr = deploy_reward()  # defaults: plateau 80, max 200, win_floor 0.5, 0.05 penalties
+    s = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
+    s.active_idx = 0  # score seat 0 throughout (rl.train._reward_for flips this in real use)
+
+    assert dr(s, done=False, horizon=120) == 0.0  # terminal only
+
+    # WIN band (seat 0 is the winner): 0.5 + 0.5*efficiency, efficiency on
+    # GAMEPLAY actions (actions_taken - pregame_actions).
+    s.winner = 0
+    s.players[1].actions_taken = 999  # loser's count must never matter
+    s.players[0].pregame_actions = 5  # 5 mulligan/keep/bottom picks -- excluded below
+    s.players[0].actions_taken = 5 + 10   # 10 gameplay actions -> under plateau
+    assert dr(s, done=True, horizon=120) == 1.0
+    s.players[0].actions_taken = 5 + 80   # exactly plateau gameplay actions
+    assert dr(s, done=True, horizon=120) == 1.0
+    s.players[0].actions_taken = 5 + 140  # 140 gameplay -> midpoint of [80,200]
+    assert abs(dr(s, done=True, horizon=120) - 0.75) < 1e-9  # 0.5 + 0.5*0.5
+    s.players[0].actions_taken = 5 + 200  # >= max gameplay -> win floor
+    assert abs(dr(s, done=True, horizon=120) - 0.5) < 1e-9
+    s.players[0].actions_taken = 5 + 5000
+    assert abs(dr(s, done=True, horizon=120) - 0.5) < 1e-9  # floored, never below win_floor
+
+    # LOSS band (seat 0 is NOT the winner): 0.25 minus 0.05/discard-turn and
+    # 0.05/mulligan, floored at 0.
+    s.winner = 1
+    s.players[0].cleanup_discard_turns = 0
+    s.players[0].mulligans_taken = 0
+    assert abs(dr(s, done=True, horizon=120) - 0.25) < 1e-9  # played its hand, lost
+    s.players[0].cleanup_discard_turns = 3
+    assert abs(dr(s, done=True, horizon=120) - 0.10) < 1e-9  # 0.25 - 3*0.05
+    s.players[0].cleanup_discard_turns = 0
+    s.players[0].mulligans_taken = 2
+    assert abs(dr(s, done=True, horizon=120) - 0.15) < 1e-9  # 0.25 - 2*0.05
+    s.players[0].mulligans_taken = 7  # mulligan to zero
+    assert dr(s, done=True, horizon=120) == 0.0  # floored -- no free 0.25 for the empty-hand line
+    s.players[0].cleanup_discard_turns = 4
+    s.players[0].mulligans_taken = 4
+    assert dr(s, done=True, horizon=120) == 0.0  # over-penalized -> clamped, never negative
+
+    # No-winner timeout (winner None) uses the loss band for whichever seat.
+    s.winner = None
+    s.players[0].cleanup_discard_turns = 1
+    s.players[0].mulligans_taken = 0
+    assert abs(dr(s, done=True, horizon=120) - 0.20) < 1e-9  # 0.25 - 1*0.05
+
+    print("rewards.py deploy_reward self-check: OK")

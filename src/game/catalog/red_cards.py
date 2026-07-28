@@ -305,7 +305,7 @@ def _resolve_burn_damage(state, captured, amount, card_def):
         check_state_based_actions(state)
 
 
-def _burn_choose_target_and_push(state, card_def, amount, to_graveyard, reserves_hand_card=True, is_spell=True):
+def _burn_choose_target_and_push(state, card_def, amount, to_graveyard, reserves_hand_card=True, is_spell=True, exiles_on_resolve=False):
     """Shared faithful-burn tail for every "deal `amount` damage to any target"
     effect. Used both by burn SPELLS (Lightning Bolt, Fiery Temper, Fireblast,
     Lava Dart -- is_spell=True) and by Makeshift Munitions' activated ABILITY
@@ -328,7 +328,7 @@ def _burn_choose_target_and_push(state, card_def, amount, to_graveyard, reserves
             to_graveyard(state, card_def)
             _resolve_burn_damage(state, captured, amount, card_def)
 
-        push_to_stack(state, card_def, _resolve, reserves_hand_card=reserves_hand_card, is_spell=is_spell)
+        push_to_stack(state, card_def, _resolve, reserves_hand_card=reserves_hand_card, is_spell=is_spell, exiles_on_resolve=exiles_on_resolve)
 
     # "any target" creature candidates exclude what the caster can't legally
     # target: shroud (anyone) and opponent-controlled hexproof (can_be_targeted).
@@ -476,8 +476,8 @@ def flashback_faithless_looting(state, card_def):
     sacrifice) -- so, same as Land Grant's free alt_cast, the effect is
     already "fully paid for" the instant Flashback is chosen and pushes
     onto the stack immediately, not gated behind any further resolution."""
-    state.graveyard.remove(card_def)  # leaves the graveyard the moment Flashback is chosen -- exiled after, untracked (Dread Return's own Flashback precedent)
-    push_to_stack(state, card_def, lambda st, cd: faithless_looting_discard(st), reserves_hand_card=False)
+    state.graveyard.remove(card_def)  # leaves the graveyard the moment Flashback is chosen; exiled on resolution (702.34)
+    push_to_stack(state, card_def, lambda st, cd: faithless_looting_discard(st), reserves_hand_card=False, exiles_on_resolve=True)
 
 
 def _highway_robbery_effect(state):
@@ -603,13 +603,13 @@ def cast_lava_dart(state, card_def):
 def flashback_lava_dart(state, card_def):
     """Flashback -- Sacrifice a Mountain: no mana component at all. Same "1
     damage to any target"; once the sacrifice is paid, the target is chosen
-    and the effect pushed onto the stack. The card left the graveyard when
-    Flashback was chosen and is exiled after (untracked) -- so its stack
-    resolve does no zone move."""
-    state.graveyard.remove(card_def)  # leaves the graveyard the moment Flashback is chosen -- exiled after, untracked (Dread Return's own Flashback precedent)
+    and the effect pushed onto the stack. The card leaves the graveyard when
+    Flashback is chosen and is EXILED as it resolves (exiles_on_resolve) --
+    tracked in the exile zone, not the graveyard (702.34)."""
+    state.graveyard.remove(card_def)  # leaves the graveyard the moment Flashback is chosen; exiled on resolution
     resolution.begin_sacrifice(
         state, lambda p: p.card_def.name == "Mountain", 1,
-        on_complete=lambda s, ok: _burn_choose_target_and_push(s, card_def, 1, lambda st, cd: None, reserves_hand_card=False),
+        on_complete=lambda s, ok: _burn_choose_target_and_push(s, card_def, 1, lambda st, cd: None, reserves_hand_card=False, exiles_on_resolve=True),
     )
 
 

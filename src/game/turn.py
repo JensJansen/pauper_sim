@@ -664,6 +664,10 @@ def game_coroutine(state, horizon=None, combat_enabled=False):
     loop here mirrors run_multiplayer_game's own former inline loop verbatim --
     same horizon/turn_won/decked_out guard, same lazy active_idx flip."""
     yield from _yield_decisions(_run_mulligan_gen(state), state)
+    # Baseline for gameplay-only action counts: everything counted up to here is
+    # pregame mulligan/keep/bottom picks (see PlayerState.pregame_actions).
+    for player in state.players:
+        player.pregame_actions = player.actions_taken
     first_turn = True
     while (horizon is None or state.turn_number < horizon) and state.turn_won is None and not state.decked_out:
         if not first_turn:

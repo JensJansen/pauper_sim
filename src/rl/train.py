@@ -73,11 +73,13 @@ class RolloutBuffer:
 
 
 def _reward_for(state, seat, reward_fn, horizon, done):
-    """Per-seat reward -- see this module's own docstring for why the reward
-    is taken directly from reward_fn (0.0 if the seat lost, else reward_fn's
-    value), never gated by an extra turn_won check."""
-    if drl_env._lost(state, seat):
-        return 0.0
+    """Per-seat reward, computed seat-relative (drl_env._for_player flips
+    state.active_idx to `seat`, so the reward_fn reads that seat's own zones/
+    counters and compares state.winner to it). NO external loser gate: the
+    reward_fn itself decides win vs loss vs no-winner -- deploy_reward needs the
+    LOSER to reach its own (nonzero) loss band, not be forced to 0. Legacy
+    reward_fns that still want "loser -> 0" self-contain that check now
+    (rl.rewards.action_count_win_reward), so this stays correct for both."""
     if done:
         return drl_env._for_player(state, seat, lambda s: reward_fn(s, True, horizon))
     return reward_fn(state, False, horizon)
