@@ -132,6 +132,13 @@ def find_to_hand(state, name):
     state.rng.shuffle(state.library)
     if found:
         state.hand.append(found)
+        # Log the library->hand move (real Magic: the card physically enters hand).
+        # Every "search your library, put it into hand" effect routes through here
+        # (forestcycle/Islandcycling, Ash Barrens, Land Grant, Expedition Map, ...);
+        # without this the fetched card appeared in hand with no logged event, so
+        # the replay never tracked it -- e.g. a later Brainstorm put-back that named
+        # it couldn't find it. reason="search" distinguishes it from a normal draw.
+        state.log_event("zone_move", card=found.name, from_zone="library", to_zone="hand", reason="search")
 
 
 def discard_from_hand_to_graveyard(state, card_def):

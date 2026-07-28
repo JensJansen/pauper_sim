@@ -836,6 +836,30 @@ class EventStreamReplayBuilder(BaseReplayBuilder):
         cont = self._new_container()
         self._create_arrow(cont, blocker_p, b_entry["id"], attacker_p, a_entry["id"])
 
+    def _handle_aura_attached(self, e):
+        # Aura resolving onto its target: draw an arrow from the aura to what it's
+        # enchanting, then a moment (one container == ~1 replay-second) later snap it
+        # on and clear the arrow. _resolve_battlefield_ref finds the target on either
+        # player's side (auras like Cartouche can enchant an opponent's creature).
+        aura_p = self.players[e["active_idx"]]
+        aura = aura_p.battlefield.get(tuple(e["aura"]))
+        if aura is None:
+            return
+        target_owner, target_id = self._resolve_battlefield_ref(aura_p, tuple(e["target"]))
+        if target_id is None:
+            return
+        self._create_arrow(self._new_container(), aura_p, aura["id"], target_owner, target_id)
+        cont = self._new_container()
+        ac = add_event(cont, aura_p.idx, pb_attach.Event_AttachCard.ext)
+        ac.start_zone = Z_TABLE
+        ac.card_id = aura["id"]
+        ac.target_player_id = target_owner.idx
+        ac.target_zone = Z_TABLE
+        ac.target_card_id = target_id
+        # ponytail: only arrows live mid-main-phase are the one we just made; switch to
+        # a targeted delete if a combat arrow can ever overlap an aura resolution.
+        self._clear_arrows(cont)
+
     def _handle_life_change(self, e):
         # covers every source of life change, combat or otherwise (confirmed against
         # the log: a combat_damage event hitting a player is always immediately
@@ -1027,6 +1051,23 @@ class EventStreamReplayBuilder(BaseReplayBuilder):
         self._move(cont, p, Z_STACK, p, Z_GRAVE, c["id"], c["id"])
         p.graveyard.append({"id": c["id"], "name": c["name"]})
 
+    def _handle_put_on_top(self, e):
+        # Brainstorm-style "put N cards from your hand on top of your library."
+        # The engine logs this as its own "put_on_top" event (cards=[names], the
+        # caster is active_idx), NOT a zone_move -- so without this the cards were
+        # never taken back off the replay hand (hand grew by the net every
+        # Brainstorm). Render each as hand->deck and un-count it from the shown
+        # deck size (it went back into the library). Deck order isn't tracked
+        # (the deck is a hidden zone), so "on top" is just "into the deck" here.
+        p = self.players[e["active_idx"]]
+        moved = [c for c in (pop_by_name(p.hand, name) for name in e.get("cards") or []) if c is not None]
+        if not moved:
+            return
+        cont = self._new_container()
+        for c in moved:
+            self._move(cont, p, Z_HAND, p, Z_DECK, c["id"], c["id"])
+            p.library_draws = max(0, p.library_draws - 1)
+
     _HANDLERS = {
         "turn_start": _handle_turn_start,
         "phase_change": _handle_phase_change,
@@ -1037,9 +1078,11 @@ class EventStreamReplayBuilder(BaseReplayBuilder):
         "payment_abandoned": _handle_payment_abandoned,
         "attack_declared": _handle_attack_declared,
         "block_assigned": _handle_block_assigned,
+        "aura_attached": _handle_aura_attached,
         "life_change": _handle_life_change,
         "state_based_death": _handle_state_based_death,
         "countered": _handle_countered,
+        "put_on_top": _handle_put_on_top,
     }
 
 

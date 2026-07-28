@@ -54,6 +54,7 @@ from rl.train import (
     batch_size_for_iteration, collect_rollout_league,
     collect_rollout_league_parallel, ppo_update, train_selfplay,
 )
+from rl.mulligan import MulliganNet, update as mulligan_update
 
 CHECKPOINT_DIR = "../checkpoints"
 FROZEN_STACK = f"{CHECKPOINT_DIR}/shared_stack_frozen.pt"
@@ -93,7 +94,8 @@ def build_fresh_stack(vocab_size):
     return shared
 
 
-def _save_live_checkpoints(live_nets, optimizers, deck_names, session, session_path, league_dir):
+def _save_live_checkpoints(live_nets, optimizers, deck_names, session, session_path, league_dir,
+                           mulligan_nets=None, mulligan_optimizers=None):
     """Persist every deck's current live net + optimizer + the session
     counter. Called at each snapshot point AND at session end -- NOT only
     at the end: a mid-session crash (a rare card-interaction bug ~2500
@@ -107,6 +109,9 @@ def _save_live_checkpoints(live_nets, optimizers, deck_names, session, session_p
         os.makedirs(deck_dir, exist_ok=True)
         torch.save({"net": live_nets[name].state_dict(), "optimizer": optimizers[name].state_dict()},
                    f"{deck_dir}/live.pt")
+        if mulligan_nets is not None:
+            torch.save({"net": mulligan_nets[name].state_dict(), "optimizer": mulligan_optimizers[name].state_dict()},
+                       f"{deck_dir}/mulligan.pt")
     with open(session_path, "w") as f:
         f.write(str(session))
 
@@ -141,6 +146,23 @@ def _run_session(n_iterations, games_per_iteration, snapshot_every, executor, n_
         live_nets[name] = net
         optimizers[name] = optimizer
 
+    # Per-deck mulligan model (rl.mulligan): owns the pregame keep/mulligan +
+    # bottoming, trained by its OWN REINFORCE with a direct game-outcome reward
+    # (decoupled from the main PPO above). Shares the same frozen stack. Resets
+    # with the per-deck policies (mulligan.pt is deleted alongside live.pt).
+    mulligan_nets, mulligan_optimizers = {}, {}
+    for name in deck_names:
+        mnet = MulliganNet(shared)
+        mull_path = f"{league_dir}/{name}/mulligan.pt"
+        if os.path.exists(mull_path):
+            mck = torch.load(mull_path, weights_only=True)
+            mnet.load_state_dict(mck["net"])
+        mopt = torch.optim.Adam([p for p in mnet.parameters() if p.requires_grad], lr=1e-3)
+        if os.path.exists(mull_path):
+            mopt.load_state_dict(mck["optimizer"])
+        mulligan_nets[name] = mnet
+        mulligan_optimizers[name] = mopt
+
     pool = LeaguePool(league_dir, deck_names)
     session_path = f"{league_dir}/session.txt"
     session = int(open(session_path).read()) + 1 if os.path.exists(session_path) else 0
@@ -162,18 +184,26 @@ def _run_session(n_iterations, games_per_iteration, snapshot_every, executor, n_
     update_time_total = 0.0
     for iteration in range(n_iterations):
         batch_size = batch_size_for_iteration(iteration, n_iterations, batch_size_start, batch_size_cap, batch_size_steps)
+        mull_by_deck = {name: [] for name in deck_names}  # mulligan transitions accumulated across this iteration
+        # Snapshot the mulligan nets for the workers now; they're updated once after
+        # the whole deck-loop (on-policy within the iteration, same as the main nets).
+        mulligan_state_dicts = {n: mulligan_nets[n].state_dict() for n in deck_names}
         for name in deck_names:
             t_collect0 = time.time()
             if executor is not None:
-                buf, opp_buffers, played = collect_rollout_league_parallel(
+                buf, opp_buffers, mull_training, mull_opp, played = collect_rollout_league_parallel(
                     name, live_nets, reward_fn_name, league_dir, horizon, games_per_iteration,
-                    executor, n_workers, SHARED_HPARAMS,
+                    executor, n_workers, SHARED_HPARAMS, mulligan_state_dicts,
                 )
             else:
-                buf, opp_buffers, played = collect_rollout_league(
+                buf, opp_buffers, mull_training, mull_opp, played = collect_rollout_league(
                     name, live_nets[name], deck_ctxs[name], decklists[name], reward_fn,
                     pool, decklists, deck_ctxs, live_nets, horizon, games_per_iteration, rng, device="cpu",
+                    mulligan_nets=mulligan_nets,
                 )
+            mull_by_deck[name].extend(mull_training)
+            for opp_deck, tr in mull_opp.items():  # Path A salvage for the mulligan model too
+                mull_by_deck[opp_deck].extend(tr)
             collect_time_total += time.time() - t_collect0
             total_games += played
             t_update0 = time.time()
@@ -198,10 +228,24 @@ def _run_session(n_iterations, games_per_iteration, snapshot_every, executor, n_
             print(f"  iter {iteration} [{name}]: games={played} buf={len(buf)} salvaged={salvaged} batch_size={batch_size} "
                   f"policy_loss={policy_loss:.4f} value_loss={value_loss:.4f}", flush=True)
 
+        # Mulligan-model REINFORCE: one step per deck on its own transitions this
+        # iteration (its games + Path A salvage from live opponents). Decoupled
+        # from the main PPO updates above -- its own optimizer, its own reward.
+        mull_stats = {}
+        for name in deck_names:
+            if mull_by_deck[name]:
+                mull_stats[name] = mulligan_update(mulligan_nets[name], mulligan_optimizers[name], mull_by_deck[name])
+        if mull_stats:  # readout so the new mulligan subsystem is visible while it trains
+            total_n = sum(s["n"] for s in mull_stats.values())
+            mean_loss = sum(s["loss"] for s in mull_stats.values()) / len(mull_stats)
+            print(f"  iter {iteration}: mulligan model -- {total_n} transitions across {len(mull_stats)} decks, "
+                  f"mean REINFORCE loss {mean_loss:.4f}", flush=True)
+
         if (iteration + 1) % snapshot_every == 0:
             for name in deck_names:
                 pool.register_snapshot(name, live_nets[name])
-            _save_live_checkpoints(live_nets, optimizers, deck_names, session, session_path, league_dir)
+            _save_live_checkpoints(live_nets, optimizers, deck_names, session, session_path, league_dir,
+                                   mulligan_nets, mulligan_optimizers)
             print(f"  iter {iteration}: snapshotted all decks + saved live checkpoints "
                   f"(counts now: { {n: len(pool.snapshots[n]) for n in deck_names} })", flush=True)
 
@@ -210,7 +254,8 @@ def _run_session(n_iterations, games_per_iteration, snapshot_every, executor, n_
           f"collect={collect_time_total:.1f}s ({100 * collect_time_total / elapsed:.0f}%), "
           f"update={update_time_total:.1f}s ({100 * update_time_total / elapsed:.0f}%)")
 
-    _save_live_checkpoints(live_nets, optimizers, deck_names, session, session_path, league_dir)
+    _save_live_checkpoints(live_nets, optimizers, deck_names, session, session_path, league_dir,
+                           mulligan_nets, mulligan_optimizers)
     print("live checkpoints saved for all decks")
 
 

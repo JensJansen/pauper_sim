@@ -55,7 +55,7 @@ def action_count_win_reward(plateau_actions=80, max_actions=200, min_reward=0.25
 
 
 def deploy_reward(plateau_actions=80, max_actions=200, win_floor=0.5, loss_default=0.25,
-                  discard_penalty=0.05, mulligan_penalty=0.05):
+                  discard_penalty=0.05):
     """Two-band terminal reward. Scored PER SEAT: rl.train._reward_for flips
     state.active_idx to the seat being scored (via drl_env._for_player) and no
     longer zeroes the loser first, so this callable decides win vs loss itself.
@@ -70,17 +70,16 @@ def deploy_reward(plateau_actions=80, max_actions=200, win_floor=0.5, loss_defau
     LOSS or no-winner timeout (state.winner != this seat, including None -- the
     only non-win 2-player outcome, a horizon cap; genuine draws can't happen,
     win_check awards every life/deck-out end to a seat): loss_default (0.25)
-    DECREMENTED by this seat's own wasted resources -- discard_penalty (0.05) per
-    turn it discarded to cleanup (hoarded cards it never played) and
-    mulligan_penalty (0.05) per mulligan it took (a thrown-away opening hand).
-    Floored at 0, so a do-nothing hoarder (mulligan to zero and/or discard every
-    turn) bottoms out at exactly 0, while a deck that deployed its hand and lost
-    keeps 0.25. Both penalties read per-seat counters (cleanup_discard_turns,
-    mulligans_taken), so the opponent's play can never move this seat's score.
+    DECREMENTED by discard_penalty (0.05) per turn this seat discarded to cleanup
+    (hoarded cards it never played), floored at 0, so a hoarder that never deploys
+    bottoms out at 0 while a deck that deployed its hand and lost keeps 0.25.
 
-    Terminal only (0.0 until done). The empty-hand line (mulligan to zero) is the
-    one hole worth naming: it hoards nothing, so the discard term can't touch it
-    -- the mulligan penalty is exactly what keeps it from being a free 0.25."""
+    The MULLIGAN decision is NOT scored here anymore: it's owned by the separate
+    per-deck mulligan model (rl.mulligan), which the main policy doesn't drive, so
+    penalizing the main policy for mulligans it can't control would be pure noise.
+    (The old terminal mulligan penalty also never propagated to the mulligan
+    decision through ~100 steps of discounting -- the whole reason that model
+    exists.) Terminal only (0.0 until done)."""
     span = max_actions - plateau_actions
     win_span = 1.0 - win_floor
     def reward_fn(state, done, horizon):
@@ -92,8 +91,7 @@ def deploy_reward(plateau_actions=80, max_actions=200, win_floor=0.5, loss_defau
             gameplay_actions = p.actions_taken - p.pregame_actions
             over = min(max(0, gameplay_actions - plateau_actions), span)
             return win_floor + win_span * (1.0 - over / span)
-        penalty = discard_penalty * p.cleanup_discard_turns + mulligan_penalty * p.mulligans_taken
-        return max(0.0, loss_default - penalty)
+        return max(0.0, loss_default - discard_penalty * p.cleanup_discard_turns)
     return reward_fn
 
 
@@ -182,27 +180,20 @@ if __name__ == "__main__":
     s.players[0].actions_taken = 5 + 5000
     assert abs(dr(s, done=True, horizon=120) - 0.5) < 1e-9  # floored, never below win_floor
 
-    # LOSS band (seat 0 is NOT the winner): 0.25 minus 0.05/discard-turn and
-    # 0.05/mulligan, floored at 0.
+    # LOSS band (seat 0 is NOT the winner): 0.25 minus 0.05/discard-turn, floored
+    # at 0. Mulligans are NOT scored here (the mulligan model owns that now).
     s.winner = 1
     s.players[0].cleanup_discard_turns = 0
-    s.players[0].mulligans_taken = 0
-    assert abs(dr(s, done=True, horizon=120) - 0.25) < 1e-9  # played its hand, lost
+    s.players[0].mulligans_taken = 7   # mulligans no longer affect the loss band
+    assert abs(dr(s, done=True, horizon=120) - 0.25) < 1e-9  # played its hand, lost (mulligans ignored)
     s.players[0].cleanup_discard_turns = 3
     assert abs(dr(s, done=True, horizon=120) - 0.10) < 1e-9  # 0.25 - 3*0.05
-    s.players[0].cleanup_discard_turns = 0
-    s.players[0].mulligans_taken = 2
-    assert abs(dr(s, done=True, horizon=120) - 0.15) < 1e-9  # 0.25 - 2*0.05
-    s.players[0].mulligans_taken = 7  # mulligan to zero
-    assert dr(s, done=True, horizon=120) == 0.0  # floored -- no free 0.25 for the empty-hand line
-    s.players[0].cleanup_discard_turns = 4
-    s.players[0].mulligans_taken = 4
-    assert dr(s, done=True, horizon=120) == 0.0  # over-penalized -> clamped, never negative
+    s.players[0].cleanup_discard_turns = 6
+    assert dr(s, done=True, horizon=120) == 0.0  # over-penalized on discards -> clamped, never negative
 
     # No-winner timeout (winner None) uses the loss band for whichever seat.
     s.winner = None
     s.players[0].cleanup_discard_turns = 1
-    s.players[0].mulligans_taken = 0
     assert abs(dr(s, done=True, horizon=120) - 0.20) < 1e-9  # 0.25 - 1*0.05
 
     print("rewards.py deploy_reward self-check: OK")

@@ -39,6 +39,7 @@ from rl.action_bridge import (
 )
 from rl.arch import pad_token_batch
 from rl.features import build_token_set
+from rl import mulligan as mulligan_mod
 
 
 class RolloutBuffer:
@@ -223,7 +224,7 @@ def _seat_step(state, seat, deck_ctx, net, horizon, device):
 
 
 def collect_rollout(seat_nets, decklists, reward_fns, deck_ctxs, horizon, n_games, rng, device="cpu",
-                     game_logs=None):
+                     game_logs=None, mulligan_ctx=None):
     """Plays n_games real self-play games (game.run_multiplayer_game),
     recording a transition into whichever seat's own buffer made each
     decision -- 100% utilization, same core mechanism validated for the
@@ -242,9 +243,19 @@ def collect_rollout(seat_nets, decklists, reward_fns, deck_ctxs, horizon, n_game
     run_multiplayer_game's other callers."""
     buffers = [RolloutBuffer(), RolloutBuffer()]
     pending = [None, None]
+    mull_game = [[], []]  # this game's mulligan-model transitions per seat (reward filled at game end)
 
     def choose_action(state):
         seat = state.active_idx
+        # Pregame mulligan phase (keep/mulligan + London bottoming) is owned by the
+        # separate deck-specific mulligan model, trained by its own REINFORCE with a
+        # direct game-outcome reward (rl.mulligan) -- NOT the main policy. Route those
+        # decisions there and record a transition; the main net never sees them.
+        if mulligan_ctx is not None:
+            pend = state.pending_resolution
+            if pend is not None and pend["kind"] in ("mulligan_decision", "mulligan_bottom"):
+                return mulligan_mod.decide(mulligan_ctx["nets"][seat], mulligan_ctx["vocab"], state, seat,
+                                           mull_game[seat].append)
         executor, entry, is_pass = _seat_step(state, seat, deck_ctxs[seat], seat_nets[seat], horizon, device)
         # entry is None for a FORCED decision (_seat_step took the sole legal
         # action without a policy forward). Record nothing and leave pending
@@ -286,6 +297,15 @@ def collect_rollout(seat_nets, decklists, reward_fns, deck_ctxs, horizon, n_game
                     tokens, scalar, mask, action_idx, logp, value = pending[seat]
                     buffers[seat].add(tokens, scalar, mask, action_idx, logp, value, reward, True)
                     pending[seat] = None
+            if mulligan_ctx is not None:
+                # Attribute the whole-game outcome directly to this game's mulligan
+                # decisions (the bandit reward -- no discounting through gameplay).
+                for seat in (0, 1):
+                    r = mulligan_mod.mulligan_reward(state.winner == seat, state.players[seat].mulligans_taken)
+                    for entry in mull_game[seat]:
+                        entry[5] = r
+                    mulligan_ctx["out"][seat].extend(mull_game[seat])
+                    mull_game[seat] = []
             games_played += 1
     finally:
         torch.set_num_threads(prev_threads)
@@ -294,7 +314,7 @@ def collect_rollout(seat_nets, decklists, reward_fns, deck_ctxs, horizon, n_game
 
 def collect_rollout_league(training_deck_name, training_net, training_ctx, training_decklist, reward_fn,
                             pool, decklists_by_name, ctxs_by_name, live_nets, horizon, n_games,
-                            rng, device="cpu"):
+                            rng, device="cpu", mulligan_nets=None):
     """League-play counterpart to collect_rollout: RESAMPLES the opponent
     from `pool` before every single game (not once for the whole call) --
     the actual mechanism league training needs instead of a fixed pairing.
@@ -316,20 +336,34 @@ def collect_rollout_league(training_deck_name, training_net, training_ctx, train
     opponent is off-policy and still contributes nothing."""
     buf = RolloutBuffer()
     opponent_buffers = {}
+    mull_training = []          # training deck's mulligan-model transitions (both seats on a mirror)
+    mull_opponents = {}         # Path A salvage: live-opponent deck name -> its mulligan transitions
     games_played = 0
     for _ in range(n_games):
         seat_nets, decklists, ctxs, reward_fns, training_seat, is_self, opp_name, opp_is_live = _league_pairing(
             training_deck_name, training_net, training_ctx, training_decklist, reward_fn,
             pool, decklists_by_name, ctxs_by_name, live_nets, rng,
         )
+        mull_ctx = None
+        if mulligan_nets is not None:
+            opp_seat = 1 - training_seat
+            seat_mull = [None, None]
+            seat_mull[training_seat] = mulligan_nets[training_deck_name]
+            seat_mull[opp_seat] = mulligan_nets[opp_name]
+            mull_ctx = {"nets": seat_mull, "vocab": training_ctx[0], "out": [[], []]}  # training_ctx = (vocab, fixed_table, pending_kinds)
         buffers, played = collect_rollout(seat_nets, decklists, reward_fns, ctxs, horizon,
-                                           n_games=1, rng=rng, device=device)
+                                           n_games=1, rng=rng, device=device, mulligan_ctx=mull_ctx)
         games_played += played
         for seat in ((0, 1) if is_self else (training_seat,)):
             buf.extend(buffers[seat])
         if opp_is_live:
             opponent_buffers.setdefault(opp_name, RolloutBuffer()).extend(buffers[1 - training_seat])
-    return buf, opponent_buffers, games_played
+        if mull_ctx is not None:  # mirror the buffer-salvage rules for the mulligan transitions
+            for seat in ((0, 1) if is_self else (training_seat,)):
+                mull_training.extend(mull_ctx["out"][seat])
+            if opp_is_live:
+                mull_opponents.setdefault(opp_name, []).extend(mull_ctx["out"][1 - training_seat])
+    return buf, opponent_buffers, mull_training, mull_opponents, games_played
 
 
 def _league_pairing(training_deck_name, training_net, training_ctx, training_decklist, reward_fn,
@@ -398,7 +432,8 @@ def _extend_buffer_from_entries(buf, entries):
 
 
 def _league_rollout_worker(training_deck_name, all_state_dicts, all_trunk_hidden, shared_state_dict,
-                            shared_hparams, reward_fn_name, league_root_dir, horizon, n_games, seed):
+                            shared_hparams, reward_fn_name, league_root_dir, horizon, n_games, seed,
+                            mulligan_state_dicts=None):
     """Runs in a SEPARATE PROCESS (spawned fresh -- Windows only supports
     the "spawn" start method, no fork, so this re-imports the whole module
     graph from scratch rather than inheriting any parent-process memory).
@@ -445,17 +480,29 @@ def _league_rollout_worker(training_deck_name, all_state_dicts, all_trunk_hidden
     pool = LeaguePool(league_root_dir, list(decklists))  # read-only here -- this worker never calls register_snapshot
     rng = random.Random(seed)
 
-    buf, opponent_buffers, played = collect_rollout_league(
+    mulligan_nets = None
+    if mulligan_state_dicts is not None:
+        from rl.mulligan import MulliganNet
+        mulligan_nets = {}
+        for name, sd in mulligan_state_dicts.items():
+            mn = MulliganNet(shared)  # reuses the same frozen shared stack built above
+            mn.load_state_dict(sd)
+            mn.eval()
+            mulligan_nets[name] = mn
+
+    buf, opponent_buffers, mull_training, mull_opponents, played = collect_rollout_league(
         training_deck_name, live_nets[training_deck_name], deck_ctxs[training_deck_name], decklists[training_deck_name],
         reward_fn, pool, decklists, deck_ctxs, live_nets, horizon, n_games, rng, device="cpu",
+        mulligan_nets=mulligan_nets,
     )
     entries = _buffer_to_entries(buf)
     opponent_entries = {opp: _buffer_to_entries(ob) for opp, ob in opponent_buffers.items()}  # Path A salvage, per live opponent
-    return entries, opponent_entries, played
+    # mulligan transitions are plain data (no live-object identities) -> cross the process boundary as-is
+    return entries, opponent_entries, mull_training, mull_opponents, played
 
 
 def collect_rollout_league_parallel(training_deck_name, live_nets, reward_fn_name, league_root_dir, horizon, n_games,
-                                     executor, n_workers, shared_hparams):
+                                     executor, n_workers, shared_hparams, mulligan_state_dicts=None):
     """Orchestrator (runs in the MAIN process): splits n_games across
     n_workers, submits one _league_rollout_worker task per worker via the
     given (already-created, reused-across-calls) ProcessPoolExecutor --
@@ -478,19 +525,24 @@ def collect_rollout_league_parallel(training_deck_name, live_nets, reward_fn_nam
     futures = [
         executor.submit(_league_rollout_worker, training_deck_name, all_state_dicts, all_trunk_hidden,
                          shared_state_dict, shared_hparams, reward_fn_name, league_root_dir, horizon, chunk,
-                         random.randrange(2 ** 31))
+                         random.randrange(2 ** 31), mulligan_state_dicts)
         for chunk in chunks if chunk > 0
     ]
     buf = RolloutBuffer()
     opponent_buffers = {}  # Path A: live-opponent deck name -> salvaged transitions, merged across workers
+    mull_training = []           # training deck's mulligan transitions, merged across workers
+    mull_opponents = {}          # Path A for the mulligan model: live-opponent deck -> its transitions
     games_played = 0
     for future in futures:
-        entries, opponent_entries, played = future.result()
+        entries, opponent_entries, mt, mo, played = future.result()
         games_played += played
         _extend_buffer_from_entries(buf, entries)
         for opp, opp_entries in opponent_entries.items():
             _extend_buffer_from_entries(opponent_buffers.setdefault(opp, RolloutBuffer()), opp_entries)
-    return buf, opponent_buffers, games_played
+        mull_training.extend(mt)
+        for opp, tr in mo.items():
+            mull_opponents.setdefault(opp, []).extend(tr)
+    return buf, opponent_buffers, mull_training, mull_opponents, games_played
 
 
 def _compute_gae(rewards_, values_, dones_, gamma, gae_lambda):
