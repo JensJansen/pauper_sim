@@ -955,10 +955,18 @@ GREEN_EFFECT_REGISTRY = {
         # The extra cost taps ANOTHER untapped creature you control -- a COST
         # CHOICE (602.5g), not a target, so the AGENT chooses which (no engine
         # auto-pick; which creature you tap is a real decision -- keep a
-        # blocker vs an attacker up), enumerated as its own atomic drl_env
-        # action (_mana_extra_tap_legal/_execute) rather than a nested
-        # resolution -- the whole ability (cost + effect) resolves as ONE
-        # action, never the stack (605.1a), same as any other mana ability.
+        # blocker vs an attacker up). Two sequential steps -- choose the
+        # creature to tap, THEN choose the produced color (matches real
+        # sequencing: the cost is paid before the ability's own color-choice
+        # effect resolves) -- via a mana_subdecision (drl_env._mana_extra_
+        # choose_legal/_execute, game.begin_mana_subdecision), never the
+        # stack (605.1a), same as any other mana ability. mana_subdecision is
+        # a field SEPARATE from state.pending_resolution specifically so this
+        # stays legal in ANY priority window, even mid-resolution of
+        # something else (605.1a/605.3b -- confirmed load-bearing: Quirion
+        # Ranger targeting an opposing Ward creature opens exactly this
+        # window in real league play) -- see state.mana_subdecision's own
+        # docstring for the full reasoning.
         "mana_extra_choose": lambda p: p.card_type == CardType.CREATURE,
     },
     EffectId.OVERGROWN_BATTLEMENT: {
@@ -1627,6 +1635,127 @@ if __name__ == "__main__":
     assert _stats.permanent_power(state, bestowed) == 2 and _stats.permanent_toughness(state, bestowed) == 3  # 0/1 base + 2, its own pt_bonus no longer applies to anything
 
     print("green_cards.py Nyxborn Hydra Bestow self-check: OK")
+
+    # Nyxborn Hydra via the REAL action table (not calling resolve closures
+    # directly, unlike the two self-checks just above): "Cast Nyxborn Hydra"
+    # -> choose_cast_mode ("Mode 1" = creature, registry-first) -> choose_
+    # cast_x ("X=3") -> pay {G}{3} -> resolves as the creature mode with 3
+    # counters. Confirms the decomposed mode-then-X sequencing
+    # (drl_env._x_modal_execute) actually reaches the exact resolve closures
+    # the direct-call tests above already verified in isolation.
+    import drl_env as _drl_env
+    from ..mana import activate_mana_source as _activate_mana, execute_pool_spend as _epspend, pool_spend_options as _pspend_opts
+    from ..turn import Phase as _Phase2
+
+    hydra_dl = [("Nyxborn Hydra", 4), ("Forest", 8)]
+    hydra_byname = {a[0]: (a[1], a[2]) for a in _drl_env.build_action_table(
+        hydra_dl, registry.EFFECT_REGISTRY, pending_kinds=registry.derive_pending_kinds(hydra_dl))}
+    hx_state = GameState(on_the_play=True)
+    hx_state.phase = _Phase2.MAIN1
+    hx_state.turn_player_idx = 0
+    hx_state.active_idx = 0
+    hx_state.hand = [registry.CARD_DEFS["Nyxborn Hydra"]]
+    hx_state.battlefield = [Permanent(registry.CARD_DEFS["Forest"]) for _ in range(4)]  # {G} + X=3 generic = 4 mana
+    for f in hx_state.battlefield:
+        _activate_mana(hx_state, f)
+    assert hx_state.mana_pool.get("G", 0) == 4
+    cast_legal, cast_execute = hydra_byname["Cast Nyxborn Hydra"]
+    assert cast_legal(hx_state)
+    cast_execute(hx_state)
+    assert hx_state.pending_resolution["kind"] == "choose_cast_mode"
+    mode1_legal, mode1_execute = hydra_byname["Mode 1"]
+    assert mode1_legal(hx_state)
+    mode1_execute(hx_state)
+    assert hx_state.pending_resolution["kind"] == "choose_cast_x"
+    x3_legal, x3_execute = hydra_byname["X=3"]
+    assert x3_legal(hx_state)
+    x3_execute(hx_state)
+    assert hx_state.pending_resolution["kind"] == "pay_cost"
+    _guard = 0
+    while hx_state.pending_resolution is not None:
+        _guard += 1
+        assert _guard < 30
+        _epspend(hx_state, _pspend_opts(hx_state)[0])
+    resolve_top_of_stack(hx_state)
+    hx_permanent = next(p for p in hx_state.battlefield if p.card_def.name == "Nyxborn Hydra")
+    assert hx_permanent.counters["+1/+1"] == 3
+    print("green_cards.py Nyxborn Hydra via real action table (mode-then-X) self-check: OK")
+
+    # Winding Way via the real action table: "Cast Winding Way" -> choose_
+    # cast_mode ("Mode 1" = creature, registry-first, no per-mode cost
+    # override) -> pay {1}{G} -> hits the stack normally (no precast_choice)
+    # -> resolving reveals top 4, matches creatures to hand.
+    ww_dl = [("Winding Way", 4), ("Forest", 8)]
+    ww_byname = {a[0]: (a[1], a[2]) for a in _drl_env.build_action_table(
+        ww_dl, registry.EFFECT_REGISTRY, pending_kinds=registry.derive_pending_kinds(ww_dl))}
+    ww_state = GameState(on_the_play=True)
+    ww_state.phase = _Phase2.MAIN1
+    ww_state.turn_player_idx = 0
+    ww_state.active_idx = 0
+    ww_state.hand = [registry.CARD_DEFS["Winding Way"]]
+    ww_state.battlefield = [Permanent(registry.CARD_DEFS["Forest"]) for _ in range(2)]  # {1}{G} = 2 mana
+    ww_state.library = [CardDef(f"Bear{i}", CardType.CREATURE, {"G": 1}, EffectId.FILLER, power=2, toughness=2) for i in range(4)]
+    for f in ww_state.battlefield:
+        _activate_mana(ww_state, f)
+    cast_legal, cast_execute = ww_byname["Cast Winding Way"]
+    assert cast_legal(ww_state)
+    cast_execute(ww_state)
+    assert ww_state.pending_resolution["kind"] == "choose_cast_mode"
+    mode1_legal, mode1_execute = ww_byname["Mode 1"]
+    assert mode1_legal(ww_state)
+    mode1_execute(ww_state)
+    assert ww_state.pending_resolution["kind"] == "pay_cost"
+    _guard = 0
+    while ww_state.pending_resolution is not None:
+        _guard += 1
+        assert _guard < 30
+        _epspend(ww_state, _pspend_opts(ww_state)[0])
+    assert len(ww_state.stack) == 1  # no precast_choice -- Winding Way sits on the stack like an ordinary sorcery
+    resolve_top_of_stack(ww_state)
+    assert any(c.name == "Winding Way" for c in ww_state.graveyard), "the resolved sorcery must land in its own graveyard"
+    assert len(ww_state.hand) == 4 and all(c.card_type == CardType.CREATURE for c in ww_state.hand), (
+        "creature mode must match all 4 revealed (all-creature-seeded) library cards to hand"
+    )
+    print("green_cards.py Winding Way via real action table (modal, no X) self-check: OK")
+
+    # Utopia Sprawl via the real action table: exercises BOTH extra_legal
+    # (needs a Forest to enchant) and precast_choice (the aura's real target
+    # is locked in as part of casting, before the stack) within the
+    # decomposed modal path -- "Cast Utopia Sprawl" -> choose_cast_mode
+    # ("Mode 1" = green, registry-first) -> pay {G} -> resolve() runs
+    # directly as pay_cost's on_complete (precast_choice), which is
+    # cast_utopia_sprawl -> cast_aura -> opens ITS OWN choose_any_target for
+    # the Forest -- pre-existing cast_aura machinery, untouched by this
+    # change; stopping once that resolve() hand-off is reached is enough to
+    # prove the new mode-choice/cost/precast_choice wiring is correct.
+    us_dl = [("Utopia Sprawl", 4), ("Forest", 8)]
+    us_byname = {a[0]: (a[1], a[2]) for a in _drl_env.build_action_table(
+        us_dl, registry.EFFECT_REGISTRY, pending_kinds=registry.derive_pending_kinds(us_dl))}
+    us_state = GameState(on_the_play=True)
+    us_state.phase = _Phase2.MAIN1
+    us_state.turn_player_idx = 0
+    us_state.active_idx = 0
+    us_state.hand = [registry.CARD_DEFS["Utopia Sprawl"]]
+    us_forest = Permanent(registry.CARD_DEFS["Forest"])
+    us_state.battlefield = [us_forest]
+    _activate_mana(us_state, us_forest)
+    cast_legal, cast_execute = us_byname["Cast Utopia Sprawl"]
+    assert cast_legal(us_state)
+    cast_execute(us_state)
+    assert us_state.pending_resolution["kind"] == "choose_cast_mode"
+    mode1_legal, mode1_execute = us_byname["Mode 1"]
+    assert mode1_legal(us_state)
+    mode1_execute(us_state)
+    assert us_state.pending_resolution["kind"] == "pay_cost"
+    _guard = 0
+    while us_state.pending_resolution is not None and us_state.pending_resolution["kind"] == "pay_cost":
+        _guard += 1
+        assert _guard < 30
+        _epspend(us_state, _pspend_opts(us_state)[0])
+    assert us_state.pending_resolution["kind"] == "choose_any_target", (
+        "precast_choice must hand off to cast_aura's own target choice directly, not push to the stack first"
+    )
+    print("green_cards.py Utopia Sprawl via real action table (extra_legal + precast_choice) self-check: OK")
 
     # Gingerbread Cabin: "enters tapped unless you control 3+ other Forests;
     # when it enters untapped, create a Food token." Exercises the new

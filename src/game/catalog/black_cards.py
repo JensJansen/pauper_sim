@@ -470,9 +470,9 @@ BLACK_EFFECT_REGISTRY = {
         "pending_kinds": {"discard"},
     },
     EffectId.GURMAG_ANGLER: {
-        # Delve only -- "Cast Gurmag Angler (delve N)" for N in 0..6 (delve 0
-        # is the plain {6}{B} cast). Each exiles N graveyard cards to pay {N}
-        # of the generic (drl_env delve loop).
+        # Delve only -- "Cast Gurmag Angler", then a generic "Delve N" (N in
+        # 0..6; delve 0 is the plain {6}{B} cast) choice exiles N graveyard
+        # cards to pay {N} of the generic (drl_env delve loop).
         "delve": {"max": 6, "resolve": lambda state, card_def: cast_permanent_from_hand(state, card_def)},
         "pending_kinds": {"choose_graveyard_card"},
     },
@@ -863,9 +863,16 @@ if __name__ == "__main__":
     from ..mana import activate_mana_source, execute_pool_spend, pool_spend_options
     for _sw in state.battlefield:
         activate_mana_source(state, _sw)  # float-first: float 5 B into the pool BEFORE casting
-    legal, execute = byname["Cast Gurmag Angler (delve 2)"]
+    legal, execute = byname["Cast Gurmag Angler"]
     assert legal(state)
     execute(state)
+    # 702.66/601.2f: the delve amount is its own generic sub-decision now,
+    # chosen BEFORE the exile sub-cost opens -- "Delve 2" is a shared button
+    # (drl_env._choose_delve_amount_legal), not baked into the cast row.
+    assert state.pending_resolution["kind"] == "choose_delve_amount"
+    delve_legal, delve_execute = byname["Delve 2"]
+    assert delve_legal(state)
+    delve_execute(state)
     from ..resolution import execute_choose_graveyard_card_option as _egc, choose_graveyard_card_options as _gopts
     _egc(state, _gopts(state)[0])  # exile the first eligible graveyard instance (delve 1)
     _egc(state, _gopts(state)[0])  # and the next (delve 2)

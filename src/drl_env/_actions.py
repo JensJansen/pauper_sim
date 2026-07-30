@@ -21,11 +21,13 @@ import game
 #      flexible/granted source. Legal in ANY priority window, even
 #      mid-resolution of anything else (605.1a/605.3b -- no pending-resolution
 #      gate at all), resolves immediately (never the stack) -- masked by
-#      game.mana_ability_options. "Tap <name> for <color>, tapping <name2>
-#      (slot k)" (Saruli Caretaker): same category, but its extra cost (tap
-#      ANOTHER creature -- a cost choice, 602.5g, not a target) is enumerated
-#      directly rather than a nested resolution, so the whole ability stays
-#      one atomic action -- see _mana_extra_tap_legal's own docstring for why.
+#      game.mana_ability_options. "Tap <name>" (Saruli Caretaker): same
+#      gate-free category, but its extra cost (tap ANOTHER creature -- a cost
+#      choice, 602.5g, not a target) opens a mana_subdecision (a SEPARATE
+#      state field from pending_resolution, so this can still open mid-
+#      resolution of anything else without clobbering it) instead of
+#      resolving in one shot -- see state.mana_subdecision's own docstring
+#      and _mana_extra_choose_legal's own docstring for why.
 #      "Filter <name> for <output_color>, paying <input_color>" (Conduit
 #      Pylons/Barrels): an atomic pool->pool conversion, same category and
 #      same "no nested resolution" reasoning.
@@ -89,6 +91,19 @@ def _cast_speed(card_def, spec):
 
 
 _GATE_NO_PENDING = object()  # sentinel: this closure's own first check is "state.pending_resolution is None" -- see legal_action_mask's own docstring
+
+# Shared button-count caps for the generic choose_cast_mode/choose_cast_x/
+# choose_delve_amount sub-decisions (build_action_table's own cast_modes/
+# x_cast_modes/delve loops below) -- ponytail: sized to the current catalog's
+# own max (Utopia Sprawl's 5 modes, Nyxborn Hydra's X=0..10, Gurmag Angler's
+# delve 0..6), not a speculative ceiling. plan_payment/index-bounds masking
+# already keeps a card with a smaller max from ever offering more than its
+# own range, so raising these later for a bigger future card is the only
+# thing a new card can ever require here -- see each button's own legal()
+# below for the mask that makes over-provisioning safe.
+_CAST_MODE_BUTTON_MAX = 5
+_CAST_X_BUTTON_MAX = 10
+_DELVE_BUTTON_MAX = 6
 
 
 def _land_drop_legal(name):
@@ -265,11 +280,12 @@ def _delve_reduced_cost(card_def, n):
     return cost
 
 
-def _delve_legal(name, n, speed):
-    """Cast this spell delving exactly n cards -- legal only with n cards in
-    the graveyard to exile AND the {generic-n} remainder affordable. One
-    action per n (0..delve["max"]); plan_payment masks the unaffordable ones,
-    same as x_cast_modes' own per-X enumeration."""
+def _delve_legal(name, max_n, speed):
+    """Cast <name> is legal iff at least one delve amount 0..max_n is
+    currently affordable given the current graveyard size -- aggregated
+    across the range (one "Cast <name>" row, not one per n); the shared
+    "Delve 0".."Delve 6" buttons (choose_delve_amount below) mask the
+    unaffordable amounts next, same plan_payment check just re-encoded."""
     def legal(state):
         if state.pending_resolution is not None:
             return False
@@ -277,29 +293,256 @@ def _delve_legal(name, n, speed):
             return False
         if _hand_count_available(state, name) <= 0:
             return False
-        if len(state.graveyard) < n:
-            return False
-        return game.plan_payment(state, _delve_reduced_cost(game.CARD_DEFS[name], n)) is not None
+        card_def = game.CARD_DEFS[name]
+        for n in range(min(max_n, len(state.graveyard)) + 1):
+            if game.plan_payment(state, _delve_reduced_cost(card_def, n)) is not None:
+                return True
+        return False
     legal._pending_gate = _GATE_NO_PENDING
     return legal
 
 
-def _delve_execute(name, n, resolve):
-    """Exile n graveyard cards (the model chooses which -- begin_exile_n_from_
-    graveyard), then pay the {generic-n} remainder, then cast normally. The
-    exile is a cost, paid first and irreversible; the mana payment that
-    follows is a pure pool spend (float-first: no undo, see the "no Abandon
-    payment" note in build_action_table below)."""
+def _delve_execute(name, max_n, resolve):
+    """601.2f/702.66: the delve amount is chosen before the exile sub-cost
+    opens and the reduced cost is calculated -- begin_choose_delve_amount
+    (shared "Delve 0".."Delve 6" buttons) first, THEN exile that many
+    graveyard cards (the model chooses which -- begin_exile_n_from_
+    graveyard, unchanged), THEN pay the {generic-n} remainder, then cast
+    normally. The exile is a cost, paid first and irreversible; the mana
+    payment that follows is a pure pool spend (float-first: no undo, see the
+    "no Abandon payment" note in build_action_table below)."""
     def execute(state):
         card_def = game.CARD_DEFS[name]
 
-        def _after_exile(s):
-            def _after_pay(s2):
-                game.on_cast_trigger(s2, card_def)
-                game.push_to_stack(s2, card_def, resolve)
-            game.begin_pay_cost(s, _delve_reduced_cost(card_def, n), on_complete=_after_pay)
+        def _after_n(state, n):
+            def _after_exile(s):
+                def _after_pay(s2):
+                    game.on_cast_trigger(s2, card_def)
+                    game.push_to_stack(s2, card_def, resolve)
+                game.begin_pay_cost(s, _delve_reduced_cost(card_def, n), on_complete=_after_pay)
+            game.begin_exile_n_from_graveyard(state, n, _after_exile)
 
-        game.begin_exile_n_from_graveyard(state, n, _after_exile)
+        game.begin_choose_delve_amount(state, card_def, max_n, _after_n)
+    return execute
+
+
+def _choose_delve_amount_legal(n):
+    """Shared "Delve n" button (0..n..max_n), reused by every delve card --
+    legal only mid a choose_delve_amount resolution, within this specific
+    card's own max_n, with enough graveyard cards, and only if the resulting
+    reduced cost is actually affordable (the exact per-value masking a flat
+    per-row enumeration already did, just re-encoded)."""
+    def legal(state):
+        pending = state.pending_resolution
+        if pending is None or pending["kind"] != "choose_delve_amount":
+            return False
+        if n > pending["max_n"]:
+            return False
+        if len(state.graveyard) < n:
+            return False
+        return game.plan_payment(state, _delve_reduced_cost(pending["card_def"], n)) is not None
+    legal._pending_gate = frozenset({"choose_delve_amount"})
+    return legal
+
+
+def _choose_delve_amount_execute(n):
+    def execute(state):
+        game.execute_choose_delve_amount_option(state, n)
+    return execute
+
+
+def _modal_legal(name, mode_items, speed):
+    """Cast <name> is legal iff at least one of its modes is currently
+    produceable -- extra_legal (if any) passes AND its own cost (mode
+    override, else the card's cast_cost via _effective_cast_cost) is
+    affordable. One "Cast <name>" row, not one per mode; the aggregate
+    check mirrors today's per-row plan_payment masking, now aggregated
+    across modes instead of enumerated per row."""
+    def legal(state):
+        if state.pending_resolution is not None:
+            return False
+        if not game.turn.speed_legal(state, speed):
+            return False
+        if _hand_count_available(state, name) <= 0:
+            return False
+        card_def = game.CARD_DEFS[name]
+        for _mode_name, mode_spec in mode_items:
+            extra_legal = mode_spec.get("extra_legal")
+            if extra_legal is not None and not extra_legal(state):
+                continue
+            cost = mode_spec.get("cost")
+            if cost is None:
+                cost = _effective_cast_cost(state, card_def)
+            if game.plan_payment(state, cost) is not None:
+                return True
+        return False
+    legal._pending_gate = _GATE_NO_PENDING
+    return legal
+
+
+def _modal_execute(name, mode_items):
+    """601.2b: mode chosen before the cost is calculated -- opens the
+    generic choose_cast_mode resolution (shared "Mode 1".."Mode 5" buttons),
+    then -- once a mode is picked -- computes THAT mode's own cost and
+    proceeds exactly as a plain/cost-overridden cast would (begin_pay_cost
+    -> push_to_stack, or the precast_choice variant if this mode needs
+    one -- e.g. Utopia Sprawl's own "enchant target Forest")."""
+    def execute(state):
+        card_def = game.CARD_DEFS[name]
+
+        def _afford_check(mode_spec):
+            cost = mode_spec.get("cost")
+            def check(state, cost=cost, card_def=card_def):
+                c = cost if cost is not None else _effective_cast_cost(state, card_def)
+                return game.plan_payment(state, c) is not None
+            return check
+
+        modes_for_gate = tuple((spec.get("extra_legal"), _afford_check(spec)) for _n, spec in mode_items)
+
+        def _after_mode(state, mode_index):
+            _mode_name, mode_spec = mode_items[mode_index]
+            cost = mode_spec.get("cost")
+            if cost is None:
+                cost = _effective_cast_cost(state, card_def)
+            resolve = mode_spec["resolve"]
+
+            def _after_pay(s):
+                game.on_cast_trigger(s, card_def)
+                if mode_spec.get("precast_choice"):
+                    resolve(s, card_def)
+                else:
+                    game.push_to_stack(s, card_def, resolve)
+            game.begin_pay_cost(state, cost, on_complete=_after_pay)
+
+        game.begin_choose_cast_mode(state, card_def, modes_for_gate, _after_mode)
+    return execute
+
+
+def _x_modal_legal(name, mode_items, speed):
+    """Cast <name> is legal iff at least one (mode, X) pair is currently
+    affordable, X=0 upward per mode's own base cost -- aggregated across
+    modes AND the X range, mirroring today's per-(mode,X)-row masking, now
+    behind one "Cast <name>" row."""
+    def legal(state):
+        if state.pending_resolution is not None:
+            return False
+        if not game.turn.speed_legal(state, speed):
+            return False
+        if _hand_count_available(state, name) <= 0:
+            return False
+        for _mode_name, mode_spec in mode_items:
+            extra_legal = mode_spec.get("extra_legal")
+            if extra_legal is not None and not extra_legal(state):
+                continue
+            base_cost = mode_spec["cost"]
+            for x in range(mode_spec["max_x"] + 1):
+                cost = dict(base_cost)
+                cost["generic"] = cost.get("generic", 0) + x
+                if game.plan_payment(state, cost) is not None:
+                    return True
+        return False
+    legal._pending_gate = _GATE_NO_PENDING
+    return legal
+
+
+def _x_modal_execute(name, mode_items):
+    """601.2b then 601.2f: mode chosen first, X chosen second, both before
+    the total cost is calculated/paid -- matches real sequencing (mode is
+    part of announcing the spell; X is determined as part of costing it,
+    strictly afterward). Nyxborn Hydra's Bestow mode still needs a real Aura
+    target (precast_choice), settled after payment, same as today --
+    make_resolve(x) (green_cards.cast_nyxborn_hydra_creature/_bestow) is
+    called once X is known, exactly as the old per-(mode,X) row baked it in
+    at table-build time, just deferred to runtime."""
+    def execute(state):
+        card_def = game.CARD_DEFS[name]
+
+        def _x_afford_check(mode_spec):
+            base_cost, max_x = mode_spec["cost"], mode_spec["max_x"]
+            def check(state, base_cost=base_cost, max_x=max_x):
+                for x in range(max_x + 1):
+                    cost = dict(base_cost)
+                    cost["generic"] = cost.get("generic", 0) + x
+                    if game.plan_payment(state, cost) is not None:
+                        return True
+                return False
+            return check
+
+        modes_for_gate = tuple((spec.get("extra_legal"), _x_afford_check(spec)) for _n, spec in mode_items)
+
+        def _after_mode(state, mode_index):
+            _mode_name, mode_spec = mode_items[mode_index]
+            base_cost, max_x = mode_spec["cost"], mode_spec["max_x"]
+            make_resolve = mode_spec["resolve"]
+
+            def _after_x(state, x):
+                cost = dict(base_cost)
+                cost["generic"] = cost.get("generic", 0) + x
+                resolve = make_resolve(x)
+
+                def _after_pay(s):
+                    game.on_cast_trigger(s, card_def)
+                    if mode_spec.get("precast_choice"):
+                        resolve(s, card_def)
+                    else:
+                        game.push_to_stack(s, card_def, resolve)
+                game.begin_pay_cost(state, cost, on_complete=_after_pay)
+
+            game.begin_choose_cast_x(state, base_cost, max_x, _after_x)
+
+        game.begin_choose_cast_mode(state, card_def, modes_for_gate, _after_mode)
+    return execute
+
+
+def _choose_cast_mode_legal(mode_index):
+    """Shared "Mode n" button (1..5, drl_env's own numbering -- 0-based
+    internally), reused by every cast_modes/x_cast_modes card -- legal only
+    mid a choose_cast_mode resolution, within THIS card's own mode count,
+    and only if that specific mode's own extra_legal/affordability check
+    (closed over per-mode at "Cast <name>" execute time) currently passes."""
+    def legal(state):
+        pending = state.pending_resolution
+        if pending is None or pending["kind"] != "choose_cast_mode":
+            return False
+        modes = pending["modes"]
+        if mode_index >= len(modes):
+            return False
+        extra_legal, afford_check = modes[mode_index]
+        if extra_legal is not None and not extra_legal(state):
+            return False
+        return afford_check(state)
+    legal._pending_gate = frozenset({"choose_cast_mode"})
+    return legal
+
+
+def _choose_cast_mode_execute(mode_index):
+    def execute(state):
+        game.execute_choose_cast_mode_option(state, mode_index)
+    return execute
+
+
+def _choose_cast_x_legal(x):
+    """Shared "X=n" button (0..10), reused by every x_cast_modes card --
+    legal only mid a choose_cast_x resolution, within this mode's own
+    max_x, and only if base_cost+x's generic is actually affordable (the
+    exact per-value masking a flat per-row enumeration already did, just
+    re-encoded)."""
+    def legal(state):
+        pending = state.pending_resolution
+        if pending is None or pending["kind"] != "choose_cast_x":
+            return False
+        if x > pending["max_x"]:
+            return False
+        cost = dict(pending["base_cost"])
+        cost["generic"] = cost.get("generic", 0) + x
+        return game.plan_payment(state, cost) is not None
+    legal._pending_gate = frozenset({"choose_cast_x"})
+    return legal
+
+
+def _choose_cast_x_execute(x):
+    def execute(state):
+        game.execute_choose_cast_x_option(state, x)
     return execute
 
 
@@ -684,7 +927,10 @@ def _done_blocking_legal(state):
         return False
     # Menace (509.1c): can't FINISH a block declaration that leaves a menace
     # attacker blocked by exactly one creature -- the defender must add a
-    # second blocker or unassign the lone one first.
+    # second blocker. No undo available (by design -- see
+    # game.menace_block_incomplete's own docstring): if no second blocker is
+    # available, this stays illegal until the phase's action cap forces
+    # completion and combat.enforce_menace drops the illegal lone block.
     return not game.menace_block_incomplete(state)
 
 
@@ -693,37 +939,6 @@ _done_blocking_legal._pending_gate = frozenset({"declare_blockers"})
 
 def _done_blocking_execute(state):
     game.complete_resolution(state)
-
-
-def _unassign_blocker_legal(name, slot):
-    """One "Unassign Blocker: <name> (slot j)" action -- take a committed
-    blocker back OUT of the block declaration (before Done). Legal while a
-    declare_blockers resolution is pending and the specific physical permanent
-    at this (name, slot) is currently committed as a blocker. Exists so the
-    menace 0-or-2+ rule (see _done_blocking_legal) is never a softlock: the
-    defender can always rearrange a lone menace-block into a legal declaration."""
-    def legal(state):
-        pending = state.pending_resolution
-        if pending is None or pending["kind"] != "declare_blockers":
-            return False
-        p = _cached_battlefield_lookup(state).get((name, slot))
-        return p is not None and any(p in blockers for blockers in state.opponent.blocked_by.values())
-    legal._pending_gate = frozenset({"declare_blockers"})
-    return legal
-
-
-def _unassign_blocker_execute(name, slot):
-    def execute(state):
-        p = next(pp for pp in state.battlefield if pp.card_def.name == name and pp.slot == slot)
-        blocked_by = state.opponent.blocked_by
-        for attacker, blockers in list(blocked_by.items()):
-            if p in blockers:
-                blockers.remove(p)
-                if not blockers:
-                    del blocked_by[attacker]
-                state.log_event("block_unassigned", blocker=(name, slot), attacker=(attacker.card_def.name, attacker.slot))
-                break
-    return execute
 
 
 def _assign_damage_to_opponent_legal(state):
@@ -1629,36 +1844,25 @@ def build_action_table(decklist, registry, token_card_defs=(), pending_kinds=(),
 
     # Saruli Caretaker-shaped mana abilities: an extra cost that taps ANOTHER
     # untapped creature (mana_extra_choose) -- a COST CHOICE (602.5g), not a
-    # target. The whole ability (both taps + floating the mana) must resolve
-    # as ONE atomic action, same as any other mana ability, so the choice is
-    # enumerated directly -- one row per (source, color, target name, target
-    # slot) -- rather than opened as a nested resolution (which would clobber
-    # whatever pending_resolution is already open: state.pending_resolution
-    # is a single slot, not a stack). Pre-registered broadly over every
-    # (name, slot) this side's battlefield could ever hold, same "choose
-    # target: X (slot k)" convention below; _mana_extra_tap_legal's own
-    # extra_pred check gates precisely at runtime (rejecting non-creatures,
-    # the source itself, and anything already tapped). target_name is
-    # pre-filtered to creature names here (same card_type_by_name filter
-    # attackable_names uses below) since a non-creature target can never pass
-    # extra_pred -- pure row-count reduction, zero behavior change.
+    # target. ONE gate-free "Tap <name>" row per source name (same shape as
+    # an ordinary mana ability, mana_source_names above); its execute opens
+    # a mana_subdecision (game.begin_mana_subdecision) -- choose which
+    # creature to tap (pointer-routed, rl.action_bridge, no fixed-table row
+    # needed), THEN choose a color (the shared "Produce <color>" buttons
+    # below) -- matching real sequencing (602.5g cost paid before the
+    # ability's own color-choice effect resolves) while staying gate-free
+    # (605.1a/605.3b): mana_subdecision is a field SEPARATE from
+    # pending_resolution specifically so this can still open mid-resolution
+    # of anything else without clobbering it -- see state.mana_subdecision's
+    # own docstring.
+    needs_mana_subdecision_color_buttons = False
     extra_tap_source_names = sorted(
         {name for name in distinct_names if "mana_extra_choose" in registry.get(game.CARD_DEFS[name].effect_id, {})}
         | {cd.name for cd in token_card_defs if "mana_extra_choose" in registry.get(cd.effect_id, {})}
     )
-    extra_tap_target_names = sorted(
-        name for name in choosable_names if card_type_by_name[name] == game.CardType.CREATURE
-    )
     for name in extra_tap_source_names:
-        for color in game.POOL_COLORS:
-            for target_name in extra_tap_target_names:
-                max_slot = qty_by_name.get(target_name, game.TOKEN_LIMIT)
-                for slot in range(1, max_slot + 1):
-                    actions.append((
-                        f"Tap {name} for {color}, tapping {target_name} (slot {slot})",
-                        _mana_extra_tap_legal(name, color, target_name, slot),
-                        _mana_extra_tap_execute(name, color, target_name, slot),
-                    ))
+        actions.append((f"Tap {name}", _mana_extra_choose_legal(name), _mana_extra_choose_execute(name)))
+        needs_mana_subdecision_color_buttons = True
 
     # Mana filters (Conduit Pylons / Barrels of Blasting Jelly): "{1}: add one
     # mana of <output_color>" -- an ATOMIC pool->pool conversion (spend one
@@ -1679,6 +1883,15 @@ def build_action_table(decklist, registry, token_card_defs=(), pending_kinds=(),
                     _filter_mana_execute(name, output_color, input_color),
                 ))
 
+    # Tracked so the generic choose_cast_mode/choose_cast_x/choose_delve_amount
+    # buttons below only get added to a deck's table that actually has a card
+    # using that shape -- these are MY OWN casting decisions (never posed by
+    # an opponent's card, unlike the pay_unless/tuck_position-style universal
+    # rows further down), so a deck with none of these cards never needs them.
+    needs_cast_mode_buttons = False
+    needs_cast_x_buttons = False
+    needs_delve_buttons = False
+
     for name in distinct_names:
         card_spec = registry.get(game.CARD_DEFS[name].effect_id, {})
         cast_spec = card_spec.get("cast")
@@ -1694,67 +1907,46 @@ def build_action_table(decklist, registry, token_card_defs=(), pending_kinds=(),
                 _cast_legal(name, cast_spec.get("extra_legal"), _cast_speed(game.CARD_DEFS[name], cast_spec)),
                 cast_execute_fn(name, cast_spec["resolve"]),
             ))
-        # Winding Way: a modal cast (choose creature or land) instead of a
-        # single "cast" entry -- one action per mode.
+        # Winding Way/Utopia Sprawl/Goblin Bushwhacker: a modal cast -- ONE
+        # "Cast <name>" row (not one per mode); which mode is a generic
+        # choose_cast_mode sub-decision (601.2b: chosen before the cost is
+        # calculated), shared "Mode 1".."Mode 5" buttons reused by every
+        # modal card instead of a per-card, per-mode fixed row.
         cast_modes = card_spec.get("cast_modes")
         if cast_modes is not None:
-            for mode_name, mode_spec in cast_modes.items():
-                speed = _cast_speed(game.CARD_DEFS[name], mode_spec)
-                extra_legal = mode_spec.get("extra_legal")
-                # A mode may override the card's cast_cost (Kicker: the kicked
-                # mode costs more) -- if it does, route through the explicit-
-                # cost helpers (_x_cast_*), same ones x_cast_modes uses; else
-                # the default card_def.cast_cost path (Winding Way/Utopia Sprawl).
-                mode_cost = mode_spec.get("cost")
-                if mode_cost is not None:
-                    legal = _x_cast_legal(name, mode_cost, extra_legal, speed)
-                    ex_fn = _x_precast_choice_execute if mode_spec.get("precast_choice") else _x_cast_execute
-                    execute = ex_fn(name, mode_cost, mode_spec["resolve"])
-                else:
-                    legal = _cast_legal(name, extra_legal, speed)
-                    ex_fn = _precast_choice_execute if mode_spec.get("precast_choice") else _cast_execute
-                    execute = ex_fn(name, mode_spec["resolve"])
-                actions.append((f"Cast {name} (choose {mode_name})", legal, execute))
+            mode_items = list(cast_modes.items())
+            speed = _cast_speed(game.CARD_DEFS[name], mode_items[0][1])
+            actions.append((f"Cast {name}", _modal_legal(name, mode_items, speed), _modal_execute(name, mode_items)))
+            needs_cast_mode_buttons = True
         # Nyxborn Hydra: X-cost modes (its own normal creature cast AND
-        # Bestow, each with a different base cost) -- one action per (mode,
-        # X) pair, X in 0..mode_spec["max_x"]. Each mode's own "resolve" is
-        # a function OF x returning the (state, card_def) resolve itself
-        # (green_cards.cast_nyxborn_hydra_creature/cast_nyxborn_hydra_bestow),
-        # not a plain resolve like cast_modes above -- X has to be baked
-        # into a distinct closure per action, there's no other way to tell
-        # two different X actions apart once they're both just entries in
-        # this flat action table. plan_payment (inside _x_cast_legal) is
-        # what keeps an unaffordable X from ever being offered -- this loop
-        # only bounds the table's own size, not what's ever actually legal.
+        # Bestow, each with a different base cost) -- ONE "Cast <name>" row;
+        # mode chosen first (601.2b), X chosen second (601.2f), both generic
+        # sub-decisions (shared "Mode 1".."Mode 5" then "X=0".."X=10"
+        # buttons) instead of one fixed row per (mode, X) pair. Each mode's
+        # own "resolve" is still a function OF x returning the (state,
+        # card_def) resolve itself (green_cards.cast_nyxborn_hydra_creature/
+        # cast_nyxborn_hydra_bestow) -- called once X is actually chosen
+        # (_x_modal_execute), not baked in at table-build time anymore.
         x_cast_modes = card_spec.get("x_cast_modes")
         if x_cast_modes is not None:
-            for mode_name, mode_spec in x_cast_modes.items():
-                mode_execute_fn = _x_precast_choice_execute if mode_spec.get("precast_choice") else _x_cast_execute
-                speed = _cast_speed(game.CARD_DEFS[name], mode_spec)
-                extra_legal = mode_spec.get("extra_legal")
-                make_resolve = mode_spec["resolve"]
-                base_cost = mode_spec["cost"]
-                for x in range(mode_spec["max_x"] + 1):
-                    cost = dict(base_cost)
-                    cost["generic"] = cost.get("generic", 0) + x
-                    actions.append((
-                        f"Cast {name} ({mode_name}, X={x})",
-                        _x_cast_legal(name, cost, extra_legal, speed),
-                        mode_execute_fn(name, cost, make_resolve(x)),
-                    ))
-        # Gurmag Angler: Delve -- one "Cast X (delve N)" action per N in
-        # 0..delve["max"] (the generic cost), each exiling N graveyard cards
-        # to pay {N} of the generic. Same per-value enumeration + plan_payment
-        # masking as x_cast_modes.
+            mode_items = list(x_cast_modes.items())
+            speed = _cast_speed(game.CARD_DEFS[name], mode_items[0][1])
+            actions.append((f"Cast {name}", _x_modal_legal(name, mode_items, speed), _x_modal_execute(name, mode_items)))
+            needs_cast_mode_buttons = True
+            needs_cast_x_buttons = True
+        # Gurmag Angler: Delve -- ONE "Cast <name>" row; the delve amount is
+        # a generic choose_delve_amount sub-decision (702.66: chosen before
+        # the exile sub-cost opens and the reduced cost is calculated),
+        # shared "Delve 0".."Delve 6" buttons instead of one fixed row per N.
         delve = card_spec.get("delve")
         if delve is not None:
             delve_speed = _cast_speed(game.CARD_DEFS[name], delve)
-            for n in range(delve["max"] + 1):
-                actions.append((
-                    f"Cast {name} (delve {n})",
-                    _delve_legal(name, n, delve_speed),
-                    _delve_execute(name, n, delve["resolve"]),
-                ))
+            actions.append((
+                f"Cast {name}",
+                _delve_legal(name, delve["max"], delve_speed),
+                _delve_execute(name, delve["max"], delve["resolve"]),
+            ))
+            needs_delve_buttons = True
         # Land Grant: a second, free cast path alongside the normal one.
         alt_cast = card_spec.get("alt_cast")
         if alt_cast is not None:
@@ -2001,7 +2193,18 @@ def build_action_table(decklist, registry, token_card_defs=(), pending_kinds=(),
     # flipped state.active_idx to the defender and a "declare_blockers"
     # resolution is pending -- see _assign_blocker_legal). "Done blocking"
     # is the explicit action that closes the consult, same "Done" precedent
-    # as scry/surveil's own keep-then-order decomposition.
+    # as scry/surveil's own keep-then-order decomposition. Deliberately NO
+    # undo (no "Unassign Blocker") -- once committed, a blocker stays
+    # committed until Done: standing engine-wide policy (no action may let
+    # the agent reconsider/reverse an earlier commitment, see
+    # todo/no_undo_policy.md -- owner-authorized deviation from real
+    # Magic's single simultaneous declare-blockers action, 509.2, which this
+    # engine linearizes into one-creature-at-a-time picks with no way back).
+    # A prior version of this engine DID have Unassign Blocker; removed
+    # 2026-07-30 after it was confirmed to enable a real, observed
+    # pathological cycle (turn.py's own PRIORITY_ROUND_ACTION_CAP docstring:
+    # tens of thousands of assign/unassign iterations in one boggles_mirror
+    # evaluation, turn_number never advancing).
     for name in attackable_names:
         max_slot = qty_by_name.get(name, game.TOKEN_LIMIT)
         for slot in range(1, max_slot + 1):
@@ -2009,14 +2212,6 @@ def build_action_table(decklist, registry, token_card_defs=(), pending_kinds=(),
                 f"Assign Blocker: {name} (slot {slot})",
                 _assign_blocker_legal(name, slot),
                 _assign_blocker_execute(name, slot),
-            ))
-            # "Unassign Blocker: X (slot j)" -- take a committed blocker back
-            # out (menace's 0-or-2+ rule needs this to never be a softlock, see
-            # _unassign_blocker_legal). Same (name, slot) own-creature domain.
-            actions.append((
-                f"Unassign Blocker: {name} (slot {slot})",
-                _unassign_blocker_legal(name, slot),
-                _unassign_blocker_execute(name, slot),
             ))
     actions.append(("Done blocking", _done_blocking_legal, _done_blocking_execute))
     # Trample's "assign a combat-damage point to the defending player" half
@@ -2195,6 +2390,33 @@ def build_action_table(decklist, registry, token_card_defs=(), pending_kinds=(),
     for color in game.COLORS:
         actions.append((f"Add mana: {color}", _choose_mana_color_legal(color), _choose_mana_color_execute(color)))
 
+    # choose_cast_mode/choose_cast_x/choose_delve_amount: shared, per-deck-
+    # conditional button sets for the generic mode/X/delve-amount sub-
+    # decisions the cast_modes/x_cast_modes/delve loops above open -- unlike
+    # the universal rows just above, these are never posed by an OPPONENT's
+    # card (they only ever fire mid this deck's own casting), so they're
+    # gated on this deck actually having a card of that shape, same
+    # reasoning as the deck-gated impulse/discard_or_sacrifice rows.
+    if needs_cast_mode_buttons:
+        for i in range(_CAST_MODE_BUTTON_MAX):
+            actions.append((f"Mode {i + 1}", _choose_cast_mode_legal(i), _choose_cast_mode_execute(i)))
+    if needs_cast_x_buttons:
+        for x in range(_CAST_X_BUTTON_MAX + 1):
+            actions.append((f"X={x}", _choose_cast_x_legal(x), _choose_cast_x_execute(x)))
+    if needs_delve_buttons:
+        for n in range(_DELVE_BUTTON_MAX + 1):
+            actions.append((f"Delve {n}", _choose_delve_amount_legal(n), _choose_delve_amount_execute(n)))
+
+    # Shared "Produce <color>" buttons for the choose_color stage of a
+    # mana_subdecision (Saruli Caretaker) -- deck-gated same as the buttons
+    # just above (this is never posed by an opponent's card, only ever
+    # opened by this deck's own mana_extra_choose source).
+    if needs_mana_subdecision_color_buttons:
+        for color in game.COLORS:
+            actions.append((
+                f"Produce {color}", _mana_subdecision_color_legal(color), _mana_subdecision_color_execute(color),
+            ))
+
     return tuple(actions)
 
 
@@ -2298,39 +2520,98 @@ def _mana_ability_execute(name, color):
     return execute
 
 
-def _mana_extra_tap_legal(name, color, target_name, target_slot):
+def _find_mana_extra_source(state, name):
+    """Same as _find_mana_source, minus the color-producibility check --
+    for a mana_extra_choose source (Saruli Caretaker), the color isn't
+    chosen until the SECOND stage of its mana_subdecision (601.2f-shaped:
+    the cost -- tapping a creature -- is paid before the color-choice
+    effect resolves), so there's no color to check availability against
+    yet at this point. Only mana_extra_choose currently exists on one card
+    with no per-instance color restriction, so no generic color-dependent
+    availability case is being dropped here -- see _mana_subdecision_color_
+    legal for where that check properly lives instead, against the
+    already-resolved source."""
+    for p in state.battlefield:
+        if p.card_def.name != name or p.tapped or game.tap_summoning_locked(state, p):
+            continue
+        extra = game.EFFECT_REGISTRY.get(p.card_def.effect_id, {}).get("mana_extra_available")
+        if extra is not None and not extra(state, p):
+            continue
+        return p
+    return None
+
+
+def _mana_extra_choose_legal(name):
     """Saruli-Caretaker-shaped mana ability whose additional cost is tapping
-    ANOTHER untapped creature (registry "mana_extra_choose") -- exact
-    (name, slot) addressed, same reasoning _choose_permanent_legal's own
-    docstring gives (two same-named creatures aren't interchangeable once
-    their own state differs -- which specific one you tap can matter). No
-    pending-resolution gate (same reasoning _mana_ability_legal's own
-    docstring gives -- this whole action, extra cost included, is atomic).
-    Legal iff `name` can currently produce `color`, AND the specific
-    (target_name, target_slot) permanent is untapped, isn't the source
-    itself, and satisfies the source's own mana_extra_choose predicate.
-    Uses the sweep-scoped _cached_mana_source/_cached_battlefield_lookup
-    caches, not a fresh scan -- this legal() runs once per (source, color,
-    target, slot) row, so an uncached scan here is the O(battlefield) cost
-    per row _cached_battlefield_lookup's own docstring was profiled against."""
+    ANOTHER untapped creature (registry "mana_extra_choose") -- a COST
+    CHOICE (602.5g), decided as the FIRST stage of a mana_subdecision (see
+    game.resolution.begin_mana_subdecision), not enumerated as a fixed-table
+    row anymore. No pending-resolution gate (same reasoning
+    _mana_ability_legal's own docstring gives -- a mana ability is legal in
+    ANY priority window, even mid-resolution of anything else, 605.1a/
+    605.3b) -- gate-free is load-bearing here specifically (confirmed:
+    Quirion Ranger + an opposing Ward creature reaches this exact window in
+    real league play, see the self-check below). Legal iff a source of this
+    name is currently untapped/available AND at least one OTHER creature
+    satisfies the source's own mana_extra_choose predicate. Looks up
+    extra_pred off the resolved permanent's own card_def.effect_id (not a
+    closed-over table-build-time value) -- same reasoning
+    _mana_extra_choose_execute gives, handles a token-sourced name
+    identically to a real decklist name."""
     def legal(state):
-        p = _cached_mana_source(state, name, color)
+        p = _find_mana_extra_source(state, name)
         if p is None:
             return False
         extra_pred = game.EFFECT_REGISTRY.get(p.card_def.effect_id, {}).get("mana_extra_choose")
         if extra_pred is None:
             return False
-        target = _cached_battlefield_lookup(state).get((target_name, target_slot))
-        return target is not None and target is not p and not target.tapped and extra_pred(target)
+        return any(
+            q is not p and not q.tapped and extra_pred(q)
+            for q in state.battlefield
+        )
     return legal
 
 
-def _mana_extra_tap_execute(name, color, target_name, target_slot):
+def _mana_extra_choose_execute(name):
+    """Resolves the specific source permanent NOW (not deferred) -- the
+    pointer-routed target-choice step needs to identity-exclude THIS exact
+    copy, not just any creature named `name`, when multiple same-named
+    sources exist (two Saruli Caretakers: tapping one to pay for the
+    other's ability is legal; tapping itself is not). extra_pred is looked
+    up off the resolved permanent's own card_def.effect_id, not
+    game.CARD_DEFS[name] -- a token-sourced name (extra_tap_source_names'
+    own token_card_defs union below) has no CARD_DEFS entry at all."""
     def execute(state):
-        p = _find_mana_source(state, name, color)
-        target = next(q for q in state.battlefield if q.card_def.name == target_name and q.slot == target_slot)
-        target.tapped = True
-        game.activate_mana_source(state, p, color)
+        p = _find_mana_extra_source(state, name)
+        extra_pred = game.EFFECT_REGISTRY[p.card_def.effect_id]["mana_extra_choose"]
+        game.begin_mana_subdecision(state, p, extra_pred)
+    return execute
+
+
+def _mana_subdecision_color_legal(color):
+    """Shared "Produce <color>" button, reused by every mana_extra_choose
+    card -- legal only mid the choose_color stage of a mana_subdecision,
+    and only if the ALREADY-RESOLVED source can actually produce this color
+    (game.mana_output raises for an out-of-set color on a "flexible"
+    source, same check _find_mana_source's own color-producibility check
+    already made for ordinary mana sources) -- generic, not hardcoded to
+    Saruli's own 5-true-color case, though Saruli's own ("flexible",
+    set(COLORS)) spec means all 5 always pass here once a target is locked
+    in."""
+    def legal(state):
+        sub = state.mana_subdecision
+        try:
+            game.mana_output(sub["source"], state, color)
+        except ValueError:
+            return False
+        return True
+    legal._mana_subdecision_gate = "choose_color"
+    return legal
+
+
+def _mana_subdecision_color_execute(color):
+    def execute(state):
+        game.execute_mana_subdecision_color(state, color)
     return execute
 
 
@@ -2369,7 +2650,8 @@ def _filter_mana_legal(name, output_color, input_color):
     {1} and adding `output_color` both happen in one action, never a nested
     pay_cost (which would risk clobbering whatever pending_resolution is
     already open -- state.pending_resolution is a single slot, not a stack;
-    same reasoning _mana_extra_tap_legal's own docstring gives). No
+    same reasoning state.mana_subdecision's own docstring gives for why
+    Saruli Caretaker needs a wholly separate field instead). No
     pending-resolution gate. Legal iff an unused filter named `name` exists
     and the pool already holds a floating `input_color` pip to spend on its
     {1} activation cost (any color, including colorless, can pay a generic
@@ -2529,6 +2811,18 @@ def legal_action_mask(state, actions):
     always called, exactly like every closure was before this fix -- the
     fail-safe default, not an optimization gap that can go wrong.
 
+    A SEPARATE gate, `._mana_subdecision_gate`, governs the "Produce <color>"
+    buttons (state.mana_subdecision's own choose_color stage) -- checked
+    BEFORE the pending_resolution logic above and takes EXCLUSIVE priority
+    over it: whenever a mana_subdecision is open, every other closure (gate-
+    free or not) is suppressed outright, and only the matching-stage
+    mana_subdecision closures are ever called. This is what lets a gate-free
+    mana ability (Saruli Caretaker) open its own multi-step choice without
+    a SECOND such ability (or anything else) interleaving mid-choice, while
+    still never touching state.pending_resolution at all -- see
+    state.mana_subdecision's own docstring for why this can't just be
+    another pending_resolution kind.
+
     Resets _battlefield_lookup_cache, _mana_ability_options_cache,
     _mana_source_cache, _filter_source_cache, and game.mana's own
     _enchanting_cache (game.reset_mana_cache) before AND after the sweep
@@ -2548,9 +2842,25 @@ def legal_action_mask(state, actions):
     game.reset_mana_cache()
     pending = state.pending_resolution
     pending_kind = pending["kind"] if pending is not None else None
+    mana_sub = state.mana_subdecision
+    mana_sub_stage = mana_sub["stage"] if mana_sub is not None else None
     try:
         mask = np.zeros(len(actions), dtype=bool)
         for idx, (_name, legal_fn, _execute) in enumerate(actions):
+            sub_gate = getattr(legal_fn, "_mana_subdecision_gate", None)
+            if sub_gate is not None:
+                # Exclusive to the mana_subdecision window: legal ONLY when
+                # a sub-decision is open AND at exactly this stage -- never
+                # reaches the pending_resolution gate logic below at all.
+                if sub_gate == mana_sub_stage:
+                    mask[idx] = legal_fn(state)
+                continue
+            if mana_sub is not None:
+                # A mana_subdecision takes exclusive priority: suppress
+                # EVERYTHING else -- gate-free mana abilities included --
+                # while it's open, mirroring how activating a mana ability
+                # is atomic from everyone else's view in real Magic.
+                continue
             gate = getattr(legal_fn, "_pending_gate", None)
             if gate is _GATE_NO_PENDING:
                 if pending is not None:
@@ -2584,6 +2894,16 @@ __all__ = [
     '_delve_reduced_cost',
     '_delve_legal',
     '_delve_execute',
+    '_choose_delve_amount_legal',
+    '_choose_delve_amount_execute',
+    '_modal_legal',
+    '_modal_execute',
+    '_x_modal_legal',
+    '_x_modal_execute',
+    '_choose_cast_mode_legal',
+    '_choose_cast_mode_execute',
+    '_choose_cast_x_legal',
+    '_choose_cast_x_execute',
     '_tuck_position_legal',
     '_activate_legal',
     '_activate_execute',
@@ -2606,8 +2926,6 @@ __all__ = [
     '_assign_blocker_execute',
     '_done_blocking_legal',
     '_done_blocking_execute',
-    '_unassign_blocker_legal',
-    '_unassign_blocker_execute',
     '_assign_damage_to_opponent_legal',
     '_assign_damage_to_opponent_execute',
     '_pool_spend_legal',
@@ -2632,6 +2950,11 @@ __all__ = [
     '_choose_room_execute',
     '_choose_mana_color_legal',
     '_choose_mana_color_execute',
+    '_find_mana_extra_source',
+    '_mana_extra_choose_legal',
+    '_mana_extra_choose_execute',
+    '_mana_subdecision_color_legal',
+    '_mana_subdecision_color_execute',
     '_select_to_hand_keep_legal',
     '_select_to_hand_bottom_legal',
     '_select_to_hand_keep_execute',

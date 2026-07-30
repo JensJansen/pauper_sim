@@ -1163,6 +1163,60 @@ if __name__ == "__main__":
     assert permanent_power(state, ally) == 2 and has_keyword(state, ally, "haste")
     print("red_cards.py Goblin Bushwhacker (kicked team pump) self-check: OK")
 
+    # Goblin Bushwhacker via the REAL action table (not calling
+    # _goblin_bushwhacker_kicked directly, unlike the test just above):
+    # "Cast Goblin Bushwhacker" -> choose_cast_mode ("Mode 2" = kicked,
+    # registry-second, its own {R}{R} cost OVERRIDE) -> pay {R}{R} ->
+    # resolves as the kicked mode. Exercises the cost-override branch of
+    # drl_env._modal_execute/_modal_legal (Winding Way/Utopia Sprawl's own
+    # modes never override cost; this card's kicked mode does).
+    import drl_env as _drl_env
+    from .. import registry
+    from ..mana import activate_mana_source as _activate_mana, execute_pool_spend as _epspend, pool_spend_options as _pspend_opts
+    from ..turn import Phase as _Phase3
+
+    bw_dl = [("Goblin Bushwhacker", 4), ("Mountain", 8)]
+    bw_byname = {a[0]: (a[1], a[2]) for a in _drl_env.build_action_table(
+        bw_dl, registry.EFFECT_REGISTRY, pending_kinds=registry.derive_pending_kinds(bw_dl))}
+    bw_state = GameState(on_the_play=True)
+    bw_state.phase = _Phase3.MAIN1
+    bw_state.turn_player_idx = 0
+    bw_state.active_idx = 0
+    bw_state.hand = [registry.CARD_DEFS["Goblin Bushwhacker"]]
+    bw_ally = Permanent(CardDef("Ally", CardType.CREATURE, None, EffectId.FILLER, power=1, toughness=1))
+    bw_ally.slot = 1
+    bw_state.battlefield = [bw_ally, Permanent(registry.CARD_DEFS["Mountain"]), Permanent(registry.CARD_DEFS["Mountain"])]
+    for p in bw_state.battlefield:
+        if p.card_def.name == "Mountain":
+            _activate_mana(bw_state, p)
+    assert bw_state.mana_pool.get("R", 0) == 2
+    cast_legal, cast_execute = bw_byname["Cast Goblin Bushwhacker"]
+    assert cast_legal(bw_state)
+    cast_execute(bw_state)
+    assert bw_state.pending_resolution["kind"] == "choose_cast_mode"
+    mode2_legal, mode2_execute = bw_byname["Mode 2"]  # registry order: unkicked (Mode 1), kicked (Mode 2)
+    assert mode2_legal(bw_state)
+    mode2_execute(bw_state)
+    assert bw_state.pending_resolution["kind"] == "pay_cost"
+    assert bw_state.pending_resolution["remaining"] == {"R": 2}, (
+        "must owe the kicked mode's OWN {R}{R} cost override, not the card's base {R}"
+    )
+    _guard = 0
+    while bw_state.pending_resolution is not None:
+        _guard += 1
+        assert _guard < 30
+        _epspend(bw_state, _pspend_opts(bw_state)[0])
+    while bw_state.stack:  # resolve the spell itself first (creates the permanent, queues its ETB)
+        resolve_top_of_stack(bw_state)
+    promote_triggers_to_stack(bw_state)  # THEN promote the now-queued ETB trigger
+    while bw_state.stack:
+        resolve_top_of_stack(bw_state)
+    bw_gob = next(p for p in bw_state.battlefield if p.card_def.name == "Goblin Bushwhacker")
+    assert permanent_power(bw_state, bw_gob) == 2 and has_keyword(bw_state, bw_gob, "haste"), (
+        "kicked mode's ETB team pump must have fired"
+    )
+    print("red_cards.py Goblin Bushwhacker via real action table (cost-override mode) self-check: OK")
+
     # --- G6 ---
     from .. import registry
     from ..effects.tokens import HUMAN_SOLDIER_TOKEN_CARD_DEF, TREASURE_TOKEN_CARD_DEF

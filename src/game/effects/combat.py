@@ -387,13 +387,18 @@ def menace_block_incomplete(state):
     """True while some menace attacker has exactly ONE blocker committed -- an
     ILLEGAL block declaration ("can't be blocked except by two or more
     creatures", 509.1c: 0 or 2+, never 1). drl_env forbids the defender from
-    finishing ("Done blocking") while this holds, and offers an "Unassign
-    Blocker" action so they can always reach a legal declaration (add a second
-    blocker or take the lone one back) -- declaration-time enforcement, not a
-    post-hoc correction. Called only during the declare-blockers step, where
-    active_idx is the defender, so the attacker's own blocked_by/attackers are
-    reached via state.opponent (the attacking player, from the defender's
-    point of view -- same accessor the block machinery already uses)."""
+    finishing ("Done blocking") while this holds -- declaration-time
+    enforcement, not a post-hoc correction. No undo exists (standing engine
+    policy, see todo/no_undo_policy.md): the ONLY way forward once a menace
+    attacker has exactly one committed blocker is to add a second one. If none
+    is available, this stays illegal until the phase's action cap forces
+    completion and enforce_menace (below) drops the illegal lone block --
+    bounded, not a softlock, but no longer purely a pathological-policy-only
+    path (see enforce_menace's own docstring). Called only during the
+    declare-blockers step, where active_idx is the defender, so the
+    attacker's own blocked_by/attackers are reached via state.opponent (the
+    attacking player, from the defender's point of view -- same accessor the
+    block machinery already uses)."""
     return any(
         len(blockers) == 1 and stats.has_keyword(state, attacker, "menace")
         for attacker, blockers in state.opponent.blocked_by.items()
@@ -401,15 +406,21 @@ def menace_block_incomplete(state):
 
 
 def enforce_menace(state):
-    """Defensive backstop, NOT the primary rule: the declaration-time gate
-    (menace_block_incomplete + the Unassign action in drl_env) already makes
-    the defender declare 0 or 2+ blockers on a menace attacker, so at combat
-    damage no menace attacker should have exactly one blocker. This only ever
-    fires if game.turn._declare_blockers_gen abandons a partial declaration on
-    its action-cap (a pathological policy that never finishes) -- it then drops
-    any lone menace-block so the OUTCOME is still faithful (a lone creature
-    can't stop a menace attacker). A no-op on every rational path. active_idx is
-    back on the attacker here, so state.blocked_by is the attacker's own."""
+    """Backstop, not the primary rule: the declaration-time gate
+    (menace_block_incomplete) already makes the defender declare 0 or 2+
+    blockers on a menace attacker whenever they CAN, so at combat damage no
+    menace attacker should have exactly one blocker on the common path. Fires
+    in two cases, only the first of which is pathological: (1)
+    game.turn._declare_blockers_gen abandons a partial declaration on its
+    action-cap (a policy that never finishes); (2) -- reachable by a
+    perfectly rational policy, not just a broken one, since Unassign Blocker
+    was removed (todo/no_undo_policy.md) -- the defender has exactly one
+    eligible blocker left and it's already committed to a menace attacker,
+    with no way to reconsider and no second blocker to add, so declaration
+    stays illegal until the action cap forces it through. Either way, this
+    drops any lone menace-block so the OUTCOME is still faithful (a lone
+    creature can't stop a menace attacker). active_idx is back on the
+    attacker here, so state.blocked_by is the attacker's own."""
     for attacker, blockers in list(state.blocked_by.items()):
         if len(blockers) == 1 and stats.has_keyword(state, attacker, "menace"):
             del state.blocked_by[attacker]

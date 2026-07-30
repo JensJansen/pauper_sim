@@ -508,13 +508,18 @@ def _run_self_checks():
 
     print("drl_env mana-ability options cache self-check: OK")
 
-    # Saruli Caretaker (F11 atomic redesign): its extra cost -- tap ANOTHER
-    # untapped creature -- is a COST CHOICE (602.5g), not a target, so it's
-    # enumerated directly as "Tap Saruli Caretaker for <color>, tapping <name>
-    # (slot k)" -- both taps + the float happen in ONE atomic action, never a
-    # nested resolution. Two Slippery Bogles: only the untapped one is a legal
-    # tap-target; Saruli can never target itself even though it's also a
-    # (Defender) creature.
+    # Saruli Caretaker (Option A: gate-free two-stage mana_subdecision, see
+    # state.mana_subdecision's own docstring): its extra cost -- tap ANOTHER
+    # untapped creature -- is a COST CHOICE (602.5g), decided first ("Tap
+    # Saruli Caretaker", gate-free, opens the mana_subdecision), then the
+    # tap-TARGET (pointer-routed in real play, rl.action_bridge -- exercised
+    # there; here the resulting state transition is driven directly via
+    # game.execute_mana_subdecision_target, same call the pointer dispatch
+    # makes), THEN the color (shared "Produce <color>" buttons, gated via
+    # legal_action_mask's own _mana_subdecision_gate dispatch, not this
+    # closure's own pending-agnostic check) -- matching real sequencing (cost
+    # paid before the ability's own color-choice effect resolves), never the
+    # stack (605.1a).
     saruli_decklist = [("Saruli Caretaker", 2), ("Slippery Bogle", 2)]
     saruli_actions = build_action_table(saruli_decklist, game.EFFECT_REGISTRY)
 
@@ -526,24 +531,41 @@ def _run_self_checks():
     bogle_1 = Permanent(game.CARD_DEFS["Slippery Bogle"])
     bogle_2 = Permanent(game.CARD_DEFS["Slippery Bogle"])
     bogle_2.slot = 2
-    bogle_2.tapped = True  # already tapped -- NOT a legal tap-target
+    bogle_2.tapped = True  # already tapped -- would be excluded downstream, not relevant to this row's own aggregate legality
     state = GameState(on_the_play=True)
     state.battlefield = [saruli, bogle_1, bogle_2]
 
-    _, legal_bogle1, execute_bogle1 = saruli_actions[_sidx("Tap Saruli Caretaker for G, tapping Slippery Bogle (slot 1)")]
-    _, legal_bogle2, _ = saruli_actions[_sidx("Tap Saruli Caretaker for G, tapping Slippery Bogle (slot 2)")]
-    _, legal_self, _ = saruli_actions[_sidx("Tap Saruli Caretaker for G, tapping Saruli Caretaker (slot 1)")]
+    tap_idx = _sidx("Tap Saruli Caretaker")
+    _, tap_legal, tap_execute = saruli_actions[tap_idx]
+    assert tap_legal(state)  # at least one OTHER untapped creature exists (bogle_1) -- aggregate check, no per-target/color row anymore
+    tap_execute(state)
+    sub = state.mana_subdecision
+    assert sub is not None and sub["stage"] == "choose_target" and sub["source"] is saruli and sub["target"] is None, (
+        "must open a mana_subdecision at the choose_target stage, source resolved to THIS Saruli"
+    )
 
-    assert legal_bogle1(state)       # untapped, another creature -- legal
-    assert not legal_bogle2(state)   # already tapped -- not a legal target
-    assert not legal_self(state)     # Saruli can never tap itself
+    # Same row is no longer even reachable while the sub-decision is open --
+    # legal_action_mask's own exclusive-priority dispatch, not this closure's
+    # own logic (tap_legal itself doesn't check mana_subdecision at all).
+    assert not legal_action_mask(state, saruli_actions)[tap_idx]
 
-    execute_bogle1(state)
+    game.execute_mana_subdecision_target(state, bogle_1)  # same call rl.action_bridge's pointer dispatch makes -- exercised end to end there
+    assert state.mana_subdecision["stage"] == "choose_color" and state.mana_subdecision["target"] is bogle_1
+    assert not bogle_1.tapped, "the target isn't tapped until the color is actually chosen (execute_mana_subdecision_color's own order)"
+
+    color_idx = _sidx("Produce G")
+    mask = legal_action_mask(state, saruli_actions)
+    assert mask[color_idx], "Produce G must be legal mid choose_color stage (Saruli's own flexible 5-color spec)"
+    assert not mask[tap_idx], "Tap Saruli Caretaker must stay illegal -- mana_subdecision still open"
+    _, _color_legal, color_execute = saruli_actions[color_idx]
+    color_execute(state)
+
+    assert state.mana_subdecision is None
     assert saruli.tapped and bogle_1.tapped and bogle_2.tapped  # bogle_2 was already tapped, untouched otherwise
     assert state.mana_pool == {"G": 1}
-    assert not legal_bogle1(state)   # Saruli itself now tapped -- no longer offered at all
+    assert not tap_legal(state)  # Saruli itself now tapped -- no untapped source left, no longer offered at all
 
-    print("drl_env Saruli Caretaker (atomic extra-cost mana ability) self-check: OK")
+    print("drl_env Saruli Caretaker (gate-free two-stage mana_subdecision) self-check: OK")
 
     # Mana filter (Barrels of Blasting Jelly / Conduit Pylons), F11 atomic
     # redesign: "Filter X for <output>, paying <input>" spends one floating

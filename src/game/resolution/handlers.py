@@ -719,6 +719,113 @@ def execute_choose_mana_color(state, color):
     complete_resolution(state, color)
 
 
+def begin_choose_cast_mode(state, card_def, modes, on_complete):
+    """A modal spell's own mode choice (601.2b: chosen as the spell is cast,
+    before its total cost is even calculated) -- shared "Mode 1".."Mode 5"
+    drl_env buttons, capped per-card by len(modes), instead of a per-card,
+    per-mode fixed-table row. Covers both cast_modes (Winding Way: no X) and
+    x_cast_modes (Nyxborn Hydra: mode chosen first, X chosen next via
+    begin_choose_cast_x). modes: tuple of (extra_legal_or_None,
+    afford_check) pairs, one per mode in this card's own registry order --
+    afford_check(state) -> bool reports whether THIS mode is currently
+    payable at all (a fixed cost for cast_modes, "some X in range is
+    affordable" for x_cast_modes), letting the shared buttons mask per-mode
+    without a per-card row. on_complete(state, mode_index) fires with the
+    chosen zero-based index into that card's own registry mode order."""
+    begin_resolution(state, "choose_cast_mode", on_complete, card_def=card_def, modes=modes)
+
+
+def choose_cast_mode_options(state):
+    return list(range(len(state.pending_resolution["modes"])))
+
+
+def execute_choose_cast_mode_option(state, mode_index):
+    complete_resolution(state, mode_index)
+
+
+def begin_choose_cast_x(state, base_cost, max_x, on_complete):
+    """An X-cost spell's own X value (601.2f: determined before the total
+    cost is paid) -- shared "X=0".."X=10" drl_env buttons, capped per-card/
+    mode by max_x, instead of a per-(mode,X) fixed-table row. base_cost is
+    this mode's own cost before X's generic is added; each shared button
+    computes base_cost+n itself to check affordability -- the exact
+    per-value masking a flat per-row enumeration already did, just
+    re-encoded as a resolution. on_complete(state, x) fires with the
+    chosen X."""
+    begin_resolution(state, "choose_cast_x", on_complete, base_cost=base_cost, max_x=max_x)
+
+
+def choose_cast_x_options(state):
+    return list(range(state.pending_resolution["max_x"] + 1))
+
+
+def execute_choose_cast_x_option(state, x):
+    complete_resolution(state, x)
+
+
+def begin_choose_delve_amount(state, card_def, max_n, on_complete):
+    """Delve's own exile-amount choice (702.66) -- shared "Delve 0".."Delve
+    6" drl_env buttons, capped per-card by max_n, instead of a per-N
+    fixed-table row. Opens BEFORE the existing exile sub-cost
+    (begin_exile_n_from_graveyard) and the reduced-cost payment, matching
+    real sequencing: choose how much to delve, then pay accordingly.
+    card_def lets each shared button check both graveyard size and the
+    reduced cost's affordability. on_complete(state, n) fires with the
+    chosen amount."""
+    begin_resolution(state, "choose_delve_amount", on_complete, card_def=card_def, max_n=max_n)
+
+
+def choose_delve_amount_options(state):
+    return list(range(state.pending_resolution["max_n"] + 1))
+
+
+def execute_choose_delve_amount_option(state, n):
+    complete_resolution(state, n)
+
+
+def begin_mana_subdecision(state, source, target_predicate):
+    """Opens a gate-free mana ability's own multi-step choice (currently:
+    Saruli Caretaker's "tap another creature, then choose a color") --
+    deliberately NOT begin_resolution/state.pending_resolution (a single
+    slot that would be clobbered; see state.mana_subdecision's own
+    docstring for the full reasoning). No on_complete callback -- unlike
+    pending_resolution, this mechanism has exactly one, fixed two-stage
+    shape and always ends the same way (execute_mana_subdecision_color taps
+    the source and produces mana), so there's nothing for a caller to
+    customize."""
+    state.mana_subdecision = {
+        "stage": "choose_target", "source": source, "target_predicate": target_predicate, "target": None,
+    }
+    state.log_event("mana_subdecision_begin", source=(source.card_def.name, source.slot))
+
+
+def execute_mana_subdecision_target(state, target):
+    """Records the chosen tap target and advances to the color stage --
+    mutates the SAME dict in place (not complete_resolution-style clear +
+    fire), since source/target are still needed for the final step."""
+    sub = state.mana_subdecision
+    sub["target"] = target
+    sub["stage"] = "choose_color"
+    state.log_event("mana_subdecision_target", target=(target.card_def.name, target.slot))
+
+
+def execute_mana_subdecision_color(state, color):
+    """Closes the sub-decision, THEN taps the target and produces mana --
+    clearing state.mana_subdecision before firing effects mirrors
+    complete_resolution's own "clear pending before on_complete" order.
+    Tap-target-then-activate-source order matches exactly what the old
+    single-atomic-row implementation did, preserving identical observable
+    behavior."""
+    from ..mana import activate_mana_source  # call-time import -- mana imports resolution, see pay_unless_pay's own comment
+
+    sub = state.mana_subdecision
+    source, target = sub["source"], sub["target"]
+    state.mana_subdecision = None
+    target.tapped = True
+    state.log_event("mana_subdecision_complete", color=color)
+    activate_mana_source(state, source, color)
+
+
 def begin_throne_reveal(state, n, on_complete):
     """Undercity's Throne of the Dead Three: reveal the top `n` library cards;
     the venturer picks one CREATURE card from among them

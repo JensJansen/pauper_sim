@@ -75,7 +75,26 @@ def pointer_legal_mask(state, identities_row):
     for whichever ONE targeting category actually applies right now (at most
     one ever does, by construction of this engine's own turn/resolution state
     machine -- see each branch's own gate below, mirroring drl_env's own
-    _attack_legal/_assign_blocker_legal/_choose_permanent_legal/etc. exactly)."""
+    _attack_legal/_assign_blocker_legal/_choose_permanent_legal/etc. exactly).
+
+    Checked BEFORE state.pending_resolution, taking exclusive priority over
+    it: a mana_subdecision (Saruli Caretaker's own "tap another creature,
+    then choose a color") can be open WHILE a pending_resolution is also
+    open (that's the entire reason it's a separate field -- see
+    state.mana_subdecision's own docstring), and its own choose_target stage
+    is itself a pointer choice, so it needs to win the dispatch here, not
+    fall through to whatever pending_resolution's own branch would offer."""
+    mana_sub = state.mana_subdecision
+    if mana_sub is not None:
+        mask = [False] * len(identities_row)
+        if mana_sub["stage"] == "choose_target":
+            source, predicate = mana_sub["source"], mana_sub["target_predicate"]
+            for i, p in enumerate(identities_row):
+                if (p is not None and p in state.battlefield and p is not source
+                        and not p.tapped and predicate(p)):
+                    mask[i] = True
+        return mask  # choose_color stage is a fixed button, not a pointer choice -- all-False here
+
     pending = state.pending_resolution
     mask = [False] * len(identities_row)
 
@@ -177,6 +196,9 @@ def any_pointer_legal(state):
     identities/mask work entirely on the (common) steps where it's not
     even relevant, same "cheap gate before the expensive check" shape
     drl_env's own _pending_gate convention already uses throughout."""
+    mana_sub = state.mana_subdecision
+    if mana_sub is not None:
+        return mana_sub["stage"] == "choose_target"
     pending = state.pending_resolution
     if pending is None:
         return state.phase is game.turn.Phase.DECLARE_ATTACKERS and state.active_idx == state.turn_player_idx
@@ -197,6 +219,14 @@ def execute_pointer_choice(state, chosen):
     battlefield target (addressed by its own (name, slot), exactly what those
     closures already expect) -- just sourced from a pointer-head selection
     instead of a fixed-table lookup."""
+    mana_sub = state.mana_subdecision
+    if mana_sub is not None and mana_sub["stage"] == "choose_target":
+        # `chosen` is the exact Permanent to tap -- passed through directly
+        # (same identity-object shape _ID_MATCHED_KINDS below already uses),
+        # not round-tripped through (name, slot): there's no shared
+        # (name, slot)-keyed execute closure to reuse here the way the
+        # battlefield-target branches below do.
+        return game.execute_mana_subdecision_target(state, chosen)
     pending = state.pending_resolution
     if pending is not None and pending["kind"] in _ID_MATCHED_KINDS:
         # chosen is the exact object (graveyard instance, revealed-hand
@@ -236,6 +266,18 @@ if __name__ == "__main__":
     fixed_names = [name for name, _l, _e in fixed_table]
     assert not any(name.startswith(_TARGETING_PREFIXES) for name in fixed_names), (
         "fixed table must contain zero targeting actions"
+    )
+    # NO-UNDO POLICY tripwire (todo/no_undo_policy.md): the engine must never
+    # expose an action letting the agent reconsider/reverse an earlier
+    # commitment -- confirmed the hard way, Unassign Blocker (removed
+    # 2026-07-30) enabled a real observed pathological cycle (turn.py's own
+    # PRIORITY_ROUND_ACTION_CAP docstring: tens of thousands of assign/
+    # unassign iterations in one boggles_mirror evaluation). Hardcodes the
+    # literal substring independently of any prefix-filter tuple, so a
+    # future reintroduction of this exact shape fails loudly here rather
+    # than silently passing whatever filter happens to exist at the time.
+    assert not any("nassign" in name for name in fixed_names), (
+        "no action may let the agent reconsider/reverse an earlier commitment -- see todo/no_undo_policy.md"
     )
     assert "Pass" in fixed_names
     assert any(name.startswith("Play land:") for name in fixed_names)
@@ -347,6 +389,117 @@ if __name__ == "__main__":
     assert saw_choose_opponent[0], "expected at least one real cross-player 'Choose opponent's' consult across 10 real 2p games"
     print("rl.action_bridge pointer_legal_mask/execute_pointer_choice self-check: OK "
           "(real 2-player game -- attack, block, and cross-player targeting all exercised)")
+
+    # NO-UNDO regression (todo/no_undo_policy.md): a COMMITTED blocker must
+    # never be offered as a pointer target at all -- no way to reconsider it
+    # once assigned, only "add more blockers" or "Done blocking" remain
+    # legal. Hand-built (not random play) specifically to construct the
+    # already-committed state and assert the negative. blocked_by/attackers
+    # are keyed by the ATTACKING player's own permanents
+    # (game.effects.combat.creature_block_eligible's own docstring), so the
+    # "opponent" PlayerState here is the attacker's side even though the
+    # deciding seat (0, active_idx's default) is the blocker's own.
+    from game.state import GameState as _GameState, PlayerState as _PlayerState, Permanent as _Permanent
+    ub_me = _PlayerState(on_the_play=True)
+    ub_opp = _PlayerState(on_the_play=False)
+    bogle = _Permanent(game.CARD_DEFS["Slippery Bogle"])
+    attacker = _Permanent(game.CARD_DEFS["Slippery Bogle"])
+    ub_me.battlefield = [bogle]
+    ub_opp.attackers = [attacker]
+    ub_opp.blocked_by = {attacker: [bogle]}
+    ub_state = _GameState(on_the_play=True, players=[ub_me, ub_opp])
+    ub_state.pending_resolution = {"kind": "declare_blockers", "on_complete": lambda s: None}
+    ub_ids = [ident for _i, _r, ident in build_token_set(ub_state, 0, vocab)]
+    ub_legal = [r for r, ok in zip(ub_ids, pointer_legal_mask(ub_state, ub_ids)) if ok]
+    assert bogle not in ub_legal, "a committed blocker must NEVER be reachable again -- no undo, see todo/no_undo_policy.md"
+    print("rl.action_bridge no-undo (blocking) regression self-check: OK "
+          "(a committed blocker is unreachable -- no reconsideration once assigned)")
+
+    # Saruli Caretaker mana_subdecision -- POINTER mechanics (choose_target
+    # stage): domain is my own battlefield, excludes the source by IDENTITY
+    # (not name -- two same-named Sarulis are legitimately valid targets of
+    # each other), excludes already-tapped creatures, applies the source's
+    # own mana_extra_choose predicate. drl_env's own self-check exercises
+    # the rest of the flow (the fixed-table "Tap <name>"/"Produce <color>"
+    # rows) directly; this is specifically the pointer half.
+    sd_me = _PlayerState(on_the_play=True)
+    sd_opp = _PlayerState(on_the_play=False)
+    saruli_a = _Permanent(game.CARD_DEFS["Saruli Caretaker"])
+    saruli_b = _Permanent(game.CARD_DEFS["Saruli Caretaker"])
+    saruli_b.slot = 2
+    other = _Permanent(game.CARD_DEFS["Slippery Bogle"])
+    tapped_other = _Permanent(game.CARD_DEFS["Slippery Bogle"])
+    tapped_other.slot = 2
+    tapped_other.tapped = True
+    sd_me.battlefield = [saruli_a, saruli_b, other, tapped_other]
+    sd_state = _GameState(on_the_play=True, players=[sd_me, sd_opp])
+    extra_pred = game.EFFECT_REGISTRY[saruli_a.card_def.effect_id]["mana_extra_choose"]
+    game.begin_mana_subdecision(sd_state, saruli_a, extra_pred)
+    sd_ids = [ident for _i, _r, ident in build_token_set(sd_state, 0, vocab)]
+    sd_legal = [r for r, ok in zip(sd_ids, pointer_legal_mask(sd_state, sd_ids)) if ok]
+    assert set(sd_legal) == {saruli_b, other}, (
+        f"expected the OTHER Saruli + the untapped Bogle, excluding self (identity) and the tapped Bogle, got {sd_legal}"
+    )
+    execute_pointer_choice(sd_state, saruli_b)  # tap a DIFFERENT Saruli to pay for this one's ability -- legal
+    assert sd_state.mana_subdecision["stage"] == "choose_color" and sd_state.mana_subdecision["target"] is saruli_b
+    print("rl.action_bridge Saruli Caretaker mana_subdecision pointer self-check: OK "
+          "(own battlefield, self excluded by identity not name, tapped excluded, a same-named copy stays legal)")
+
+    # THE SCENARIO THAT JUSTIFIES THIS WHOLE DESIGN: Quirion Ranger targets
+    # an opponent's Ward creature -> pay_unless opens with the Saruli
+    # player as payer -> they activate Saruli (BOTH mana_subdecision stages)
+    # WHILE pay_unless is still open -> control returns to pay_unless,
+    # completely untouched, once the mana_subdecision closes. Confirmed
+    # reachable in the real 11-deck league (spy_combo's Quirion Ranger vs.
+    # mono_blue_terror/dmir_terror's Ward creatures) -- this is exactly the
+    # F11 bug class (mana abilities wrongly masked mid-ANY-resolution) that
+    # ruled out reusing the gated begin_choose_permanent/begin_choose_mana_
+    # color building blocks for this redesign in the first place.
+    pu_me = _PlayerState(on_the_play=True)
+    pu_opp = _PlayerState(on_the_play=False)
+    pu_saruli = _Permanent(game.CARD_DEFS["Saruli Caretaker"])
+    pu_saruli.summoning_sick = False  # Saruli's own {T} ability needs this (302.6) -- see drl_env's own self-check for the same note
+    pu_other = _Permanent(game.CARD_DEFS["Slippery Bogle"])
+    pu_me.battlefield = [pu_saruli, pu_other]
+    pu_state = _GameState(on_the_play=True, players=[pu_me, pu_opp])
+    pu_result = []
+    game.begin_pay_unless(pu_state, payer_idx=0, cost={"generic": 1}, on_result=lambda s, paid: pu_result.append(paid))
+    assert pu_state.pending_resolution["kind"] == "pay_unless"
+
+    pu_decklist = [("Saruli Caretaker", 2), ("Slippery Bogle", 2)]
+    pu_table = build_fixed_action_table(pu_decklist, pending_kinds=game.derive_pending_kinds(pu_decklist))
+    pu_tap_idx = next(i for i, (n, _l, _e) in enumerate(pu_table) if n == "Tap Saruli Caretaker")
+    _, pu_tap_legal, pu_tap_execute = pu_table[pu_tap_idx]
+    assert pu_tap_legal(pu_state), "Saruli's mana ability must stay legal mid-pay_unless -- the whole point of this redesign"
+    pu_tap_execute(pu_state)
+    assert pu_state.pending_resolution["kind"] == "pay_unless", "pay_unless must be UNTOUCHED while the mana_subdecision is open"
+    assert pu_state.mana_subdecision["stage"] == "choose_target"
+
+    pu_ids = [ident for _i, _r, ident in build_token_set(pu_state, 0, vocab)]
+    pu_legal = [r for r, ok in zip(pu_ids, pointer_legal_mask(pu_state, pu_ids)) if ok]
+    assert pu_legal == [pu_other], "only the untapped OTHER creature must be a legal tap-target"
+    execute_pointer_choice(pu_state, pu_other)
+    assert pu_state.mana_subdecision["stage"] == "choose_color"
+
+    pu_color_idx = next(i for i, (n, _l, _e) in enumerate(pu_table) if n == "Produce G")
+    _, pu_color_legal, pu_color_execute = pu_table[pu_color_idx]
+    assert pu_color_legal(pu_state)
+    pu_color_execute(pu_state)
+    assert pu_state.mana_subdecision is None
+    assert pu_state.mana_pool == {"G": 1}
+    assert pu_state.pending_resolution["kind"] == "pay_unless", (
+        "control must return to the untouched pay_unless resolution, not something new"
+    )
+
+    pu_pay_idx = next(i for i, (n, _l, _e) in enumerate(pu_table) if n == "Pay (unless)")
+    _, pu_pay_legal, pu_pay_execute = pu_table[pu_pay_idx]
+    assert pu_pay_legal(pu_state), "the floated G must actually be usable to pay off pay_unless"
+    pu_pay_execute(pu_state)
+    while pu_state.pending_resolution is not None:
+        game.execute_pool_spend(pu_state, game.pool_spend_options(pu_state)[0])
+    assert pu_result == [True], "pay_unless must resolve paid=True, using the mana Saruli floated mid-resolution"
+    print("rl.action_bridge Saruli Caretaker mid-pay_unless self-check: OK "
+          "(gate-free mana_subdecision survives an already-open resolution, control returns untouched)")
 
     # choose_graveyard_card is now a pointer target (by object identity), not a
     # fixed "Choose: X" row. Hand-build a real pending targeting the OPPONENT's
