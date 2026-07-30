@@ -139,7 +139,7 @@ def timberwatch_elf_activate(state, permanent):
         captured = capture_any_target(state, descriptor)
 
         def _resolve(st, cd):
-            if not target_still_legal(st, captured):
+            if captured is None or not target_still_legal(st, captured):
                 _log_target_fizzle(st, cd, None)
                 return
             x = _count_elves(st)
@@ -277,13 +277,25 @@ def cast_nyxborn_hydra_bestow(x):
     NOT handled here -- see state_based._destroy_creature's own
     "becomes_creature_when_orphaned" branch (this EffectId's own registry
     flag below), real Bestow's fall-off rule: stays on the battlefield,
-    becomes a creature again, keeps its own counters."""
+    becomes a creature again, keeps its own counters.
+
+    no_target_fallback (real MTG 702.103e): if there is no legal creature to
+    enchant AT ALL when this resolves -- never had one (begin_choose_any_
+    target's own empty-candidate auto-None; confirmed reachable: paying this
+    same cast's own {X} cost can tap the caster's last creature-mana-source
+    to death, e.g. Wall of Roots' 5th self-damaging activation) or had one
+    that died before resolving -- the spell does NOT fizzle to the graveyard
+    like an ordinary Aura. It still enters the battlefield, as a creature,
+    with its X +1/+1 counters, exactly the plain creature-mode cast
+    (cast_nyxborn_hydra_creature) -- reused directly here rather than
+    duplicated, so both paths mint an identical permanent."""
     def resolve(state, card_def):
         def _on_attached(state, aura):
             aura.type_override = CardType.ENCHANTMENT
             if x:
                 aura.counters["+1/+1"] = x
-        cast_aura(state, card_def, lambda p: p.card_type == CardType.CREATURE, on_attached=_on_attached)
+        cast_aura(state, card_def, lambda p: p.card_type == CardType.CREATURE, on_attached=_on_attached,
+                  no_target_fallback=cast_nyxborn_hydra_creature(x))
     return resolve
 
 
@@ -350,7 +362,7 @@ def quirion_ranger_untap_resolve(state, permanent):
         captured = capture_any_target(state, target_descriptor)
 
         def _resolve(state, card_def):
-            if not target_still_legal(state, captured):
+            if captured is None or not target_still_legal(state, captured):
                 where = (captured[1].card_def.name, captured[1].slot) if captured is not None else None
                 _log_target_fizzle(state, card_def, where)
                 return
@@ -690,7 +702,8 @@ def cast_ram_through(state, card_def):
 
             def _resolve(state, card_def):
                 discard_from_hand_to_graveyard(state, card_def)  # Ram Through itself -> graveyard
-                if not target_still_legal(state, cap_source) or not target_still_legal(state, cap_target):
+                if (cap_source is None or cap_target is None
+                        or not target_still_legal(state, cap_source) or not target_still_legal(state, cap_target)):
                     where = (cap_target[1].card_def.name, cap_target[1].slot) if cap_target is not None else None
                     _log_target_fizzle(state, card_def, where)
                     return

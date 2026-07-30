@@ -247,7 +247,7 @@ def cast_cleansing_wildfire(state, card_def):
 
         def _resolve(state, card_def):
             discard_from_hand_to_graveyard(state, card_def)  # the sorcery itself -> caster's graveyard
-            if not target_still_legal(state, captured):
+            if captured is None or not target_still_legal(state, captured):
                 where = (captured[1].card_def.name, captured[1].slot) if captured is not None else None
                 _log_target_fizzle(state, card_def, where)  # target gone -> no destroy, no search, no draw
                 return

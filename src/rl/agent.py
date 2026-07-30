@@ -112,12 +112,23 @@ def _raise_all_false(state, seat):
         sources = []
         for p in player.battlefield:
             spec = game.EFFECT_REGISTRY.get(p.card_def.effect_id, {})
-            if "mana" in spec or "filter_mana" in spec or "mana_extra_choose" in spec:
+            if "mana" in spec:
                 try:
                     out = game.mana_output(p, state) if not p.tapped else []
                 except Exception as exc:  # a source whose output needs state it can't read here
                     out = f"<{type(exc).__name__}>"
                 sources.append(f"{p.card_def.name}#{p.slot}{'(T)' if p.tapped else ''}->{out}")
+            elif "filter_mana" in spec or "mana_extra_choose" in spec:
+                # Pool->pool converters (filter_mana) have no mana_output at all
+                # -- that helper only understands a "mana" spec, so calling it
+                # here unconditionally used to throw ValueError and blind this
+                # exact dump to a filter's real state (confirmed live:
+                # monster_tron, "Barrels of Blasting Jelly#1-><ValueError>" on
+                # the very crash this diagnostic exists to explain). Report
+                # whether it's spent for the turn instead -- the one fact that
+                # actually matters for "why can't this pay {G}".
+                used = p.flags.get("used_this_turn", p.tapped)
+                sources.append(f"{p.card_def.name}#{p.slot}{'(used)' if used else '(available)'}")
         print(f"    seat{idx} mana sources={sources}", flush=True)
     raise RuntimeError(f"all-False action mask for pending kind {pend['kind'] if pend else None!r}")
 

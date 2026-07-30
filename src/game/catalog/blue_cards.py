@@ -97,7 +97,7 @@ def cast_deem_inferior(state, card_def):
 
         def _resolve(state, card_def):
             discard_from_hand_to_graveyard(state, card_def)  # Deem Inferior itself -> graveyard
-            if not target_still_legal(state, captured):
+            if captured is None or not target_still_legal(state, captured):
                 where = (captured[1].card_def.name, captured[1].slot) if captured is not None else None
                 _log_target_fizzle(state, card_def, where)
                 return
@@ -207,7 +207,7 @@ def escape_sleep_of_the_dead(state, inst):
             captured = capture_any_target(state, descriptor)
 
             def _resolve(state, cd):
-                if not target_still_legal(state, captured):
+                if captured is None or not target_still_legal(state, captured):
                     _log_target_fizzle(state, cd, None)
                     return
                 _sleep_tap_skip(state, captured[1])
@@ -473,7 +473,11 @@ BLUE_EFFECT_REGISTRY = {
             "extra_legal": lambda state: _has_stack_spell(state, lambda e: True),  # a spell on the stack to counter
             "precast_choice": True,  # target spell chosen at cast (from the current stack)
         },
-        "pending_kinds": {"choose_stack_target"},
+        # No "pending_kinds" entry: choose_stack_target is POINTER-addressed
+        # (rl.action_bridge), not a by-name fixed action, so it needs no
+        # per-deck action-table declaration -- see begin_choose_stack_target's
+        # own docstring for why (the countered spell is very often the
+        # opponent's, which a by-name row could never represent).
     },
     EffectId.DISPEL: {
         "cast": {
@@ -481,7 +485,6 @@ BLUE_EFFECT_REGISTRY = {
             "extra_legal": lambda state: _has_stack_spell(state, lambda e: e["card_def"].card_type == CardType.INSTANT),
             "precast_choice": True,
         },
-        "pending_kinds": {"choose_stack_target"},
     },
     EffectId.SPELL_PIERCE: {
         "cast": {
@@ -489,7 +492,7 @@ BLUE_EFFECT_REGISTRY = {
             "extra_legal": lambda state: _has_stack_spell(state, lambda e: e["card_def"].card_type != CardType.CREATURE),
             "precast_choice": True,
         },
-        "pending_kinds": {"choose_stack_target", "pay_unless"},  # pay_unless: the "unless controller pays {2}" rider
+        "pending_kinds": {"pay_unless"},  # the "unless controller pays {2}" rider -- still a real, live declaration
     },
     EffectId.ABANDON_ATTACHMENTS: {
         "cast": {"resolve": lambda state, card_def: cast_abandon_attachments(state, card_def)},
@@ -771,8 +774,14 @@ if __name__ == "__main__":
     # --- G4 counters & permission ---
     from ..effects.stack import push_to_stack as _push
     from ..resolution import (
-        execute_choose_stack_target_option, pay_unless_decline, pay_unless_pay,
+        choose_stack_target_options, execute_choose_stack_target_option, pay_unless_decline, pay_unless_pay,
     )
+
+    def _stack_target_named(state, name):
+        """choose_stack_target is pointer-addressed (the exact stack-entry
+        object), not by name -- this finds the matching entry the same way a
+        real pointer pick would, for this self-check's own convenience."""
+        return next(e for e in choose_stack_target_options(state) if e["card_def"].name == name)
 
     def _stack_spell(st, name, controller=1):
         """Put a real spell on the stack as if `controller` cast it (its card
@@ -794,7 +803,7 @@ if __name__ == "__main__":
     state.players[0].hand = [_cs]  # the counter spell is in hand while on the stack (reserved), removed on resolve
     cast_counterspell(state, _cs)
     assert state.pending_resolution["kind"] == "choose_stack_target"
-    execute_choose_stack_target_option(state, "Some Instant")
+    execute_choose_stack_target_option(state, _stack_target_named(state, "Some Instant"))
     _resolve_top(state)
     assert all(e["card_def"].name != "Some Instant" for e in state.stack)  # countered off the stack
     assert any(c.name == tgt.name for c in state.players[1].graveyard)
@@ -816,7 +825,7 @@ if __name__ == "__main__":
     _sp = CardDef("Spell Pierce", CardType.INSTANT, {"U": 1}, EffectId.SPELL_PIERCE)
     state.players[0].hand = [_sp]
     cast_spell_pierce(state, _sp)
-    execute_choose_stack_target_option(state, "Ponder")
+    execute_choose_stack_target_option(state, _stack_target_named(state, "Ponder"))
     _resolve_top(state)
     assert state.pending_resolution["kind"] == "pay_unless" and state.active_idx == 1  # payer's decision
     pay_unless_decline(state)
@@ -829,7 +838,7 @@ if __name__ == "__main__":
     _sp2 = CardDef("Spell Pierce", CardType.INSTANT, {"U": 1}, EffectId.SPELL_PIERCE)
     state.players[0].hand = [_sp2]
     cast_spell_pierce(state, _sp2)
-    execute_choose_stack_target_option(state, "Ponder")
+    execute_choose_stack_target_option(state, _stack_target_named(state, "Ponder"))
     _resolve_top(state)
     pay_unless_pay(state)
     _guard = 0
@@ -1087,7 +1096,12 @@ if __name__ == "__main__":
         state.players[1].hand = [zap]
         cast_targeting_creature(state, zap, lambda s, perm: destroy_permanent(s, perm))
         _ect(state, 0, "Tolarian Terror", 1)  # lock the target -> Ward triggers, Zap pushed
-        assert len(state.stack) == 1 and any(e["type"] == "ward" for e in state.players[1].trigger_queue)
+        # Ward is TOLARIAN TERROR'S OWN triggered ability -- it belongs to its
+        # controller (idx 0), not the caster (idx 1, state.active_idx right
+        # now): _maybe_trigger_ward writes into state.players[controller]
+        # directly rather than the active-player proxy, same owner-threading
+        # fix game.effects.state_based._queue_leave_triggers already needed.
+        assert len(state.stack) == 1 and any(e["type"] == "ward" for e in state.players[0].trigger_queue)
         promote_triggers_to_stack(state)  # Ward goes ON TOP of Zap
         assert len(state.stack) == 2 and state.stack[-1]["card_def"].name == "Tolarian Terror"
         _resolve_top(state)  # Ward resolves -> pay_unless for the caster (idx 1)

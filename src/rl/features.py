@@ -276,16 +276,21 @@ def build_token_set(state, my_seat_idx, vocab):
 
     identity: the live Permanent for a battlefield token, the exact CardInstance
     for a graveyard card (Permanent subclasses CardInstance, so battlefield vs
-    graveyard is told apart by isinstance(., Permanent) first), the CardDef for a
-    revealed hand card (DEFERRED -- hand still holds CardDefs), else None
-    (exile/stack). The pointer-network action head (rl.deck) matches a legal
-    target back to "which row of this token batch is that" via this field -- a
-    Permanent for the four battlefield targeting kinds (Attack, Assign Blocker,
-    Choose target, Choose opponent's), the CardInstance/CardDef object for
-    choose_graveyard_card (matched by object identity, so two same-named
-    graveyard copies are distinct and an opponent's graveyard is reachable --
-    which is why the per-name "Choose: X" fixed rows for it no longer exist).
-    Exile/stack cards have no pointer-addressable resolution, so None.
+    graveyard is told apart by isinstance(., Permanent) first), the raw stack-
+    entry dict for a stack token, the CardDef for a revealed hand card
+    (DEFERRED -- hand still holds CardDefs), else None (exile only). The
+    pointer-network action head (rl.deck) matches a legal target back to
+    "which row of this token batch is that" via this field -- a Permanent for
+    the four battlefield targeting kinds (Attack, Assign Blocker, Choose
+    target, Choose opponent's), the CardInstance/CardDef object for choose_
+    graveyard_card, and the stack-entry dict for choose_stack_target (matched
+    by OBJECT IDENTITY in every case -- id()-keyed for choose_graveyard_card/
+    choose_cast_copy/choose_stack_target specifically, since a stack entry is
+    an unhashable dict, see rl.action_bridge -- so two same-named graveyard
+    copies or simultaneous same-named spells are each individually
+    addressable, and an opponent's graveyard/stack entry is reachable, which
+    is why the per-name "Choose: X" fixed rows for either no longer exist).
+    Exile cards have no pointer-addressable resolution, so None.
 
     Every token also carries two dynamic targeted-by-mine/targeted-by-theirs
     bits (see _token_row, _stack_target_map) reflecting whatever the CURRENT
@@ -344,7 +349,7 @@ def build_token_set(state, my_seat_idx, vocab):
         tm, tt = _targeted(entry)  # a spell/ability can itself be targeted, e.g. Counterspell
         tokens.append((vocab.index(entry["card_def"].name),
                         _token_row(entry["card_def"].name, "stack", is_mine, vocab, targeted_by_mine=tm, targeted_by_theirs=tt),
-                        None))
+                        entry))  # pointer-addressable: choose_stack_target (Counterspell/Dispel/Spell Pierce) picks this exact entry
 
     # Faithful hand reveal: choose_graveyard_card is a generic pick, and
     # Mesmeric Fiend reuses it to exile a nonland card from the OPPONENT's hand
@@ -494,7 +499,9 @@ if __name__ == "__main__":
             "the graveyard card token must carry its exact CardInstance as pointer handle"
         assert graveyard_tokens[0][2] is seat0.graveyard[0], "graveyard token identity must be the live CardInstance"
         inert_tokens = [(idx, row, ident) for idx, row, ident in tokens if ident is None]
-        assert len(inert_tokens) == 4, "exile (1) + stack (3) tokens have no pointer-addressable resolution -> identity None"
+        assert len(inert_tokens) == 1, "only exile has no pointer-addressable resolution -> identity None"
+        stack_tokens = [(idx, row, ident) for idx, row, ident in tokens if isinstance(ident, dict)]
+        assert len(stack_tokens) == 3, "every stack token must carry its exact stack-entry dict as pointer handle (choose_stack_target)"
 
         # Guttersnipe (seat 0's own permanent) -- side flag must match
         # whether seat 0 IS my_seat, not be hardcoded to "mine" regardless.
@@ -554,8 +561,10 @@ if __name__ == "__main__":
         # Prize entry, controller=1 -- a "stack_entry" target (Counterspell-
         # shaped): a spell/ability on the stack can be the target, not just
         # a permanent or graveyard card, and the bit lands on that stack
-        # token's own row even though its pointer identity stays None.
-        bolt_row = next(row for idx, row, ident in tokens if idx == vocab.index("Lightning Bolt") and ident is None)
+        # token's own row. Disambiguated from the graveyard Lightning Bolt
+        # CardInstance by identity TYPE (dict = stack entry, pointer-
+        # addressable for choose_stack_target -- see rl.action_bridge).
+        bolt_row = next(row for idx, row, ident in tokens if idx == vocab.index("Lightning Bolt") and isinstance(ident, dict))
         assert bolt_row[targeted_mine_slot] == (1.0 if my_seat == 1 else 0.0)
         assert bolt_row[targeted_theirs_slot] == (1.0 if my_seat == 0 else 0.0)
 

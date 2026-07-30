@@ -153,8 +153,8 @@ def _etb_targets(entry):
 
 
 def promote_triggers_to_stack(state):
-    """Moves every currently-queued trigger for the active player onto
-    state.stack, replacing the old
+    """Moves every currently-queued trigger -- for EVERY player, not just
+    the active one -- onto state.stack, replacing the old
     drain_trigger_queue (which ran each entry's own effect immediately
     instead of deferring it onto the stack -- see _trigger_resolve for
     what changed per trigger kind). Called once per priority round, right
@@ -162,46 +162,87 @@ def promote_triggers_to_stack(state):
     matching real Magic's actual ordering (704.3: state-based actions,
     then triggers move to the stack, THEN priority is given).
 
-    Only ever looks at state.trigger_queue (the ACTIVE player's own,
-    active-player-proxied) -- callers always invoke this with
-    state.active_idx == state.turn_player_idx (priority always resets
-    there before this runs), and nothing in the current card pool ever
-    queues a trigger for a non-active player (only the active player's
-    own draw()/discard() ever populate trigger_queue), so real Magic's own
-    APNAP ordering (whose triggers get placed first, when different
-    players have simultaneous ones) is moot given what this engine can
-    actually produce today -- revisit if a future card changes that.
+    Reads each player's OWN trigger_queue (game.state.PlayerState.
+    trigger_queue), not just state.trigger_queue (the active-player proxy).
+    Most producers (ETB, upkeep, cast triggers, Madness, venture, Ward) only
+    ever fire because of an action the CURRENTLY active player is taking, so
+    writing through the proxy already lands them in the right owner's list.
+    The one exception is a leaves-the-battlefield trigger from a state-based
+    DEATH (game.effects.state_based._queue_leave_triggers): state-based
+    checks scan BOTH battlefields every priority round regardless of whose
+    turn it is, so the dying permanent's owner can be the NON-active player
+    (their blocker died in combat, or a removal spell killed their creature,
+    on the active player's own turn) -- _queue_leave_triggers writes into
+    that true owner's list directly for exactly this reason (confirmed
+    live: a real league game crashed drl_env's coverage guard because the
+    active player was handed an order_triggers choice naming the opponent's
+    Clockwork Percussionist).
 
-    2+ queued at once: the active player picks the placement order
-    (resolution.begin_order_triggers) -- real Magic's own rule (603.3b),
-    not a fixed queue order (a real deck can hit this: Faithless
-    Looting's discard-2 landing on two Madness cards at once, two Sneaky
-    Snackers both crossing their own draw-count trigger on the same draw,
-    or two targeting ETBs entering simultaneously). 0 or 1 total: placed
-    immediately, no ordering decision needed. No-op if the queue is empty --
-    safe to call unconditionally at the start of every priority round.
+    Real Magic's own APNAP ordering (603.3b) now actually matters given the
+    above, so each player's queue becomes its own GROUP: the active
+    player's group is placed FIRST (deepest on the stack, resolves LAST),
+    then the other player's group is placed second (resolves FIRST) --
+    see _place_trigger_groups. Each group gets its own placement-order
+    decision (resolution.begin_order_triggers) only when THAT SAME player
+    has 2+ simultaneous triggers -- a player only ever orders their own
+    triggers, never an opponent's (this is what keeps order_triggers a
+    plain by-name resolution: every candidate it can ever offer is
+    guaranteed to be a card from the deciding player's own deck, the same
+    guarantee drl_env._actions._CHOOSE_NAME_PENDING_KINDS documents and
+    enforces). state.active_idx is set to each group's owner for the
+    duration of its placement (push_to_stack's own "controller" stamp reads
+    active_idx, same convention resolve_top_of_stack's controller-restore
+    already established) and restored once every group has been placed.
+    Both queues empty (by far the common case): no-op, safe to call
+    unconditionally at the start of every priority round.
 
     A TARGETING ETB (_etb_targets) is placed like any other queued trigger,
     just via a different placement action: instead of pushing a plain
     resolve, its OWN etb_trigger hook runs AT PLACEMENT -- opening target
     selection and pushing its own effect entry (targets locked now, fizzle
     per-target at resolution, 608.2b/c). When 2+ triggers (targeting and/or
-    plain, any mix) are queued together, ALL of them go through ONE
-    begin_order_triggers ordering choice (603.3b covers every simultaneous
-    trigger, not just the non-targeting ones) -- see
-    resolution.execute_order_triggers_option's own targeting branch for how
-    a targeting entry gets placed."""
-    if not state.trigger_queue:
-        return
-    queue = list(state.trigger_queue)
-    state.trigger_queue.clear()
+    plain, any mix) are queued together for the SAME owner, ALL of them go
+    through ONE begin_order_triggers ordering choice (603.3b covers every
+    simultaneous trigger of one player's, not just the non-targeting ones)
+    -- see resolution.execute_order_triggers_option's own targeting branch
+    for how a targeting entry gets placed."""
+    original_active_idx = state.active_idx
+    player_indices = [original_active_idx]
+    if len(state.players) > 1:
+        player_indices.append(1 - original_active_idx)
 
     def _entry_for(e):
         if _etb_targets(e):
             return {"card_def": e["card_def"], "permanent": e["permanent"], "targeting": True}
         return {"card_def": e["card_def"], "resolve": _trigger_resolve(e)}
 
-    entries = [_entry_for(e) for e in queue]
+    groups = []
+    for player_idx in player_indices:
+        queue = state.players[player_idx].trigger_queue
+        if not queue:
+            continue
+        groups.append((player_idx, [_entry_for(e) for e in queue]))
+        queue.clear()
+
+    _place_trigger_groups(state, groups, original_active_idx)
+
+
+def _place_trigger_groups(state, groups, original_active_idx):
+    """Places `groups` (a list of (owner_idx, entries) pairs, APNAP-ordered
+    by promote_triggers_to_stack) one at a time, each under its OWN owner's
+    active_idx, restoring original_active_idx once every group is placed.
+    A group's own 2+ entries chain through begin_order_triggers's on_complete
+    (begin_resolution's own docstring: "it may itself begin a further
+    resolution") rather than being placed in one synchronous pass, since
+    only ONE pending_resolution can be open at a time -- the next group's
+    decision (if it needs one) must wait for this one to fully resolve, the
+    same reason game.turn's own priority round only ever calls
+    promote_triggers_to_stack when state.pending_resolution is None."""
+    if not groups:
+        state.active_idx = original_active_idx
+        return
+    (owner_idx, entries), rest = groups[0], groups[1:]
+    state.active_idx = owner_idx
     if len(entries) == 1:
         # Same two-way placement branch execute_order_triggers_option uses for
         # the 2+ case below -- inlined here (not shared) for the same "can't
@@ -212,8 +253,10 @@ def promote_triggers_to_stack(state):
             registry.EFFECT_REGISTRY[entry["card_def"].effect_id]["etb_trigger"](state, entry["permanent"])
         else:
             push_to_stack(state, entry["card_def"], entry["resolve"], reserves_hand_card=False, is_spell=False)  # a triggered ability, not a spell
-        return
-    resolution.begin_order_triggers(state, entries, on_complete=lambda s: None)
+        _place_trigger_groups(state, rest, original_active_idx)
+    else:
+        resolution.begin_order_triggers(
+            state, entries, on_complete=lambda s: _place_trigger_groups(s, rest, original_active_idx))
 
 
 if __name__ == "__main__":
@@ -331,3 +374,103 @@ if __name__ == "__main__":
         registry.EFFECT_REGISTRY[EffectId.GENEROUS_ENT] = _ent_backup
 
     print("triggers.py 2 simultaneous targeting-ETB triggers (F8 generalization) self-check: OK")
+
+    # Cross-owner LTB trigger (the actual bug this session found): a
+    # NON-active player's creature dying via state-based action (combat,
+    # removal -- check_state_based_actions scans BOTH battlefields every
+    # round) must queue into THAT player's own trigger_queue, not the
+    # active player's proxy -- and promote_triggers_to_stack must place each
+    # owner's group under ITS OWN active_idx (APNAP, 603.3b): the active
+    # player's single trigger placed first (resolves last), the opponent's
+    # single trigger placed second (resolves first), each stack entry
+    # controller-stamped to its TRUE owner, active_idx restored to the real
+    # active player once both groups are placed.
+    from ..state import PlayerState
+    from . import state_based
+
+    ltb_fired = []
+    _filler_backup3 = registry.EFFECT_REGISTRY[EffectId.FILLER]
+    _ent_backup2 = registry.EFFECT_REGISTRY[EffectId.GENEROUS_ENT]
+    registry.EFFECT_REGISTRY[EffectId.FILLER] = {"ltb_trigger": lambda s, p: ltb_fired.append(p.card_def.name)}
+    registry.EFFECT_REGISTRY[EffectId.GENEROUS_ENT] = {"ltb_trigger": lambda s, p: ltb_fired.append(p.card_def.name)}
+    _card_defs_backup2 = dict(registry.CARD_DEFS)
+    try:
+        mine_def = CardDef("Mine Dies", CardType.CREATURE, None, EffectId.FILLER, power=1, toughness=1)
+        theirs_def = CardDef("Theirs Dies", CardType.CREATURE, None, EffectId.GENEROUS_ENT, power=1, toughness=1)
+        registry.CARD_DEFS["Mine Dies"] = mine_def
+        registry.CARD_DEFS["Theirs Dies"] = theirs_def
+        mine = Permanent(mine_def)
+        theirs = Permanent(theirs_def)
+        state = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
+        state.active_idx = 0
+        state.players[0].battlefield = [mine]
+        state.players[1].battlefield = [theirs]
+        mine.damage_marked = 1  # lethal for both -- simultaneous SBA deaths, cross-owner
+        theirs.damage_marked = 1
+        state_based.check_state_based_actions(state)
+        # Each landed in its OWN owner's queue, never the active-player proxy.
+        assert [e["card_def"].name for e in state.players[0].trigger_queue] == ["Mine Dies"]
+        assert [e["card_def"].name for e in state.players[1].trigger_queue] == ["Theirs Dies"]
+
+        promote_triggers_to_stack(state)
+        assert state.pending_resolution is None  # 1 entry per owner -- no ordering decision needed by either
+        assert len(state.stack) == 2
+        assert state.stack[0]["card_def"].name == "Mine Dies" and state.stack[0]["controller"] == 0  # active player's own -- placed first (deepest)
+        assert state.stack[1]["card_def"].name == "Theirs Dies" and state.stack[1]["controller"] == 1  # opponent's -- placed second (on top)
+        assert state.active_idx == 0  # restored to the true active player, not left on the opponent
+
+        while state.stack:  # LIFO: the opponent's (placed last) resolves FIRST
+            resolve_top_of_stack(state)
+        assert ltb_fired == ["Theirs Dies", "Mine Dies"]
+    finally:
+        registry.EFFECT_REGISTRY[EffectId.FILLER] = _filler_backup3
+        registry.EFFECT_REGISTRY[EffectId.GENEROUS_ENT] = _ent_backup2
+        registry.CARD_DEFS.clear()
+        registry.CARD_DEFS.update(_card_defs_backup2)
+
+    print("triggers.py cross-owner LTB trigger (APNAP, per-owner queues) self-check: OK")
+
+    # The actual crash scenario: the OPPONENT has 2+ simultaneous triggers of
+    # their OWN -- order_triggers must be answered by THAT player (active_idx
+    # set to them), offering ONLY their own card names, never the active
+    # player's -- this is what keeps order_triggers a safe by-name resolution
+    # (drl_env._actions._CHOOSE_NAME_PENDING_KINDS's own guaranteed invariant:
+    # every candidate it can ever offer is confined to the deciding player's
+    # own deck).
+    _filler_backup4 = registry.EFFECT_REGISTRY[EffectId.FILLER]
+    _ent_backup3 = registry.EFFECT_REGISTRY[EffectId.GENEROUS_ENT]
+    registry.EFFECT_REGISTRY[EffectId.FILLER] = {"ltb_trigger": lambda s, p: None}
+    registry.EFFECT_REGISTRY[EffectId.GENEROUS_ENT] = {"ltb_trigger": lambda s, p: None}
+    _card_defs_backup3 = dict(registry.CARD_DEFS)
+    try:
+        opp_a_def = CardDef("Opp Dies A", CardType.CREATURE, None, EffectId.FILLER, power=1, toughness=1)
+        opp_b_def = CardDef("Opp Dies B", CardType.CREATURE, None, EffectId.GENEROUS_ENT, power=1, toughness=1)
+        registry.CARD_DEFS["Opp Dies A"] = opp_a_def
+        registry.CARD_DEFS["Opp Dies B"] = opp_b_def
+        opp_a = Permanent(opp_a_def)
+        opp_b = Permanent(opp_b_def)
+        state = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
+        state.active_idx = 0
+        state.players[1].battlefield = [opp_a, opp_b]
+        opp_a.damage_marked = 1
+        opp_b.damage_marked = 1
+        state_based.check_state_based_actions(state)
+
+        promote_triggers_to_stack(state)
+        assert state.pending_resolution["kind"] == "order_triggers"
+        assert state.active_idx == 1  # the OPPONENT orders these -- never the active player
+        assert resolution.order_triggers_options(state) == ["Opp Dies A", "Opp Dies B"]  # only THEIR own names
+
+        resolution.execute_order_triggers_option(state, "Opp Dies A")
+        assert state.active_idx == 1  # still theirs to place the second one
+        resolution.execute_order_triggers_option(state, "Opp Dies B")
+        assert state.pending_resolution is None
+        assert state.active_idx == 0  # restored once every group (here, just the one) is placed
+        assert all(e["controller"] == 1 for e in state.stack)
+    finally:
+        registry.EFFECT_REGISTRY[EffectId.FILLER] = _filler_backup4
+        registry.EFFECT_REGISTRY[EffectId.GENEROUS_ENT] = _ent_backup3
+        registry.CARD_DEFS.clear()
+        registry.CARD_DEFS.update(_card_defs_backup3)
+
+    print("triggers.py opponent-owned order_triggers (APNAP: only their own names) self-check: OK")

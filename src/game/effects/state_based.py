@@ -41,7 +41,7 @@ def check_state_based_actions(state):
         _destroy_creature(state, permanent)
 
 
-def _queue_leave_triggers(state, permanent):
+def _queue_leave_triggers(state, permanent, owner_idx):
     """Queue a leaves-the-battlefield triggered ability (Mesmeric Fiend's
     exiled-card return) for a permanent that JUST left the battlefield, so
     game.turn's priority round puts it on the stack (real Magic 603.3 -- an
@@ -50,17 +50,37 @@ def _queue_leave_triggers(state, permanent):
     trigger needs on its flags (the linked exiled card). No-op unless the
     card's effect_id has an "ltb_trigger" spec.
 
+    Appends to owner_idx's OWN trigger_queue (state.players[owner_idx], not
+    the state.trigger_queue active-player proxy): state-based death checks
+    scan BOTH battlefields every priority round regardless of whose turn it
+    is (check_state_based_actions above), so the dying permanent's owner can
+    be the NON-active player (their blocker died in combat, or a removal
+    spell killed their creature, on the active player's own turn) -- writing
+    through the proxy would silently misfile their trigger into the active
+    player's queue, then hand the active player an order_triggers choice
+    naming a card from the OPPONENT's deck (confirmed live: a real league
+    game crashed drl_env's coverage guard this way, "Clockwork
+    Percussionist" offered to a deck that doesn't run it).
+    game.effects.triggers.promote_triggers_to_stack reads every player's own
+    queue now, each ordering only ITS OWN simultaneous triggers (603.3b
+    APNAP), so this is the one and only place that needs the true owner
+    threaded through instead of the proxy.
+
     Called from the two -- and, in this card pool, only -- ways a creature
     (the sole card type with an LTB trigger here) leaves: death (below) and
     being sacrificed (resolution.execute_sacrifice_option inlines the identical
-    three lines, since it can't import this module without a cycle). No other
-    removal path in this pool takes a creature off the battlefield (bounce is
-    lands-only; every sacrifice/exile ability sacrifices its own non-creature
-    source), so this is complete, not a simplification -- thread it through a
-    new removal site if a future card ever makes one reachable."""
+    three lines, since it can't import this module without a cycle -- that
+    call site sacrifices only the ACTIVE player's own permanents, so its
+    state.trigger_queue proxy write is already correctly self-scoped and
+    doesn't need this same owner_idx threading). No other removal path in
+    this pool takes a creature off the battlefield (bounce is lands-only;
+    every sacrifice/exile ability sacrifices its own non-creature source), so
+    this is complete, not a simplification -- thread it through a new
+    removal site if a future card ever makes one reachable."""
     spec = registry.EFFECT_REGISTRY.get(permanent.card_def.effect_id, {})
     if spec.get("ltb_trigger") is not None:
-        state.trigger_queue.append({"type": "ltb", "card_def": permanent.card_def, "permanent": permanent})
+        state.players[owner_idx].trigger_queue.append(
+            {"type": "ltb", "card_def": permanent.card_def, "permanent": permanent})
 
 
 def _destroy_creature(state, permanent):
@@ -95,7 +115,7 @@ def _destroy_creature(state, permanent):
         "state_based_death", permanent=(permanent.card_def.name, permanent.slot), owner_idx=owner_idx,
         to_zone=("ceases_to_exist" if is_token else "graveyard"),
     )
-    _queue_leave_triggers(state, permanent)
+    _queue_leave_triggers(state, permanent, owner_idx)
     orphaned = [p for p in owner.battlefield if p.flags.get("enchanting") is permanent]
     for aura in orphaned:
         spec = registry.EFFECT_REGISTRY.get(aura.card_def.effect_id, {})
@@ -149,7 +169,7 @@ def destroy_permanent(state, permanent):
         to_zone=("ceases_to_exist" if is_token else "graveyard"),
     )
     if not is_token:
-        _queue_leave_triggers(state, permanent)  # a "put into a graveyard from the battlefield" (dies) trigger, if any
+        _queue_leave_triggers(state, permanent, owner_idx)  # a "put into a graveyard from the battlefield" (dies) trigger, if any
     return True
 
 
@@ -182,7 +202,7 @@ def sacrifice_to_graveyard(state, permanent):
         to_zone=("ceases_to_exist" if is_token else "graveyard"), reason="sacrifice",
     )
     if not is_token:
-        _queue_leave_triggers(state, permanent)
+        _queue_leave_triggers(state, permanent, owner_idx)
     fire_sacrifice_triggers(state, owner_idx, permanent.card_def)  # Gixian Infiltrator / Writhing Chrysalis
 
 

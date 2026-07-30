@@ -125,9 +125,9 @@ def cast_agony_warp(state, card_def):
 
             def _resolve(state, card_def):
                 discard_from_hand_to_graveyard(state, card_def)
-                if target_still_legal(state, cap1):
+                if cap1 is not None and target_still_legal(state, cap1):
                     cap1[1].temp_power -= 3  # -3/-0 until end of turn
-                if target_still_legal(state, cap2):
+                if cap2 is not None and target_still_legal(state, cap2):
                     cap2[1].temp_toughness -= 3  # -0/-3 until end of turn
                 check_state_based_actions(state)  # 0-toughness -> dies
 

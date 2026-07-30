@@ -46,7 +46,18 @@ def cast_targeting_creature(state, card_def, on_resolve, eligible=lambda p: True
     (Cast Down/Terminate/Snuff Out, via state_based.destroy_permanent), put
     counters (Unexpected Fangs), or grant until-EOT keywords + Investigate
     (Toxin Analysis). `eligible` narrows the legal targets (Snuff Out's
-    nonblack); the default is any creature."""
+    nonblack); the default is any creature.
+
+    captured can be None even for this MANDATORY pick: begin_choose_any_target
+    auto-completes with None the instant it's called if zero legal creatures
+    exist right then (its own documented contract) -- reachable when this
+    spell's OWN cost payment (a mana ability, paid AFTER targeting under this
+    engine's cost-then-target order) kills the caster's last/only legal
+    target. target_still_legal(None) returns True by design (correct for the
+    OPTIONAL-pick callers that check captured is None themselves first), so it
+    must be checked explicitly here too, or resolution falls through into
+    `captured[1]` -- confirmed the hard way, a real pretrain run crashed doing
+    exactly that via a different begin_choose_any_target caller (cast_aura)."""
     idx = state.active_idx
 
     def _on_target(state, descriptor):
@@ -54,7 +65,7 @@ def cast_targeting_creature(state, card_def, on_resolve, eligible=lambda p: True
 
         def _resolve(state, card_def):
             discard_from_hand_to_graveyard(state, card_def)  # the spell itself -> its owner's graveyard
-            if not target_still_legal(state, captured):
+            if captured is None or not target_still_legal(state, captured):
                 where = (captured[1].card_def.name, captured[1].slot) if captured is not None else None
                 _log_target_fizzle(state, card_def, where)
                 return
@@ -93,10 +104,12 @@ def _log_target_fizzle(state, card_def, chosen_name_slot):
     branch is silent and looks, from the outside, identical to "cast a
     spell that legitimately does nothing," which is exactly the kind of
     gap that made the original crash (a stale choose_permanent resolution)
-    hard to diagnose. where=None only if begin_choose_permanent's own
-    empty-options safety net fired at cast time -- unreachable for an Aura
-    today (its own extra_legal already guarantees a target exists then),
-    kept here so the message stays accurate if that ever changes."""
+    hard to diagnose. where=None when there was never a captured target at
+    all -- begin_choose_any_target's own empty-candidate-pool auto-complete
+    (confirmed reachable for an Aura: a cast's own cost payment, paid after
+    targeting under this engine's cost-then-target order, can kill the
+    caster's last legal target before _resolve ever runs) or an analogous
+    begin_choose_permanent/search_fetch safety net."""
     where = f"{chosen_name_slot[0]!r} (slot {chosen_name_slot[1]})" if chosen_name_slot is not None else "no legal target at cast time"
     print(f"[target fizzle] turn {state.turn_number}: {card_def.name} failed to resolve -- target was {where}, not on the battlefield anymore.")
 
@@ -147,7 +160,20 @@ def _maybe_trigger_ward(state, permanent):
     controller = next((idx for idx, p in enumerate(state.players) if permanent in p.battlefield), None)
     if controller is None or caster_idx == controller:
         return  # only an OPPONENT's targeting triggers Ward
-    state.trigger_queue.append(
+    # Ward is the WARDED creature's own triggered ability -- it belongs to
+    # `controller` (whoever placement-orders it alongside their own other
+    # simultaneous triggers, game.effects.triggers.promote_triggers_to_stack),
+    # never to caster_idx (the opponent who triggered it, and who is
+    # state.active_idx right now, mid-cast). Writing through the
+    # state.trigger_queue active-player PROXY would append into caster_idx's
+    # own queue instead -- confirmed live: a real league game crashed
+    # drl_env's coverage guard because the ACTIVE (casting) player was handed
+    # an order_triggers choice naming "Tolarian Terror", a card from the
+    # WARDED player's deck, same failure mode
+    # game.effects.state_based._queue_leave_triggers already hit and fixed
+    # for LTB triggers -- this producer needed the identical owner_idx
+    # threading.
+    state.players[controller].trigger_queue.append(
         {"type": "ward", "card_def": permanent.card_def, "payer_idx": caster_idx, "cost": ward}
     )
     state.log_event("ward_triggered", permanent=(permanent.card_def.name, permanent.slot), payer=caster_idx)
@@ -169,7 +195,7 @@ def target_still_legal(state, captured):
     return any(perm in player.battlefield for player in state.players)
 
 
-def cast_aura(state, card_def, target_predicate, on_attached=None):
+def cast_aura(state, card_def, target_predicate, on_attached=None, no_target_fallback=None):
     """Cast an Aura from hand: pick a legal target via
     resolution.begin_choose_any_target -- real "Enchant creature/land"
     targets ANY matching permanent on EITHER battlefield (not just your own),
@@ -188,11 +214,15 @@ def cast_aura(state, card_def, target_predicate, on_attached=None):
     BEFORE the card ever sits on the stack) -- and re-checked by EXACT
     OBJECT IDENTITY only once the spell actually resolves off the stack.
     If that exact Permanent is gone by then (died, was sacrificed, bounced
-    -- doesn't matter how), the spell fails outright: no effect, straight
-    to the graveyard (real Magic: a spell whose only target is illegal on
-    resolution is removed from the stack doing nothing) -- see _resolve's
-    own fizzle branch below, logged via _log_target_fizzle so this doesn't
-    silently look like "cast a spell that did nothing."
+    -- doesn't matter how), OR there was never a legal target to begin with
+    (begin_choose_any_target's own auto-complete-with-None on an empty
+    candidate pool -- reachable when THIS SAME cast's own cost payment, paid
+    after targeting under this engine's cost-then-target order, kills the
+    caster's last legal target: confirmed the hard way, a real pretrain run
+    tapping its own Wall of Roots for the 5th and lethal time while paying
+    for a Bestow cast), the spell fails outright: no effect -- see
+    _resolve's own fizzle branch below, logged via _log_target_fizzle so
+    this doesn't silently look like "cast a spell that did nothing."
 
     on_attached(state, aura_permanent), if given, runs once actually
     attached -- for an Aura with its own ETB effect (Abundant Growth's
@@ -202,16 +232,24 @@ def cast_aura(state, card_def, target_predicate, on_attached=None):
     needs to record something onto the Aura's own Permanent, not just act
     on shared state.
 
+    no_target_fallback(state, card_def), if given, REPLACES the default
+    "no legal target -> graveyard" fizzle above. The one user is Bestow
+    (Nyxborn Hydra, green_cards.cast_nyxborn_hydra_bestow): real Magic
+    702.103e -- a spell cast for its bestow cost that ends up with no legal
+    target for the Aura still enters the battlefield, AS A CREATURE, instead
+    of going to the graveyard. Every other Aura leaves this None (the
+    default), keeping the plain graveyard-fizzle.
+
     Real-rules note: an Aura returns to the graveyard (and, for Rancor,
     from there back to hand) when whatever it enchants leaves the
     battlefield ("orphaning") -- modeled for the one reachable case in this
-    card pool, combat death. Every OTHER battlefield-removal call
-    site in this codebase (sacrifice, bounce, exile -- see their own call
-    sites) still doesn't orphan an enchanted permanent's Auras, since none
-    of them can currently target a creature that could be enchanted
-    (boggles is the only deck with Auras, and none of its own cards
-    sacrifice/bounce/exile a creature). Thread the same orphaning logic
-    through a removal site if a future card ever makes that reachable."""
+    card pool, combat death (state_based._destroy_creature). Every OTHER
+    battlefield-removal call site in this codebase (sacrifice, bounce, exile
+    -- see their own call sites) still doesn't orphan an enchanted
+    permanent's Auras, since no card in this pool can currently
+    sacrifice/bounce/exile a creature something else has enchanted. Thread
+    the same orphaning logic through a removal site if a future card ever
+    makes that reachable."""
     def _on_target_chosen(state, target_descriptor):
         captured = capture_any_target(state, target_descriptor)  # ("permanent-as-'creature'", perm) or None
 
@@ -222,7 +260,11 @@ def cast_aura(state, card_def, target_predicate, on_attached=None):
             # (captured), well before this runs.
             if card_def in state.hand:
                 state.hand.remove(card_def)
-            if not target_still_legal(state, captured):
+            if captured is None or not target_still_legal(state, captured):
+                if no_target_fallback is not None:
+                    no_target_fallback(state, card_def)
+                    state.log_event("aura_no_target", card=card_def.name, outcome="entered_as_creature")
+                    return
                 state.move_card(card_def, state.graveyard)
                 state.log_event("zone_move", card=card_def.name, from_zone="hand", to_zone="graveyard", reason="fizzle")
                 where = (captured[1].card_def.name, captured[1].slot) if captured is not None else None

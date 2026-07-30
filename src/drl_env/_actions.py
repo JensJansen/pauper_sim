@@ -384,7 +384,7 @@ def _graveyard_ability_execute(name, cost_key, resolve):
             # the ability's own resolve exiles that exact instance as its cost.
             game.begin_pay_cost(state, cost, on_complete=lambda s, inst=inst: resolve(s, inst))
 
-        _with_chosen_copy(state, name, _proceed)
+        _with_chosen_copy(state, name, _proceed, reserved_cost=cost)
     return execute
 
 
@@ -408,6 +408,38 @@ def _pass_execute(state):
     pass  # no-op: a Pass is signalled by choose_action returning None (the game loop then advances), never by invoking this execute fn
 
 
+# The complete set of pending kinds _choose_name_options ever dispatches --
+# the SOLE authoritative list (both _choose_name_legal's gate and
+# legal_action_mask's own coverage guard below read this SAME constant, so
+# there is exactly one place that can ever drift out of sync with the
+# dispatch table above/below it).
+#
+# STRUCTURAL INVARIANT, not a convention to remember: every kind in this set
+# MUST have its candidate names confined to the DECIDING PLAYER'S OWN cards
+# (their hand/library/battlefield/graveyard/trigger_queue -- all already
+# active-player-proxied). A "Choose: X" row only ever exists for a name in
+# the ASKING player's own deck (build_action_table's choosable_names, built
+# once per deck) -- so a kind whose candidates could ever include another
+# player's card CANNOT be represented here, no matter how many rows exist.
+# choose_graveyard_card and choose_stack_target both learned this the hard
+# way (Relic of Progenitus/Mesmeric Fiend reach the opponent's graveyard/
+# hand; a spell to counter is very often the opponent's) and were migrated
+# to POINTER addressing instead (rl.action_bridge) -- pointer scoring reads
+# live token identity, never a per-deck name table, so it needs no such
+# guarantee. A future kind belongs in this set ONLY if it can never read
+# anything but the acting player's own zones; otherwise it must be a pointer
+# target. This is not merely documented: legal_action_mask's own coverage
+# check below FAILS LOUDLY, the first time any game ever exercises it, if a
+# kind in this set ever produces a candidate this constant's own promise
+# doesn't cover -- so a future violation cannot ship unnoticed the way this
+# one did.
+_CHOOSE_NAME_PENDING_KINDS = frozenset({
+    "search_fetch", "throne_reveal", "sacrifice", "discard",
+    "discard_or_sacrifice", "ancient_stirrings", "malevolent_rumble", "scry", "surveil",
+    "select_to_hand", "order_triggers", "put_on_top", "ponder",
+})
+
+
 def _choose_name_options(state):
     """Plain (uncolored) 'Choose: X' names currently legal, given whatever
     kind of pending resolution -- if any -- is active. "choose_permanent"
@@ -415,7 +447,11 @@ def _choose_name_options(state):
     execute below: it needs exact (name, slot) addressing (docs/
     "Permanent identity"), same as
     "choose_opponent_permanent" already gets, not this generic by-name
-    dispatch."""
+    dispatch.
+
+    Every kind handled here must be in _CHOOSE_NAME_PENDING_KINDS -- see
+    that constant's own docstring for the invariant it (and this function)
+    are required to uphold."""
     pending = state.pending_resolution
     if pending is None:
         return []
@@ -428,11 +464,12 @@ def _choose_name_options(state):
         return game.search_fetch_options(state)
     if kind == "throne_reveal":  # Undercity Throne: pick a creature card from the revealed top 10
         return game.throne_reveal_options(state)
-    # choose_graveyard_card is deliberately absent: it's a POINTER target
-    # (rl.action_bridge), not a by-name fixed action -- the chosen card (from a
-    # graveyard, or a hand the effect reveals like Mesmeric Fiend) is picked by
-    # pointing at its token, so an opponent's cards are reachable without a
-    # whole-league "Choose: X" fixed row per card name.
+    # choose_graveyard_card and choose_stack_target are deliberately absent:
+    # both are POINTER targets (rl.action_bridge), not by-name fixed actions
+    # -- the chosen card/stack-entry (a graveyard card, a hand the effect
+    # reveals like Mesmeric Fiend, or a spell on the stack to counter) is
+    # picked by pointing at its token, so an opponent's cards are reachable
+    # without a whole-league "Choose: X" fixed row per card name.
     if kind == "sacrifice":
         return game.sacrifice_options(state)
     if kind == "discard":
@@ -461,21 +498,13 @@ def _choose_name_options(state):
         return game.put_on_top_options(state)
     if kind == "ponder":  # Ponder: which revealed card to place on top next ("Shuffle (Ponder)" is its own action)
         return game.ponder_options(state)
-    if kind == "choose_stack_target":  # Counterspell/Dispel/Spell Pierce: which spell on the stack to counter
-        return game.choose_stack_target_options(state)
     return []
 
 
 def _choose_name_legal(name):
     def legal(state):
         return name in _choose_name_options(state)
-    # Matches _choose_name_options' own dispatch table above exactly --
-    # every pending kind that function ever returns a non-empty list for.
-    legal._pending_gate = frozenset({
-        "search_fetch", "throne_reveal", "sacrifice", "discard",
-        "discard_or_sacrifice", "ancient_stirrings", "malevolent_rumble", "scry", "surveil",
-        "select_to_hand", "order_triggers", "put_on_top", "ponder", "choose_stack_target",
-    })
+    legal._pending_gate = _CHOOSE_NAME_PENDING_KINDS
     return legal
 
 
@@ -504,8 +533,6 @@ def _choose_name_execute(name):
             game.execute_put_on_top_option(state, name)
         elif kind == "ponder":
             game.execute_ponder_option(state, name)
-        elif kind == "choose_stack_target":
-            game.execute_choose_stack_target_option(state, name)
         else:  # scry / surveil, ordering phase
             game.execute_scry_surveil_option(state, name)
     return execute
@@ -1241,7 +1268,7 @@ def _graveyard_instance(state, name):
     return inst
 
 
-def _with_chosen_copy(state, name, proceed):
+def _with_chosen_copy(state, name, proceed, reserved_cost=None):
     """Run `proceed(state, inst)` on the graveyard copy of `name` being cast.
 
     With 2+ same-named copies this is a REAL agent choice (MTG 601.2a -- the
@@ -1252,12 +1279,20 @@ def _with_chosen_copy(state, name, proceed):
     With exactly one copy there is no choice to make, so it proceeds inline --
     not a simplification, just the absence of a decision (the harness would
     auto-resolve a one-option pending anyway; skipping it avoids a pointless
-    token-set build + mask sweep on the common path)."""
+    token-set build + mask sweep on the common path).
+
+    reserved_cost: the mana cost `proceed` will pay via begin_pay_cost once a
+    copy is chosen (None if there is none, e.g. a life-only flashback cost) --
+    threaded straight through to begin_choose_cast_copy, whose own docstring
+    explains why a not-yet-open payment still needs strand protection during
+    this choice. Irrelevant on the single-copy fast path: nothing else gets a
+    turn to filter mana away between this call and begin_pay_cost when there's
+    no intervening pending resolution at all."""
     copies = [c for c in state.graveyard if c.name == name]
     if len(copies) <= 1:
         proceed(state, _graveyard_instance(state, name))
         return
-    game.begin_choose_cast_copy(state, name, on_complete=proceed)
+    game.begin_choose_cast_copy(state, name, on_complete=proceed, reserved_cost=reserved_cost)
 
 
 def _flashback_execute(name, resolve, cost=None):
@@ -1280,7 +1315,7 @@ def _flashback_execute(name, resolve, cost=None):
                 resolve(state, inst)
             game.begin_pay_cost(state, cost, on_complete=_after_pay)
 
-        _with_chosen_copy(state, name, _proceed)
+        _with_chosen_copy(state, name, _proceed, reserved_cost=cost)
     return execute
 
 
@@ -2304,7 +2339,8 @@ def _filter_mana_legal(name, output_color, input_color):
 
 def _filter_would_strand_payment(state, input_color):
     """Would converting one `input_color` pip away right now make an ALREADY-
-    BEGUN payment impossible to finish?
+    BEGUN payment -- or one about to begin the instant the current choice
+    resolves -- impossible to finish?
 
     Float-first's own design guarantee is that a payment, once begun, can always
     be completed -- it deliberately removed the "Abandon payment" action (which
@@ -2316,6 +2352,23 @@ def _filter_would_strand_payment(state, input_color):
     tap Forest for the only {G}, cast Crop Rotation for {G}, then filter that
     same {G} into {U} -- remaining {'G': 1}, no untapped green source, all-False
     action mask, RuntimeError).
+
+    A SECOND, later hole in the same guarantee: choose_cast_copy (WHICH
+    graveyard copy to cast/activate, MTG 601.2a) sits BETWEEN the moment a
+    flashback/escape/graveyard-ability action is chosen (its own legality
+    already required plan_payment to confirm the pool covers the cost) and the
+    begin_pay_cost that actually opens once a copy is picked -- and mana
+    abilities/filters stay legal "in ANY priority window" (605.1a/605.3b)
+    during that gap too, same as mid-pay_cost. So filtering away the very pip
+    the not-yet-open payment is guaranteed to need is exactly as breaking here
+    as it is once pay_cost has already begun -- confirmed live (monster_tron,
+    turn 44: 2 Bramble Wurms in the graveyard, activated the {2}{G} graveyard
+    ability, filtered the floating {G} away while still choosing WHICH copy;
+    pay_cost then opened already unpayable, all-False mask). game.resolution.
+    handlers.begin_choose_cast_copy's own docstring covers why only this one
+    pointer pending needs this (reserved_cost, stashed on the pending by
+    whichever registry-driven execute closure already knows the upcoming cost
+    in full -- drl_env._actions._graveyard_ability_execute/_flashback_execute).
 
     Only COLORED requirements can break. A filter is one pip in, one pip out, so
     the pool's SIZE is invariant and any outstanding generic requirement stays
@@ -2331,12 +2384,18 @@ def _filter_would_strand_payment(state, input_color):
     about mana still tappable from untapped sources, so a line like "convert my
     only G to U, then tap a second Forest for G" is refused. That line is never
     NEEDED -- pool_can_pay already required the full cost to be floating when
-    the payment began, so converting away a still-demanded pip can only ever
-    reduce sufficiency."""
+    the payment began (or, for the choose_cast_copy case, when the flashback/
+    activate action was chosen), so converting away a still-demanded pip can
+    only ever reduce sufficiency."""
     pending = state.pending_resolution
-    if pending is None or pending["kind"] != "pay_cost":
+    if pending is None:
         return False
-    still_needed = pending["remaining"].get(input_color, 0)
+    if pending["kind"] == "pay_cost":
+        still_needed = pending["remaining"].get(input_color, 0)
+    elif pending["kind"] == "choose_cast_copy" and pending.get("reserved_cost") is not None:
+        still_needed = pending["reserved_cost"].get(input_color, 0)
+    else:
+        return False
     return state.mana_pool.get(input_color, 0) - 1 < still_needed
 
 
@@ -2354,6 +2413,51 @@ def _filter_mana_execute(name, output_color, input_color):
         state.mana_pool[output_color] = state.mana_pool.get(output_color, 0) + 1
         state.log_event("mana_tap", permanent=(name, p.slot), mode="filter", produced=[output_color])
     return execute
+
+
+def _validate_choose_name_coverage(state, actions):
+    """The durable, always-on half of the by-name/cross-player guardrail
+    (see _CHOOSE_NAME_PENDING_KINDS's own docstring for the invariant this
+    enforces). Runs on every legal_action_mask sweep, but is a cheap no-op
+    unless the current pending is actually one of that constant's kinds --
+    which is already a small minority of decisions.
+
+    Cross-checks _choose_name_options' own OUTPUT against what this deck's
+    table can actually represent (every "Choose: X" row already built into
+    `actions`, read directly off it -- no separate choosable_names threading
+    needed). If a candidate has no matching row, that candidate is
+    UNREACHABLE: not merely "illegal right now" (any legal_fn can say that),
+    but a card the agent has NO WAY to ever select for this decision, which
+    means either every candidate is unreachable (an eventual all-False
+    crash, the failure mode that surfaced this bug) or only SOME are (a
+    silent, still-live correctness bug -- the agent quietly loses the
+    ability to choose a specific legal option, with no crash at all to flag
+    it). Raising immediately, the first time ANY game -- a self-check,
+    random self-play, or real training -- exercises the violation, is what
+    makes this a property of the code instead of a fact someone has to
+    remember: no comment to read, no separate audit script to run and act
+    on. Confirmed reachable in real cross-deck league play: choose_
+    stack_target asked mono_blue_terror to name a spell dmir_terror cast,
+    which mono_blue_terror's own table (built only from its own decklist)
+    had no row for."""
+    pending = state.pending_resolution
+    if pending is None or pending["kind"] not in _CHOOSE_NAME_PENDING_KINDS:
+        return
+    candidates = _choose_name_options(state)
+    if not candidates:
+        return
+    table_names = {name[len("Choose: "):] for name, _legal, _execute in actions if name.startswith("Choose: ")}
+    missing = set(candidates) - table_names
+    if missing:
+        raise RuntimeError(
+            f"_choose_name_options returned {sorted(missing)} for pending kind {pending['kind']!r}, but this "
+            f"deck's own action table has no 'Choose: X' row for {'it' if len(missing) == 1 else 'them'}. "
+            f"A by-name pending kind can only ever be answered from names in the DECIDING PLAYER's own deck "
+            f"(build_action_table's choosable_names) -- {pending['kind']!r} can apparently produce a candidate "
+            f"outside that (most likely another player's card), which means it must be POINTER-addressed "
+            f"(see rl.action_bridge; choose_graveyard_card and choose_stack_target are the established pattern), "
+            f"not left in _CHOOSE_NAME_PENDING_KINDS."
+        )
 
 
 def legal_action_mask(state, actions):
@@ -2404,6 +2508,7 @@ def legal_action_mask(state, actions):
             elif gate is not None and pending_kind not in gate:
                 continue
             mask[idx] = legal_fn(state)
+        _validate_choose_name_coverage(state, actions)
         return mask
     finally:
         _battlefield_lookup_cache = None

@@ -137,7 +137,7 @@ def execute_choose_graveyard_card_decline(state):
     complete_resolution(state, None)
 
 
-def begin_choose_cast_copy(state, name, on_complete):
+def begin_choose_cast_copy(state, name, on_complete, reserved_cost=None):
     """WHICH physical copy of `name` in your own graveyard is being cast (or
     having its graveyard ability activated) -- Flashback/Escape/graveyard-ability.
 
@@ -158,12 +158,30 @@ def begin_choose_cast_copy(state, name, on_complete):
     adds ZERO fixed action rows (see rl.action_bridge), so no deck's action-space
     width changes.
 
+    reserved_cost: the mana cost (a plain {color: n} dict, or None) that
+    on_complete is ABOUT to pay via begin_pay_cost once a copy is chosen --
+    known in full up front (drl_env._actions._graveyard_ability_execute/
+    _flashback_execute already read it off the registry/card_def before this
+    ever opens). Stashed on the pending purely so drl_env._actions._filter_
+    would_strand_payment can protect it: mana abilities/filters stay legal
+    "in ANY priority window" (605.1a/605.3b) DURING this choice, same as
+    during an already-open pay_cost, so the agent could otherwise filter away
+    the exact colored pip this ability is guaranteed to need one step later --
+    confirmed live (monster_tron, turn 44: 2 Bramble Wurms in the graveyard,
+    activating the {2}{G} graveyard ability, filtered the floating {G} away
+    while still choosing WHICH copy -- pay_cost then opened already unpayable,
+    all-False mask). Only choose_cast_copy needs this: every other pointer
+    pending in this pool (choose_permanent, choose_any_target, ...) either
+    can't precede a cost payment at all, or (choose_graveyard_card feeding
+    Dread Return's own creature-sacrifice cost) pays with a non-mana resource
+    a filter can't touch.
+
     Always the caster's OWN graveyard (state.graveyard, active-idx proxied) --
     no card in this pool casts from an opponent's graveyard. on_complete receives
     the exact chosen CardInstance. Callers only open this when 2+ copies exist;
     with one copy there is no choice to make (drl_env._actions._graveyard_instance
     resolves it directly)."""
-    begin_resolution(state, "choose_cast_copy", on_complete, name=name)
+    begin_resolution(state, "choose_cast_copy", on_complete, name=name, reserved_cost=reserved_cost)
 
 
 def choose_cast_copy_options(state):
@@ -738,29 +756,34 @@ def begin_choose_stack_target(state, predicate, on_complete):
     """Choose a SPELL on the stack (Counterspell: any; Dispel: instant; Spell
     Pierce: noncreature) to counter. `predicate(entry)` further narrows the
     spell entries (entries are the stack's own {"card_def","is_spell",...}
-    dicts). Options are the distinct names of matching spell entries; the
-    chosen entry (the TOPMOST of that name -- most recently cast) is passed to
-    on_complete. Fizzles immediately (on_complete(None)) if nothing matches --
-    though a counter spell's own extra_legal already requires a legal target
-    to be cast at all."""
+    dicts). POINTER-addressed (rl.action_bridge), not by name: the spell
+    being countered is very often the OPPONENT's, so no per-deck "Choose: X"
+    row could ever represent it (confirmed the hard way -- an all-False mask
+    in real cross-deck league play, mono_blue_terror asked to name a spell
+    dmir_terror cast). Options are the matching stack ENTRIES themselves, by
+    object identity, so two simultaneous same-named spells stay independently
+    addressable too -- the old by-name version could only ever reach the
+    topmost of duplicate-named entries. Fizzles immediately (on_complete
+    (None)) if nothing matches -- though a counter spell's own extra_legal
+    already requires a legal target to be cast at all."""
     begin_resolution(state, "choose_stack_target", on_complete, predicate=predicate)
     if not choose_stack_target_options(state):
         complete_resolution(state, None)
 
 
 def choose_stack_target_options(state):
+    """The matching stack entries themselves (objects), NOT names -- see
+    begin_choose_stack_target's own docstring for why. No dedup, no sort:
+    rl.action_bridge masks/executes by object identity (id()-keyed, since a
+    stack entry is an unhashable dict), not by name."""
     predicate = state.pending_resolution["predicate"]
-    return sorted({e["card_def"].name for e in state.stack if e.get("is_spell") and predicate(e)})
+    return [e for e in state.stack if e.get("is_spell") and predicate(e)]
 
 
-def execute_choose_stack_target_option(state, name):
-    predicate = state.pending_resolution["predicate"]
-    # Topmost (last-pushed) matching spell of this name -- LIFO, the spell
-    # most recently put on the stack.
-    entry = next(
-        e for e in reversed(state.stack)
-        if e.get("is_spell") and predicate(e) and e["card_def"].name == name
-    )
+def execute_choose_stack_target_option(state, entry):
+    """`entry` is the exact chosen stack-entry object -- the on_complete
+    consumer (_cast_counter) acts on that exact entry, so a specific spell
+    among simultaneous same-named copies is reachable."""
     complete_resolution(state, entry)
 
 
