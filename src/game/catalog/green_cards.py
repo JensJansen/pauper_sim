@@ -10,7 +10,8 @@ their own registry entries below)."""
 from .. import resolution
 from ..cards import CardDef, CardType, EffectId
 from ..effects.casting import (
-    _log_target_fizzle, capture_any_target, cast_aura, cast_permanent_from_hand, enters_battlefield, target_still_legal,
+    _log_target_fizzle, capture_any_target, cast_aura, cast_permanent_from_hand, enters_battlefield,
+    target_still_legal,
 )
 from ..effects.shared import (
     any_creature_on_battlefield, card_subtypes, discard_from_hand_to_graveyard, find_and_remove_by_name, find_to_hand,
@@ -146,7 +147,8 @@ def timberwatch_elf_activate(state, permanent):
             captured[1].temp_toughness += x
             st.log_event("pump", target=(captured[1].card_def.name, captured[1].slot), amount=x)
 
-        push_to_stack(state, permanent.card_def, _resolve, reserves_hand_card=False, is_spell=False)
+        push_to_stack(state, permanent.card_def, _resolve, reserves_hand_card=False, is_spell=False,
+                      targets=() if captured is None else (captured,))
 
     resolution.begin_choose_any_target(
         state, lambda p: p.card_type == CardType.CREATURE and can_be_targeted(state, p, idx),
@@ -177,47 +179,11 @@ def forestcycle_generous_ent(state, card_def):
     find_to_hand(state, "Forest")
 
 
-def _saruli_caretaker_extra_available(state, permanent):
-    """Saruli Caretaker's mana ability costs {T}, tap an untapped creature
-    you control (not itself) -- not offered as a mana source unless
-    another untapped creature exists to pay that extra cost."""
-    return any(
-        p is not permanent and not p.tapped and p.card_type == CardType.CREATURE
-        for p in state.battlefield
-    )
-
-
-def _saruli_caretaker_on_tap(state, permanent):
-    """Which specific other creature gets tapped doesn't matter (same
-    fungible-by-name simplification used throughout this engine) --
-    auto-picks the first untapped one. Recorded on Saruli's own flags so
-    on_tap_undo can reverse exactly this tap if the payment is abandoned."""
-    other = next(
-        (p for p in state.battlefield
-         if p is not permanent and not p.tapped and p.card_type == CardType.CREATURE),
-        None,
-    )
-    if other is not None:
-        other.tapped = True
-        permanent.flags["tapped_other"] = other
-        state.log_event(
-            "tap", permanent=(other.card_def.name, other.slot), reason="saruli_caretaker",
-            source=(permanent.card_def.name, permanent.slot),
-        )
-
-
-def _saruli_caretaker_on_tap_undo(state, permanent):
-    other = permanent.flags.pop("tapped_other", None)
-    if other is not None:
-        other.tapped = False
-        state.log_event("untap", permanent=(other.card_def.name, other.slot), reason="saruli_caretaker_undo")
-
-
 def _wall_of_roots_mana_available(state, permanent):
     """Real text has no {T} at all, just "Activate only once each turn" --
-    tap_cost_options' own mana_extra_available gate is what enforces that
-    limit here (mana.py's "mana_no_tap": True on this same registry entry
-    is what skips the tap itself), same used_this_turn flag/reset
+    this registry entry's own "mana_extra_available" gate is what enforces
+    that limit (mana.py's "mana_no_tap": True on this same registry entry is
+    what skips the tap itself), same used_this_turn flag/reset
     (turn.untap_step) Barrels of Blasting Jelly's filter ability already
     relies on."""
     return not permanent.flags.get("used_this_turn", False)
@@ -232,25 +198,6 @@ def _wall_of_roots_on_tap(state, permanent):
     lethal damage -- no bespoke removal here."""
     permanent.flags["used_this_turn"] = True
     permanent.counters["-0/-1"] = permanent.counters.get("-0/-1", 0) + 1
-
-
-def _wall_of_roots_on_tap_undo(state, permanent):
-    """Reverses exactly one counter add, including the once-per-turn flag
-    (so an abandoned payment leaves this activatable again, same as any
-    other abandoned tap). If the state-based-action check already killed
-    this Wall of Roots (0 effective toughness) before the payment was
-    abandoned, restore it -- abandon_pay_cost's own contract is a COMPLETE
-    reversal of everything this tap did, even past an intervening SBA
-    death, same as the old activation-count version already had to handle."""
-    permanent.flags["used_this_turn"] = False
-    permanent.counters["-0/-1"] -= 1
-    if permanent not in state.battlefield:
-        state.battlefield.append(permanent)
-        state.graveyard.remove(permanent.card_def)
-        state.log_event(
-            "zone_move", permanent=(permanent.card_def.name, permanent.slot), from_zone="graveyard",
-            to_zone="battlefield", reason="wall_of_roots_payment_abandoned",
-        )
 
 
 def cast_roost_seek(state, card_def):
@@ -411,7 +358,8 @@ def quirion_ranger_untap_resolve(state, permanent):
             target.tapped = False
             state.log_event("untap", permanent=(target.card_def.name, target.slot), reason="quirion_ranger")
 
-        push_to_stack(state, permanent.card_def, _resolve, reserves_hand_card=False, is_spell=False)  # activated ability -- not a spell
+        push_to_stack(state, permanent.card_def, _resolve, reserves_hand_card=False, is_spell=False,  # activated ability -- not a spell
+                      targets=() if captured is None else (captured,))
 
     resolution.begin_choose_any_target(
         state,
@@ -433,7 +381,7 @@ def _cast_winding_way(state, card_def, chosen_type):
         if card.card_type == chosen_type:
             state.hand.append(card)
         else:
-            state.graveyard.append(card)
+            state.move_card(card, state.graveyard)
 
 
 def cast_winding_way_creature(state, card_def):
@@ -663,7 +611,8 @@ def execute_malevolent_rumble_option(state, option):
     else:
         idx = next(i for i, c in enumerate(revealed) if c.name == option)
         chosen = revealed.pop(idx)
-    state.graveyard.extend(revealed)  # the rest -- order is never read again
+    for c in revealed:  # the rest -- order is never read again
+        state.move_card(c, state.graveyard)
     resolution.complete_resolution(state, chosen)
 
 
@@ -684,7 +633,7 @@ def cast_malevolent_rumble(state, card_def):
     begin_malevolent_rumble(state, top, _on_chosen)
 
 
-def activate_bramble_wurm_gy(state, card_def):
+def activate_bramble_wurm_gy(state, inst):
     """{2}{G}, Exile this card from your graveyard: gain 5 life. Removed
     from the graveyard only -- exile itself is untracked, same convention
     as Relic of Progenitus' own graveyard-exile ability
@@ -693,9 +642,12 @@ def activate_bramble_wurm_gy(state, card_def):
     Faithful timing: exiling from the graveyard is
     a COST, paid now on activation; gaining 5 life is the effect, so it
     goes on the stack (push_ability_to_stack) and resolves after a priority
-    window."""
-    state.graveyard.remove(card_def)
-    push_ability_to_stack(state, card_def, lambda st: gain_life(st, 5))
+    window.
+
+    inst: the exact graveyard CardInstance whose ability this is -- see
+    black_cards.flashback_dread_return."""
+    state.graveyard.remove(inst)
+    push_ability_to_stack(state, inst, lambda st: gain_life(st, 5))
 
 
 def _ram_through_extra_legal(state):
@@ -762,7 +714,7 @@ def cast_ram_through(state, card_def):
                     deal_damage_to_opponent(state, to_controller)  # "that creature's controller" == the opponent
                 check_state_based_actions(state)  # kills the target if the damage was lethal
 
-            push_to_stack(state, card_def, _resolve)
+            push_to_stack(state, card_def, _resolve, targets=tuple(t for t in (cap_source, cap_target) if t is not None))
 
         # Second target: a creature you DON'T control (opponent's side),
         # hexproof/shroud-aware.
@@ -784,20 +736,22 @@ def cast_ram_through(state, card_def):
     )
 
 
-def masked_vandal_etb(state):
+def masked_vandal_etb(state, permanent):
     """When Masked Vandal enters, you may exile a creature card from your
     graveyard. If you do, exile target artifact or enchantment an opponent
     controls. (Changeling is a no-op -- no tribal-synergy card exists in this
     pool, same documented drop as Rooftop Percher's Changeling.)
 
-    "target artifact or enchantment an opponent controls" needs a real
-    opponent with a legal such permanent -- with none (a 1-player config, or
-    an opponent with only hexproof/shroud artifacts/enchantments), the ability
-    has no legal target and does nothing at all (real Magic: a targeted
-    ability with no legal target is removed from the stack), so the may-exile
-    isn't even offered. Runs as this ETB resolves off the stack (the trigger
-    queue), choosing its target at resolution -- the same ETB-targets-at-
-    resolution convention Pinnacle Kill-Ship's own ETB already follows."""
+    Target-at-promotion (project_targeted_triggered_abilities): the target
+    (opponent artifact/enchantment) is chosen and captured by object identity as
+    the ability goes on the stack. A targeted ability needs a legal target to be
+    put on the stack at all (603.3c) -- with none (a 1-player config, or an
+    opponent with only hexproof/shroud artifacts/enchantments), the ability does
+    nothing and isn't put on the stack, so nothing is offered. At RESOLUTION: the
+    "you may exile a creature card from your graveyard" choice, and IF taken,
+    exile the captured target if it is still legal (else the exile fizzles,
+    608.2b). Declining the graveyard exile simply makes the "if you do" not
+    happen -- that is not a fizzle."""
     if len(state.players) < 2:
         return
 
@@ -805,29 +759,36 @@ def masked_vandal_etb(state):
         return p.card_type in (CardType.ARTIFACT, CardType.ENCHANTMENT) and can_be_targeted(state, p, state.active_idx)
 
     if not any(_targetable(p) for p in state.opponent.battlefield):
-        return
+        return  # no legal target -> not put on the stack (603.3c)
 
-    def _after_gy(state, name):
-        if name is None:
-            return  # declined the "you may", or no creature card in the graveyard
-        found = next(c for c in state.graveyard if c.name == name)
-        state.graveyard.remove(found)  # exiled (untracked) -- paying the "if you do"
-        state.log_event("zone_move", card=found.name, from_zone="graveyard", to_zone="exile_untracked", reason="masked_vandal")
+    def _on_target(state, choice):
+        if choice is None:
+            return  # (safety) a legal target was confirmed above, so this shouldn't happen
+        tname, tslot = choice
+        target = next(p for p in state.opponent.battlefield if p.card_def.name == tname and p.slot == tslot)  # captured at promotion
 
-        def _on_target(state, choice):
-            if choice is None:
-                return  # no legal target left -- graceful no-op
-            tname, tslot = choice
-            perm = next(p for p in state.opponent.battlefield if p.card_def.name == tname and p.slot == tslot)
-            state.opponent.battlefield.remove(perm)  # exiled, untracked
-            state.log_event(
-                "zone_move", permanent=(tname, tslot), from_zone="battlefield", to_zone="exile_untracked",
-                reason="masked_vandal",
-            )
+        def _resolve(state, card_def):
+            def _after_gy(state, chosen):
+                if chosen is None:
+                    return  # declined the "you may" -> the "if you do" doesn't happen (no fizzle)
+                state.graveyard.remove(chosen)  # exile the chosen creature (untracked) -- paying the "if you do"
+                state.log_event("zone_move", card=chosen.name, from_zone="graveyard", to_zone="exile_untracked", reason="masked_vandal")
+                # Exile the captured target if it is still a legal target (608.2b, object identity).
+                owner = next((pl for pl in state.players if target in pl.battlefield), None)
+                if owner is None:
+                    _log_target_fizzle(state, card_def, (target.card_def.name, target.slot))
+                    return
+                owner.battlefield.remove(target)  # exiled, untracked
+                state.log_event(
+                    "zone_move", permanent=(target.card_def.name, target.slot), from_zone="battlefield",
+                    to_zone="exile_untracked", reason="masked_vandal",
+                )
 
-        resolution.begin_choose_opponent_permanent(state, _targetable, _on_target)
+            resolution.begin_choose_graveyard_card(state, lambda c: c.card_type == CardType.CREATURE, _after_gy, optional=True)
 
-    resolution.begin_choose_graveyard_card(state, lambda c: c.card_type == CardType.CREATURE, _after_gy, optional=True)
+        push_to_stack(state, permanent.card_def, _resolve, reserves_hand_card=False, is_spell=False)  # ETB effect -- not a spell
+
+    resolution.begin_choose_opponent_permanent(state, _targetable, _on_target)
 
 
 def _gingerbread_cabin_enters_tapped(state):
@@ -868,24 +829,19 @@ def cast_pulse_of_murasa(state, card_def):
     card to THEIR hand never helps you)."""
     caster_idx = state.active_idx
 
-    def _on_chosen(state, name):
+    def _on_chosen(state, chosen):
         def _resolve(state, card_def):
             discard_from_hand_to_graveyard(state, card_def)  # Pulse itself -> caster's graveyard
-            owner_idx = found = None
-            if name is not None:
-                order = [caster_idx] + [i for i in range(len(state.players)) if i != caster_idx]
-                for idx in order:
-                    found = next((c for c in state.players[idx].graveyard
-                                  if c.name == name and _pulse_of_murasa_eligible(c)), None)
-                    if found is not None:
-                        owner_idx = idx
-                        break
-            if found is None:
+            # chosen: the exact graveyard instance locked at cast. Fizzle (608.2b)
+            # if it has since left -- find whichever player's graveyard still holds it.
+            owner_idx = (next((i for i, pl in enumerate(state.players) if chosen in pl.graveyard), None)
+                         if chosen is not None else None)
+            if owner_idx is None:
                 _log_target_fizzle(state, card_def, None)  # target left the graveyard -> fizzle, no lifegain
                 return
-            state.players[owner_idx].graveyard.remove(found)
-            state.players[owner_idx].hand.append(found)  # to its OWNER's hand
-            state.log_event("zone_move", card=found.name, from_zone="graveyard", to_zone="hand", reason="pulse_of_murasa")
+            state.players[owner_idx].graveyard.remove(chosen)
+            state.players[owner_idx].hand.append(chosen.card_def)  # to its OWNER's hand (hand DEFERRED -- CardDef)
+            state.log_event("zone_move", card=chosen.name, from_zone="graveyard", to_zone="hand", reason="pulse_of_murasa")
             gain_life(state, 6)  # caster (active_idx at resolution) gains
 
         push_to_stack(state, card_def, _resolve)
@@ -976,15 +932,21 @@ GREEN_EFFECT_REGISTRY = {
         "cast": {"resolve": lambda state, card_def: cast_permanent_from_hand(state, card_def)},
         # "you may exile a creature card from your graveyard. If you do,
         # exile target artifact or enchantment an opponent controls."
-        "etb_trigger": lambda state, permanent: masked_vandal_etb(state),
+        "etb_trigger": lambda state, permanent: masked_vandal_etb(state, permanent),
+        "etb_targets": True,  # target chosen at promotion; the "you may exile a creature" + fizzle at resolution
         "pending_kinds": {"choose_graveyard_card", "choose_opponent_permanent"},
     },
     EffectId.SARULI_CARETAKER: {
         "cast": {"resolve": lambda state, card_def: cast_permanent_from_hand(state, card_def)},
         "mana": ("flexible", set(COLORS)),
-        "mana_extra_available": lambda state, permanent: _saruli_caretaker_extra_available(state, permanent),
-        "on_tap": lambda state, permanent: _saruli_caretaker_on_tap(state, permanent),
-        "on_tap_undo": lambda state, permanent: _saruli_caretaker_on_tap_undo(state, permanent),
+        # The extra cost taps ANOTHER untapped creature you control -- a COST
+        # CHOICE (602.5g), not a target, so the AGENT chooses which (no engine
+        # auto-pick; which creature you tap is a real decision -- keep a
+        # blocker vs an attacker up), enumerated as its own atomic drl_env
+        # action (_mana_extra_tap_legal/_execute) rather than a nested
+        # resolution -- the whole ability (cost + effect) resolves as ONE
+        # action, never the stack (605.1a), same as any other mana ability.
+        "mana_extra_choose": lambda p: p.card_type == CardType.CREATURE,
     },
     EffectId.OVERGROWN_BATTLEMENT: {
         "cast": {"resolve": lambda state, card_def: cast_permanent_from_hand(state, card_def)},
@@ -996,7 +958,6 @@ GREEN_EFFECT_REGISTRY = {
         "mana_no_tap": True,
         "mana_extra_available": lambda state, permanent: _wall_of_roots_mana_available(state, permanent),
         "on_tap": lambda state, permanent: _wall_of_roots_on_tap(state, permanent),
-        "on_tap_undo": lambda state, permanent: _wall_of_roots_on_tap_undo(state, permanent),
     },
     EffectId.ROOST_SEEK: {
         "cast": {"resolve": lambda state, card_def: cast_roost_seek(state, card_def)},
@@ -1244,7 +1205,7 @@ if __name__ == "__main__":
     # assert-based demo convention -- run via
     # `python -m game.catalog.green_cards` from src/.
     from .. import registry
-    from ..state import GameState
+    from ..state import CardInstance, GameState
 
     # Malevolent Rumble: reveal top 4, may take one permanent card to
     # hand (rest to graveyard, NOT the library bottom -- unlike Ancient
@@ -1299,10 +1260,13 @@ if __name__ == "__main__":
     # activate_bramble_wurm_gy adds beyond already-self-checked helpers
     # (cast_permanent_from_hand, gain_life itself).
     state = GameState(on_the_play=True)
-    wurm = CardDef(
+    # Graveyard holds a real CardInstance (as a live game does), and that
+    # instance is what activate_bramble_wurm_gy now receives -- the exile cost
+    # is an identity removal, not a by-name lookup.
+    wurm = CardInstance(CardDef(
         "Bramble Wurm", CardType.CREATURE, {"generic": 6, "G": 1}, EffectId.BRAMBLE_WURM, power=7, toughness=6,
         gy_ability_cost={"generic": 2, "G": 1},
-    )
+    ))
     state.graveyard = [wurm]
     activate_bramble_wurm_gy(state, wurm)
     assert state.graveyard == []  # exiled -- a cost, paid immediately on activation
@@ -1396,7 +1360,7 @@ if __name__ == "__main__":
     execute_choose_any_target_creature(state, 1, "Their Bear", 1)  # target: creature I don't control
     assert state.hand == [] and len(state.stack) == 1  # left hand at cast, on the stack
     resolve_top_of_stack(state)
-    assert ram in state.graveyard
+    assert any(c.name == ram.name for c in state.graveyard)
     assert theirs not in state.players[1].battlefield  # 3 >= 2 toughness -> dead
     assert mine in state.players[0].battlefield  # one-sided: my creature takes nothing
 
@@ -1433,7 +1397,7 @@ if __name__ == "__main__":
     with _ctx.redirect_stdout(_flog):
         resolve_top_of_stack(state)
     assert "fizzle" in _flog.getvalue().lower()
-    assert ram in state.graveyard and mine2 in state.players[0].battlefield  # my creature unaffected
+    assert any(c.name == ram.name for c in state.graveyard) and mine2 in state.players[0].battlefield  # my creature unaffected
 
     # (d) never castable in 1-player (no "creature you don't control").
     solo = _GS(on_the_play=True)
@@ -1444,7 +1408,9 @@ if __name__ == "__main__":
 
     # Masked Vandal ETB: "you may exile a creature card from your graveyard.
     # If you do, exile target artifact or enchantment an opponent controls."
-    # Resolved off the stack (ETB queue), target chosen at resolution.
+    # Target-at-promotion: the opponent-permanent TARGET is chosen as the
+    # ability goes on the stack; the "you may exile a creature" (+ fizzle) at
+    # resolution.
     from ..resolution import (
         choose_graveyard_card_options, execute_choose_graveyard_card_decline,
         execute_choose_graveyard_card_option, execute_choose_opponent_permanent_option,
@@ -1453,41 +1419,55 @@ if __name__ == "__main__":
 
     def _setup_vandal():
         st = _GS(on_the_play=True, players=[_PS(True), _PS(False)])
-        st.players[0].graveyard = [CardDef("Dead Guy", CardType.CREATURE, {"G": 1}, EffectId.FILLER, power=2, toughness=2)]
+        st.players[0].graveyard = [st.new_instance(CardDef("Dead Guy", CardType.CREATURE, {"G": 1}, EffectId.FILLER, power=2, toughness=2))]
         art = _P(CardDef("Their Relic", CardType.ARTIFACT, {"generic": 1}, EffectId.FILLER))
         st.players[1].battlefield = [art]
         enters_battlefield(st, vandal, from_zone="hand")
         assert [e["type"] for e in st.trigger_queue] == ["etb"]
-        promote_triggers_to_stack(st)
-        resolve_top_of_stack(st)
+        promote_triggers_to_stack(st)  # target-at-promotion: opens the opponent-permanent TARGET choice FIRST
+        assert st.pending_resolution["kind"] == "choose_opponent_permanent"
         return st, art
 
-    # (a) take it: exile a creature from GY, then exile the opponent's artifact.
+    # (a) take it: lock the target, then (at resolution) exile a creature from GY -> exile the target.
     state, opp_artifact = _setup_vandal()
+    execute_choose_opponent_permanent_option(state, "Their Relic", 1)  # target locked at promotion
+    assert state.pending_resolution is None and len(state.stack) == 1  # the effect is on the stack
+    resolve_top_of_stack(state)  # opens the "you may exile a creature" choice
     assert state.pending_resolution["kind"] == "choose_graveyard_card"
-    assert choose_graveyard_card_options(state) == ["Dead Guy"]  # creature cards only
-    execute_choose_graveyard_card_option(state, "Dead Guy")
+    vandal_opts = choose_graveyard_card_options(state)
+    assert [c.name for c in vandal_opts] == ["Dead Guy"]  # creature cards only
+    execute_choose_graveyard_card_option(state, vandal_opts[0])
     assert state.players[0].graveyard == []  # creature exiled from GY (the "if you do" cost)
-    assert state.pending_resolution["kind"] == "choose_opponent_permanent"
-    execute_choose_opponent_permanent_option(state, "Their Relic", 1)
-    assert opp_artifact not in state.players[1].battlefield  # opponent's artifact exiled
+    assert opp_artifact not in state.players[1].battlefield  # the targeted artifact is exiled
     assert state.pending_resolution is None
 
-    # (b) decline the "you may": nothing exiled, target untouched.
+    # (b) decline the "you may": the target was locked, but declining the graveyard exile means nothing happens.
     state, opp_artifact = _setup_vandal()
+    execute_choose_opponent_permanent_option(state, "Their Relic", 1)
+    resolve_top_of_stack(state)
     assert state.pending_resolution["kind"] == "choose_graveyard_card"
     execute_choose_graveyard_card_decline(state)
     assert len(state.players[0].graveyard) == 1 and opp_artifact in state.players[1].battlefield
     assert state.pending_resolution is None
 
-    # (c) no legal target (opponent controls no artifact/enchantment): the
-    # whole ETB is a no-op -- the may-exile is never even offered.
-    state = _GS(on_the_play=True, players=[_PS(True), _PS(False)])
-    state.players[0].graveyard = [CardDef("Dead Guy", CardType.CREATURE, {"G": 1}, EffectId.FILLER, power=2, toughness=2)]
-    enters_battlefield(state, vandal, from_zone="hand")
-    promote_triggers_to_stack(state)
+    # (c) fizzle: target locked at promotion, then leaves before resolution -> the
+    # creature is still exiled (the cost is paid), but the target exile fizzles (608.2b).
+    state, opp_artifact = _setup_vandal()
+    execute_choose_opponent_permanent_option(state, "Their Relic", 1)
+    state.players[1].battlefield.remove(opp_artifact)  # target gone before this resolves
     resolve_top_of_stack(state)
-    assert state.pending_resolution is None and len(state.players[0].graveyard) == 1
+    execute_choose_graveyard_card_option(state, choose_graveyard_card_options(state)[0])
+    assert state.players[0].graveyard == []  # the creature was still exiled -- the cost was paid
+    assert opp_artifact not in state.players[1].battlefield  # nothing re-added; the exile fizzled gracefully
+    assert state.pending_resolution is None
+
+    # (d) no legal target (opponent controls no artifact/enchantment): the whole
+    # ETB is a no-op -- it isn't even put on the stack (603.3c), nothing offered.
+    state = _GS(on_the_play=True, players=[_PS(True), _PS(False)])
+    state.players[0].graveyard = [state.new_instance(CardDef("Dead Guy", CardType.CREATURE, {"G": 1}, EffectId.FILLER, power=2, toughness=2))]
+    enters_battlefield(state, vandal, from_zone="hand")
+    promote_triggers_to_stack(state)  # no legal target -> the hook returns early, nothing pushed
+    assert state.pending_resolution is None and state.stack == [] and len(state.players[0].graveyard) == 1
 
     print("green_cards.py Masked Vandal ETB self-check: OK")
 
@@ -1523,9 +1503,8 @@ if __name__ == "__main__":
     # Wall of Roots: two real-rules bugs fixed together -- no {T} in the
     # real ability's own cost at all (unlike every other mana dork here),
     # and a real -0/-1 counter each use (not a private activation count).
-    # Drives the actual interactive tap machinery (mana.begin_pay_cost/
-    # execute_tap_cost_option/execute_pool_spend/abandon_pay_cost), since
-    # both bugs lived specifically in that interactive path.
+    # Float-first: its mana ability IS activate_mana_source (immediate float,
+    # no tap-during-payment), so both bugs are exercised through that path.
     from .. import mana, turn
     from ..effects import stats as _stats
     from ..effects.state_based import check_state_based_actions
@@ -1541,63 +1520,33 @@ if __name__ == "__main__":
     wall = _wall_of_roots()
     state.battlefield = [wall]
 
-    mana.begin_pay_cost(state, {"G": 1}, on_complete=lambda s: None)
-    assert ("Wall of Roots", None, False) in mana.tap_cost_options(state)
-    mana.execute_tap_cost_option(state, "Wall of Roots", None, False)
+    assert ("Wall of Roots", None) in mana.mana_ability_options(state)
+    mana.activate_mana_source(state, wall)  # float {G} -- no {T} in this ability's cost, so it stays untapped
     assert wall.tapped is False  # the real bug: no {T} in this ability's own cost
     assert wall.counters["-0/-1"] == 1
-    mana.execute_pool_spend(state, "G")
-    assert state.pending_resolution is None
+    assert state.mana_pool.get("G", 0) == 1  # produced mana floated into the pool
 
     # Once each turn -- not offered again this same turn, even though it's
     # still untapped (mana_extra_available's own used_this_turn gate; there
     # is no tapped state here to gate on at all).
-    mana.begin_pay_cost(state, {"G": 1}, on_complete=lambda s: None)
-    assert mana.tap_cost_options(state) == []
-    mana.abandon_pay_cost(state)
+    assert ("Wall of Roots", None) not in mana.mana_ability_options(state)
 
     # 4 more activations, one per (simulated) turn, reach the 5th counter --
     # lethal against this wall's own 5 toughness, same real number as
     # before, now via a genuine counter + the ordinary state-based-action
     # check instead of a hardcoded remove-at-5.
     for _ in range(4):
-        turn.untap_step(state)
-        mana.begin_pay_cost(state, {"G": 1}, on_complete=lambda s: None)
-        mana.execute_tap_cost_option(state, "Wall of Roots", None, False)
-        mana.execute_pool_spend(state, "G")
+        turn.untap_step(state)  # resets used_this_turn, re-enabling the ability
+        mana.activate_mana_source(state, wall)
 
     assert wall.counters["-0/-1"] == 5
     assert _stats.permanent_toughness(state, wall) == 0
     assert wall in state.battlefield  # state-based actions haven't been asked to check yet
     check_state_based_actions(state)
     assert wall not in state.battlefield
-    assert wall.card_def in state.graveyard
+    assert any(c.name == wall.card_def.name for c in state.graveyard)
 
     print("green_cards.py Wall of Roots self-check: OK")
-
-    # Abandon past an intervening SBA death: reversing the LETHAL activation
-    # mid-payment (before the pool spend that would complete it) must fully
-    # restore the wall -- abandon_pay_cost's own "complete reversal"
-    # contract, now genuinely exercised across a real state-based death.
-    state2 = GameState(on_the_play=True)
-    wall2 = _wall_of_roots()
-    wall2.counters["-0/-1"] = 4  # one activation away from lethal
-    state2.battlefield = [wall2]
-
-    mana.begin_pay_cost(state2, {"G": 1}, on_complete=lambda s: None)
-    mana.execute_tap_cost_option(state2, "Wall of Roots", None, False)
-    assert wall2.counters["-0/-1"] == 5
-    check_state_based_actions(state2)  # simulates the priority loop's own pre-consultation SBA check, mid-payment
-    assert wall2 not in state2.battlefield
-
-    mana.abandon_pay_cost(state2)
-    assert state2.pending_resolution is None
-    assert wall2 in state2.battlefield
-    assert wall2.card_def not in state2.graveyard
-    assert wall2.counters["-0/-1"] == 4
-    assert wall2.flags.get("used_this_turn", False) is False
-
-    print("green_cards.py Wall of Roots abandon-past-death self-check: OK")
 
     # Nyxborn Hydra, creature mode: 0/1 base (a design choice, not Scryfall
     # data) plus X real "+1/+1" counters.
@@ -1712,20 +1661,21 @@ if __name__ == "__main__":
     state = GameState(on_the_play=True)
     pulse = CardDef("Pulse of Murasa", CardType.INSTANT, {"generic": 2, "G": 1}, EffectId.PULSE_OF_MURASA)
     state.hand = [pulse]
-    state.graveyard = [
+    state.graveyard = [state.new_instance(cd) for cd in [
         CardDef("A Creature", CardType.CREATURE, {"G": 1}, EffectId.FILLER, power=1, toughness=1),
         CardDef("A Land", CardType.LAND, None, EffectId.FOREST, basic=True),
         CardDef("An Instant", CardType.INSTANT, {"G": 1}, EffectId.FILLER),  # ineligible
-    ]
+    ]]
     state.life_total = 10
     cast_pulse_of_murasa(state, pulse)
     assert state.pending_resolution["kind"] == "choose_graveyard_card"
-    assert choose_graveyard_card_options(state) == ["A Creature", "A Land"]  # instant excluded
-    execute_choose_graveyard_card_option(state, "A Creature")
+    pulse_opts = choose_graveyard_card_options(state)
+    assert sorted(c.name for c in pulse_opts) == ["A Creature", "A Land"]  # instant excluded
+    execute_choose_graveyard_card_option(state, next(o for o in pulse_opts if o.name == "A Creature"))
     _pulse_resolve_top(state)
     assert any(c.name == "A Creature" for c in state.hand)
     assert state.life_total == 16  # +6
-    assert pulse in state.graveyard  # the instant itself resolved to the graveyard
+    assert any(c.name == pulse.name for c in state.graveyard)  # the instant itself resolved to the graveyard
 
     # Cross-graveyard (Oracle "from A graveyard ... to its owner's hand"): the
     # caster can return a card from the OPPONENT's graveyard -- it goes to the
@@ -1736,11 +1686,12 @@ if __name__ == "__main__":
     pulse2 = CardDef("Pulse of Murasa", CardType.INSTANT, {"generic": 2, "G": 1}, EffectId.PULSE_OF_MURASA)
     state.players[0].hand = [pulse2]
     opp_beast = CardDef("Opp Beast", CardType.CREATURE, {"G": 1}, EffectId.FILLER, power=2, toughness=2)
-    state.players[1].graveyard = [opp_beast]
+    state.players[1].graveyard = [state.new_instance(opp_beast)]
     state.players[0].life_total = 10
     cast_pulse_of_murasa(state, pulse2)
-    assert choose_graveyard_card_options(state) == ["Opp Beast"]  # the opponent's graveyard card is a legal target
-    execute_choose_graveyard_card_option(state, "Opp Beast")
+    beast_opts = choose_graveyard_card_options(state)
+    assert [c.name for c in beast_opts] == ["Opp Beast"]  # the opponent's graveyard card is a legal target
+    execute_choose_graveyard_card_option(state, beast_opts[0])
     _pulse_resolve_top(state)
     assert opp_beast in state.players[1].hand  # returned to ITS OWNER (the opponent), not the caster
     assert state.players[0].life_total == 16  # caster gained 6

@@ -14,10 +14,12 @@ slots). Two independent pieces per token, deliberately kept separate:
    Gathering" (arxiv 2407.05879) found actually drives generalization to
    unseen cards; the identity embedding alone does not.
 
-Dynamic per-instance state (tapped, damage, blocked-as-attacker, etc.) is a
-separate, per-Permanent concern -- see dynamic_permanent_features below,
-combined with the static vector by the tokenizer (not built yet) into one
-per-token feature row.
+Dynamic per-instance state (tapped, damage, blocked-as-attacker, currently
+targeted by something on the stack, etc.) is a separate, per-token concern --
+see _token_row below, combined with the static vector into one per-token
+feature row by build_token_set (the tokenizer), which also assigns each
+token's zone/side and (for battlefield/graveyard/stack tokens) its pointer-
+addressable identity.
 """
 
 import json
@@ -99,6 +101,23 @@ class CardVocab:
             with open(vocab_path, "w") as f:
                 json.dump(self.name_to_index, f, indent=2, sort_keys=True)
 
+        # Double-faced back faces (Delver of Secrets -> Insectile Aberration): a
+        # transformed permanent's card_def is swapped to its back face
+        # (game.resolution.execute_may_transform), so features must resolve the
+        # back name too. Register each back CardDef and ALIAS its vocab index to
+        # its FRONT face's -- the shared card-embedding table (and every trained
+        # checkpoint) keeps its exact size, and the agent perceives the flipped
+        # creature as its front identity plus the already-transform-aware live
+        # power/toughness (_token_row's dynamic half). Done AFTER the persist
+        # write above so aliases never enter the persisted vocab or grow self.size.
+        for front_def in list(self.card_def_by_name.values()):
+            spec = game.EFFECT_REGISTRY.get(front_def.effect_id, {}).get("transform")
+            if not spec or "card_def" not in spec:
+                continue
+            back = spec["card_def"]
+            self.card_def_by_name[back.name] = back
+            self.name_to_index.setdefault(back.name, self.name_to_index.get(front_def.name, 0))
+
     def index(self, name):
         return self.name_to_index.get(name, 0)
 
@@ -154,16 +173,18 @@ def cached_static_card_features(name, vocab):
 
 ZONES = ("battlefield", "graveyard", "stack", "exile")
 # untapped, tapped, effective_power, effective_toughness, blocked_as_attacker,
-# committed_as_blocker, zone one-hot (4), side flag (1) -- see _token_row's
-# own inline comments for what each slot means and why.
-DYNAMIC_FEATURE_DIM = 6 + len(ZONES) + 1
+# committed_as_blocker, targeted_by_mine, targeted_by_theirs, zone one-hot
+# (4), side flag (1) -- see _token_row's own inline comments for what each
+# slot means and why.
+DYNAMIC_FEATURE_DIM = 8 + len(ZONES) + 1
 TOKEN_FEATURE_DIM = STATIC_FEATURE_DIM + DYNAMIC_FEATURE_DIM
 
 PER_CREATURE_POWER_CAP = 20  # clamp before normalizing to [0,1]; 20 covers this card subset's creatures
 PER_CREATURE_TOUGHNESS_CAP = 20
 
 
-def _token_row(name, zone, is_mine, vocab, permanent=None, owner_idx=None, enchanting_auras=None, state=None):
+def _token_row(name, zone, is_mine, vocab, permanent=None, owner_idx=None, enchanting_auras=None, state=None,
+                targeted_by_mine=False, targeted_by_theirs=False):
     """One token's full feature row: static card identity/stats (always
     present) + dynamic per-instance state (mostly zero outside battlefield,
     since graveyard/stack/exile cards aren't permanents with tapped/combat
@@ -173,7 +194,19 @@ def _token_row(name, zone, is_mine, vocab, permanent=None, owner_idx=None, encha
     is_mine alone, since is_mine is relative to whichever seat's own
     perspective build_token_set is building for right now, while blocked_by
     lookups need the permanent's actual owning seat regardless of
-    perspective."""
+    perspective.
+
+    targeted_by_mine/targeted_by_theirs: is this token's own object CURRENTLY
+    a declared target of something on the stack controlled by the perspective
+    seat / by its opponent (see _stack_target_map) -- the target as DECLARED,
+    not whether it would still resolve (real Magic: a target stays publicly
+    known even after it becomes illegal and the spell later fizzles; that
+    legality re-check is a separate, resolution-time concern this row doesn't
+    make). Applies uniformly to battlefield permanents, graveyard cards, and
+    stack entries themselves (a spell can target another spell on the stack,
+    e.g. Counterspell) -- any zone whose tokens carry a stable per-instance
+    identity a captured target can reference. Defaults False for zones
+    nothing in this pool ever targets (exile, revealed hand)."""
     row = list(cached_static_card_features(name, vocab))
     untapped = tapped = eff_power = eff_toughness = blocked_attacker = committed_blocker = 0.0
     if permanent is not None:
@@ -191,10 +224,43 @@ def _token_row(name, zone, is_mine, vocab, permanent=None, owner_idx=None, encha
         blocked_attacker = 1.0 if permanent in own_blocked_by else 0.0
         committed_blocker = 1.0 if permanent in other_committed_blockers else 0.0
     row += [untapped, tapped, eff_power, eff_toughness, blocked_attacker, committed_blocker]
+    row += [1.0 if targeted_by_mine else 0.0, 1.0 if targeted_by_theirs else 0.0]
     row += [1.0 if zone == z else 0.0 for z in ZONES]
     row.append(1.0 if is_mine else 0.0)
     assert len(row) == TOKEN_FEATURE_DIM
     return row
+
+
+def _stack_target_map(state):
+    """Every CURRENT stack entry's declared targets (game.effects.stack.
+    push_to_stack's own targets= tuple), split by whether the target is an
+    OBJECT or a PLAYER:
+
+    obj_controllers: id(target_object) -> the set of controller seat indices
+    whose stack entry targets that object. Covers permanent ("creature"),
+    graveyard-card, and stack-entry targets uniformly -- all three are
+    addressed by real object identity, matching how build_token_set already
+    carries each token's own identity, so one id()-keyed lookup serves every
+    kind without special-casing any of them.
+
+    player_controllers: player_idx -> the set of controller seat indices
+    whose stack entry targets that PLAYER. Kept separate since no token
+    exists for "the player" as an object (build_token_set never tokenizes
+    one) -- rl.agent._scalar_features reads this half directly instead.
+
+    Keyed by id(), never by the object itself: a raw stack-entry dict (a
+    "stack_entry" target) is unhashable, so id()-as-int is the one
+    representation safe to put in a dict across all four target kinds."""
+    obj_controllers = {}
+    player_controllers = {0: set(), 1: set()}
+    for entry in state.stack:
+        controller = entry["controller"]
+        for kind, obj in entry.get("targets", ()):
+            if kind == "player":
+                player_controllers[obj].add(controller)
+            else:
+                obj_controllers.setdefault(id(obj), set()).add(controller)
+    return obj_controllers, player_controllers
 
 
 def build_token_set(state, my_seat_idx, vocab):
@@ -208,23 +274,36 @@ def build_token_set(state, my_seat_idx, vocab):
     consumes it) but IS deterministic given the same state, for
     reproducibility.
 
-    identity: the live Permanent object for a battlefield token, else None
-    -- the pointer-network action head (rl.deck) matches a legal
-    target (game.choose_permanent_options et al. already return/operate on
-    these same Permanent objects, id()-based, same convention this engine
-    already uses throughout -- e.g. enchanting_by_target below) back to
-    "which row of this token batch is that" via this field. Only battlefield
-    tokens ever need it: every pointer-scored decision this branch builds
-    (Attack, Assign Blocker, Choose target, Choose opponent's) targets a
-    permanent, never a graveyard/exile/stack card (those go through
-    separate, non-pointer resolution kinds -- choose_graveyard_card, etc.
-    -- untouched by this migration).
+    identity: the live Permanent for a battlefield token, the exact CardInstance
+    for a graveyard card (Permanent subclasses CardInstance, so battlefield vs
+    graveyard is told apart by isinstance(., Permanent) first), the CardDef for a
+    revealed hand card (DEFERRED -- hand still holds CardDefs), else None
+    (exile/stack). The pointer-network action head (rl.deck) matches a legal
+    target back to "which row of this token batch is that" via this field -- a
+    Permanent for the four battlefield targeting kinds (Attack, Assign Blocker,
+    Choose target, Choose opponent's), the CardInstance/CardDef object for
+    choose_graveyard_card (matched by object identity, so two same-named
+    graveyard copies are distinct and an opponent's graveyard is reachable --
+    which is why the per-name "Choose: X" fixed rows for it no longer exist).
+    Exile/stack cards have no pointer-addressable resolution, so None.
 
-    Hand and library are deliberately excluded -- those stay hidden
-    (aggregate count only), per the "only hand/library CONTENTS are hidden"
-    rule. Violating that here
-    would leak hidden information the rest of this engine carefully
-    protects."""
+    Every token also carries two dynamic targeted-by-mine/targeted-by-theirs
+    bits (see _token_row, _stack_target_map) reflecting whatever the CURRENT
+    contents of state.stack declare as their targets -- a battlefield
+    permanent, a graveyard card, or a stack entry itself (Counterspell
+    targets a spell). A player-targeted burn spell has no token to carry that
+    bit on; rl.agent._scalar_features surfaces it as a scalar instead.
+
+    Hand and library are deliberately excluded from THIS token set -- those
+    stay hidden here, per the "only hand/library CONTENTS are hidden" rule
+    (violating that would leak hidden information the rest of this engine
+    carefully protects). Their aggregate SIZE is not hidden in real Magic
+    (either player can count a library or a hand) and is surfaced instead as
+    a scalar, not a token -- rl.agent._scalar_features, not here. The ONE
+    faithful exception to the content-hiding rule is a hand a card's own
+    effect reveals (Mesmeric Fiend) -- tokenized only for the duration of
+    that choose_graveyard_card pick, exactly what the real reveal shows the
+    caster (see the hand-reveal block at the end of this function)."""
     opponent_seat_idx = 1 - my_seat_idx
     enchanting_by_target = {}
     for player in state.players:
@@ -233,30 +312,67 @@ def build_token_set(state, my_seat_idx, vocab):
             if target is not None:
                 enchanting_by_target.setdefault(id(target), []).append(aura)
 
+    obj_controllers, _player_controllers = _stack_target_map(state)  # player half is rl.agent._scalar_features's job
+
+    def _targeted(obj):
+        controllers = obj_controllers.get(id(obj), ())
+        return my_seat_idx in controllers, opponent_seat_idx in controllers
+
     tokens = []
     for seat_idx in (my_seat_idx, opponent_seat_idx):
         is_mine = seat_idx == my_seat_idx
         player = state.players[seat_idx]
         for p in player.battlefield:
             auras = enchanting_by_target.get(id(p), ())
+            tm, tt = _targeted(p)
             tokens.append((vocab.index(p.card_def.name),
                             _token_row(p.card_def.name, "battlefield", is_mine, vocab, permanent=p, owner_idx=seat_idx,
-                                       enchanting_auras=auras, state=state),
+                                       enchanting_auras=auras, state=state, targeted_by_mine=tm, targeted_by_theirs=tt),
                             p))
-        for card_def in player.graveyard:
-            tokens.append((vocab.index(card_def.name), _token_row(card_def.name, "graveyard", is_mine, vocab), None))
+        for inst in player.graveyard:
+            # identity = the exact CardInstance, so two same-named graveyard cards
+            # are DISTINCT pointer targets (and a flickered/returned card, being a
+            # new instance, is a new token) -- MTG 400.7.
+            tm, tt = _targeted(inst)
+            tokens.append((vocab.index(inst.name),
+                            _token_row(inst.name, "graveyard", is_mine, vocab, targeted_by_mine=tm, targeted_by_theirs=tt),
+                            inst))
         for card_def, _plotted_turn in player.exile:
             tokens.append((vocab.index(card_def.name), _token_row(card_def.name, "exile", is_mine, vocab), None))
     for entry in state.stack:
         is_mine = entry["controller"] == my_seat_idx
+        tm, tt = _targeted(entry)  # a spell/ability can itself be targeted, e.g. Counterspell
         tokens.append((vocab.index(entry["card_def"].name),
-                        _token_row(entry["card_def"].name, "stack", is_mine, vocab), None))
+                        _token_row(entry["card_def"].name, "stack", is_mine, vocab, targeted_by_mine=tm, targeted_by_theirs=tt),
+                        None))
+
+    # Faithful hand reveal: choose_graveyard_card is a generic pick, and
+    # Mesmeric Fiend reuses it to exile a nonland card from the OPPONENT's hand
+    # (black_cards.py passes graveyard=<a player's hand>). Real MTG reveals that
+    # hand to the caster, so when the pick is over a player's hand, tokenize it
+    # (identity = the CardDef object -- hand is DEFERRED; zone "hand" -> all-zero
+    # zone one-hot since hand is not a public ZONE) so the pointer can address it
+    # -- which is what lets both the
+    # graveyard and the hand cross-player picks be pointer-scored with no
+    # whole-league fixed "Choose: X" rows. Graveyard/combined-graveyard picks
+    # (Relic, Pulse) add nothing here: their cards are already tokenized above.
+    pending = state.pending_resolution
+    if pending is not None and pending["kind"] == "choose_graveyard_card":
+        hand_owner = next((i for i, pl in enumerate(state.players) if pending["graveyard"] is pl.hand), None)
+        if hand_owner is not None:
+            for card_def in pending["graveyard"]:
+                # DEFERRED hand: still CardDefs (interned), so identity = the CardDef.
+                # Two same-named nonland hand cards are indistinguishable until hand
+                # instances land -- acceptable, no pool card reveals such a pair.
+                tokens.append((vocab.index(card_def.name),
+                                _token_row(card_def.name, "hand", hand_owner == my_seat_idx, vocab),
+                                card_def))
     return tokens
 
 
 if __name__ == "__main__":
     # ponytail self-check: run via `python -m rl.features` from src/.
-    from game.state import GameState, PlayerState, Permanent
+    from game.state import CardInstance, GameState, PlayerState, Permanent
 
     decklist_a = game.parse_decklist_file("../data/mono_red_madness.txt")
     decklist_b = game.parse_decklist_file("../data/rakdos_madness.txt")
@@ -309,6 +425,17 @@ if __name__ == "__main__":
     shared_names = ({n for n, *_r in decklist_a} & {n for n, *_r in decklist_b})
     assert "Lightning Bolt" in shared_names and len(shared_names) == 8
 
+    # DFC back face (Delver of Secrets -> Insectile Aberration): the back name must
+    # resolve to a real CardDef (no KeyError when a transformed permanent is observed)
+    # and ALIAS to its front face's vocab index, WITHOUT changing vocab.size (the
+    # shared embedding table / checkpoints stay valid).
+    assert vocab.card_def("Insectile Aberration").name == "Insectile Aberration"  # registered, resolves
+    dfc_vocab = CardVocab([game.parse_decklist_file("../data/mono_blue_terror.txt")])
+    assert dfc_vocab.index("Delver of Secrets") != 0  # real decklist card
+    assert dfc_vocab.index("Insectile Aberration") == dfc_vocab.index("Delver of Secrets")  # aliased to the front
+    _size_no_dfc = max(v for k, v in dfc_vocab.name_to_index.items() if k != "Insectile Aberration") + 1
+    assert dfc_vocab.size == _size_no_dfc, "the back-face alias must not grow vocab.size"
+
     print(f"rl.features self-check: OK (vocab_size={vocab.size}, static_feature_dim={STATIC_FEATURE_DIM}, "
           f"keywords={KEYWORD_VOCAB})")
 
@@ -319,12 +446,31 @@ if __name__ == "__main__":
     # the permanent's own true owner_idx) would pass a seat-0-only test.
     seat0 = PlayerState(on_the_play=True)
     seat0.battlefield = [Permanent(game.CARD_DEFS["Guttersnipe"]), Permanent(game.CARD_DEFS["Mountain"], tapped=True)]
-    seat0.graveyard = [game.CARD_DEFS["Lightning Bolt"]]
+    seat0.graveyard = [CardInstance(game.CARD_DEFS["Lightning Bolt"])]  # graveyard holds CardInstances now
     seat1 = PlayerState(on_the_play=False)
     seat1.battlefield = [Permanent(game.CARD_DEFS["Kitchen Imp"])]
     seat1.exile = [(game.CARD_DEFS["Faithless Looting"], 3)]
     fs_state = GameState(on_the_play=True, players=[seat0, seat1])
-    fs_state.stack = [{"card_def": game.CARD_DEFS["Fiery Temper"], "resolve": None, "controller": 1}]
+    # Three stack entries exercising all three OBJECT target kinds
+    # push_to_stack's targets= can carry (the fourth, "player", has no token
+    # to attach to -- see rl.agent._scalar_features's own self-check).
+    # Card-to-target pairings here are mechanically synthetic (not real
+    # card text) -- this only exercises the plumbing, not card legality:
+    # Fiery Temper (controller=1, "theirs" from seat0's own perspective)
+    # targets seat0's own Guttersnipe (a "creature"/permanent target);
+    # Lightning Bolt (controller=0) targets seat0's graveyard Lightning
+    # Bolt CardInstance (a "graveyard_card" target); Grab the Prize
+    # (controller=1) targets the Lightning Bolt ENTRY itself (a
+    # "stack_entry" target, Counterspell-shaped).
+    bolt_entry = {"card_def": game.CARD_DEFS["Lightning Bolt"], "resolve": None, "controller": 0,
+                  "targets": (("graveyard_card", seat0.graveyard[0]),)}
+    fs_state.stack = [
+        {"card_def": game.CARD_DEFS["Fiery Temper"], "resolve": None, "controller": 1,
+         "targets": (("creature", seat0.battlefield[0]),)},
+        bolt_entry,
+        {"card_def": game.CARD_DEFS["Grab the Prize"], "resolve": None, "controller": 1,
+         "targets": (("stack_entry", bolt_entry),)},
+    ]
     # seat 0's Guttersnipe blocks seat 1's Kitchen Imp -- exercises the
     # blocked_as_attacker/committed_as_blocker dynamic features on both sides.
     attacker, blocker = seat1.battlefield[0], seat0.battlefield[0]
@@ -334,44 +480,93 @@ if __name__ == "__main__":
     for my_seat in (0, 1):
         tokens = build_token_set(fs_state, my_seat, vocab)
         # 2 (seat0 battlefield) + 1 (seat0 graveyard) + 1 (seat1 battlefield)
-        # + 1 (seat1 exile) + 1 (shared stack) = 6 tokens, regardless of
-        # which seat's own perspective this is built from.
-        assert len(tokens) == 6, f"expected 6 tokens for my_seat={my_seat}, got {len(tokens)}"
+        # + 1 (seat1 exile) + 3 (stack) = 8 tokens, regardless of which
+        # seat's own perspective this is built from.
+        assert len(tokens) == 8, f"expected 8 tokens for my_seat={my_seat}, got {len(tokens)}"
         for vocab_idx, row, identity in tokens:
             assert isinstance(vocab_idx, int) and vocab_idx != 0  # every token here is a real, known card
             assert len(row) == TOKEN_FEATURE_DIM
-        battlefield_tokens = [(idx, row, ident) for idx, row, ident in tokens if ident is not None]
-        assert len(battlefield_tokens) == 3, "3 battlefield permanents (2 seat0 + 1 seat1) must carry identity"
-        non_battlefield_tokens = [(idx, row, ident) for idx, row, ident in tokens if ident is None]
-        assert len(non_battlefield_tokens) == 3, "graveyard/exile/stack tokens must NOT carry a permanent identity"
+        battlefield_tokens = [(idx, row, ident) for idx, row, ident in tokens if isinstance(ident, Permanent)]
+        assert len(battlefield_tokens) == 3, "3 battlefield permanents (2 seat0 + 1 seat1) must carry a Permanent identity"
+        graveyard_tokens = [(idx, row, ident) for idx, row, ident in tokens
+                            if isinstance(ident, CardInstance) and not isinstance(ident, Permanent)]
+        assert len(graveyard_tokens) == 1 and graveyard_tokens[0][2].name == "Lightning Bolt", \
+            "the graveyard card token must carry its exact CardInstance as pointer handle"
+        assert graveyard_tokens[0][2] is seat0.graveyard[0], "graveyard token identity must be the live CardInstance"
+        inert_tokens = [(idx, row, ident) for idx, row, ident in tokens if ident is None]
+        assert len(inert_tokens) == 4, "exile (1) + stack (3) tokens have no pointer-addressable resolution -> identity None"
 
         # Guttersnipe (seat 0's own permanent) -- side flag must match
         # whether seat 0 IS my_seat, not be hardcoded to "mine" regardless.
-        guttersnipe_row = next(row for idx, row, ident in tokens if idx == vocab.index("Guttersnipe"))
-        guttersnipe_identity = next(ident for idx, row, ident in tokens if idx == vocab.index("Guttersnipe"))
+        # Matched by Permanent identity too, not just name: a second,
+        # unrelated "Guttersnipe"-named token would never collide with this,
+        # but being explicit keeps the lookup robust regardless of token order.
+        guttersnipe_row = next(row for idx, row, ident in tokens
+                                if idx == vocab.index("Guttersnipe") and isinstance(ident, Permanent))
+        guttersnipe_identity = next(ident for idx, row, ident in tokens
+                                     if idx == vocab.index("Guttersnipe") and isinstance(ident, Permanent))
         assert guttersnipe_identity is seat0.battlefield[0], "battlefield token identity must be the live Permanent object"
         expected_side_flag = 1.0 if my_seat == 0 else 0.0
         assert guttersnipe_row[-1] == expected_side_flag, (
             f"my_seat={my_seat}: Guttersnipe's side flag should be {expected_side_flag}, got {guttersnipe_row[-1]}"
         )
-        # committed_as_blocker (the 6th-from-last dynamic slot, before the
-        # 4 zone one-hot slots + 1 side-flag slot) must be set on Guttersnipe
-        # regardless of my_seat -- this is exactly the bug the owner_idx fix
-        # corrects: without it, blocked_by lookups silently used the wrong
-        # seat's dict once my_seat_idx=1.
-        committed_blocker_slot = -(len(ZONES) + 1) - 1
+        # Dynamic-slot offsets, counted back from the row's END (same idiom
+        # the side-flag check above already relies on): side(-1), zone
+        # one-hot(-2..-5), targeted_by_theirs(-6), targeted_by_mine(-7),
+        # committed_blocker(-8) -- see _token_row's own row-assembly order.
+        targeted_theirs_slot = -(len(ZONES) + 1) - 1
+        targeted_mine_slot = -(len(ZONES) + 1) - 2
+        committed_blocker_slot = -(len(ZONES) + 1) - 3
+        # committed_as_blocker must be set on Guttersnipe regardless of
+        # my_seat -- this is exactly the bug the owner_idx fix corrects:
+        # without it, blocked_by lookups silently used the wrong seat's
+        # dict once my_seat_idx=1.
         assert guttersnipe_row[committed_blocker_slot] == 1.0, (
             f"my_seat={my_seat}: Guttersnipe should show committed_as_blocker=1.0, got "
             f"{guttersnipe_row[committed_blocker_slot]}"
         )
 
-        # The stack entry's controller is seat 1 -- side flag must track
-        # that controller, not my_seat, for the "is_mine" semantics to be
-        # correct from whichever seat's own perspective this is built for.
-        stack_row = next(row for idx, row, ident in tokens if idx == vocab.index("Fiery Temper"))
-        assert stack_row[-1] == (1.0 if my_seat == 1 else 0.0)
+        # Guttersnipe is targeted by Fiery Temper, controller=1 -- so it
+        # shows targeted_by_mine when my_seat==1, targeted_by_theirs when
+        # my_seat==0, regardless of whose permanent it actually is (the bit
+        # tracks the PERSPECTIVE seat vs. the targeting entry's controller,
+        # never the target's own owner).
+        assert guttersnipe_row[targeted_mine_slot] == (1.0 if my_seat == 1 else 0.0), (
+            f"my_seat={my_seat}: Guttersnipe targeted_by_mine mismatch: {guttersnipe_row[targeted_mine_slot]}"
+        )
+        assert guttersnipe_row[targeted_theirs_slot] == (1.0 if my_seat == 0 else 0.0), (
+            f"my_seat={my_seat}: Guttersnipe targeted_by_theirs mismatch: {guttersnipe_row[targeted_theirs_slot]}"
+        )
+        # An untargeted permanent (Mountain never appears in any stack
+        # entry's targets) must show 0/0 on both bits.
+        mountain_row = next(row for idx, row, ident in tokens if idx == vocab.index("Mountain"))
+        assert mountain_row[targeted_mine_slot] == 0.0 and mountain_row[targeted_theirs_slot] == 0.0
 
-    print("rl.features build_token_set self-check: OK (both seats' own perspective, all 4 public zones)")
+        # The graveyard Lightning Bolt CardInstance is targeted by the
+        # Lightning Bolt STACK ENTRY, controller=0 -- a "graveyard_card"
+        # target, matched by the same id()-keyed lookup as a battlefield
+        # "creature" target.
+        gy_row = graveyard_tokens[0][1]
+        assert gy_row[targeted_mine_slot] == (1.0 if my_seat == 0 else 0.0)
+        assert gy_row[targeted_theirs_slot] == (1.0 if my_seat == 1 else 0.0)
+
+        # The Lightning Bolt STACK TOKEN is itself targeted by the Grab the
+        # Prize entry, controller=1 -- a "stack_entry" target (Counterspell-
+        # shaped): a spell/ability on the stack can be the target, not just
+        # a permanent or graveyard card, and the bit lands on that stack
+        # token's own row even though its pointer identity stays None.
+        bolt_row = next(row for idx, row, ident in tokens if idx == vocab.index("Lightning Bolt") and ident is None)
+        assert bolt_row[targeted_mine_slot] == (1.0 if my_seat == 1 else 0.0)
+        assert bolt_row[targeted_theirs_slot] == (1.0 if my_seat == 0 else 0.0)
+
+        # The Fiery Temper entry's controller is seat 1 -- side flag must
+        # track that controller, not my_seat, for the "is_mine" semantics to
+        # be correct from whichever seat's own perspective this is built for.
+        fiery_row = next(row for idx, row, ident in tokens if idx == vocab.index("Fiery Temper"))
+        assert fiery_row[-1] == (1.0 if my_seat == 1 else 0.0)
+
+    print("rl.features build_token_set self-check: OK (both seats' own perspective, all 4 public zones, "
+          "targeted-by-mine/theirs across creature/graveyard_card/stack_entry target kinds)")
 
     # CardVocab persistence: append-only across separate construction calls
     # -- existing names must NEVER change index once a 3rd deck introduces

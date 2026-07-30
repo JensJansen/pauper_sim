@@ -50,9 +50,10 @@ class DeckNetwork(nn.Module):
         outputs (caller runs shared_stack separately -- see this module's
         docstring on why it's a reference, not owned here). scalar_features:
         [B, SCALAR_FEATURE_DIM] -- the non-tokenized globals (life totals,
-        turn number, phase one-hot, pending-kind one-hot, mana pool -- the
-        same non-per-card globals the scalar-feature builder
-        (rl.agent._scalar_features) carries). pointer_token_mask:
+        turn number, phase one-hot, mana pool, library sizes, opponent hand
+        size, stack-targets-me/opponent -- the same non-per-card globals the
+        scalar-feature builder (rl.agent._scalar_features) carries, see its
+        own docstring for the exact composition). pointer_token_mask:
         [B, T] bool, True where a token is a currently-legal POINTER TARGET
         for whatever specific resolution is pending right now (Attack-
         eligible creature, block-eligible creature, etc.) -- this is
@@ -86,12 +87,16 @@ class DeckNetwork(nn.Module):
 
 # Turn number/horizon, lands-played-this-turn, mulligans-taken, am-I-turn-
 # player, my/opponent life totals, floating mana pool (len(POOL_COLORS)),
-# phase one-hot (len(Phase)) -- genuinely scalar/global facts, deliberately
-# NOT re-derived via tokens since they aren't per-card ones.
+# phase one-hot (len(Phase)), my/opponent library size, opponent's hand
+# size, stack-targets-me/stack-targets-opponent -- genuinely scalar/global
+# facts, deliberately NOT re-derived via tokens since they aren't per-card
+# ones (rl.agent._scalar_features is the one place that builds this vector).
 import game  # noqa: E402
 from rl.arch import FiLM  # noqa: E402
 
-SCALAR_FEATURE_DIM = 4 + len(game.POOL_COLORS) + len(game.turn.Phase) + 2  # 4 = turn/lands/mulligans/am-i-turn-player, +2 = my/opponent life totals
+# 4 = turn/lands/mulligans/am-i-turn-player, +2 = my/opponent life totals,
+# +5 = my/opponent library size, opponent hand size, stack-targets-me/opponent
+SCALAR_FEATURE_DIM = 4 + len(game.POOL_COLORS) + len(game.turn.Phase) + 2 + 5
 
 
 if __name__ == "__main__":

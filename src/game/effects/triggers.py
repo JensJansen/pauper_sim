@@ -139,6 +139,19 @@ def _trigger_resolve(entry):
     raise ValueError(f"unknown trigger queue entry: {entry}")
 
 
+def _etb_targets(entry):
+    """A queued ETB triggered ability that CHOOSES TARGETS. Its targets are
+    picked when the ability goes on the stack (603.3d), so its hook runs at
+    PROMOTION -- opening target selection and pushing its own single effect
+    entry, which fizzles per-target at resolution (608.2b/c) -- rather than at
+    resolution like a non-targeting ETB. Owner directive (see
+    project_targeted_triggered_abilities): every "enters and targets" effect
+    works this way (Rooftop Percher, Pinnacle Kill-Ship)."""
+    if entry["type"] != "etb":
+        return False
+    return registry.EFFECT_REGISTRY.get(entry["card_def"].effect_id, {}).get("etb_targets", False)
+
+
 def promote_triggers_to_stack(state):
     """Moves every currently-queued trigger for the active player onto
     state.stack, replacing the old
@@ -162,20 +175,45 @@ def promote_triggers_to_stack(state):
     2+ queued at once: the active player picks the placement order
     (resolution.begin_order_triggers) -- real Magic's own rule (603.3b),
     not a fixed queue order (a real deck can hit this: Faithless
-    Looting's discard-2 landing on two Madness cards at once, or two
-    Sneaky Snackers both crossing their own draw-count trigger on the
-    same draw). 0 or 1: pushed immediately, no ordering decision needed.
-    No-op if the queue is empty -- safe to call unconditionally at the
-    start of every priority round."""
+    Looting's discard-2 landing on two Madness cards at once, two Sneaky
+    Snackers both crossing their own draw-count trigger on the same draw,
+    or two targeting ETBs entering simultaneously). 0 or 1 total: placed
+    immediately, no ordering decision needed. No-op if the queue is empty --
+    safe to call unconditionally at the start of every priority round.
+
+    A TARGETING ETB (_etb_targets) is placed like any other queued trigger,
+    just via a different placement action: instead of pushing a plain
+    resolve, its OWN etb_trigger hook runs AT PLACEMENT -- opening target
+    selection and pushing its own effect entry (targets locked now, fizzle
+    per-target at resolution, 608.2b/c). When 2+ triggers (targeting and/or
+    plain, any mix) are queued together, ALL of them go through ONE
+    begin_order_triggers ordering choice (603.3b covers every simultaneous
+    trigger, not just the non-targeting ones) -- see
+    resolution.execute_order_triggers_option's own targeting branch for how
+    a targeting entry gets placed."""
     if not state.trigger_queue:
         return
-    stack_entries = [{"card_def": entry["card_def"], "resolve": _trigger_resolve(entry)} for entry in state.trigger_queue]
+    queue = list(state.trigger_queue)
     state.trigger_queue.clear()
-    if len(stack_entries) == 1:
-        entry = stack_entries[0]
-        push_to_stack(state, entry["card_def"], entry["resolve"], reserves_hand_card=False, is_spell=False)  # a triggered ability, not a spell
+
+    def _entry_for(e):
+        if _etb_targets(e):
+            return {"card_def": e["card_def"], "permanent": e["permanent"], "targeting": True}
+        return {"card_def": e["card_def"], "resolve": _trigger_resolve(e)}
+
+    entries = [_entry_for(e) for e in queue]
+    if len(entries) == 1:
+        # Same two-way placement branch execute_order_triggers_option uses for
+        # the 2+ case below -- inlined here (not shared) for the same "can't
+        # import across this pair without a cycle" reason state_based/
+        # handlers duplicate their own leaves-battlefield three-liner.
+        entry = entries[0]
+        if entry.get("targeting"):
+            registry.EFFECT_REGISTRY[entry["card_def"].effect_id]["etb_trigger"](state, entry["permanent"])
+        else:
+            push_to_stack(state, entry["card_def"], entry["resolve"], reserves_hand_card=False, is_spell=False)  # a triggered ability, not a spell
         return
-    resolution.begin_order_triggers(state, stack_entries, on_complete=lambda s: None)
+    resolution.begin_order_triggers(state, entries, on_complete=lambda s: None)
 
 
 if __name__ == "__main__":
@@ -235,3 +273,61 @@ if __name__ == "__main__":
         registry.EFFECT_REGISTRY[EffectId.FILLER] = _filler_backup
 
     print("triggers.py draw-counter self-check: OK")
+
+    # 2 SIMULTANEOUS TARGETING ETBs (F8 generalization): both go through ONE
+    # begin_order_triggers ordering choice -- no assert-len<=1 guard anymore --
+    # each PLACED via its own etb_trigger hook (not a plain resolve). Placement
+    # order is the active player's choice; LIFO means placed-LAST resolves-FIRST.
+    from ..state import Permanent
+
+    etb_calls = []
+
+    def _fake_targeting_etb(tag):
+        def hook(state, permanent):
+            etb_calls.append(f"{tag}-placed")
+            push_to_stack(
+                state, permanent.card_def,
+                lambda s, cd: etb_calls.append(f"{tag}-resolved"),
+                reserves_hand_card=False, is_spell=False,
+            )
+        return hook
+
+    _filler_backup2 = registry.EFFECT_REGISTRY[EffectId.FILLER]
+    _ent_backup = registry.EFFECT_REGISTRY[EffectId.GENEROUS_ENT]
+    registry.EFFECT_REGISTRY[EffectId.FILLER] = {"etb_trigger": _fake_targeting_etb("A"), "etb_targets": True}
+    registry.EFFECT_REGISTRY[EffectId.GENEROUS_ENT] = {"etb_trigger": _fake_targeting_etb("B"), "etb_targets": True}
+    try:
+        card_a = CardDef("Targeting A", CardType.CREATURE, None, EffectId.FILLER)
+        card_b = CardDef("Targeting B", CardType.CREATURE, None, EffectId.GENEROUS_ENT)
+        perm_a = Permanent(card_a)
+        perm_b = Permanent(card_b)
+        state = GameState(on_the_play=True)
+        state.battlefield = [perm_a, perm_b]
+        state.trigger_queue = [
+            {"type": "etb", "card_def": card_a, "permanent": perm_a},
+            {"type": "etb", "card_def": card_b, "permanent": perm_b},
+        ]
+
+        promote_triggers_to_stack(state)
+        assert state.pending_resolution["kind"] == "order_triggers"
+        assert resolution.order_triggers_options(state) == ["Targeting A", "Targeting B"]
+        assert etb_calls == []  # neither hook has run yet -- only PLACEMENT runs a targeting hook
+
+        resolution.execute_order_triggers_option(state, "Targeting A")  # placed FIRST -- resolves LAST
+        assert etb_calls == ["A-placed"]
+        assert len(state.stack) == 1
+        assert state.pending_resolution["kind"] == "order_triggers"  # one more still to place
+
+        resolution.execute_order_triggers_option(state, "Targeting B")  # placed LAST -- resolves FIRST
+        assert etb_calls == ["A-placed", "B-placed"]
+        assert len(state.stack) == 2
+        assert state.pending_resolution is None
+
+        while state.stack:
+            resolve_top_of_stack(state)
+        assert etb_calls == ["A-placed", "B-placed", "B-resolved", "A-resolved"]  # LIFO: B (placed last) resolves first
+    finally:
+        registry.EFFECT_REGISTRY[EffectId.FILLER] = _filler_backup2
+        registry.EFFECT_REGISTRY[EffectId.GENEROUS_ENT] = _ent_backup
+
+    print("triggers.py 2 simultaneous targeting-ETB triggers (F8 generalization) self-check: OK")

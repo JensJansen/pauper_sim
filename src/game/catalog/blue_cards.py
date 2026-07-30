@@ -19,7 +19,7 @@ from ..effects.shared import (
     affinity_reduction, card_subtypes, discard_from_hand_to_graveyard, find_to_hand, graveyard_instant_sorcery_count, mill,
 )
 from ..effects.stack import counter_spell, push_ability_to_stack, push_to_stack
-from ..effects.state_based import sacrifice_to_graveyard
+from ..effects.state_based import departing_card_def, sacrifice_to_graveyard
 from ..effects.stats import can_be_targeted, controller_idx
 from ..effects.tokens import BIRD_ILLUSION_TOKEN_CARD_DEF, create_token
 from ..effects.win_check import lose_life
@@ -68,6 +68,20 @@ BLUE_CARD_CATALOG = {
     "Delver of Secrets": CardDef("Delver of Secrets", CardType.CREATURE, {"U": 1}, EffectId.DELVER_OF_SECRETS, power=1, toughness=1),
 }
 
+# Back face of Delver of Secrets. Deliberately NOT in BLUE_CARD_CATALOG / CARD_DEFS:
+# it's never in a decklist, drawn, or cast -- it only exists as the identity a
+# Delver Permanent takes on once it transforms (execute_may_transform swaps the
+# Permanent's card_def to this). Same EffectId as the front face so every registry
+# lookup (the upkeep trigger, the transform spec, stats) still resolves; same cast
+# cost/color identity; 3/2 stats live here AND in the "transform" spec below (the
+# spec stays authoritative for combat via effects.stats._transform_spec, this def
+# carries them so any direct card_def.extra read stays consistent). A DFC reverts to
+# its front face in every zone but the battlefield, so state_based._departing_card_def
+# puts the FRONT def back when it leaves.
+INSECTILE_ABERRATION_CARD_DEF = CardDef(
+    "Insectile Aberration", CardType.CREATURE, {"U": 1}, EffectId.DELVER_OF_SECRETS, power=3, toughness=2,
+)
+
 
 def cast_deem_inferior(state, card_def):
     """{3}{U} (costs {1} less per card drawn this turn): "The owner of target
@@ -90,9 +104,10 @@ def cast_deem_inferior(state, card_def):
             permanent = captured[1]
             owner_idx = controller_idx(state, permanent)  # controller == owner (no control-changing in this pool)
             state.players[owner_idx].battlefield.remove(permanent)
-            begin_tuck_to_library(state, permanent.card_def, owner_idx)
+            # a DFC tucked into the library reverts to its front face (Delver, not Insectile)
+            begin_tuck_to_library(state, departing_card_def(permanent), owner_idx)
 
-        push_to_stack(state, card_def, _resolve)
+        push_to_stack(state, card_def, _resolve, targets=() if captured is None else (captured,))
 
     begin_choose_any_target(
         state,
@@ -135,20 +150,19 @@ def cast_sleep_of_the_dead(state, card_def):
 
 def _exile_n_other_from_graveyard(state, n, exclude, on_complete):
     """Escape's additional cost: the model exiles n cards from its own
-    graveyard OTHER than `exclude` (the card being escaped), one at a time
-    (chained begin_choose_graveyard_card). Runs on_complete(state) once n are
-    exiled. NOTE: excludes `exclude` by identity -- CardDefs are interned per
-    name, so a second copy of the same card can't be used to pay (a benign,
-    conservative limitation, never wrongly permissive)."""
+    graveyard OTHER than `exclude` (the exact graveyard INSTANCE being escaped),
+    one at a time (chained begin_choose_graveyard_card). Runs on_complete(state)
+    once n are exiled. Excludes `exclude` by object identity -- so a SECOND copy
+    of the same card in the graveyard (a distinct instance now) CAN be exiled to
+    pay, faithfully."""
     def _step(remaining):
         if remaining == 0:
             on_complete(state)
             return
 
-        def _chosen(state, name):
-            found = next(c for c in state.graveyard if c.name == name)
-            state.graveyard.remove(found)  # exiled, untracked
-            state.log_event("zone_move", card=found.name, from_zone="graveyard", to_zone="exile_untracked", reason="escape")
+        def _chosen(state, chosen):
+            state.graveyard.remove(chosen)  # the exact chosen instance; exiled, untracked
+            state.log_event("zone_move", card=chosen.name, from_zone="graveyard", to_zone="exile_untracked", reason="escape")
             _step(remaining - 1)
 
         begin_choose_graveyard_card(state, lambda c: c is not exclude, _chosen)
@@ -161,18 +175,32 @@ def _sleep_escape_legal(state):
     with 3+ other graveyard cards to exile AND a legal creature to tap
     (a targeted spell needs a target). Mana + Sleep-in-graveyard are checked
     by the generic graveyard-cast machinery (drl_env._flashback_legal)."""
-    sleep_def = registry.CARD_DEFS["Sleep of the Dead"]
-    others = sum(1 for c in state.graveyard if c is not sleep_def)
-    return others >= 3 and has_creature_target(state)
+    # 3+ cards OTHER than the one Sleep being escaped -- any other card, INCLUDING
+    # a second Sleep copy (distinct instances now). Escape is only offered with a
+    # Sleep in the graveyard, so "others" = everything but that one card.
+    if not any(c.name == "Sleep of the Dead" for c in state.graveyard):
+        return False
+    return len(state.graveyard) - 1 >= 3 and has_creature_target(state)
 
 
-def escape_sleep_of_the_dead(state, card_def):
+def escape_sleep_of_the_dead(state, inst):
     """Escape: {2}{U} (paid by the graveyard-cast machinery) + exile three
     other graveyard cards, then Sleep leaves the graveyard (escaping; exiled
     after it resolves) and taps a target creature (chosen at cast, fizzles if
-    gone)."""
+    gone).
+
+    inst: the exact graveyard CardInstance being escaped -- see
+    flashback_dread_return. Identity matters twice here, not just for the
+    removal: it's also the exclusion passed to _exile_n_other_from_graveyard,
+    whose predicate is `c is not exclude`, so a SECOND Sleep copy in the
+    graveyard stays a legal choice to exile as part of the cost (faithful --
+    it genuinely is "another card") while the escaping copy itself never is.
+    This function used to re-derive it by name; the boundary now hands it
+    down (drl_env._actions._graveyard_instance)."""
+    sleep_inst = inst
+
     def _after_exile(state):
-        state.graveyard.remove(card_def)  # escapes the graveyard; exiled after resolution (untracked)
+        state.graveyard.remove(sleep_inst)  # escapes the graveyard; exiled after resolution (untracked)
         idx = state.active_idx
 
         def _on_target(state, descriptor):
@@ -184,14 +212,15 @@ def escape_sleep_of_the_dead(state, card_def):
                     return
                 _sleep_tap_skip(state, captured[1])
 
-            push_to_stack(state, card_def, _resolve, reserves_hand_card=False, is_spell=True)
+            push_to_stack(state, sleep_inst, _resolve, reserves_hand_card=False, is_spell=True,
+                          targets=() if captured is None else (captured,))
 
         begin_choose_any_target(
             state, lambda p: p.card_type == CardType.CREATURE and can_be_targeted(state, p, idx),
             _on_target, allow_players=False,
         )
 
-    _exile_n_other_from_graveyard(state, 3, card_def, _after_exile)
+    _exile_n_other_from_graveyard(state, 3, sleep_inst, _after_exile)
 
 
 def sewer_cam_tap_or_untap(state, source_card_def):
@@ -213,7 +242,8 @@ def sewer_cam_tap_or_untap(state, source_card_def):
             perm.tapped = not perm.tapped
             st.log_event("tap_or_untap", permanent=(perm.card_def.name, perm.slot), now_tapped=perm.tapped)
 
-        push_to_stack(state, source_card_def, _resolve, reserves_hand_card=False, is_spell=False)
+        push_to_stack(state, source_card_def, _resolve, reserves_hand_card=False, is_spell=False,
+                      targets=() if captured is None else (captured,))
 
     begin_choose_any_target(
         state, lambda p: p.card_type == CardType.CREATURE and can_be_targeted(state, p, idx),
@@ -250,7 +280,7 @@ def _cast_counter(state, card_def, predicate, on_countered=None):
             else:
                 on_countered(state, entry)
 
-        push_to_stack(state, card_def, _resolve)
+        push_to_stack(state, card_def, _resolve, targets=() if entry is None else (("stack_entry", entry),))
 
     begin_choose_stack_target(state, predicate, _on_target)
 
@@ -382,17 +412,23 @@ def cast_deep_analysis(state, card_def):
     _deep_analysis_effect(state, card_def)
 
 
-def flashback_deep_analysis(state, card_def):
+def flashback_deep_analysis(state, inst):
     """Flashback -- {1}{U}, Pay 3 life. The {1}{U} was already paid by the
     generic mana-flashback path (drl_env._flashback_execute's begin_pay_cost);
     pay the 3-life additional cost now, remove this card from the graveyard
     (it leaves the moment Flashback is chosen; exiled afterward -- untracked,
     Dread Return's precedent), then push the same target-player-draws-two
     effect onto the stack. Life >= 3 is enforced by the flashback's own
-    legal predicate."""
-    state.graveyard.remove(card_def)
+    legal predicate.
+
+    inst: the exact graveyard CardInstance being flashed back -- see
+    flashback_dread_return. This function is why that boundary exists: it used
+    to be handed the interned CardDef and call state.graveyard.remove on it,
+    which can never match a CardInstance, crashing a real pretrain run with
+    ValueError."""
+    state.graveyard.remove(inst)
     lose_life(state, 3, reason="deep_analysis_flashback")
-    push_to_stack(state, card_def, _deep_analysis_effect, reserves_hand_card=False, exiles_on_resolve=True)
+    push_to_stack(state, inst, _deep_analysis_effect, reserves_hand_card=False, exiles_on_resolve=True)
 
 
 def delver_upkeep(state, permanent):
@@ -408,7 +444,7 @@ def delver_upkeep(state, permanent):
         return
     top = state.library[0]
     if top.card_type in (CardType.INSTANT, CardType.SORCERY):
-        begin_may_transform(state, permanent)
+        begin_may_transform(state, permanent, revealed_card=top.name)
 
 
 BLUE_EFFECT_REGISTRY = {
@@ -502,8 +538,11 @@ BLUE_EFFECT_REGISTRY = {
         "cast": {"resolve": lambda state, card_def: cast_permanent_from_hand(state, card_def)},
         "upkeep_trigger": delver_upkeep,
         # Back face Insectile Aberration: 3/2 flying (flag-gated in effects.stats
-        # via permanent.flags["transformed"], set by execute_may_transform).
-        "transform": {"power": 3, "toughness": 2, "keywords": {"flying"}},
+        # via permanent.flags["transformed"], set by execute_may_transform, which
+        # also swaps the Permanent's card_def to `card_def` so the game state's own
+        # identity -- name, logging, RL perception -- becomes the back face).
+        "transform": {"name": "Insectile Aberration", "power": 3, "toughness": 2,
+                      "keywords": {"flying"}, "card_def": INSECTILE_ABERRATION_CARD_DEF},
         "pending_kinds": {"may_transform"},
     },
     EffectId.SEWER_VEILLANCE_CAM: {
@@ -560,7 +599,7 @@ BLUE_EFFECT_REGISTRY = {
 if __name__ == "__main__":
     # ponytail self-check: run via `python -m game.catalog.blue_cards` from src/.
     from ..resolution import execute_choose_target_player_option, execute_search_fetch_option, search_fetch_options
-    from ..state import GameState, Permanent, PlayerState
+    from ..state import CardInstance, GameState, Permanent, PlayerState
 
     # Mental Note {U}: mill 2 (self), draw 1. The spell moves itself to the
     # graveyard as it resolves, ahead of the mill/draw.
@@ -695,18 +734,39 @@ if __name__ == "__main__":
     execute_choose_target_player_option(state, 0)
     assert len(state.hand) == 2
 
+    # Flashback. The graveyard is built from a real CardInstance -- what an
+    # actual game puts there (plans/object-identity-zone-model.md) -- and the
+    # instance is what gets passed in, matching the contract
+    # drl_env._actions._flashback_execute now honors. Building this fixture from
+    # a raw CardDef instead is what let a real bug (state.graveyard.remove on
+    # the interned CardDef, which can never match an instance) pass this check
+    # and crash only in live self-play.
     state = GameState(on_the_play=True)
-    da = CardDef("Deep Analysis", CardType.SORCERY, {"generic": 3, "U": 1}, EffectId.DEEP_ANALYSIS)
+    da = CardInstance(CardDef("Deep Analysis", CardType.SORCERY, {"generic": 3, "U": 1}, EffectId.DEEP_ANALYSIS))
     state.graveyard = [da]
     state.library = [_card(f"F{i}") for i in range(4)]
     state.players[0].life_total = 10
     flashback_deep_analysis(state, da)  # mana already paid upstream in real play
-    assert da not in state.graveyard and state.life_total == 7 and len(state.stack) == 1
+    assert state.graveyard == [] and state.life_total == 7 and len(state.stack) == 1
+    assert state.stack[0]["card_def"] is da, "the stack entry must carry the exact graveyard instance"
     _resolve_top(state)
     assert state.pending_resolution["kind"] == "choose_target_player"
     execute_choose_target_player_option(state, 0)
     assert len(state.hand) == 2
     print("blue_cards.py Deep Analysis (cast + flashback pay-3-life) self-check: OK")
+
+    # Two same-named graveyard copies: the instance handed in is the one that
+    # leaves, and the OTHER copy stays put -- the identity property the old
+    # by-name lookup could not guarantee.
+    state = GameState(on_the_play=True)
+    da_def = CardDef("Deep Analysis", CardType.SORCERY, {"generic": 3, "U": 1}, EffectId.DEEP_ANALYSIS)
+    copy_a, copy_b = CardInstance(da_def), CardInstance(da_def)
+    state.graveyard = [copy_a, copy_b]
+    state.library = [_card(f"G{i}") for i in range(4)]
+    state.players[0].life_total = 10
+    flashback_deep_analysis(state, copy_b)  # explicitly the SECOND copy
+    assert state.graveyard == [copy_a], "exactly the passed instance must leave; the other copy stays"
+    print("blue_cards.py Deep Analysis flashback picks the exact instance self-check: OK")
 
     # --- G4 counters & permission ---
     from ..effects.stack import push_to_stack as _push
@@ -737,7 +797,7 @@ if __name__ == "__main__":
     execute_choose_stack_target_option(state, "Some Instant")
     _resolve_top(state)
     assert all(e["card_def"].name != "Some Instant" for e in state.stack)  # countered off the stack
-    assert tgt in state.players[1].graveyard
+    assert any(c.name == tgt.name for c in state.players[1].graveyard)
     print("blue_cards.py Counterspell self-check: OK")
 
     # Dispel: an instant is a legal target; a sorcery is not.
@@ -760,7 +820,7 @@ if __name__ == "__main__":
     _resolve_top(state)
     assert state.pending_resolution["kind"] == "pay_unless" and state.active_idx == 1  # payer's decision
     pay_unless_decline(state)
-    assert tgt in state.players[1].graveyard and state.active_idx == 0  # not paid -> countered, active_idx restored
+    assert any(c.name == tgt.name for c in state.players[1].graveyard) and state.active_idx == 0  # not paid -> countered, active_idx restored
 
     state = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
     tgt = _stack_spell(state, "Ponder", controller=1)
@@ -818,10 +878,12 @@ if __name__ == "__main__":
     # Sleep of the Dead Escape: exile 3 other graveyard cards + tap; the card
     # escapes the graveyard.
     state = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
-    sd = registry.CARD_DEFS["Sleep of the Dead"]
-    state.players[0].graveyard = [sd, CardDef("g1", CardType.INSTANT, {"U": 1}, EffectId.FILLER),
-                                  CardDef("g2", CardType.INSTANT, {"U": 1}, EffectId.FILLER),
-                                  CardDef("g3", CardType.INSTANT, {"U": 1}, EffectId.FILLER)]
+    # Graveyard holds real CardInstances, as a live game does -- and `sd` (the
+    # instance) is what escape_sleep_of_the_dead now receives.
+    sd = CardInstance(registry.CARD_DEFS["Sleep of the Dead"])
+    state.players[0].graveyard = [sd, CardInstance(CardDef("g1", CardType.INSTANT, {"U": 1}, EffectId.FILLER)),
+                                  CardInstance(CardDef("g2", CardType.INSTANT, {"U": 1}, EffectId.FILLER)),
+                                  CardInstance(CardDef("g3", CardType.INSTANT, {"U": 1}, EffectId.FILLER))]
     victim = Permanent(CardDef("Victim", CardType.CREATURE, None, EffectId.FILLER, power=1, toughness=1))
     victim.slot = 1
     state.players[1].battlefield = [victim]
@@ -830,7 +892,7 @@ if __name__ == "__main__":
     escape_sleep_of_the_dead(state, sd)
     for nm in ("g1", "g2", "g3"):
         assert state.pending_resolution["kind"] == "choose_graveyard_card"
-        execute_choose_graveyard_card_option(state, nm)
+        execute_choose_graveyard_card_option(state, next(c for c in state.graveyard if c.name == nm))
     assert state.pending_resolution["kind"] == "choose_any_target"
     execute_choose_any_target_creature(state, 1, "Victim", 1)
     _resolve_top(state)
@@ -954,9 +1016,11 @@ if __name__ == "__main__":
     from ..turn import upkeep_step
     from ..effects.triggers import promote_triggers_to_stack
     from ..effects.stats import creature_keywords, permanent_power, permanent_toughness
+    from ..effects.state_based import check_state_based_actions
     from ..resolution import execute_may_transform
 
     state = GameState(on_the_play=True)
+    state.event_log = []  # capture events to check the reveal + transform logging
     state.active_idx = 0
     delver = Permanent(registry.CARD_DEFS["Delver of Secrets"])
     delver.slot = 0
@@ -972,9 +1036,26 @@ if __name__ == "__main__":
     assert permanent_power(state, delver) == 1 and permanent_toughness(state, delver) == 1  # front face
     execute_may_transform(state, True)
     assert delver.flags.get("transformed")
+    # game state IS the back face now: card_def swapped (identity/name), front kept for revert.
+    assert delver.card_def.name == "Insectile Aberration"
+    assert delver.flags["front_card_def"].name == "Delver of Secrets"
     assert permanent_power(state, delver) == 3 and permanent_toughness(state, delver) == 2  # Insectile Aberration
     assert "flying" in creature_keywords(state, delver)
-    print("blue_cards.py Delver (upkeep reveal I/S -> transform 3/2 flyer) self-check: OK")
+    reveal = next(e for e in state.event_log if e["kind"] == "reveal")
+    assert reveal["card"] == "Bolt"  # the revealed top-of-library instant
+    xf = next(e for e in state.event_log if e["kind"] == "transform")
+    assert xf["permanent"] == ["Delver of Secrets", 0] and xf["to_card"] == "Insectile Aberration"
+    assert xf["power"] == 3 and xf["toughness"] == 2
+    # A DFC reverts to its FRONT face when it leaves the battlefield: dying puts
+    # "Delver of Secrets" in the graveyard (not the back face, and not ceased as a
+    # would-be token from the back name not being in CARD_DEFS).
+    delver.damage_marked = 2
+    check_state_based_actions(state)
+    assert delver not in state.players[0].battlefield
+    assert [c.name for c in state.players[0].graveyard] == ["Delver of Secrets"]
+    death = next(e for e in state.event_log if e["kind"] == "state_based_death")
+    assert death["permanent"] == ["Insectile Aberration", 0] and death["to_zone"] == "graveyard"
+    print("blue_cards.py Delver (reveal I/S -> transform 3/2 flyer -> dies as Delver) self-check: OK")
 
     # Non-instant/sorcery on top: look, but no transform choice ever opens.
     state = GameState(on_the_play=True)
@@ -1017,7 +1098,7 @@ if __name__ == "__main__":
     state, tt, zap = _cast_zap_at_tt(pay=False)
     pay_unless_decline(state)
     assert tt in state.players[0].battlefield  # not destroyed -- Zap was countered
-    assert state.stack == [] and zap in state.players[1].graveyard
+    assert state.stack == [] and any(c.name == zap.name for c in state.players[1].graveyard)
     print("blue_cards.py Ward {2} (decline -> spell countered) self-check: OK")
 
     # Pay {2} -> Zap survives, resolves, Tolarian Terror is destroyed.

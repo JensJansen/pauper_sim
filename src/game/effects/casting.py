@@ -15,7 +15,7 @@ game/registry.py's docstring."""
 
 from .. import registry
 from ..cards import CardType
-from ..state import Permanent
+from ..state import Permanent, CardInstance
 from .shared import discard_from_hand_to_graveyard
 from .stack import push_to_stack
 from .stats import can_be_targeted
@@ -60,7 +60,7 @@ def cast_targeting_creature(state, card_def, on_resolve, eligible=lambda p: True
                 return
             on_resolve(state, captured[1])
 
-        push_to_stack(state, card_def, _resolve)
+        push_to_stack(state, card_def, _resolve, targets=() if captured is None else (captured,))
 
     resolution.begin_choose_any_target(
         state,
@@ -101,6 +101,15 @@ def _log_target_fizzle(state, card_def, chosen_name_slot):
     print(f"[target fizzle] turn {state.turn_number}: {card_def.name} failed to resolve -- target was {where}, not on the battlefield anymore.")
 
 
+# FUTURE WORK (MTG 400.7 exceptions -- owner-flagged, not needed by the current
+# pool): a card that changes zones becomes a NEW object, and targeting here
+# captures the exact object, so a flickered/returned permanent or graveyard card
+# correctly makes an old target fizzle. The ONE thing not modeled is a LINKED
+# ability that deliberately TRACKS an object across a zone change (Adventure,
+# Foretell, "exile, then you may play THIS card") -- that returned object is
+# still new, but the linked ability references it. No pool card does this today;
+# add cross-zone object linkage here (and to game.state.move_card's minting) when
+# one arrives. See plans/object-identity-zone-model.md.
 def capture_any_target(state, target):
     """Cast/activation time: lock a resolution.begin_choose_any_target
     descriptor onto a concrete, identity-stable target to carry on the
@@ -214,7 +223,7 @@ def cast_aura(state, card_def, target_predicate, on_attached=None):
             if card_def in state.hand:
                 state.hand.remove(card_def)
             if not target_still_legal(state, captured):
-                state.graveyard.append(card_def)
+                state.move_card(card_def, state.graveyard)
                 state.log_event("zone_move", card=card_def.name, from_zone="hand", to_zone="graveyard", reason="fizzle")
                 where = (captured[1].card_def.name, captured[1].slot) if captured is not None else None
                 _log_target_fizzle(state, card_def, where)
@@ -228,7 +237,7 @@ def cast_aura(state, card_def, target_predicate, on_attached=None):
             if on_attached is not None:
                 on_attached(state, aura)
 
-        push_to_stack(state, card_def, _resolve)
+        push_to_stack(state, card_def, _resolve, targets=() if captured is None else (captured,))
 
     resolution.begin_choose_any_target(
         state,
@@ -253,6 +262,12 @@ def enters_battlefield(state, card_def, force_tapped=False, from_zone=None):
     when cast, but tapped specifically when its own "third card drawn"
     trigger returns it from the graveyard
     item 7). Every existing caller omits it, unaffected."""
+    # Accept a CardInstance/Permanent (a graveyard-return or flicker path passing
+    # the leaving object) or a raw CardDef: the permanent is always minted FRESH
+    # from the underlying CardDef (a NEW object, MTG 400.7), never wrapping an
+    # instance, so a stale target on the old object can't survive re-entry.
+    if isinstance(card_def, CardInstance):
+        card_def = card_def.card_def
     spec = registry.EFFECT_REGISTRY.get(card_def.effect_id, {})
     # enters_tapped may be a plain bool OR a callable(state) -> bool, for a
     # land whose tapped-ness depends on the board (Gingerbread Cabin: tapped
@@ -260,7 +275,7 @@ def enters_battlefield(state, card_def, force_tapped=False, from_zone=None):
     # is added to the battlefield below, so "other" counts exclude it.
     raw_tapped = spec.get("enters_tapped", False)
     tapped = force_tapped or (raw_tapped(state) if callable(raw_tapped) else raw_tapped)
-    permanent = Permanent(card_def, tapped=tapped)
+    permanent = state.new_permanent(card_def, tapped=tapped)  # fresh Permanent + per-game iid (new object, MTG 400.7)
     # Record how it entered so an ETB conditioned on entering untapped
     # (Gingerbread Cabin's Food) reads the entry state, not whatever the
     # permanent's tapped-ness has since become (it could be tapped for mana
@@ -428,7 +443,7 @@ if __name__ == "__main__":
         resolve_top_of_stack(state)
     assert "fizzle" in fizzle_log.getvalue().lower()
     assert state.hand == []
-    assert ethereal_armor in state.graveyard
+    assert any(c.name == ethereal_armor.name for c in state.graveyard)  # graveyard holds a fresh instance
     assert not any(p.card_def.name == "Ethereal Armor" for p in state.battlefield)
     assert stats.permanent_power(state, bogle) == 3  # unaffected -- the fizzled Aura was never targeting bogle
 

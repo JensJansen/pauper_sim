@@ -79,6 +79,31 @@ class Speed(enum.Enum):
 # degrades to "MAIN1 only" for free.
 SORCERY_SPEED_PHASES = {Phase.MAIN1, Phase.MAIN2}
 
+# Combat's three sub-phases form ONE mana window: mana floated in
+# declare-attackers is still there in declare-blockers/combat-damage.
+# AUTHORIZED SIMPLIFICATION (owner-approved): real Magic empties the pool
+# between each of these steps too (500.4); we don't, treating combat as a
+# single window. Every OTHER phase boundary still empties (see _run_turn_gen).
+_COMBAT_PHASES = {Phase.DECLARE_ATTACKERS, Phase.DECLARE_BLOCKERS, Phase.COMBAT_DAMAGE}
+
+
+def _empty_mana_pools(state):
+    """Rule 500.4: at the end of each step/phase, all unused mana empties --
+    for BOTH players (the non-active player can float mana to cast an instant
+    on your turn). Float-first makes the pool a persistent within-phase
+    resource, so this per-phase empty is what makes a mis-floated color a real,
+    faithful cost (the mana is gone, the source stays tapped) rather than an
+    undo. Replaces the old once-per-turn clear (untap_step) -- and, since it
+    now owns every mana clear, logs each non-empty emptying (keyed by player
+    index) so the event log stays a faithful record of when mana was lost."""
+    emptied = {}
+    for idx, player in enumerate(state.players):
+        if player.mana_pool:
+            emptied[idx] = dict(player.mana_pool)
+            player.mana_pool.clear()
+    if emptied:
+        state.log_event("mana_emptied", pools=emptied)
+
 
 def speed_legal(state, speed):
     """The one gate every timing-restricted legal_fn in drl_env calls
@@ -143,23 +168,25 @@ PHASE_ACTION_CAPS = {phase: 200 for phase in Phase}
 #
 # ponytail: dropped from 200 to 20 as a temporary stopgap while
 # investigating a suspected deterministic-eval stall (a tap-a-source ->
-# Abandon payment loop: abandoning fully reverses the tap/pool delta, so a
+# Abandon payment loop: abandoning fully reversed the tap/pool delta, so a
 # deterministic policy facing the identical resulting observation could
 # keep re-choosing the same doomed payment attempt, burning the old
-# 200-iteration budget almost silently every phase). 4 was tried first and
-# was too aggressive -- turn.py's own regression self-check failed casting
-# a single Lightning Bolt (tap + spend + both-players-pass-to-resolve
+# 200-iteration budget almost silently every phase). The float-first mana
+# rewrite removed "Abandon payment" entirely (paying a cost is now just an
+# irreversible pool spend -- nothing to undo, nothing to re-choose), which
+# structurally eliminates that specific suspected loop. 4 was tried first
+# and was too aggressive -- turn.py's own regression self-check failed
+# casting a single Lightning Bolt (tap + spend + both-players-pass-to-resolve
 # already costs 4 by itself). 20 leaves room for a couple of real casts
 # plus combat per phase while still bounding a runaway loop far below 200.
-# Revisit once the loop's actual root cause is confirmed: either raise this
-# back toward 200 once fixed properly, or replace it with a smarter "no
-# observable progress" detector instead of a blunt iteration count.
+# Revisit now that the suspected root cause is gone: raise this back toward
+# 200 (or replace it with a smarter "no observable progress" detector) once
+# a real training run confirms no other stall exists at the higher cap.
 PRIORITY_ROUND_ACTION_CAP = 20
 
 
 def untap_step(state):
     untapped = [(p.card_def.name, p.slot) for p in state.battlefield if p.tapped]
-    mana_cleared = dict(state.mana_pool)
     for permanent in state.battlefield:
         permanent.tapped = False
         permanent.summoning_sick = False
@@ -168,7 +195,9 @@ def untap_step(state):
         # the Dead): skip this permanent's untap ONCE, consuming the flag.
         if permanent.flags.pop("skip_next_untap", False):
             permanent.tapped = True
-    state.mana_pool.clear()  # floating mana doesn't carry across turns
+    # Floating mana no longer clears here: _empty_mana_pools now empties both
+    # pools at every phase boundary (including into this UNTAP step) and logs
+    # it. This step only handles untapping now.
     # The Initiative's "until your next turn" durations (Arena's Goad, Throne's
     # hexproof) expire at their owning player's turn start. Lazy import:
     # undercity pulls in casting/tokens, loaded after turn.py.
@@ -182,8 +211,8 @@ def untap_step(state):
     if expired:
         state.impulse = [(cd, u) for (cd, u) in state.impulse if state.turn_number <= u]
         state.log_event("impulse_expired", cards=[n for n, _u in expired])
-    if untapped or mana_cleared:
-        state.log_event("untap_step", untapped=untapped, mana_cleared=mana_cleared)
+    if untapped:
+        state.log_event("untap_step", untapped=untapped)
 
 
 def upkeep_step(state):
@@ -283,9 +312,8 @@ def _declare_blockers_gen(state):
     for tens of thousands of iterations, turn_number never advancing.
     Exhausting the cap force-completes with whatever's already been
     assigned (complete_resolution, same "can't finish, so the attempt ends
-    outright" precedent mana.abandon_pay_cost and the priority round's own
-    cap-exhaustion already use) rather than leaving declare_blockers open
-    forever."""
+    outright" precedent the priority round's own cap-exhaustion below
+    already uses) rather than leaving declare_blockers open forever."""
     if len(state.players) < 2:
         return
     attacker_idx = state.active_idx
@@ -311,8 +339,8 @@ def _declare_blockers_gen(state):
             # open). Abandon outright instead: keep whatever blocks are
             # already recorded in blocked_by, drop the in-progress one, end
             # blocking regardless of nesting depth. Same "can't finish, so
-            # the attempt ends" precedent abandon_pay_cost / the priority
-            # round's own cap-exhaustion already use.
+            # the attempt ends" precedent the priority round's own
+            # cap-exhaustion already uses.
             state.log_event("declare_blockers_cap_abandoned", pending_kind=state.pending_resolution["kind"])
             state.pending_resolution = None
     finally:
@@ -529,6 +557,12 @@ def _run_turn_gen(state, combat_enabled=False):
             from_phase = state.phase
             state.phase = phase
             state.log_event("phase_change", from_phase=from_phase.value if from_phase is not None else None)
+            # Rule 500.4: unused mana empties at every step/phase boundary (both
+            # players), EXCEPT between combat's own sub-phases (one mana window
+            # -- see _COMBAT_PHASES). This is the end-of-previous-phase empty,
+            # applied as the next phase begins.
+            if not (from_phase in _COMBAT_PHASES and phase in _COMBAT_PHASES):
+                _empty_mana_pools(state)
             auto_effect = _PHASE_AUTO_EFFECTS.get(phase)
             if auto_effect is not None:
                 auto_effect(state)
@@ -836,7 +870,7 @@ if __name__ == "__main__":
     def bolt_resolve(s, cd):
         if cd in s.hand:
             s.hand.remove(cd)
-        s.graveyard.append(cd)
+        s.move_card(cd, s.graveyard)
         deal_damage_to_opponent(s, 3)
 
     def _bolts_available(state):
@@ -874,21 +908,22 @@ if __name__ == "__main__":
         if state.pending_resolution is not None:
             # Only ever a pay_cost here now (paying Lightning Bolt's {R}) --
             # discard (above) is handled regardless of whose turn it is.
-            # Pool-only model: a tap only floats mana
-            # into the pool, so tap first if there's still an untapped
-            # Mountain, then spend the floated R from the pool.
-            tap_opts = mana.tap_cost_options(state)
-            if tap_opts:
-                name, color, is_filter = tap_opts[0]
-                return lambda: mana.execute_tap_cost_option(state, name, color, is_filter)
+            # Float-first: a tap floats mana into the pool via a top-level mana
+            # ability BEFORE the cast (below); during payment there is only pool
+            # mana to spend.
             color = mana.pool_spend_options(state)[0]
             return lambda: mana.execute_pool_spend(state, color)
         if state.lands_played_this_turn == 0 and any(c.name == "Mountain" for c in state.hand):
             return lambda: play_land_from_hand(state, registry.CARD_DEFS["Mountain"])
-        if _bolts_available(state) > 0 and mana.plan_payment(state, bolt_def.cast_cost) is not None:
-            def _cast_bolt():
-                mana.begin_pay_cost(state, bolt_def.cast_cost, on_complete=lambda s: push_to_stack(s, bolt_def, bolt_resolve))
-            return _cast_bolt
+        if _bolts_available(state) > 0:
+            if mana.plan_payment(state, bolt_def.cast_cost) is not None:
+                def _cast_bolt():
+                    mana.begin_pay_cost(state, bolt_def.cast_cost, on_complete=lambda s: push_to_stack(s, bolt_def, bolt_resolve))
+                return _cast_bolt
+            # Can't pay yet -- float {R} from an untapped Mountain first (float-first).
+            mtn = next((p for p in state.battlefield if p.card_def.name == "Mountain" and not p.tapped), None)
+            if mtn is not None:
+                return lambda: mana.activate_mana_source(state, mtn)
         return None  # Pass -- resolves the stack if non-empty, else advances the phase
 
     state = run_multiplayer_game(

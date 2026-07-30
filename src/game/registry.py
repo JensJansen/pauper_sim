@@ -39,18 +39,7 @@ EFFECT_REGISTRY = {
     **multicolor_cards.MULTICOLOR_EFFECT_REGISTRY,
 }
 
-# Derived views: kept as module-level names for backward compatibility with
-# every existing caller (game.mana, rl.rewards's resource_quality_components).
-SIMPLE_MANA_SOURCE_EFFECTS = {
-    effect_id for effect_id, spec in EFFECT_REGISTRY.items() if spec.get("mana") is not None
-}
-# _FIXED_SOURCE_COLOR used to live here (a single-symbol-per-effect_id
-# approximation mana.choose_taps_for_cost's legality solver consulted for
-# "fixed"/"count" sources). Deleted's
-# solver rewrite calls mana_output(p, state) directly instead, which
-# handles any real output (including a multi-symbol "fixed_multi" tap or
-# count's genuinely variable total) correctly, so the approximation (and
-# its documented undercount) has no remaining reader.
+# Derived views: kept as module-level names for the callers that consult them.
 _FLEXIBLE_SOURCE_CHOICES = {
     effect_id: spec["mana"][1]
     for effect_id, spec in EFFECT_REGISTRY.items()

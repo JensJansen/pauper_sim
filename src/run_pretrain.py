@@ -75,7 +75,9 @@ def main():
         opt_shared.load_state_dict(ckpt["opt_shared"])
         for name in deck_names:
             nets[name].load_state_dict(ckpt["nets"][name])
-            head_opts[name].load_state_dict(ckpt["head_opts"][name])
+        if "head_opts" in ckpt:  # a migrated checkpoint drops per-deck head optimizers -> fresh Adam re-warms
+            for name in deck_names:
+                head_opts[name].load_state_dict(ckpt["head_opts"][name])
         session = ckpt["session"] + 1
         print(f"resumed from {CHECKPOINT} (session {session}, vocab {ckpt['vocab_size']}=={vocab.size})")
 

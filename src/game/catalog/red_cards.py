@@ -8,7 +8,8 @@ cast_breath_weapon is a symmetric "2 damage to each creature" wipe."""
 from .. import resolution
 from ..cards import CardDef, CardType, EffectId
 from ..effects.casting import (
-    _log_target_fizzle, capture_any_target, cast_permanent_from_hand, enters_battlefield, target_still_legal,
+    _log_target_fizzle, capture_any_target, cast_permanent_from_hand, enters_battlefield,
+    target_still_legal,
 )
 from ..effects.madness_and_plot import plot_to_exile
 from ..effects.shared import card_subtypes, discard_from_hand_to_graveyard, find_and_remove_by_name, impulse_exile, is_artifact
@@ -169,7 +170,7 @@ def activate_reckless_lackey_sac(state, permanent):
     wiring; sacrifice (a real card -> graveyard) is a cost paid now, and the
     draw + Treasure are the effect (on the stack, after a priority window)."""
     state.battlefield.remove(permanent)
-    state.graveyard.append(permanent.card_def)
+    state.move_card(permanent.card_def, state.graveyard)
     state.log_event(
         "zone_move", permanent=(permanent.card_def.name, permanent.slot), from_zone="battlefield",
         to_zone="graveyard", reason="sacrifice",
@@ -266,7 +267,7 @@ def cast_cleansing_wildfire(state, card_def):
             state.active_idx = controller  # the land's controller searches THEIR own library
             resolution.begin_search_fetch(state, _is_basic_land, _after_search, optional=True)  # "MAY search"
 
-        push_to_stack(state, card_def, _resolve)
+        push_to_stack(state, card_def, _resolve, targets=() if captured is None else (captured,))
 
     resolution.begin_choose_any_target(
         state,
@@ -328,7 +329,8 @@ def _burn_choose_target_and_push(state, card_def, amount, to_graveyard, reserves
             to_graveyard(state, card_def)
             _resolve_burn_damage(state, captured, amount, card_def)
 
-        push_to_stack(state, card_def, _resolve, reserves_hand_card=reserves_hand_card, is_spell=is_spell, exiles_on_resolve=exiles_on_resolve)
+        push_to_stack(state, card_def, _resolve, reserves_hand_card=reserves_hand_card, is_spell=is_spell,
+                      exiles_on_resolve=exiles_on_resolve, targets=() if captured is None else (captured,))
 
     # "any target" creature candidates exclude what the caster can't legally
     # target: shroud (anyone) and opponent-controlled hexproof (can_be_targeted).
@@ -361,7 +363,7 @@ def madness_fiery_temper(state, card_def):
     rather than pushing it) the card is already out of exile -- it appends
     itself to the graveyard on resolution, never touches hand. Target is
     locked here as the spell is put on the stack, same as a hard cast."""
-    _burn_choose_target_and_push(state, card_def, 3, lambda s, c: s.graveyard.append(c), reserves_hand_card=False)
+    _burn_choose_target_and_push(state, card_def, 3, lambda s, c: s.move_card(c, s.graveyard), reserves_hand_card=False)
 
 
 def _chain_lightning_resolve_tail(state, captured, card_def):
@@ -427,6 +429,7 @@ def _chain_lightning_make_copy(state, card_def, copier_idx, restore_idx):
         push_to_stack(
             state, card_def, lambda s, cd: _chain_lightning_resolve_tail(s, captured, cd),
             reserves_hand_card=False,  # a copy, not the physical card
+            targets=() if captured is None else (captured,),
         )
         state.active_idx = restore_idx  # copy pushed with copier as controller; restore
 
@@ -449,7 +452,7 @@ def cast_chain_lightning(state, card_def):
             discard_from_hand_to_graveyard(state, card_def)  # itself -> graveyard first
             _chain_lightning_resolve_tail(state, captured, card_def)
 
-        push_to_stack(state, card_def, _resolve)
+        push_to_stack(state, card_def, _resolve, targets=() if captured is None else (captured,))
 
     resolution.begin_choose_any_target(
         state,
@@ -471,13 +474,16 @@ def cast_faithless_looting(state, card_def):
     faithless_looting_discard(state)
 
 
-def flashback_faithless_looting(state, card_def):
+def flashback_faithless_looting(state, inst):
     """No alternate cost of its own (unlike Dread Return/Lava Dart's
     sacrifice) -- so, same as Land Grant's free alt_cast, the effect is
     already "fully paid for" the instant Flashback is chosen and pushes
-    onto the stack immediately, not gated behind any further resolution."""
-    state.graveyard.remove(card_def)  # leaves the graveyard the moment Flashback is chosen; exiled on resolution (702.34)
-    push_to_stack(state, card_def, lambda st, cd: faithless_looting_discard(st), reserves_hand_card=False, exiles_on_resolve=True)
+    onto the stack immediately, not gated behind any further resolution.
+
+    inst: the exact graveyard CardInstance being flashed back -- see
+    black_cards.flashback_dread_return."""
+    state.graveyard.remove(inst)  # leaves the graveyard the moment Flashback is chosen; exiled on resolution (702.34)
+    push_to_stack(state, inst, lambda st, cd: faithless_looting_discard(st), reserves_hand_card=False, exiles_on_resolve=True)
 
 
 def _highway_robbery_effect(state):
@@ -505,7 +511,7 @@ def cast_highway_robbery_from_exile(state, card_def):
     """Plot's cast-from-exile resolve. By the time this runs, the card
     already left exile, never hand -- unlike cast_highway_robbery above,
     this never touches state.hand."""
-    state.graveyard.append(card_def)
+    state.move_card(card_def, state.graveyard)
     _highway_robbery_effect(state)
 
 
@@ -556,7 +562,7 @@ def activate_melded_moxite_sac(state, permanent):
     the graveyard (real Magic 701.17 -- unlike Blood/Eldrazi Spawn tokens,
     which cease to exist), same as Candy Trail's own sac ability."""
     state.battlefield.remove(permanent)
-    state.graveyard.append(permanent.card_def)
+    state.move_card(permanent.card_def, state.graveyard)
     state.log_event(
         "zone_move", permanent=(permanent.card_def.name, permanent.slot), from_zone="battlefield",
         to_zone="graveyard", reason="sacrifice",
@@ -600,16 +606,19 @@ def cast_lava_dart(state, card_def):
     _cast_burn_any_target(state, card_def, 1)
 
 
-def flashback_lava_dart(state, card_def):
+def flashback_lava_dart(state, inst):
     """Flashback -- Sacrifice a Mountain: no mana component at all. Same "1
     damage to any target"; once the sacrifice is paid, the target is chosen
     and the effect pushed onto the stack. The card leaves the graveyard when
     Flashback is chosen and is EXILED as it resolves (exiles_on_resolve) --
-    tracked in the exile zone, not the graveyard (702.34)."""
-    state.graveyard.remove(card_def)  # leaves the graveyard the moment Flashback is chosen; exiled on resolution
+    tracked in the exile zone, not the graveyard (702.34).
+
+    inst: the exact graveyard CardInstance being flashed back -- see
+    black_cards.flashback_dread_return."""
+    state.graveyard.remove(inst)  # leaves the graveyard the moment Flashback is chosen; exiled on resolution
     resolution.begin_sacrifice(
         state, lambda p: p.card_def.name == "Mountain", 1,
-        on_complete=lambda s, ok: _burn_choose_target_and_push(s, card_def, 1, lambda st, cd: None, reserves_hand_card=False, exiles_on_resolve=True),
+        on_complete=lambda s, ok: _burn_choose_target_and_push(s, inst, 1, lambda st, cd: None, reserves_hand_card=False, exiles_on_resolve=True),
     )
 
 
@@ -866,7 +875,7 @@ if __name__ == "__main__":
     state.players[1].battlefield = [theirs_dies]
 
     cast_breath_weapon(state, breath_weapon)
-    assert state.hand == [] and breath_weapon in state.graveyard
+    assert state.hand == [] and any(c.name == breath_weapon.name for c in state.graveyard)
     assert mine_dies not in state.players[0].battlefield  # 2 damage >= 2 toughness -- this deck's own creature dies too
     assert mine_survives in state.players[0].battlefield and mine_survives.damage_marked == 2
     assert theirs_dies not in state.players[1].battlefield
@@ -950,7 +959,7 @@ if __name__ == "__main__":
     _res.execute_choose_any_target_creature(state, 1, "Grizzly Bears", 1)  # lock the opponent's creature
     assert state.hand == []  # left hand at cast, paid-but-unresolved on the stack
     resolve_top_of_stack(state)
-    assert opp_creature.damage_marked == 3 and bolt in state.graveyard
+    assert opp_creature.damage_marked == 3 and any(c.name == bolt.name for c in state.graveyard)
 
     # (b) opponent player -> 3 to the face (20 -> 17)
     state = _fresh_bolt_state()
@@ -978,7 +987,7 @@ if __name__ == "__main__":
     with contextlib.redirect_stdout(fizzle_log):
         resolve_top_of_stack(state)
     assert "fizzle" in fizzle_log.getvalue().lower()
-    assert bolt in state.graveyard and state.players[1].life_total == 20  # nothing happened
+    assert any(c.name == bolt.name for c in state.graveyard) and state.players[1].life_total == 20  # nothing happened
 
     # (e) hexproof: an OPPONENT'S hexproof creature is NOT a legal Bolt
     # target, but the caster's OWN hexproof creature still is (boggles' whole
@@ -1023,7 +1032,7 @@ if __name__ == "__main__":
     _res.execute_choose_any_target_player(state, 1)  # caster targets the opponent
     assert chain not in state.players[0].hand  # left hand at cast, now on the stack
     resolve_top_of_stack(state)
-    assert state.players[1].life_total == 17 and chain in state.players[0].graveyard  # 3 to opp, itself to gy
+    assert state.players[1].life_total == 17 and any(c.name == chain.name for c in state.players[0].graveyard)  # 3 to opp, itself to gy
     # rider FIRST "may": the affected player (opp, idx 1) may pay {R}{R}
     assert state.pending_resolution["kind"] == "pay_unless" and state.active_idx == 1
     _res.pay_unless_pay(state)
@@ -1182,7 +1191,7 @@ if __name__ == "__main__":
     state.library = [CardDef("Top", CardType.LAND, None, EffectId.MOUNTAIN)]
     assert has_keyword(state, lackey, "first_strike") and has_keyword(state, lackey, "haste")
     activate_reckless_lackey_sac(state, lackey)
-    assert lackey not in state.battlefield and registry.CARD_DEFS["Reckless Lackey"] in state.graveyard
+    assert lackey not in state.battlefield and any(c.name == "Reckless Lackey" for c in state.graveyard)
     resolve_top_of_stack(state)
     assert len(state.hand) == 1 and any(p.card_def.name == "Treasure" for p in state.battlefield)
     print("red_cards.py Reckless Lackey (sac -> draw + Treasure) self-check: OK")

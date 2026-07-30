@@ -71,25 +71,31 @@ def execute_choose_permanent_option(state, name, slot):
 
 
 def begin_choose_graveyard_card(state, predicate, on_complete, graveyard=None, optional=False):
-    """Pick ONE card from a graveyard by name, among those matching
-    predicate -- Dread Return's reanimation target originally
-    (game.catalog.black_cards), promoted here once Relic of Progenitus'
-    own repeatable exile ability needed the identical primitive too (see
-    this module's own docstring: a deck-specific kind moves here the
-    moment something ELSE reuses it). Same fungible-by-name simplification,
-    same empty-options safety net as begin_search_fetch/begin_choose_
-    permanent.
+    """Pick ONE card from a graveyard, among those matching predicate --
+    Dread Return's reanimation target originally (game.catalog.black_cards),
+    promoted here once Relic of Progenitus' own repeatable exile ability
+    needed the identical primitive too (see this module's own docstring: a
+    deck-specific kind moves here the moment something ELSE reuses it).
+
+    The pick is BY OBJECT IDENTITY: on_complete receives the exact chosen
+    object (a CardInstance for a real graveyard -- so two same-named copies are
+    distinct and individually reachable; a CardDef for the DEFERRED
+    Mesmeric-Fiend hand-reveal path, where interned same-named copies are still
+    indistinguishable until hand instances land). Same empty-options safety net
+    as begin_search_fetch/begin_choose_permanent.
 
     graveyard=None defaults to state.graveyard (the active player's own,
     via the active-idx proxy) -- Dread Return's reanimation target is
     always its own controller's graveyard, never anyone else's. Pass an
     explicit graveyard list to target a DIFFERENT player's graveyard
-    instead -- Relic of Progenitus' own ability can target either player,
-    real "choose which card" ability text notwithstanding: the target's
-    own choice is simplified to the ACTIVATING player's, same "no
-    observable difference in this solitaire sim, nothing depends on WHO
-    picks" reasoning already applied elsewhere (Grab the Prize's own
-    discard timing).
+    instead -- Relic of Progenitus' own ability can target either player.
+    The card is picked by whoever is the current active player: when the
+    RULES say the TARGET player chooses (Relic targeting the opponent), the
+    caller flips active_idx to that player first and restores it after (see
+    activate_relic_of_progenitus_exile), so the correct player -- and, in
+    training, their own net -- makes the choice. (Where the CASTER is the one
+    who chooses, e.g. Mesmeric Fiend picking from a revealed hand, no flip is
+    needed.)
 
     optional=True is a "you may exile a card from your graveyard" choice
     (Masked Vandal's ETB): the model may decline outright even when legal
@@ -106,12 +112,21 @@ def begin_choose_graveyard_card(state, predicate, on_complete, graveyard=None, o
 
 
 def choose_graveyard_card_options(state):
+    """The matching graveyard cards themselves (objects), NOT names -- so two
+    same-named copies are DISTINCT choices (a real graveyard holds CardInstances;
+    the deferred Mesmeric-Fiend hand-reveal path holds CardDefs). No dedup, no
+    sort: rl.action_bridge masks/executes by object identity (the token carries
+    the same object), not by name."""
     pending = state.pending_resolution
-    return sorted({c.name for c in pending["graveyard"] if pending["predicate"](c)})
+    return [c for c in pending["graveyard"] if pending["predicate"](c)]
 
 
-def execute_choose_graveyard_card_option(state, name):
-    complete_resolution(state, name)
+def execute_choose_graveyard_card_option(state, card):
+    """`card` is the exact chosen object (a CardInstance from a graveyard, or a
+    CardDef from the deferred hand-reveal path) -- the on_complete consumer acts
+    on that exact object, so a specific copy among same-named duplicates is
+    reachable."""
+    complete_resolution(state, card)
 
 
 def execute_choose_graveyard_card_decline(state):
@@ -120,6 +135,129 @@ def execute_choose_graveyard_card_decline(state):
     nothing. Only ever offered by the environment while the pending was begun
     optional=True, same convention as execute_search_fetch_decline."""
     complete_resolution(state, None)
+
+
+def begin_choose_cast_copy(state, name, on_complete):
+    """WHICH physical copy of `name` in your own graveyard is being cast (or
+    having its graveyard ability activated) -- Flashback/Escape/graveyard-ability.
+
+    Real Magic 601.2a: the object being cast is chosen when the spell is
+    ANNOUNCED, before costs are paid, and with two same-named cards in a
+    graveyard that is a real choice the PLAYER makes. It is only observable when
+    something else references one specific copy -- but then it matters a great
+    deal: a Rooftop Percher trigger on the stack targets copy A by object
+    identity, and casting copy A in response removes it, making Percher's target
+    illegal so that target fizzles (608.2b/c), while casting copy B leaves A to
+    be exiled. Both are legal lines; the agent has to be able to aim.
+
+    MANDATORY -- no decline (the caster already committed to casting by taking
+    the flashback/activate action, whose own legality already required a
+    same-named card here). That is why this is a distinct kind rather than a
+    reuse of choose_graveyard_card, whose optional-decline machinery would be
+    permanently-illegal noise; it also keeps this a POINTER-only pending that
+    adds ZERO fixed action rows (see rl.action_bridge), so no deck's action-space
+    width changes.
+
+    Always the caster's OWN graveyard (state.graveyard, active-idx proxied) --
+    no card in this pool casts from an opponent's graveyard. on_complete receives
+    the exact chosen CardInstance. Callers only open this when 2+ copies exist;
+    with one copy there is no choice to make (drl_env._actions._graveyard_instance
+    resolves it directly)."""
+    begin_resolution(state, "choose_cast_copy", on_complete, name=name)
+
+
+def choose_cast_copy_options(state):
+    """The matching graveyard INSTANCES themselves (objects), not names -- the
+    whole point is telling same-named copies apart. No dedup, no sort:
+    rl.action_bridge masks/executes by object identity, and the observation
+    token for each instance carries that same object (plus, since this session's
+    stack-targeting work, a targeted_by_mine/targeted_by_theirs bit -- which is
+    what makes "cast the copy they're pointing at" a LEARNABLE choice rather
+    than an invisible coin flip)."""
+    pending = state.pending_resolution
+    return [c for c in state.graveyard if c.name == pending["name"]]
+
+
+def execute_choose_cast_copy_option(state, card):
+    """`card` is the exact chosen graveyard CardInstance -- the on_complete
+    consumer (a flashback/escape/graveyard-ability execute closure) proceeds to
+    pay costs and resolve using that exact object."""
+    complete_resolution(state, card)
+
+
+def begin_choose_up_to_graveyard(state, predicate, max_targets, on_complete, graveyard=None):
+    """Choose UP TO max_targets DISTINCT cards from a graveyard (default the
+    active player's; pass a combined list for "from graveyardS"), one at a time.
+    Each pick excludes those already chosen BY OBJECT IDENTITY -- so two
+    same-named copies are both reachable -- and is optional: declining ends the
+    selection early (the "up to" slack), as does running out of eligible cards.
+    Runs on_complete(state, chosen_instances) with the 0..max_targets chosen
+    instances (a LIST). The N-ary multi-target primitive behind "exile up to N
+    target cards from graveyard(s)" (Rooftop Percher); pairs with a resolution
+    that acts on still-legal captured instances and fully fizzles only if all
+    are gone (608.2c). See project_targeted_triggered_abilities."""
+    gy = state.graveyard if graveyard is None else graveyard
+    chosen = []
+
+    def _step():
+        if len(chosen) >= max_targets:
+            on_complete(state, chosen)
+            return
+
+        def _picked(state, card):
+            if card is None:  # declined, or no eligible card left -> stop early
+                on_complete(state, chosen)
+                return
+            chosen.append(card)
+            _step()
+
+        begin_choose_graveyard_card(
+            state, lambda c: predicate(c) and c not in chosen, _picked, graveyard=gy, optional=True,
+        )
+
+    _step()
+
+
+def begin_choose_up_to_any_target(state, predicate, max_targets, on_complete, allow_players=False):
+    """Choose UP TO max_targets DISTINCT any-targets (a creature on EITHER
+    battlefield, optionally a player), one at a time -- the BOARD analog of
+    begin_choose_up_to_graveyard, for "up to N target creatures/permanents".
+    Each pick excludes those already chosen by its (side, name, slot) -- slot
+    distinguishes same-named copies, so two distinct same-named creatures are
+    both reachable -- and is optional (declining ends the selection early).
+
+    Runs on_complete(state, descriptors) with the 0..max_targets chosen target
+    descriptors -- ("creature", side, name, slot) or ("player", idx). The caller
+    captures each (casting.capture_any_target) as the ability is put on the
+    stack, then at resolution acts on the still-legal captured targets, fully
+    fizzling only if ALL are illegal (608.2c). Player targets aren't de-duped
+    (no pool card needs up-to-N with repeatable player targets); add it if one
+    arrives. See project_targeted_triggered_abilities."""
+    chosen = []
+
+    def _already(p):
+        side = next(i for i, pl in enumerate(state.players) if p in pl.battlefield)
+        key = (side, p.card_def.name, p.slot)
+        return any(d is not None and d[0] == "creature" and (d[1], d[2], d[3]) == key for d in chosen)
+
+    def _step():
+        if len(chosen) >= max_targets:
+            on_complete(state, chosen)
+            return
+
+        def _picked(state, descriptor):
+            if descriptor is None:  # declined -> stop early (the "up to" slack)
+                on_complete(state, chosen)
+                return
+            chosen.append(descriptor)
+            _step()
+
+        begin_choose_any_target(
+            state, lambda p: predicate(p) and not _already(p), _picked,
+            allow_players=allow_players, optional=True,
+        )
+
+    _step()
 
 
 def begin_choose_target_player(state, on_complete):
@@ -425,10 +563,9 @@ def begin_exile_n_from_graveyard(state, n, on_complete, predicate=None):
             on_complete(state)
             return
 
-        def _chosen(state, name):
-            found = next(c for c in state.graveyard if c.name == name)
-            state.graveyard.remove(found)  # exiled, untracked
-            state.log_event("zone_move", card=found.name, from_zone="graveyard", to_zone="exile_untracked", reason="exile_cost")
+        def _chosen(state, chosen):
+            state.graveyard.remove(chosen)  # the exact chosen instance; exiled, untracked
+            state.log_event("zone_move", card=chosen.name, from_zone="graveyard", to_zone="exile_untracked", reason="exile_cost")
             _step(remaining - 1)
 
         begin_choose_graveyard_card(state, pred, _chosen)
@@ -466,19 +603,42 @@ def execute_tuck_position(state, position):
     on_complete(state)
 
 
-def begin_may_transform(state, permanent):
+def begin_may_transform(state, permanent, revealed_card=None):
     """A "you may transform this creature" choice (Delver of Secrets, once an
     instant/sorcery is revealed). Two drl_env actions -- "Transform" /
-    "Don't transform" -- back it; execute_may_transform applies or skips."""
-    begin_resolution(state, "may_transform", lambda s: None, permanent=permanent)
+    "Don't transform" -- back it; execute_may_transform applies or skips.
+    revealed_card: the name of the top-of-library card the trigger looked at
+    (the instant/sorcery that enables the transform) -- logged as the reveal
+    iff the player actually reveals it, i.e. transforms (Delver's "may reveal"
+    and "if revealed, transform" collapse to one choice in this engine)."""
+    begin_resolution(state, "may_transform", lambda s: None, permanent=permanent, revealed_card=revealed_card)
 
 
 def execute_may_transform(state, do_transform):
     pending = state.pending_resolution
     permanent = pending["permanent"]
     if do_transform:
+        # Revealing the top card is what enables (and, for an I/S, forces) the
+        # transform -- so a transform IS a reveal. Log it before the flip.
+        revealed = pending.get("revealed_card")
+        if revealed is not None:
+            state.log_event("reveal", card=revealed, source=(permanent.card_def.name, permanent.slot),
+                            from_zone="library", reason="delver")
+        # Flip to the back face: set the marker flag (effects.stats reads it for the
+        # 3/2-flying stats) AND swap the Permanent's own card_def to the back face, so
+        # the game state's identity -- name, every log event, RL perception -- becomes
+        # Insectile Aberration, not Delver. front_card_def is kept so the permanent
+        # reverts to its front face if it later leaves the battlefield (a DFC is only
+        # its back face while on the battlefield).
+        spec = registry.EFFECT_REGISTRY.get(permanent.card_def.effect_id, {}).get("transform", {})
+        from_name = permanent.card_def.name
         permanent.flags["transformed"] = True
-        state.log_event("transform", permanent=(permanent.card_def.name, permanent.slot))
+        back = spec.get("card_def")
+        if back is not None:
+            permanent.flags["front_card_def"] = permanent.card_def
+            permanent.card_def = back
+        state.log_event("transform", permanent=(from_name, permanent.slot), to_card=permanent.card_def.name,
+                        power=spec.get("power"), toughness=spec.get("toughness"))
     complete_resolution(state)
 
 
@@ -492,6 +652,18 @@ def begin_may_copy(state, on_complete):
 
 def execute_may_copy(state, do_copy):
     complete_resolution(state, do_copy)
+
+
+def begin_may_cast(state, on_complete):
+    """A "you may cast this card [without paying its mana cost]" choice --
+    Cascade's own may-cast of the hit card (Maelstrom Colossus). Two drl_env
+    actions -- "Cast (may)" / "Decline (may)" -- back it. It is the caster's
+    own decision (no active_idx flip). on_complete(state, do_cast: bool)."""
+    begin_resolution(state, "may_cast", on_complete)
+
+
+def execute_may_cast(state, do_cast):
+    complete_resolution(state, do_cast)
 
 
 def begin_choose_room(state, options, on_complete):
@@ -681,7 +853,8 @@ def _finish_scry_surveil(state):
         state.rng.shuffle(disposed)
         state.library.extend(disposed)
     else:  # surveil
-        state.graveyard.extend(disposed)
+        for c in disposed:
+            state.move_card(c, state.graveyard)
     state.log_event(
         "zone_move", reason=pending["kind"], kept_to_library_top=[c.name for c in kept_final],
         disposed_to=disposed_to, disposed=[c.name for c in disposed],
@@ -895,7 +1068,7 @@ def _discard_one(state, card):
         state.trigger_queue.append({"type": "decision", "kind": "madness", "card_def": card})
         state.log_event("zone_move", card=card.name, from_zone="hand", to_zone="exile", reason="discard_madness")
     else:
-        state.graveyard.append(card)
+        state.move_card(card, state.graveyard)
         state.log_event("zone_move", card=card.name, from_zone="hand", to_zone="graveyard", reason="discard")
 
 
@@ -942,7 +1115,7 @@ def execute_discard_or_sacrifice_option(state, mode, name):
     else:
         permanent = next(p for p in state.battlefield if p.card_def.name == name)
         state.battlefield.remove(permanent)
-        state.graveyard.append(permanent.card_def)
+        state.move_card(permanent.card_def, state.graveyard)
         state.log_event(
             "zone_move", permanent=(permanent.card_def.name, permanent.slot), from_zone="battlefield",
             to_zone="graveyard", reason="sacrifice",
@@ -1066,7 +1239,7 @@ def execute_madness_decline(state):
     pending = state.pending_resolution
     card_def = pending["card_def"]
     _remove_one_from_exile(state, card_def)
-    state.graveyard.append(card_def)
+    state.move_card(card_def, state.graveyard)
     state.log_event("zone_move", card=card_def.name, from_zone="exile", to_zone="graveyard", reason="madness_decline")
     complete_resolution(state)
 
@@ -1079,27 +1252,33 @@ def execute_madness_decline(state):
 def begin_order_triggers(state, entries, on_complete):
     """2+ of the active player's own
     triggers are ready to move onto the stack at once (e.g. Faithless
-    Looting's discard-2 hitting two Madness cards in the same discard, or
-    two Sneaky Snackers both crossing their own draw-count trigger on the
-    same draw) -- real Magic lets that player choose the PLACEMENT order
-    (603.3b: APNAP among different players, but this engine only ever
-    queues triggers for the active player -- see game.effects.triggers.
-    promote_triggers_to_stack's own docstring for why that's sufficient
-    given the current card pool), not a fixed queue order.
+    Looting's discard-2 hitting two Madness cards in the same discard, two
+    Sneaky Snackers both crossing their own draw-count trigger on the same
+    draw, or two targeting ETBs entering simultaneously) -- real Magic lets
+    that player choose the PLACEMENT order (603.3b: APNAP among different
+    players, but this engine only ever queues triggers for the active
+    player -- see game.effects.triggers.promote_triggers_to_stack's own
+    docstring for why that's sufficient given the current card pool), not a
+    fixed queue order.
 
-    entries: list of {"card_def", "resolve"} dicts, already stack-ready
-    (built by game.effects.triggers.promote_triggers_to_stack, which is
+    entries: list of {"card_def", "resolve"} dicts (plain triggers, already
+    stack-ready) or {"card_def", "permanent", "targeting": True} dicts
+    (target-at-promotion ETBs -- placing one runs its OWN etb_trigger hook
+    instead, see execute_order_triggers_option's targeting branch) -- built
+    by game.effects.triggers.promote_triggers_to_stack, which is
     also what turns each queued trigger's own (type, kind) into the right
     resolve function -- this module only ever deals in the stack's own
     generic shape, never trigger-specific semantics, same reverse-import
     reason execute_madness_cast's own cost-payment lives in
     game/effects/madness_and_plot.py instead of here).
 
-    Picks one at a time; each pick is pushed onto state.stack immediately
+    Picks one at a time; each pick is placed immediately
     (execute_order_triggers_option below), not deferred to the end --
-    PLACEMENT order, not resolution order. Since the stack is LIFO,
-    whichever entry is placed LAST resolves FIRST. on_complete(state) once
-    every entry has been placed."""
+    PLACEMENT order, not resolution order. Since the stack is LIFO, whichever
+    PLAIN entry is placed LAST resolves FIRST (a targeting entry's own effect
+    goes on the stack at ITS placement moment too, once it locks targets,
+    following that same LIFO rule). on_complete(state) once every entry has
+    been placed."""
     begin_resolution(state, "order_triggers", on_complete, remaining=list(entries))
 
 
@@ -1111,22 +1290,31 @@ def execute_order_triggers_option(state, name):
     pending = state.pending_resolution
     idx = next(i for i, e in enumerate(pending["remaining"]) if e["card_def"].name == name)
     entry = pending["remaining"].pop(idx)
-    # Same controller field push_to_stack itself stamps on every entry
-    # -- state.active_idx here is still the
-    # trigger owner (nothing else can interleave mid-resolution), so this
-    # is the correct moment to record it, same reasoning push_to_stack's
-    # own docstring gives.
-    entry["controller"] = state.active_idx
-    # Every entry reaching here originates from triggers.promote_triggers_
-    # to_stack (begin_order_triggers's own docstring: queued triggers only,
-    # never a real cast) -- same "never reserves a hand card" reasoning
-    # push_to_stack(..., reserves_hand_card=False) applies for the
-    # single-trigger branch right above this function's own caller.
-    entry["reserves_hand_card"] = False
-    entry["is_spell"] = False  # a triggered ability, not a spell -- never a Counterspell target
-    state.stack.append(entry)  # already the stack's own native {"card_def", "resolve"} shape
-    # A triggered ability going on the stack moves no card (is_spell=False), so
-    # emit no card zone_move -- same reasoning as push_to_stack / resolve_top_of_stack.
+    if entry.get("targeting"):
+        # Target-at-promotion (game.effects.triggers.promote_triggers_to_
+        # stack's own docstring): placing this entry means running its OWN
+        # etb_trigger hook NOW -- it opens target selection and pushes its
+        # own stack entry once targets are locked, rather than this function
+        # pushing a plain resolve directly. Same two-way branch
+        # promote_triggers_to_stack's own single-entry fast path uses.
+        registry.EFFECT_REGISTRY[entry["card_def"].effect_id]["etb_trigger"](state, entry["permanent"])
+    else:
+        # Same controller field push_to_stack itself stamps on every entry
+        # -- state.active_idx here is still the
+        # trigger owner (nothing else can interleave mid-resolution), so this
+        # is the correct moment to record it, same reasoning push_to_stack's
+        # own docstring gives.
+        entry["controller"] = state.active_idx
+        # Every entry reaching here originates from triggers.promote_triggers_
+        # to_stack (begin_order_triggers's own docstring: queued triggers only,
+        # never a real cast) -- same "never reserves a hand card" reasoning
+        # push_to_stack(..., reserves_hand_card=False) applies for the
+        # single-trigger branch right above this function's own caller.
+        entry["reserves_hand_card"] = False
+        entry["is_spell"] = False  # a triggered ability, not a spell -- never a Counterspell target
+        state.stack.append(entry)  # already the stack's own native {"card_def", "resolve"} shape
+        # A triggered ability going on the stack moves no card (is_spell=False), so
+        # emit no card zone_move -- same reasoning as push_to_stack / resolve_top_of_stack.
     if not pending["remaining"]:
         complete_resolution(state)
 
@@ -1167,7 +1355,10 @@ def execute_sacrifice_option(state, name):
     predicate = pending["predicate"]
     permanent = next(p for p in state.battlefield if p.card_def.name == name and predicate(p))
     state.battlefield.remove(permanent)
-    state.graveyard.append(permanent.card_def)
+    # 400.7 linked-ability tracking: see state_based._destroy_creature's own
+    # comment -- stash the fresh graveyard instance so an ltb_trigger needing
+    # the EXACT card that left (Lembas) can reference it, not bridge by name.
+    permanent.flags["graveyard_instance"] = state.move_card(permanent.card_def, state.graveyard)
     state.log_event(
         "zone_move", permanent=(permanent.card_def.name, permanent.slot), from_zone="battlefield",
         to_zone="graveyard", reason="sacrifice",
@@ -1601,3 +1792,51 @@ if __name__ == "__main__":
     execute_scry_surveil_option(state, "dispose")
     assert [c.name for c in state.graveyard] == ["A Spell"]
     print("handlers.py explore self-check: OK")
+
+    # begin_choose_up_to_graveyard / begin_choose_up_to_any_target: N-ary "up to
+    # X" multi-target selection with BY-IDENTITY exclusion (two same-named copies
+    # both reachable) and optional decline (the "up to" slack).
+    from ..state import PlayerState as _PS2, Permanent as _Perm2
+
+    # graveyard up-to-2: two same-named "Bolt" instances -- both offered, and
+    # picking one excludes only THAT instance (its twin stays choosable).
+    st = GameState(on_the_play=True, players=[_PS2(True), _PS2(False)]); st.active_idx = 0
+    g1 = st.new_instance(CardDef("Bolt", CardType.INSTANT, {"R": 1}, EffectId.FILLER))
+    g2 = st.new_instance(CardDef("Bolt", CardType.INSTANT, {"R": 1}, EffectId.FILLER))
+    st.players[0].graveyard = [g1, g2]
+    picked = []
+    begin_choose_up_to_graveyard(st, lambda c: True, 2, lambda s, chosen: picked.extend(chosen))
+    assert sorted(o.name for o in choose_graveyard_card_options(st)) == ["Bolt", "Bolt"]
+    execute_choose_graveyard_card_option(st, g1)
+    assert g1 not in choose_graveyard_card_options(st) and g2 in choose_graveyard_card_options(st)  # identity exclusion
+    execute_choose_graveyard_card_option(st, g2)  # 2nd pick -> max reached
+    assert st.pending_resolution is None and picked == [g1, g2]
+
+    # graveyard decline after one (the "up to" slack)
+    st = GameState(on_the_play=True, players=[_PS2(True), _PS2(False)]); st.active_idx = 0
+    h1 = st.new_instance(CardDef("A", CardType.INSTANT, {"R": 1}, EffectId.FILLER))
+    h2 = st.new_instance(CardDef("B", CardType.INSTANT, {"R": 1}, EffectId.FILLER))
+    st.players[0].graveyard = [h1, h2]
+    picked = []
+    begin_choose_up_to_graveyard(st, lambda c: True, 2, lambda s, chosen: picked.extend(chosen))
+    execute_choose_graveyard_card_option(st, h1)
+    assert st.pending_resolution["kind"] == "choose_graveyard_card"
+    execute_choose_graveyard_card_decline(st)
+    assert st.pending_resolution is None and picked == [h1]
+
+    # board up-to-2: two same-named "Bear" (distinct slots) -- both reachable,
+    # picking slot 1 excludes only it (slot 2 stays choosable).
+    st = GameState(on_the_play=True, players=[_PS2(True), _PS2(False)]); st.active_idx = 0
+    bear1 = _Perm2(CardDef("Bear", CardType.CREATURE, {"G": 1}, EffectId.FILLER, power=2, toughness=2)); bear1.slot = 1
+    bear2 = _Perm2(CardDef("Bear", CardType.CREATURE, {"G": 1}, EffectId.FILLER, power=2, toughness=2)); bear2.slot = 2
+    st.players[0].battlefield = [bear1, bear2]
+    descs = []
+    begin_choose_up_to_any_target(st, lambda p: p.card_type == CardType.CREATURE, 2, lambda s, d: descs.extend(d))
+    opts = choose_any_target_creature_options(st)
+    assert (0, "Bear", 1) in opts and (0, "Bear", 2) in opts
+    execute_choose_any_target_creature(st, 0, "Bear", 1)
+    opts = choose_any_target_creature_options(st)
+    assert (0, "Bear", 1) not in opts and (0, "Bear", 2) in opts  # identity (slot) exclusion
+    execute_choose_any_target_creature(st, 0, "Bear", 2)
+    assert st.pending_resolution is None and descs == [("creature", 0, "Bear", 1), ("creature", 0, "Bear", 2)]
+    print("handlers.py up-to-X multi-target (graveyard + board, identity exclusion + decline) self-check: OK")

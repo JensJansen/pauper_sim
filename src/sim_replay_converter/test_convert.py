@@ -52,6 +52,11 @@ def engine_expected(events):
             kept[e["active_idx"]] -= Counter(n)
     exp = {p: sum(kept[p].values()) for p in (0, 1)}
     for e in events[first_turn:]:
+        # An orphaned aura with outcome "hand" (Rancor) returns to its controller's
+        # hand -- the converter emits a real into-hand move for it, so account for it.
+        if e["kind"] == "aura_orphaned" and e.get("outcome") == "hand":
+            exp[e["active_idx"]] += 1
+            continue
         if e["kind"] != "zone_move" or e.get("to_zone") != "hand":
             continue
         n = e.get("cards") or ([e["card"]] if e.get("card") else []) or ([e["permanent"]] if e.get("permanent") else [])

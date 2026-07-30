@@ -15,7 +15,8 @@ efficiently it was reached; a loss/timeout is either a flat 0.0
 (deploy_reward). The old single-player Tron-era heuristics (resource-quality
 tie-breakers) and the turn-decay fast_win_reward went away with the 1-player
 pipeline. Pretraining uses action_count_win_reward_200_floor02; league
-self-play uses deploy_reward_v1.
+self-play uses deploy_reward_v2 (= deploy_reward with win_floor=1.0 -> flat win;
+the v1 efficiency scaling caused an action-space-minimization pathology).
 """
 
 
@@ -109,6 +110,17 @@ action_count_win_reward_200_floor02 = action_count_win_reward(min_reward=0.2)
 deploy_reward_v1 = deploy_reward()
 
 
+# The reward league self-play uses NOW (run_league.py): deploy_reward with
+# win_floor=1.0, which collapses the win band to a FLAT 1.0 (win_span = 0) -- no
+# efficiency scaling -- while keeping the identical loss band. v1's efficiency
+# scaling induced an action-space-minimization pathology (the policy generalized
+# "win in fewer actions -> more reward" into "shrink your own board"); flat win
+# removes that gradient. Float-first removed the tap/untap-abandon churn
+# structurally (no undo action exists), so the old dense abandon penalty is gone;
+# PPO entropy alone now bounds pointless actions without capping them.
+deploy_reward_v2 = deploy_reward(win_floor=1.0)
+
+
 if __name__ == "__main__":
     # ponytail self-check: run via `python -m rl.rewards` from src/.
     # action_count_win_reward: per-seat (state.players[winner].actions_taken),
@@ -199,3 +211,13 @@ if __name__ == "__main__":
     assert abs(dr(s, done=True, horizon=120) - 0.20) < 1e-9  # 0.25 - 1*0.05
 
     print("rewards.py deploy_reward self-check: OK")
+
+    # --- deploy_reward_v2 == deploy_reward(win_floor=1.0): the win band flattens to
+    # 1.0 regardless of game length (the loss band is deploy_reward's, checked above) ---
+    v2 = deploy_reward(win_floor=1.0)
+    s.winner = 0  # reuse the fixture above (pregame_actions=5)
+    s.players[0].actions_taken = 5 + 5000   # a long, grindy win
+    assert v2(s, done=True, horizon=120) == 1.0  # flat -- no efficiency dock
+    s.players[0].actions_taken = 5 + 1          # a fast win scores identically
+    assert v2(s, done=True, horizon=120) == 1.0
+    print("rewards.py deploy_reward_v2 (win_floor=1.0 -> flat win) self-check: OK")

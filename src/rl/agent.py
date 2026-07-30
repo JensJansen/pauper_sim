@@ -25,22 +25,35 @@ import drl_env
 import game
 from rl.action_bridge import any_pointer_legal, execute_pointer_choice, pointer_legal_mask
 from rl.arch import pad_token_batch
-from rl.features import build_token_set
+from rl.features import _stack_target_map, build_token_set
 from rl import mulligan as mulligan_mod
+
+DECK_SIZE_CAP = 60  # every decklist in data/ is exactly 60 cards (see rl.features's own cap-then-normalize idiom)
+OPPONENT_HAND_SIZE_CAP = 12  # generous headroom over the 7-card cleanup limit for a mid-turn multi-draw hand
 
 
 def _scalar_features(state, seat_idx, horizon):
     """Non-tokenized globals -- turn number, lands-played, mulligans, am-I-
-    turn-player, floating mana pool, phase one-hot, my/opponent life. Same
-    composition rl.deck.SCALAR_FEATURE_DIM documents (mana-pool cap of 8,
-    matched here). state.mana_pool is a
-    GameState property proxying to state.players[state.active_idx]
-    (game/state.py's _active_player_property) -- read unconditionally, not
-    gated, since _for_player below already guarantees active_idx == seat_idx
-    for the whole duration of _read."""
+    turn-player, floating mana pool, phase one-hot, my/opponent life,
+    my/opponent library size, opponent's hand size, whether the stack
+    currently targets me/the opponent AS A PLAYER. Same composition
+    rl.deck.SCALAR_FEATURE_DIM documents (mana-pool cap of 8, matched here).
+    state.mana_pool is a GameState property proxying to
+    state.players[state.active_idx] (game/state.py's _active_player_property)
+    -- read unconditionally, not gated, since _for_player below already
+    guarantees active_idx == seat_idx for the whole duration of _read.
+
+    Library/hand SIZE (not contents) and a declared player-target are all
+    public in real Magic (either player can count a library or a hand, and a
+    spell's targets are known the instant they're chosen) -- unlike the
+    per-card token set, which deliberately keeps hand/library CONTENTS
+    hidden (rl.features.build_token_set's own docstring). My own hand size
+    isn't included: it's not hidden information from myself, so there's
+    nothing to surface there."""
     def _read(s):
         me = s.players[seat_idx]
         other = s.players[1 - seat_idx]
+        _obj_controllers, player_controllers = _stack_target_map(s)
         out = [
             min(s.turn_number / horizon, 1.0),
             1.0 if s.lands_played_this_turn > 0 else 0.0,
@@ -53,6 +66,11 @@ def _scalar_features(state, seat_idx, horizon):
             out.append(1.0 if phase == s.phase else 0.0)
         out.append(max(me.life_total, 0) / game.state.STARTING_LIFE)
         out.append(max(other.life_total, 0) / game.state.STARTING_LIFE)
+        out.append(min(len(me.library), DECK_SIZE_CAP) / DECK_SIZE_CAP)
+        out.append(min(len(other.library), DECK_SIZE_CAP) / DECK_SIZE_CAP)
+        out.append(min(len(other.hand), OPPONENT_HAND_SIZE_CAP) / OPPONENT_HAND_SIZE_CAP)
+        out.append(1.0 if player_controllers[seat_idx] else 0.0)
+        out.append(1.0 if player_controllers[1 - seat_idx] else 0.0)
         return out
     return drl_env._for_player(state, seat_idx, _read)
 
@@ -73,13 +91,34 @@ def _raise_all_false(state, seat):
     # with a misleading error. Surface the true culprit precisely instead.
     pend = state.pending_resolution
     print("  *** ALL-FALSE MASK ***", flush=True)
-    print(f"    pending_kind={pend['kind'] if pend else None} phase={state.phase} seat={seat}", flush=True)
+    print(f"    pending_kind={pend['kind'] if pend else None} phase={state.phase} seat={seat} "
+          f"turn={state.turn_number} active_idx={state.active_idx} turn_player={state.turn_player_idx}", flush=True)
     if pend:
         print(f"    pending keys={list(pend.keys())}", flush=True)
         for k in ("remaining", "ordered", "kept", "disposed"):
             if k in pend:
                 v = pend[k]
                 print(f"    pending[{k}]={[getattr(c, 'name', c) for c in v] if isinstance(v, list) else v}", flush=True)
+    # A STRANDED PAYMENT (pending_kind=pay_cost) is the one all-False shape whose
+    # cause is invisible from the pending alone: it depends on what mana is
+    # floating and what could still be tapped. Float-first removed "Abandon
+    # payment", so a payment the agent cannot finish is unescapable by
+    # construction -- meaning the mana state at this instant IS the bug report.
+    # Dump both pools, every mana source and whether it is still untapped, and
+    # what each untapped one could produce.
+    print(f"    mana_pool(active)={dict(state.mana_pool)}", flush=True)
+    for idx, player in enumerate(state.players):
+        print(f"    seat{idx} pool={dict(player.mana_pool)} life={player.life_total}", flush=True)
+        sources = []
+        for p in player.battlefield:
+            spec = game.EFFECT_REGISTRY.get(p.card_def.effect_id, {})
+            if "mana" in spec or "filter_mana" in spec or "mana_extra_choose" in spec:
+                try:
+                    out = game.mana_output(p, state) if not p.tapped else []
+                except Exception as exc:  # a source whose output needs state it can't read here
+                    out = f"<{type(exc).__name__}>"
+                sources.append(f"{p.card_def.name}#{p.slot}{'(T)' if p.tapped else ''}->{out}")
+        print(f"    seat{idx} mana sources={sources}", flush=True)
     raise RuntimeError(f"all-False action mask for pending kind {pend['kind'] if pend else None!r}")
 
 
@@ -144,7 +183,7 @@ def _seat_step(state, seat, deck_ctx, net, horizon, device, greedy=False):
     + per-deck net, masks, and samples (or argmaxes, when greedy). Returns
     (executor, buffer_entry, is_pass); buffer_entry is None for a forced move
     (record nothing). greedy=True is for eval (deterministic argmax); training
-    always samples (greedy=False)."""
+    always samples."""
     dec = _build_decision(state, seat, deck_ctx, horizon)
     if dec.sole_action is not None:
         return (_executor_for(state, dec.sole_action, dec.fixed_table, dec.identities), None,
@@ -289,3 +328,38 @@ if __name__ == "__main__":
 
     print("rl.agent self-check: OK (pregame routing: AlwaysKeep keep + bottom-guard, MulliganNet records "
           "decision; main fixed table has no pregame action)")
+
+    # _scalar_features: library size (mine/opponent), opponent hand size, and
+    # stack-targets-me/opponent (the "player" target kind -- the one case
+    # with no token to carry a bit on; see rl.features._stack_target_map and
+    # its own build_token_set self-check for the three OBJECT target kinds).
+    from game.state import GameState, PlayerState
+
+    sf_seat0 = PlayerState(on_the_play=True)
+    sf_seat0.library = [game.CARD_DEFS["Mountain"]] * 40
+    sf_seat0.hand = [game.CARD_DEFS["Lightning Bolt"]] * 3
+    sf_seat1 = PlayerState(on_the_play=False)
+    sf_seat1.library = [game.CARD_DEFS["Mountain"]] * 10
+    sf_seat1.hand = [game.CARD_DEFS["Lightning Bolt"]] * 5
+    sf_state = GameState(on_the_play=True, players=[sf_seat0, sf_seat1])
+    # seat 1's Lava Dart targets seat 0 as a PLAYER (controller=1).
+    sf_state.stack = [{"card_def": game.CARD_DEFS["Lava Dart"], "resolve": None, "controller": 1,
+                        "targets": (("player", 0),)}]
+
+    sf0 = _scalar_features(sf_state, 0, horizon=40)
+    sf1 = _scalar_features(sf_state, 1, horizon=40)
+    # Tail layout (see _scalar_features's own append order): [..., my_library,
+    # opp_library, opp_hand, stack_targets_me, stack_targets_opponent].
+    my_lib_i, opp_lib_i, opp_hand_i, targets_me_i, targets_opp_i = -5, -4, -3, -2, -1
+    assert sf0[my_lib_i] == 40 / DECK_SIZE_CAP and sf0[opp_lib_i] == 10 / DECK_SIZE_CAP
+    assert sf1[my_lib_i] == 10 / DECK_SIZE_CAP and sf1[opp_lib_i] == 40 / DECK_SIZE_CAP, (
+        "library-size scalars must flip with perspective, not stay pinned to seat 0/1"
+    )
+    assert sf0[opp_hand_i] == 5 / OPPONENT_HAND_SIZE_CAP, "seat 0's opponent-hand-size view must be seat 1's hand"
+    assert sf1[opp_hand_i] == 3 / OPPONENT_HAND_SIZE_CAP, "seat 1's opponent-hand-size view must be seat 0's hand"
+    # Lava Dart (controller=1) targets seat 0 as a player -- seat 0 sees
+    # "stack targets me", seat 1 sees "stack targets opponent", never both.
+    assert sf0[targets_me_i] == 1.0 and sf0[targets_opp_i] == 0.0
+    assert sf1[targets_me_i] == 0.0 and sf1[targets_opp_i] == 1.0
+
+    print("rl.agent _scalar_features self-check: OK (deck size, opponent hand size, player-targeted flags)")

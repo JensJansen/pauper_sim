@@ -16,23 +16,31 @@ import game
 #
 # Categories, in table order:
 #   A. Play land: <name>            -- one per distinct land name
+#   A2. Tap <name> [for <color>]    -- float-first mana abilities: one no-color
+#      row per fixed/Tron/count source, one row per producible color for a
+#      flexible/granted source. Legal in ANY priority window, even
+#      mid-resolution of anything else (605.1a/605.3b -- no pending-resolution
+#      gate at all), resolves immediately (never the stack) -- masked by
+#      game.mana_ability_options. "Tap <name> for <color>, tapping <name2>
+#      (slot k)" (Saruli Caretaker): same category, but its extra cost (tap
+#      ANOTHER creature -- a cost choice, 602.5g, not a target) is enumerated
+#      directly rather than a nested resolution, so the whole ability stays
+#      one atomic action -- see _mana_extra_tap_legal's own docstring for why.
+#      "Filter <name> for <output_color>, paying <input_color>" (Conduit
+#      Pylons/Barrels): an atomic pool->pool conversion, same category and
+#      same "no nested resolution" reasoning.
 #   B. Cast <name>                  -- one per card with a registry "cast" entry
 #   C. Activate <name> (<ability>)  -- one per registered activated ability
 #   D. Forestcycle <name>           -- one per registry "forestcycle" entry
 #   E. Pass
 #   F. Choose: <name>               -- shared across every pending-resolution
-#      kind that picks a plain card name (paying with a fixed/Tron mana
-#      source, search_fetch, ancient_stirrings, and scry/surveil's ordering
-#      phase), dispatched by pending_resolution["kind"]
-#   G. Choose: <name> as <color>    -- flexible/filter mana sources during
-#      a pay_cost resolution specifically (the only kind needing a color)
+#      kind that picks a plain card name (search_fetch, ancient_stirrings,
+#      sacrifice, discard, and scry/surveil's ordering phase), dispatched by
+#      pending_resolution["kind"]. Paying a cost never appears here -- once a
+#      cost is announced, the only legal actions are "Spend <color> from
+#      pool" (below), spending mana already floated via a Tap action.
 #   H. Keep / Dispose (scry/surveil)
 #   I. Decline (Ancient Stirrings)
-#   J. Abandon payment -- cancels a pending pay_cost resolution outright,
-#      untapping everything tapped so far. Without this, tapping a
-#      flexible/filter source for the wrong color could strand a game
-#      with an unpayable remaining cost and zero legal actions -- see
-#      game.abandon_pay_cost's docstring.
 #   K. Choose target: <name> (slot k) -- exact-(name, slot)-addressed, the
 #      "choose_permanent" resolution's own actions (Aura enchant-targets,
 #      Crop Rotation's sacrifice cost, land bounce) -- NOT category F,
@@ -161,16 +169,10 @@ def _cast_execute(name, resolve):
     def execute(state):
         card_def = game.CARD_DEFS[name]
         def _after_pay(s):
-            # Fires only once mana is actually, irreversibly paid -- NOT
-            # the instant this cast is announced. "Abandon payment" can
-            # cancel a pending pay_cost resolution outright (see
-            # game.abandon_pay_cost), so firing this any earlier let a
-            # cast be announced, the trigger collected for free, and
-            # payment then abandoned -- repeatable forever. Real MTG
-            # (601.2i): a spell isn't "cast" until its cost is paid;
-            # failing/declining to pay reverses the whole action as if it
-            # was never started, so a "whenever you cast" trigger (e.g.
-            # Guttersnipe) never fires either. Every cast path (this one,
+            # Fires only once mana is actually paid -- NOT the instant this
+            # cast is announced. Real MTG (601.2i): a spell isn't "cast" until
+            # its cost is paid, so a "whenever you cast" trigger (e.g.
+            # Guttersnipe) must never fire before that. Every cast path (this one,
             # alt_cast, flashback, plot-from-exile below) fires it
             # identically once its own cost is similarly locked in.
             game.on_cast_trigger(s, card_def)
@@ -285,8 +287,9 @@ def _delve_legal(name, n, speed):
 def _delve_execute(name, n, resolve):
     """Exile n graveyard cards (the model chooses which -- begin_exile_n_from_
     graveyard), then pay the {generic-n} remainder, then cast normally. The
-    exile is a cost, paid first; abandoning the mana payment afterward leaves
-    those cards exiled (same as any other paid cost)."""
+    exile is a cost, paid first and irreversible; the mana payment that
+    follows is a pure pool spend (float-first: no undo, see the "no Abandon
+    payment" note in build_action_table below)."""
     def execute(state):
         card_def = game.CARD_DEFS[name]
 
@@ -369,9 +372,19 @@ def _graveyard_ability_legal(name, cost_key):
 
 
 def _graveyard_ability_execute(name, cost_key, resolve):
+    """resolve receives the graveyard CardInstance whose ability this is (NOT
+    the interned CardDef) -- see _graveyard_instance. The cost itself is read
+    off game.CARD_DEFS[name]: a cost is a type-level rules property, identical
+    for every copy, so the canonical def is the right source for it."""
     def execute(state):
-        card_def = game.CARD_DEFS[name]
-        game.begin_pay_cost(state, card_def.extra[cost_key], on_complete=lambda s: resolve(s, card_def))
+        cost = game.CARD_DEFS[name].extra[cost_key]
+
+        def _proceed(state, inst):
+            # Copy chosen first, then the cost is paid (602.2/601.2a order), then
+            # the ability's own resolve exiles that exact instance as its cost.
+            game.begin_pay_cost(state, cost, on_complete=lambda s, inst=inst: resolve(s, inst))
+
+        _with_chosen_copy(state, name, _proceed)
     return execute
 
 
@@ -407,14 +420,19 @@ def _choose_name_options(state):
     if pending is None:
         return []
     kind = pending["kind"]
-    if kind == "pay_cost":
-        return [n for n, c, f in _cached_tap_cost_options(state) if c is None and not f]
+    # Float-first: no tap-during-payment. Mana is produced by top-level mana
+    # abilities BEFORE casting; paying a cost only ever spends floated pool mana
+    # (_pool_spend), never taps a source here. So "pay_cost" is absent from this
+    # by-name dispatch (it used to tap fixed sources).
     if kind == "search_fetch":
         return game.search_fetch_options(state)
     if kind == "throne_reveal":  # Undercity Throne: pick a creature card from the revealed top 10
         return game.throne_reveal_options(state)
-    if kind == "choose_graveyard_card":
-        return game.choose_graveyard_card_options(state)
+    # choose_graveyard_card is deliberately absent: it's a POINTER target
+    # (rl.action_bridge), not a by-name fixed action -- the chosen card (from a
+    # graveyard, or a hand the effect reveals like Mesmeric Fiend) is picked by
+    # pointing at its token, so an opponent's cards are reachable without a
+    # whole-league "Choose: X" fixed row per card name.
     if kind == "sacrifice":
         return game.sacrifice_options(state)
     if kind == "discard":
@@ -454,7 +472,7 @@ def _choose_name_legal(name):
     # Matches _choose_name_options' own dispatch table above exactly --
     # every pending kind that function ever returns a non-empty list for.
     legal._pending_gate = frozenset({
-        "pay_cost", "search_fetch", "throne_reveal", "choose_graveyard_card", "sacrifice", "discard",
+        "search_fetch", "throne_reveal", "sacrifice", "discard",
         "discard_or_sacrifice", "ancient_stirrings", "malevolent_rumble", "scry", "surveil",
         "select_to_hand", "order_triggers", "put_on_top", "ponder", "choose_stack_target",
     })
@@ -464,14 +482,10 @@ def _choose_name_legal(name):
 def _choose_name_execute(name):
     def execute(state):
         kind = state.pending_resolution["kind"]
-        if kind == "pay_cost":
-            game.execute_tap_cost_option(state, name, None, False)
-        elif kind == "search_fetch":
+        if kind == "search_fetch":
             game.execute_search_fetch_option(state, name)
         elif kind == "throne_reveal":
             game.execute_throne_reveal_option(state, name)
-        elif kind == "choose_graveyard_card":
-            game.execute_choose_graveyard_card_option(state, name)
         elif kind == "sacrifice":
             game.execute_sacrifice_option(state, name)
         elif kind == "discard":
@@ -494,30 +508,6 @@ def _choose_name_execute(name):
             game.execute_choose_stack_target_option(state, name)
         else:  # scry / surveil, ordering phase
             game.execute_scry_surveil_option(state, name)
-    return execute
-
-
-def _choose_name_color_options(state):
-    """(name, color) pairs currently legal via tap_cost_options's
-    flexible/filter entries -- the only pending-resolution kind that ever
-    needs a color qualifier."""
-    pending = state.pending_resolution
-    if pending is None or pending["kind"] != "pay_cost":
-        return []
-    return [(n, c) for n, c, _f in _cached_tap_cost_options(state) if c is not None]
-
-
-def _choose_name_color_legal(name, color):
-    def legal(state):
-        return (name, color) in _choose_name_color_options(state)
-    legal._pending_gate = frozenset({"pay_cost"})
-    return legal
-
-
-def _choose_name_color_execute(name, color):
-    def execute(state):
-        is_filter = next(f for n, c, f in game.tap_cost_options(state) if n == name and c == color)
-        game.execute_tap_cost_option(state, name, color, is_filter)
     return execute
 
 
@@ -794,16 +784,6 @@ def _decline_malevolent_rumble_execute(state):
     game.execute_malevolent_rumble_option(state, "decline")
 
 
-def _abandon_payment_legal(state):
-    pending = state.pending_resolution
-    return pending is not None and pending["kind"] == "pay_cost"
-
-
-_abandon_payment_legal._pending_gate = frozenset({"pay_cost"})
-
-
-def _abandon_payment_execute(state):
-    game.abandon_pay_cost(state)
 
 
 def _ponder_shuffle_legal(state):
@@ -865,6 +845,14 @@ def _may_copy_legal(state):
 
 
 _may_copy_legal._pending_gate = frozenset({"may_copy"})
+
+
+def _may_cast_legal(state):
+    pending = state.pending_resolution
+    return pending is not None and pending["kind"] == "may_cast"
+
+
+_may_cast_legal._pending_gate = frozenset({"may_cast"})
 
 
 def _choose_room_legal(room):
@@ -1211,20 +1199,88 @@ def _flashback_legal(name, ability_legal, speed, cost=None):
     return legal
 
 
+def _graveyard_instance(state, name):
+    """THE type->instance boundary for every graveyard-sourced action.
+
+    The action table is built from card NAMES (it must be -- a deck's action
+    space is fixed-width), so an execute closure only ever holds a name and has
+    to recover the real game object. For a HAND cast that's free: hand holds
+    CardDefs and game.CARD_DEFS[name] IS the object in hand, so type-identity
+    and object-identity coincide. For a GRAVEYARD cast they don't -- the
+    graveyard holds per-object CardInstances (see plans/object-identity-zone-
+    model.md), and game.CARD_DEFS[name] is the interned, one-per-name rules
+    definition, never identity-equal to any instance.
+
+    Passing that CardDef onward is what forced every graveyard-cast resolve to
+    re-derive the instance itself: six did it by name (via the old
+    casting.remove_graveyard_card, or hand-rolled), and the seventh
+    (flashback_deep_analysis) forgot and crashed a real pretrain run with
+    `ValueError: list.remove(x): x not in list`. Resolving it HERE, once, is
+    what lets every downstream removal/capture be a true identity operation.
+
+    Picks the first same-named instance. MTG 400.7 makes same-named graveyard
+    cards interchangeable for "a card with this name leaves the graveyard", so
+    any one is legal today. Real Magic does let the PLAYER choose which copy,
+    and that choice becomes observable when another object references one
+    specific copy (a Rooftop Percher target locked on copy A while copy B is
+    the one flashed back). Routing that choice through the pointer head is a
+    deliberate OPEN ITEM for the owner, not settled here."""
+    inst = next((c for c in state.graveyard if c.name == name), None)
+    if inst is None:
+        # Fail loudly with context, not a bare StopIteration -- same precedent
+        # as game.effects.shared.discard_from_hand_to_graveyard's own guard.
+        # Unreachable via a legal action (_flashback_legal/_graveyard_ability_legal
+        # both require a same-named graveyard card), so this means a caller's own
+        # guarantee broke.
+        raise RuntimeError(
+            f"_graveyard_instance: no {name!r} in graveyard. "
+            f"active_idx={getattr(state, 'active_idx', None)!r} "
+            f"turn_number={getattr(state, 'turn_number', None)!r} "
+            f"graveyard={[c.name for c in state.graveyard]!r}"
+        )
+    return inst
+
+
+def _with_chosen_copy(state, name, proceed):
+    """Run `proceed(state, inst)` on the graveyard copy of `name` being cast.
+
+    With 2+ same-named copies this is a REAL agent choice (MTG 601.2a -- the
+    object being cast is chosen at announcement), so it opens a pointer-only
+    choose_cast_copy pending and continues from its on_complete; the choice is
+    made BEFORE any cost is paid, which is both the faithful order and what
+    keeps the single pending_resolution slot free for the payment that follows.
+    With exactly one copy there is no choice to make, so it proceeds inline --
+    not a simplification, just the absence of a decision (the harness would
+    auto-resolve a one-option pending anyway; skipping it avoids a pointless
+    token-set build + mask sweep on the common path)."""
+    copies = [c for c in state.graveyard if c.name == name]
+    if len(copies) <= 1:
+        proceed(state, _graveyard_instance(state, name))
+        return
+    game.begin_choose_cast_copy(state, name, on_complete=proceed)
+
+
 def _flashback_execute(name, resolve, cost=None):
+    """resolve receives the graveyard CardInstance being cast (NOT the interned
+    CardDef) -- see _graveyard_instance. Every flashback/escape resolve removes
+    that exact object from the graveyard by identity. WHICH copy, when the
+    graveyard holds several, is the agent's own choice (_with_chosen_copy)."""
     def execute(state):
-        card_def = game.CARD_DEFS[name]
-        if cost is None:
-            game.on_cast_trigger(state, card_def)  # item 11 -- see _cast_execute
-            resolve(state, card_def)
-        else:
-            # Mana flashback cost: pay it first (like a normal cast), then
-            # fire the on-cast trigger and run the resolve, which pays any
-            # further additional cost (life) and pushes the effect.
-            def _after_pay(state):
-                game.on_cast_trigger(state, card_def)
-                resolve(state, card_def)
+        def _proceed(state, inst):
+            if cost is None:
+                game.on_cast_trigger(state, inst)  # item 11 -- see _cast_execute
+                resolve(state, inst)
+                return
+            # Mana flashback cost: pay it AFTER the copy is chosen (601.2a
+            # announce-then-pay), then fire the on-cast trigger and run the
+            # resolve, which pays any further additional cost (life) and pushes
+            # the effect.
+            def _after_pay(state, inst=inst):
+                game.on_cast_trigger(state, inst)
+                resolve(state, inst)
             game.begin_pay_cost(state, cost, on_complete=_after_pay)
+
+        _with_chosen_copy(state, name, _proceed)
     return execute
 
 
@@ -1279,7 +1335,7 @@ def _play_impulse_cast_execute(name, cost, resolve, precast):
     """Cast an impulse-exiled spell for `cost` (its normal cost -- impulse,
     unlike Plot, is NOT free). Mirrors _cast_execute/_precast_choice_execute,
     but the card is removed from the impulse zone only in _after_pay (once
-    mana is irreversibly paid) -- so abandoning payment leaves it in impulse,
+    mana is actually paid) -- so a not-yet-paid cast leaves it in impulse,
     no leak. Then it's inserted into hand (Cascade-style, so the card's own
     resolve, written for a hand cast, finds and removes it) and either pushed
     to the stack (non-precast) or resolved directly (precast, which pushes
@@ -1475,11 +1531,112 @@ def build_action_table(decklist, registry, token_card_defs=(), pending_kinds=(),
     land_names = sorted({
         name for name in distinct_names if game.CARD_DEFS[name].card_type == game.CardType.LAND
     })
+    # Hoisted here (rather than just before their own first use, below) so the
+    # extra-cost mana-ability loop can also use them: card_type_by_name/
+    # qty_by_name index THIS side's own battlefield permanents (an opponent's
+    # card is never a legal choose_permanent/attack/mana-extra-cost target of
+    # mine); choosable_names is every name (real or token) this side could
+    # ever have on its own battlefield.
+    card_type_by_name = {name: game.CARD_DEFS[name].card_type for name in distinct_names}
+    card_type_by_name.update({cd.name: cd.card_type for cd in token_card_defs})
+    qty_by_name = {name: qty for name, qty, *_rest in decklist}
+    # DFC back faces (Delver of Secrets -> Insectile Aberration): a transformed
+    # permanent's card_def swaps to its back face (game.resolution.execute_may_
+    # transform), so any BY-NAME resolution (order_triggers, sacrifice, discard,
+    # search_fetch, ...) can end up needing to reference that back-face name --
+    # omitting it here is the exact same softlock class as the token case just
+    # above (a legal, on-battlefield object with no "Choose: X" row able to name
+    # it), just for DFCs instead of tokens. Confirmed the hard way: a real
+    # pretrain run hit "all-False action mask for pending kind 'order_triggers'"
+    # the first time a transformed Delver's upkeep trigger needed ordering
+    # against another simultaneous trigger. Discovered the same way
+    # rl.features.CardVocab already discovers back faces: scan each front
+    # face's own registry "transform" spec.
+    back_face_defs = [
+        spec["card_def"] for name in distinct_names
+        for spec in [registry.get(game.CARD_DEFS[name].effect_id, {}).get("transform")]
+        if spec is not None and "card_def" in spec
+    ]
+    card_type_by_name.update({cd.name: cd.card_type for cd in back_face_defs})
+    choosable_names = sorted(set(distinct_names) | {cd.name for cd in token_card_defs} | {cd.name for cd in back_face_defs})
 
     actions = []
 
     for name in land_names:
         actions.append((f"Play land: {name}", _land_drop_legal(name), _land_drop_execute(name)))
+
+    # Float-first mana abilities: "Tap X [for <color>]" produces mana into the
+    # pool in ANY priority window, even mid-resolution of anything else
+    # (605.1a/605.3b -- a mana ability never uses the stack and doesn't
+    # require priority; see _mana_ability_legal's own docstring for why no
+    # pending-resolution gate is needed at all). Breadth (one no-color row +
+    # one per pool color per source name), masked at runtime by
+    # game.mana_ability_options -- a fixed source only ever makes its
+    # no-color row legal; a flexible/granted source its color rows. Excludes
+    # mana_extra_choose sources (Saruli Caretaker) -- those get their own
+    # atomic enumeration below instead.
+    mana_source_names = sorted(
+        {name for name in distinct_names
+         if "mana" in registry.get(game.CARD_DEFS[name].effect_id, {})
+         and "mana_extra_choose" not in registry.get(game.CARD_DEFS[name].effect_id, {})}
+        | {cd.name for cd in token_card_defs
+           if "mana" in registry.get(cd.effect_id, {})
+           and "mana_extra_choose" not in registry.get(cd.effect_id, {})}
+    )
+    for name in mana_source_names:
+        actions.append((f"Tap {name}", _mana_ability_legal(name, None), _mana_ability_execute(name, None)))
+        for color in game.POOL_COLORS:
+            actions.append((
+                f"Tap {name} for {color}",
+                _mana_ability_legal(name, color),
+                _mana_ability_execute(name, color),
+            ))
+
+    # Saruli Caretaker-shaped mana abilities: an extra cost that taps ANOTHER
+    # untapped creature (mana_extra_choose) -- a COST CHOICE (602.5g), not a
+    # target. The whole ability (both taps + floating the mana) must resolve
+    # as ONE atomic action, same as any other mana ability, so the choice is
+    # enumerated directly -- one row per (source, color, target name, target
+    # slot) -- rather than opened as a nested resolution (which would clobber
+    # whatever pending_resolution is already open: state.pending_resolution
+    # is a single slot, not a stack). Pre-registered broadly over every
+    # (name, slot) this side's battlefield could ever hold, same "choose
+    # target: X (slot k)" convention below; _mana_extra_tap_legal's own
+    # extra_pred check gates precisely at runtime (rejecting non-creatures,
+    # the source itself, and anything already tapped).
+    extra_tap_source_names = sorted(
+        {name for name in distinct_names if "mana_extra_choose" in registry.get(game.CARD_DEFS[name].effect_id, {})}
+        | {cd.name for cd in token_card_defs if "mana_extra_choose" in registry.get(cd.effect_id, {})}
+    )
+    for name in extra_tap_source_names:
+        for color in game.POOL_COLORS:
+            for target_name in choosable_names:
+                max_slot = qty_by_name.get(target_name, game.TOKEN_LIMIT)
+                for slot in range(1, max_slot + 1):
+                    actions.append((
+                        f"Tap {name} for {color}, tapping {target_name} (slot {slot})",
+                        _mana_extra_tap_legal(name, color, target_name, slot),
+                        _mana_extra_tap_execute(name, color, target_name, slot),
+                    ))
+
+    # Mana filters (Conduit Pylons / Barrels of Blasting Jelly): "{1}: add one
+    # mana of <output_color>" -- an ATOMIC pool->pool conversion (spend one
+    # already-floated <input_color> pip, add one <output_color> pip), one row
+    # per (source, output_color, input_color) triple. Atomic for the same
+    # reason the extra-tap rows above are: folding the "which pip pays the
+    # {1}" choice into a nested pay_cost would open a second pending
+    # resolution mid-activation, at risk of clobbering whatever's already
+    # open. input_color ranges over every pool color (any floating pip, incl.
+    # colorless, can pay a generic {1}); output_color is the filter's own
+    # "any [true] color" spec.
+    for name in sorted({n for n in distinct_names if "filter_mana" in registry.get(game.CARD_DEFS[n].effect_id, {})}):
+        for output_color in sorted(registry.get(game.CARD_DEFS[name].effect_id, {})["filter_mana"]["colors"]):
+            for input_color in game.POOL_COLORS:
+                actions.append((
+                    f"Filter {name} for {output_color}, paying {input_color}",
+                    _filter_mana_legal(name, output_color, input_color),
+                    _filter_mana_execute(name, output_color, input_color),
+                ))
 
     for name in distinct_names:
         card_spec = registry.get(game.CARD_DEFS[name].effect_id, {})
@@ -1737,26 +1894,17 @@ def build_action_table(decklist, registry, token_card_defs=(), pending_kinds=(),
     # appearing in CARD_DEFS/the decklist; omitting token names here left
     # exactly that case legal-to-create but impossible-to-choose once a
     # token was the only eligible option, softlocking the game.
-    # extra_choosable_names: card names that can be a "Choose: X" option
-    # despite not being in THIS deck (nor its tokens) -- specifically an
-    # OPPONENT's graveyard cards, reachable by a choose_graveyard_card
-    # resolution that targets a player (Relic of Progenitus' exile ability,
-    # colorless_cards.py). Without them, a cross-deck game where the acting
-    # player exiles from the OPPONENT's graveyard has zero legal actions for
-    # names outside its own deck -> empty action mask -> dead state (a real
-    # softlock, confirmed via a monster_tron-vs-mono_red smoke game). Passed
-    # as the whole league's card universe (rl.pool.build_pool), not a
-    # specific opponent's deck: bounded, fixed per trained model, and still
-    # runtime-masked to only-legal-when-actually-in-the-targeted-graveyard.
-    choosable_names = sorted(set(distinct_names) | {cd.name for cd in token_card_defs})
-    # extra_choosable_names goes into the "Choose: X" loop ONLY, never the
-    # shared choosable_names set below -- that set also drives "Choose
-    # target: X (slot k)" and "Attack: X (slot k)", which are strictly
-    # THIS side's OWN battlefield permanents (an opponent's card is never a
-    # legal choose_permanent/attack target of mine) and index a
-    # card_type_by_name map built from this deck alone. A foreign name only
-    # ever belongs to the by-name "Choose: X" resolution (choose_graveyard_
-    # card over an opponent's graveyard), nothing permanent-scoped.
+    # extra_choosable_names: card names that can be a "Choose: X" option despite
+    # not being in THIS deck (nor its tokens). Once served an OPPONENT's
+    # graveyard cards (Relic of Progenitus' cross-player exile), but the league
+    # (rl.pool) no longer passes it: choose_graveyard_card is now a POINTER
+    # target (rl.action_bridge), so an opponent's graveyard is reached by
+    # pointing at its token, not a whole-league "Choose: X" row per card name.
+    # Kept as a general knob (and used by scripts/migrate_pointer_graveyard.py
+    # to reconstruct the pre-pointer table); defaults to none. choosable_names
+    # itself (not just extra_choosable_names) also drives "Choose target: X
+    # (slot k))" and "Attack: X (slot k)" below -- both strictly THIS side's
+    # own battlefield permanents.
     choose_by_name = sorted(set(choosable_names) | set(extra_choosable_names))
     for name in choose_by_name:
         actions.append((f"Choose: {name}", _choose_name_legal(name), _choose_name_execute(name)))
@@ -1775,9 +1923,6 @@ def build_action_table(decklist, registry, token_card_defs=(), pending_kinds=(),
     # DECLARE_ATTACKERS (combat_enabled=False) simply never sees any of
     # these become legal -- same "phase not in this deck's own sequence"
     # degrade every other phase-gated action already relies on.
-    card_type_by_name = {name: game.CARD_DEFS[name].card_type for name in distinct_names}
-    card_type_by_name.update({cd.name: cd.card_type for cd in token_card_defs})
-    qty_by_name = {name: qty for name, qty, *_rest in decklist}
 
     # "Choose target: X (slot k)" -- the "choose_permanent" resolution's own
     # exact-(name, slot) addressed actions (Aura enchant-targets, Crop
@@ -1870,35 +2015,10 @@ def build_action_table(decklist, registry, token_card_defs=(), pending_kinds=(),
                     _choose_opponent_permanent_execute(name, slot),
                 ))
 
-    # Abundant Growth's own grant: a runtime, per-instance fact (which
-    # specific land, if any, ends up enchanted) that can't be known when
-    # this table is built, before any game state exists -- so every land
-    # name gets a "Choose: X as color" slot for every color ANY card in
-    # this decklist can ever grant, pre-registered here and masked
-    # legal/illegal at runtime by mana.tap_cost_options actually seeing
-    # (or not seeing) an attached grant.
-    grantable_colors = set()
-    for name in distinct_names:
-        grantable_colors |= registry.get(game.CARD_DEFS[name].effect_id, {}).get("grants_mana_colors", set())
-
-    for name in distinct_names:
-        spec = registry.get(game.CARD_DEFS[name].effect_id, {})
-        colors = set()
-        mana = spec.get("mana")
-        if mana is not None and mana[0] == "flexible":
-            colors |= mana[1]
-        filter_mana = spec.get("filter_mana")
-        if filter_mana is not None:
-            colors |= filter_mana["colors"]
-        if game.CARD_DEFS[name].card_type == game.CardType.LAND:
-            colors |= grantable_colors
-        for color in sorted(colors):
-            actions.append((
-                f"Choose: {name} as {color}",
-                _choose_name_color_legal(name, color),
-                _choose_name_color_execute(name, color),
-            ))
-
+    # Float-first: no "Choose: X as color" tap-during-payment rows. A flexible
+    # or granted source's color is now chosen at TAP time (the "Tap X for
+    # <color>" mana-ability rows above float directly into the pool); paying a
+    # cost only ever spends floated pool mana (below).
     for color in game.POOL_COLORS:
         actions.append((
             f"Spend {color} from pool",
@@ -1906,45 +2026,77 @@ def build_action_table(decklist, registry, token_card_defs=(), pending_kinds=(),
             _pool_spend_execute(color),
         ))
 
-    if "scry" in pending_kinds or "surveil" in pending_kinds:
-        actions.append(("Keep (scry/surveil)", _keep_dispose_legal, _keep_execute))
-        actions.append(("Dispose (scry/surveil)", _keep_dispose_legal, _dispose_execute))
-    if "ancient_stirrings" in pending_kinds:
-        actions.append(("Decline (Ancient Stirrings)", _decline_legal, _decline_execute))
-    if "malevolent_rumble" in pending_kinds:
-        actions.append(("Decline (Malevolent Rumble)", _decline_malevolent_rumble_legal, _decline_malevolent_rumble_execute))
-    if "ponder" in pending_kinds:
-        actions.append(("Shuffle (Ponder)", _ponder_shuffle_legal, _ponder_shuffle_execute))
-    if "pay_unless" in pending_kinds:  # Spell Pierce / Ward "unless controller pays {N}"
-        actions.append(("Pay (unless)", _pay_unless_pay_legal, _pay_unless_pay_execute))
-        actions.append(("Don't pay (unless)", _pay_unless_decline_legal, _pay_unless_decline_execute))
-    if "tuck_position" in pending_kinds:  # Deem Inferior: owner picks 2nd-from-top or bottom
-        actions.append(("Tuck: 2nd from top", _tuck_position_legal, lambda state: game.execute_tuck_position(state, "top2")))
-        actions.append(("Tuck: bottom", _tuck_position_legal, lambda state: game.execute_tuck_position(state, "bottom")))
-    if "may_transform" in pending_kinds:  # Delver of Secrets: revealed an instant/sorcery, may flip
-        actions.append(("Transform", _may_transform_legal, lambda state: game.execute_may_transform(state, True)))
-        actions.append(("Don't transform", _may_transform_legal, lambda state: game.execute_may_transform(state, False)))
-    if "may_copy" in pending_kinds:  # Chain Lightning: after paying {R}{R}, may copy the spell
-        actions.append(("Copy spell", _may_copy_legal, lambda state: game.execute_may_copy(state, True)))
-        actions.append(("Don't copy spell", _may_copy_legal, lambda state: game.execute_may_copy(state, False)))
-    if "select_to_hand" in pending_kinds:
-        actions.append(("Keep (select to hand)", _select_to_hand_keep_legal, _select_to_hand_keep_execute))
-        actions.append(("Bottom (select to hand)", _select_to_hand_bottom_legal, _select_to_hand_bottom_execute))
-    if "search_fetch" in pending_kinds:
-        # Gated on "search_fetch" membership alone, not per-deck optionality
-        # (Tron's own search_fetch uses are never optional=True, so this
-        # stays present-but-permanently-illegal for Tron -- same as it was
-        # unconditionally before this change; both current decks already
-        # share "search_fetch" either way, so this isn't a growth vector).
-        actions.append(("Decline (search)", _decline_search_legal, _decline_search_execute))
-    if "choose_graveyard_card" in pending_kinds:
-        # Only ever legal for an OPTIONAL choose_graveyard_card (Masked
-        # Vandal's "you may exile a creature from your graveyard"); the
-        # legal_fn itself gates on pending["optional"], so it stays present-
-        # but-permanently-illegal for decks whose only graveyard picks are
-        # mandatory (Dread Return, Relic), same footing as "Decline (search)".
-        actions.append(("Decline (graveyard)", _decline_graveyard_card_legal, _decline_graveyard_card_execute))
-    actions.append(("Abandon payment", _abandon_payment_legal, _abandon_payment_execute))  # pay_cost is baseline, always present
+    # ---- UNIVERSAL DECISION ROWS (deliberately NOT gated on pending_kinds) ----
+    # Every fixed row below answers a QUESTION the engine can pose, and each is a
+    # small constant set of buttons (never a per-card-name loop). They are added
+    # to EVERY deck's table unconditionally, because a decision is not always
+    # answered by the player whose deck produced it -- an opponent's card can pose
+    # a question that YOU must answer:
+    #   pay_unless      Spell Pierce/Ward/Nihil Spellbomb/Chain Lightning -- the
+    #                   PAYER is the spell's controller, i.e. the opponent.
+    #   tuck_position   Deem Inferior -- the tucked permanent's OWNER chooses.
+    #   may_copy        Chain Lightning -- the affected player may copy.
+    #   choose_any_target  a Chain Lightning COPIER may choose a new target.
+    #   search_fetch    Cleansing Wildfire -- the destroyed land's CONTROLLER
+    #                   searches their own library.
+    #   scry/surveil, discard-decline, choose_graveyard_card-decline  same shape.
+    # `derive_pending_kinds` reads a deck's OWN cards, so gating these on it left
+    # the answering seat with no row for the question and an all-False action mask
+    # -- a hard crash (real: monster_tron/mono_blue_terror league play; an
+    # empirical cross-deck audit reproduced pay_unless and tuck_position and
+    # flagged choose_graveyard_card/discard/surveil as latent). Rather than
+    # maintain a hand-audited list of "which kinds may cross" -- which silently
+    # rots the next time a card hands a choice to the opponent -- every constant
+    # decision-button set is now always present and runtime-gated illegal, exactly
+    # the "present-but-permanently-illegal" footing "Decline (graveyard)" and
+    # "Decline (search)" already documented for themselves.
+    #
+    # Still gated below (and safe to be): the two PER-CARD-NAME expansions,
+    # `impulse` and `discard_or_sacrifice`'s land rows. Those enumerate a deck's
+    # own card names, so a cross-player instance is served by that player's own
+    # table anyway, and making them unconditional would bloat every table by a
+    # deck's worth of rows for nothing.
+    actions.append(("Keep (scry/surveil)", _keep_dispose_legal, _keep_execute))
+    actions.append(("Dispose (scry/surveil)", _keep_dispose_legal, _dispose_execute))
+    actions.append(("Decline (Ancient Stirrings)", _decline_legal, _decline_execute))
+    actions.append(("Decline (Malevolent Rumble)", _decline_malevolent_rumble_legal, _decline_malevolent_rumble_execute))
+    actions.append(("Shuffle (Ponder)", _ponder_shuffle_legal, _ponder_shuffle_execute))
+    actions.append(("Pay (unless)", _pay_unless_pay_legal, _pay_unless_pay_execute))
+    actions.append(("Don't pay (unless)", _pay_unless_decline_legal, _pay_unless_decline_execute))
+    actions.append(("Tuck: 2nd from top", _tuck_position_legal, lambda state: game.execute_tuck_position(state, "top2")))
+    actions.append(("Tuck: bottom", _tuck_position_legal, lambda state: game.execute_tuck_position(state, "bottom")))
+    actions.append(("Transform", _may_transform_legal, lambda state: game.execute_may_transform(state, True)))
+    actions.append(("Don't transform", _may_transform_legal, lambda state: game.execute_may_transform(state, False)))
+    actions.append(("Copy spell", _may_copy_legal, lambda state: game.execute_may_copy(state, True)))
+    actions.append(("Don't copy spell", _may_copy_legal, lambda state: game.execute_may_copy(state, False)))
+    actions.append(("Cast (may)", _may_cast_legal, lambda state: game.execute_may_cast(state, True)))
+    actions.append(("Decline (may)", _may_cast_legal, lambda state: game.execute_may_cast(state, False)))
+    actions.append(("Keep (select to hand)", _select_to_hand_keep_legal, _select_to_hand_keep_execute))
+    actions.append(("Bottom (select to hand)", _select_to_hand_bottom_legal, _select_to_hand_bottom_execute))
+    actions.append(("Decline (search)", _decline_search_legal, _decline_search_execute))
+    # Only ever legal for an OPTIONAL choose_graveyard_card (Masked Vandal's "you
+    # may exile a creature from your graveyard"); the legal_fn itself gates on
+    # pending["optional"], so it is present-but-permanently-illegal for decks
+    # whose only graveyard picks are mandatory (Dread Return, Relic). Universal
+    # per the block above -- Relic of Progenitus already poses its graveyard pick
+    # to the TARGETED player, so the decline row has to exist in their table too
+    # the day any cross-player graveyard pick becomes optional.
+    actions.append(("Decline (graveyard)", _decline_graveyard_card_legal, _decline_graveyard_card_execute))
+    # Float-first: NO "Abandon payment" -- there is no undo. Paying a cost is
+    # just spending already-floated pool mana (the _pool_spend rows below), and
+    # affordability was checked exactly (game.mana.pool_can_pay) before the
+    # payment began, so spending alone can never strand. Removing the action
+    # eliminates the tap/untap churn cycle the old dense abandon penalty fought.
+    #
+    # That "cannot strand" guarantee is NOT self-enforcing, though: because
+    # there is no undo, anything that DESTROYS floating mana mid-payment can
+    # make an already-begun payment impossible to finish, and with every cast/
+    # activate action and Pass illegal during a pending, the agent is left with
+    # no legal action at all (an all-False mask). A mana FILTER is exactly such
+    # an action -- pool->pool conversion, legal mid-payment -- and a real
+    # pretrain run hit it (monster_tron: filter away the only {G} while owing
+    # {G}). _filter_would_strand_payment now upholds the guarantee for that
+    # path; any FUTURE action that consumes floating mana must do the same.
     # NOTE: the pregame mulligan actions ("Keep hand" / "Mulligan") and the
     # "mulligan_bottom" branch of the generic "Choose: X" action were REMOVED from
     # this table (the harness refactor). The per-deck MulliganNet (rl.mulligan)
@@ -1953,8 +2105,10 @@ def build_action_table(decklist, registry, token_card_defs=(), pending_kinds=(),
     # space contains ZERO pregame actions and a game can never fall back to a
     # fixed-table mulligan. The _mulligan_*_legal/_execute helpers are retained
     # (still exported) but no longer wired into any table.
-    if "discard" in pending_kinds:
-        actions.append(("Decline (discard)", _decline_discard_legal, _decline_discard_execute))
+    # Refurbished Familiar already makes the OPPONENT discard from their own hand
+    # (the "Choose: X" hand-name rows are their own, so those self-serve) -- but
+    # the decline row is a constant button, so it is universal per the block above.
+    actions.append(("Decline (discard)", _decline_discard_legal, _decline_discard_execute))
     if "discard_or_sacrifice" in pending_kinds:
         # The DISCARD half reuses the generic "Choose: X" action built
         # above (bare hand-card names); only the SACRIFICE half needs its
@@ -1966,47 +2120,49 @@ def build_action_table(decklist, registry, token_card_defs=(), pending_kinds=(),
                 _discard_or_sacrifice_sacrifice_legal(name),
                 _discard_or_sacrifice_sacrifice_execute(name),
             ))
-        actions.append((
-            "Decline (discard or sacrifice)",
-            _decline_discard_or_sacrifice_legal,
-            _decline_discard_or_sacrifice_execute,
-        ))
-    if "madness_decision" in pending_kinds:
-        actions.append(("Cast (madness)", _madness_cast_legal, _madness_cast_execute))
-        actions.append(("Decline (madness)", _madness_decline_legal, _madness_decline_execute))
-    if "choose_target_player" in pending_kinds:
-        # "Target: yourself" is always legal the instant this pending
-        # kind is reached (a real Magic legality fact -- "target player"
-        # never excludes its own caster), even alone in a 1-player game;
-        # "Target: opponent" only becomes legal once a real second
-        # PlayerState exists. Two fixed actions, not a per-name loop --
-        # there are only ever at most 2 possible players, never more.
-        actions.append(("Target: yourself", _target_self_legal, _target_self_execute))
-        actions.append(("Target: opponent", _target_opponent_legal, _target_opponent_execute))
-    if "choose_any_target" in pending_kinds:
-        # The player half of an "any target" choice (Lightning Bolt etc.) --
-        # two fixed actions, same shape/reasoning as the choose_target_player
-        # pair above. The creature half (either battlefield) rides the
-        # identity pointer scheme (rl.action_bridge), not fixed actions.
-        actions.append(("Target any: yourself", _target_any_self_legal, _target_any_self_execute))
-        actions.append(("Target any: opponent", _target_any_opponent_legal, _target_any_opponent_execute))
-        actions.append(("Choose no target", _target_any_decline_legal, _target_any_decline_execute))  # "up to one" decline
-    if "choose_room" in pending_kinds:  # Undercity venture: which next room to enter (a ≤2-way branch)
-        for room in game.ROOM_NAMES:
-            actions.append((f"Enter room: {room}", _choose_room_legal(room), _choose_room_execute(room)))
-    if "choose_mana_color" in pending_kinds:  # Chromatic Star: "add one mana of any color"
-        for color in game.COLORS:
-            actions.append((f"Add mana: {color}", _choose_mana_color_legal(color), _choose_mana_color_execute(color)))
+    # Constant decline button -> universal (see the block above); only the
+    # per-land-name sacrifice rows just above stay deck-gated.
+    actions.append((
+        "Decline (discard or sacrifice)",
+        _decline_discard_or_sacrifice_legal,
+        _decline_discard_or_sacrifice_execute,
+    ))
+    actions.append(("Cast (madness)", _madness_cast_legal, _madness_cast_execute))
+    actions.append(("Decline (madness)", _madness_decline_legal, _madness_decline_execute))
+    # "Target: yourself" is always legal the instant this pending kind is reached
+    # (a real Magic legality fact -- "target player" never excludes its own
+    # caster), even alone in a 1-player game; "Target: opponent" only becomes
+    # legal once a real second PlayerState exists. Two fixed actions, not a
+    # per-name loop -- there are only ever at most 2 possible players.
+    actions.append(("Target: yourself", _target_self_legal, _target_self_execute))
+    actions.append(("Target: opponent", _target_opponent_legal, _target_opponent_execute))
+    # The player half of an "any target" choice (Lightning Bolt etc.) -- same
+    # shape/reasoning as the choose_target_player pair above. The creature half
+    # (either battlefield) rides the identity pointer scheme (rl.action_bridge),
+    # not fixed actions. Universal because a Chain Lightning COPIER -- the
+    # affected player, i.e. the opponent -- may choose a new target for the copy.
+    actions.append(("Target any: yourself", _target_any_self_legal, _target_any_self_execute))
+    actions.append(("Target any: opponent", _target_any_opponent_legal, _target_any_opponent_execute))
+    actions.append(("Choose no target", _target_any_decline_legal, _target_any_decline_execute))  # "up to one" decline
+    # Undercity venture (which next room -- a <=2-way branch) and Chromatic Star's
+    # "add one mana of any color": tiny CONSTANT sets (ROOM_NAMES / COLORS), not
+    # per-deck-card loops, so they are universal on the same footing. Initiative
+    # can pass between players, so a deck with no Undercity card of its own can
+    # still be the one venturing.
+    for room in game.ROOM_NAMES:
+        actions.append((f"Enter room: {room}", _choose_room_legal(room), _choose_room_execute(room)))
+    for color in game.COLORS:
+        actions.append((f"Add mana: {color}", _choose_mana_color_legal(color), _choose_mana_color_execute(color)))
 
     return tuple(actions)
 
 
-_battlefield_lookup_cache = None  # (state, {(name, slot): Permanent}) -- valid only for the duration of one legal_action_mask sweep, same lifecycle as _tap_cost_options_cache below
+_battlefield_lookup_cache = None  # (state, {(name, slot): Permanent}) -- valid only for the duration of one legal_action_mask sweep, same lifecycle as _mana_ability_options_cache below
 
 
 def _cached_battlefield_lookup(state):
     """Sweep-scoped {(name, slot): Permanent} lookup for state.battlefield --
-    same "profiled, not guessed" caching pattern as _cached_tap_cost_options
+    same "profiled, not guessed" caching pattern as _cached_mana_ability_options
     just below: _attack_legal/
     _assign_blocker_legal each independently scanned the WHOLE battlefield
     with any(...) to find one specific (name, slot), once per action-table
@@ -2015,8 +2171,8 @@ def _cached_battlefield_lookup(state):
     sweep (profiled: 2 closures alone accounted for ~3.4M calls across a
     single 8192-step training burst). Building this dict once per sweep
     turns each of those checks into an O(1) lookup. Safe for the same
-    reason _cached_tap_cost_options is: a legal_action_mask sweep only ever
-    calls legal_fns, never an execute_* function, so state can't change
+    reason _cached_mana_ability_options is: a legal_action_mask sweep only
+    ever calls legal_fns, never an execute_* function, so state can't change
     mid-sweep. (name, slot) is a safe dict key here because it is unique
     per side -- state.battlefield is always ONE side's own,
     active-relative zone (see this module's other active-relative
@@ -2027,25 +2183,177 @@ def _cached_battlefield_lookup(state):
     return _battlefield_lookup_cache[1]
 
 
-_tap_cost_options_cache = None  # (state, result) -- valid only for the duration of one legal_action_mask sweep, see _cached_tap_cost_options
 
 
-def _cached_tap_cost_options(state):
-    """Memoizes game.tap_cost_options(state) for the exact duration of one
-    legal_action_mask sweep. _choose_name_legal/_choose_name_color_legal
-    (the "Choose: X"/"Choose: X as color" mana-source actions) each
-    independently call this from scratch, once per candidate name/color,
-    so one sweep recomputes the identical list several times over.
-    Provably safe to cache for exactly this scope: a legal_action_mask
-    sweep only ever calls legal_fns, never an execute_* function, so state
-    can't change mid-sweep -- legal_action_mask resets this cache before
-    and after its own sweep (see there), so nothing outside a sweep (an
-    actual execute_fn call, a later sweep against mutated state) can ever
-    see a stale hit."""
-    global _tap_cost_options_cache
-    if _tap_cost_options_cache is None or _tap_cost_options_cache[0] is not state:
-        _tap_cost_options_cache = (state, game.tap_cost_options(state))
-    return _tap_cost_options_cache[1]
+_mana_ability_options_cache = None  # (state, result) -- one legal_action_mask sweep, like _tap_cost_options_cache
+
+
+def _cached_mana_ability_options(state):
+    """Memoizes game.mana_ability_options(state) for one legal_action_mask
+    sweep -- every "Tap X for <color>" row's legal() calls it, so a sweep would
+    otherwise recompute the identical battlefield scan once per mana row."""
+    global _mana_ability_options_cache
+    if _mana_ability_options_cache is None or _mana_ability_options_cache[0] is not state:
+        _mana_ability_options_cache = (state, game.mana_ability_options(state))
+    return _mana_ability_options_cache[1]
+
+
+def _mana_ability_legal(name, color):
+    """Float-first: a mana ability is legal in ANY priority window, even
+    mid-resolution of anything else (605.1a/605.3b -- it never uses the
+    stack and doesn't require priority to activate), so this has no
+    pending-resolution gate at all -- no `_pending_gate` attribute means
+    legal_action_mask always calls it, regardless of what's pending. Legal
+    iff a source named `name` can produce `color` right now
+    (game.mana_ability_options; color=None for fixed/tron/count sources)."""
+    def legal(state):
+        return (name, color) in _cached_mana_ability_options(state)
+    return legal
+
+
+def _find_mana_source(state, name, color):
+    """The specific untapped, available permanent named `name` that can produce
+    `color` now -- same-named sources are fungible, but `color` narrows to the
+    one flexible/granted source that can make it (e.g. an Abundant-Growth land).
+    Mirrors mana_ability_options' per-permanent gates (tap-lock, extra cost)."""
+    for p in state.battlefield:
+        if p.card_def.name != name or p.tapped or game.tap_summoning_locked(state, p):
+            continue
+        extra = game.EFFECT_REGISTRY.get(p.card_def.effect_id, {}).get("mana_extra_available")
+        if extra is not None and not extra(state, p):
+            continue
+        try:
+            game.mana_output(p, state, color)  # raises if this p can't produce `color`
+        except ValueError:
+            continue
+        return p
+    return None
+
+
+def _mana_ability_execute(name, color):
+    def execute(state):
+        p = _find_mana_source(state, name, color)
+        game.activate_mana_source(state, p, color)
+    return execute
+
+
+def _mana_extra_tap_legal(name, color, target_name, target_slot):
+    """Saruli-Caretaker-shaped mana ability whose additional cost is tapping
+    ANOTHER untapped creature (registry "mana_extra_choose") -- exact
+    (name, slot) addressed, same reasoning _choose_permanent_legal's own
+    docstring gives (two same-named creatures aren't interchangeable once
+    their own state differs -- which specific one you tap can matter). No
+    pending-resolution gate (same reasoning _mana_ability_legal's own
+    docstring gives -- this whole action, extra cost included, is atomic).
+    Legal iff `name` can currently produce `color`, AND the specific
+    (target_name, target_slot) permanent is untapped, isn't the source
+    itself, and satisfies the source's own mana_extra_choose predicate."""
+    def legal(state):
+        p = _find_mana_source(state, name, color)
+        if p is None:
+            return False
+        extra_pred = game.EFFECT_REGISTRY.get(p.card_def.effect_id, {}).get("mana_extra_choose")
+        if extra_pred is None:
+            return False
+        target = next(
+            (q for q in state.battlefield if q.card_def.name == target_name and q.slot == target_slot), None,
+        )
+        return target is not None and target is not p and not target.tapped and extra_pred(target)
+    return legal
+
+
+def _mana_extra_tap_execute(name, color, target_name, target_slot):
+    def execute(state):
+        p = _find_mana_source(state, name, color)
+        target = next(q for q in state.battlefield if q.card_def.name == target_name and q.slot == target_slot)
+        target.tapped = True
+        game.activate_mana_source(state, p, color)
+    return execute
+
+
+def _find_filter_source(state, name):
+    """An unused mana filter named `name` -- Conduit Pylons (gated by tapped),
+    Barrels of Blasting Jelly (gated by its own once-per-turn used_this_turn)."""
+    for p in state.battlefield:
+        if p.card_def.name != name or game.EFFECT_REGISTRY.get(p.card_def.effect_id, {}).get("filter_mana") is None:
+            continue
+        used = p.flags.get("used_this_turn", False) if name == "Barrels of Blasting Jelly" else p.tapped
+        if not used:
+            return p
+    return None
+
+
+def _filter_mana_legal(name, output_color, input_color):
+    """A mana filter is a pool->pool conversion -- "{1}[, {T}]: add one mana of
+    any color" -- ATOMIC, like every other mana ability (605.1a): spending the
+    {1} and adding `output_color` both happen in one action, never a nested
+    pay_cost (which would risk clobbering whatever pending_resolution is
+    already open -- state.pending_resolution is a single slot, not a stack;
+    same reasoning _mana_extra_tap_legal's own docstring gives). No
+    pending-resolution gate. Legal iff an unused filter named `name` exists
+    and the pool already holds a floating `input_color` pip to spend on its
+    {1} activation cost (any color, including colorless, can pay a generic
+    cost) -- AND, mid-payment, converting that pip away must not strand the
+    payment (see _filter_would_strand_payment)."""
+    def legal(state):
+        if _find_filter_source(state, name) is None or state.mana_pool.get(input_color, 0) <= 0:
+            return False
+        return not _filter_would_strand_payment(state, input_color)
+    return legal
+
+
+def _filter_would_strand_payment(state, input_color):
+    """Would converting one `input_color` pip away right now make an ALREADY-
+    BEGUN payment impossible to finish?
+
+    Float-first's own design guarantee is that a payment, once begun, can always
+    be completed -- it deliberately removed the "Abandon payment" action (which
+    existed to escape exactly this), so a payment the agent cannot finish is
+    unescapable BY CONSTRUCTION: every cast/activate action is illegal while a
+    pending is open, Pass is illegal, and the only remaining actions are
+    spending pool mana and tapping sources. That guarantee was never enforced
+    for filters, and a real pretrain run found the hole (monster_tron, turn 10:
+    tap Forest for the only {G}, cast Crop Rotation for {G}, then filter that
+    same {G} into {U} -- remaining {'G': 1}, no untapped green source, all-False
+    action mask, RuntimeError).
+
+    Only COLORED requirements can break. A filter is one pip in, one pip out, so
+    the pool's SIZE is invariant and any outstanding generic requirement stays
+    exactly as payable as before (any color pays generic) -- so this checks only
+    whether the pool would still hold enough `input_color` for what the cost
+    specifically demands in that color. Exact, not a heuristic: it permits every
+    conversion that leaves the payment completable from the pool (including
+    converting a spare copy of a needed color) and rejects only those that
+    provably break it. Pool-only, matching game.mana.pool_can_pay -- the same
+    domain float-first already uses for affordability everywhere else.
+
+    A conservative edge, deliberately accepted: it does not additionally reason
+    about mana still tappable from untapped sources, so a line like "convert my
+    only G to U, then tap a second Forest for G" is refused. That line is never
+    NEEDED -- pool_can_pay already required the full cost to be floating when
+    the payment began, so converting away a still-demanded pip can only ever
+    reduce sufficiency."""
+    pending = state.pending_resolution
+    if pending is None or pending["kind"] != "pay_cost":
+        return False
+    still_needed = pending["remaining"].get(input_color, 0)
+    return state.mana_pool.get(input_color, 0) - 1 < still_needed
+
+
+def _filter_mana_execute(name, output_color, input_color):
+    def execute(state):
+        p = _find_filter_source(state, name)
+        if name == "Barrels of Blasting Jelly":
+            p.flags["used_this_turn"] = True
+        else:
+            p.tapped = True
+        state.mana_pool[input_color] -= 1
+        if state.mana_pool[input_color] <= 0:
+            del state.mana_pool[input_color]
+        state.log_event("mana_spend", color=input_color, toward="filter")
+        state.mana_pool[output_color] = state.mana_pool.get(output_color, 0) + 1
+        state.log_event("mana_tap", permanent=(name, p.slot), mode="filter", produced=[output_color])
+    return execute
 
 
 def legal_action_mask(state, actions):
@@ -2070,7 +2378,7 @@ def legal_action_mask(state, actions):
     always called, exactly like every closure was before this fix -- the
     fail-safe default, not an optimization gap that can go wrong.
 
-    Resets _tap_cost_options_cache, _battlefield_lookup_cache, and
+    Resets _battlefield_lookup_cache, _mana_ability_options_cache, and
     game.mana's own _enchanting_cache (game.reset_mana_cache) before AND
     after the sweep itself (not just before): guarantees none of these
     caches can ever leak past this call's own scope into a later
@@ -2080,9 +2388,9 @@ def legal_action_mask(state, actions):
     module-level global, not load-bearing. mana.py's own cache is reset
     from here, not self-invalidating there, for the same reason the other
     two aren't: see game.mana._enchanting's own docstring."""
-    global _tap_cost_options_cache, _battlefield_lookup_cache
-    _tap_cost_options_cache = None
+    global _battlefield_lookup_cache, _mana_ability_options_cache
     _battlefield_lookup_cache = None
+    _mana_ability_options_cache = None
     game.reset_mana_cache()
     pending = state.pending_resolution
     pending_kind = pending["kind"] if pending is not None else None
@@ -2098,8 +2406,8 @@ def legal_action_mask(state, actions):
             mask[idx] = legal_fn(state)
         return mask
     finally:
-        _tap_cost_options_cache = None
         _battlefield_lookup_cache = None
+        _mana_ability_options_cache = None
         game.reset_mana_cache()
 
 
@@ -2131,9 +2439,6 @@ __all__ = [
     '_choose_name_options',
     '_choose_name_legal',
     '_choose_name_execute',
-    '_choose_name_color_options',
-    '_choose_name_color_legal',
-    '_choose_name_color_execute',
     '_attack_legal',
     '_attack_execute',
     '_choose_permanent_legal',
@@ -2157,8 +2462,6 @@ __all__ = [
     '_decline_execute',
     '_decline_malevolent_rumble_legal',
     '_decline_malevolent_rumble_execute',
-    '_abandon_payment_legal',
-    '_abandon_payment_execute',
     '_ponder_shuffle_legal',
     '_ponder_shuffle_execute',
     '_pay_unless_pay_legal',
@@ -2167,6 +2470,7 @@ __all__ = [
     '_pay_unless_decline_execute',
     '_may_transform_legal',
     '_may_copy_legal',
+    '_may_cast_legal',
     '_choose_room_legal',
     '_choose_room_execute',
     '_choose_mana_color_legal',
@@ -2219,7 +2523,5 @@ __all__ = [
     'build_action_table',
     '_battlefield_lookup_cache',
     '_cached_battlefield_lookup',
-    '_tap_cost_options_cache',
-    '_cached_tap_cost_options',
     'legal_action_mask',
 ]

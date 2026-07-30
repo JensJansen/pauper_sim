@@ -9,6 +9,17 @@ from ..cards import CardType
 HAND_SIZE_LIMIT = 7  # real Magic's own rule -- not a per-config tunable, no card in this pool ever modifies it
 
 
+def departing_card_def(permanent):
+    """The CardDef that actually goes to another zone when `permanent` leaves the
+    battlefield. For a transformed double-faced permanent (Insectile Aberration)
+    that's its FRONT face (Delver of Secrets) -- a DFC is only its back face while
+    on the battlefield; in every other zone it's the front face (real Magic 712.4a).
+    This also keeps the is-token check honest: the back face's name isn't in
+    registry.CARD_DEFS, so without reverting here a dying Insectile Aberration would
+    be misread as a token and deleted instead of putting Delver in the graveyard."""
+    return permanent.flags.get("front_card_def", permanent.card_def)
+
+
 def check_state_based_actions(state):
     """Creature-death check: every creature on either battlefield with lethal
     marked damage (>= effective toughness), or any damage from a deathtouch
@@ -72,9 +83,14 @@ def _destroy_creature(state, permanent):
     owner = next(player for player in state.players if permanent in player.battlefield)
     owner_idx = state.players.index(owner)
     owner.battlefield.remove(permanent)
-    is_token = permanent.card_def.name not in registry.CARD_DEFS
+    departing = departing_card_def(permanent)  # front face for a DFC leaving the battlefield
+    is_token = departing.name not in registry.CARD_DEFS
     if not is_token:
-        owner.graveyard.append(permanent.card_def)
+        # 400.7 linked-ability tracking: stash the freshly minted graveyard
+        # instance on the dying permanent's own flags, so an ltb_trigger that
+        # needs to reference the EXACT card that died (Lembas: "shuffles it
+        # into their library") can, instead of bridging by name.
+        permanent.flags["graveyard_instance"] = state.move_card(departing, owner.graveyard)
     state.log_event(
         "state_based_death", permanent=(permanent.card_def.name, permanent.slot), owner_idx=owner_idx,
         to_zone=("ceases_to_exist" if is_token else "graveyard"),
@@ -96,7 +112,7 @@ def _destroy_creature(state, permanent):
             owner.hand.append(aura.card_def)
             outcome = "hand"
         else:
-            owner.graveyard.append(aura.card_def)
+            state.move_card(aura.card_def, owner.graveyard)
             outcome = "graveyard"
         state.log_event(
             "aura_orphaned", aura=(aura.card_def.name, aura.slot), target=(permanent.card_def.name, permanent.slot),
@@ -127,7 +143,7 @@ def destroy_permanent(state, permanent):
     owner.battlefield.remove(permanent)
     is_token = permanent.card_def.name not in registry.CARD_DEFS
     if not is_token:
-        owner.graveyard.append(permanent.card_def)
+        state.move_card(permanent.card_def, owner.graveyard)
     state.log_event(
         "destroy", permanent=(permanent.card_def.name, permanent.slot), owner_idx=owner_idx,
         to_zone=("ceases_to_exist" if is_token else "graveyard"),
@@ -154,9 +170,13 @@ def sacrifice_to_graveyard(state, permanent):
     owner = next(player for player in state.players if permanent in player.battlefield)
     owner_idx = state.players.index(owner)
     owner.battlefield.remove(permanent)
-    is_token = permanent.card_def.name not in registry.CARD_DEFS
+    departing = departing_card_def(permanent)  # front face for a DFC leaving the battlefield
+    is_token = departing.name not in registry.CARD_DEFS
     if not is_token:
-        owner.graveyard.append(permanent.card_def)
+        # 400.7 linked-ability tracking: see _destroy_creature's own comment --
+        # stash the fresh graveyard instance so an ltb_trigger needing the
+        # EXACT card that left (Lembas) can reference it, not bridge by name.
+        permanent.flags["graveyard_instance"] = state.move_card(departing, owner.graveyard)
     state.log_event(
         "zone_move", permanent=(permanent.card_def.name, permanent.slot), from_zone="battlefield",
         to_zone=("ceases_to_exist" if is_token else "graveyard"), reason="sacrifice",
@@ -241,13 +261,20 @@ if __name__ == "__main__":
 
         assert attacker_with_rancor not in state.players[0].battlefield
         assert [c.name for c in state.players[0].graveyard] == ["Rancor'd Attacker"]
+        # 400.7: the graveyard card is a FRESH instance, not the battlefield
+        # Permanent re-added (an identity check the by-name assert above can't
+        # make -- the exact minting-discipline bug this guards against).
+        assert state.players[0].graveyard[0] is not attacker_with_rancor
         assert rancor_permanent not in state.players[0].battlefield
         assert [c.name for c in state.players[0].hand] == ["Rancor"]  # returned to hand, not the graveyard
+        assert state.players[0].hand[0] is not rancor_permanent  # fresh instance in hand, not the Permanent
         assert rancor_def not in state.players[0].graveyard
 
         assert blocker_with_mask not in state.players[1].battlefield
         assert mask_permanent not in state.players[1].battlefield
         assert sorted(c.name for c in state.players[1].graveyard) == ["Ancestral Mask", "Masked Blocker"]  # ordinary Aura -- graveyard, not hand
+        # both fresh instances, not the battlefield Permanents re-added (400.7)
+        assert all(c is not blocker_with_mask and c is not mask_permanent for c in state.players[1].graveyard)
         assert state.players[1].hand == []
 
         # cleanup_step clears damage_marked for EVERY permanent, both
@@ -341,7 +368,9 @@ if __name__ == "__main__":
         registry.CARD_DEFS["Victim"] = victim.card_def
         state.battlefield = [watcher, victim]
         sacrifice_to_graveyard(state, victim)
-        assert victim.card_def in state.graveyard  # real card -> graveyard
+        gy_victim = next((c for c in state.graveyard if c.card_def is victim.card_def), None)
+        assert gy_victim is not None  # real card -> graveyard
+        assert gy_victim is not victim  # 400.7: a FRESH instance, not the battlefield Permanent re-added
         assert [e for e in state.trigger_queue if e["type"] == "ltb"]  # its dies-trigger queued
         assert sac_seen == ["Victim"]  # Watcher's on_sacrifice saw the sacrifice ("another permanent")
     finally:

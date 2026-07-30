@@ -71,16 +71,13 @@ def build_pool(manifest_path=DECK_MANIFEST, vocab_path=VOCAB_PATH, token_defs=TO
     decklists = {name: game.parse_decklist_file(path) for name, path in deck_files.items()}
     vocab = CardVocab(list(decklists.values()), token_card_defs=token_defs, vocab_path=vocab_path)
 
-    # Every card name anywhere in the league -- passed to each deck's fixed
-    # action table as extra_choosable_names so a "Choose: X" action exists
-    # for an OPPONENT's graveyard card too (Relic of Progenitus' exile can
-    # target any player; without this, exiling from a cross-deck opponent's
-    # graveyard softlocks with an empty action mask -- see build_action_
-    # table's own extra_choosable_names docstring). The whole roster, not a
-    # specific opponent: a trained model's action space stays fixed across
-    # every matchup the league can produce.
-    all_league_names = sorted({name for dl in decklists.values() for name, *_rest in dl})
-
+    # No extra_choosable_names: the cross-deck OPPONENT-zone picks that needed
+    # it -- a graveyard card (Relic of Progenitus) or a revealed hand card
+    # (Mesmeric Fiend) -- are now reached by POINTING at that card's token
+    # (rl.action_bridge's choose_graveyard_card pointer path; the revealed hand
+    # is faithfully tokenized for the pick, see rl.features), not by a
+    # whole-league "Choose: X" fixed row per card name. So each deck's fixed
+    # table stays scoped to its own cards and no longer grows with the roster.
     union_kinds = None
     if union_pending:
         union_kinds = tuple(sorted(set().union(*(set(game.derive_pending_kinds(dl)) for dl in decklists.values()))))
@@ -90,7 +87,6 @@ def build_pool(manifest_path=DECK_MANIFEST, vocab_path=VOCAB_PATH, token_defs=TO
         pending_kinds = union_kinds if union_pending else game.derive_pending_kinds(decklist)
         fixed_table = build_fixed_action_table(
             decklist, token_card_defs=token_defs, pending_kinds=pending_kinds,
-            extra_choosable_names=all_league_names,
         )
         fixed_tables[name] = fixed_table
         deck_ctxs[name] = (vocab, fixed_table, pending_kinds)

@@ -139,7 +139,8 @@ def collect_rollout(pairing, n_games, horizon, rng, device="cpu", record=True, g
             mull_game = [[], []]
 
             def choose_action(state, agents=agents, reward_fns=reward_fns, record_as=record_as,
-                              game_buffers=game_buffers, pending=pending, mull_game=mull_game):
+                              game_buffers=game_buffers, pending=pending,
+                              mull_game=mull_game):
                 seat = state.active_idx
                 dr = agents[seat].decide(state, seat, horizon, device, greedy=greedy)
                 if record and record_as[seat] is not None:
@@ -465,7 +466,11 @@ def _precompute_frozen_shared(net, token_lists, device, chunk_size=256):
 
 
 def ppo_update(net, optimizers, buf, device, n_epochs=4, batch_size=64, gamma=0.99, gae_lambda=0.95,
-                clip_range=0.2, ent_coef=0.0, vf_coef=0.5, max_grad_norm=0.5):
+                clip_range=0.2, ent_coef=0.01, vf_coef=0.5, max_grad_norm=0.5):
+    # ent_coef default 0.01 (was 0.0): with no entropy bonus the main policy
+    # collapses onto a narrow low-branching behavior (pass, shrink its own board) --
+    # the action-space-minimization pathology; see rl.rewards.deploy_reward_v2. The
+    # mulligan model has its own ENTROPY_COEF; this is the DeckNetwork policy's.
     """PPO update over a buffer of variable-length token lists -- pads ONCE
     per minibatch (not once for the whole buffer up front), since a buffer
     spanning many games can have wildly different token counts across

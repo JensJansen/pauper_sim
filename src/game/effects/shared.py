@@ -105,7 +105,11 @@ def mill(state, n, player_idx=None):
     player = state.players[idx]
     milled = player.library[:n]
     del player.library[:n]
-    player.graveyard.extend(milled)
+    # Each milled card CHANGES ZONES (library -> graveyard) so it enters the
+    # graveyard as a fresh instance (move_card); return those instances, so a
+    # caller acting on "the milled cards" acts on the objects now in the
+    # graveyard, not the discarded library CardDefs.
+    milled = [state.move_card(cd, player.graveyard) for cd in milled]
     if milled:
         state.log_event("mill", count=len(milled), player_idx=idx, cards=[c.name for c in milled])
     return milled
@@ -156,7 +160,7 @@ def discard_from_hand_to_graveyard(state, card_def):
     Not for cards that instead exile or resolve from somewhere other than hand
     (Flashback/Plot/Madness's own resolve paths already skip this)."""
     if card_def is state.resolving_card:
-        state.graveyard.append(card_def)  # the resolving spell: off hand since cast, stack -> graveyard
+        state.move_card(card_def, state.graveyard)  # the resolving spell: off hand since cast, stack -> graveyard (new object)
         return
     if card_def not in state.hand:
         # A non-resolving card must be in hand. If it isn't, a caller's own
@@ -174,7 +178,7 @@ def discard_from_hand_to_graveyard(state, card_def):
             f"stack={[e['card_def'].name for e in state.stack]!r}"
         )
     state.hand.remove(card_def)
-    state.graveyard.append(card_def)
+    state.move_card(card_def, state.graveyard)
 
 
 def any_creature_on_battlefield(state):
@@ -203,7 +207,10 @@ if __name__ == "__main__":
     forest = state.hand[0]
     state.hand = [forest]
     discard_from_hand_to_graveyard(state, forest)
-    assert state.hand == [] and state.graveyard == [forest]
+    # library->hand->graveyard: the graveyard holds a FRESH instance (move_card),
+    # a distinct object from the hand CardDef, not the CardDef itself.
+    assert state.hand == [] and [c.name for c in state.graveyard] == ["Forest"]
+    assert state.graveyard[0] is not forest, "graveyard entry must be a new instance, not the discarded CardDef"
 
     try:
         discard_from_hand_to_graveyard(state, forest)

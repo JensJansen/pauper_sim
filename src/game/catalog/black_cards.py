@@ -143,7 +143,7 @@ def mill_until_land(state):
     whatever later draw attempts to pull from the now-empty library."""
     while state.library:
         card = state.library.pop(0)
-        state.graveyard.append(card)
+        state.move_card(card, state.graveyard)
         if card.card_type == CardType.LAND:
             break
 
@@ -155,7 +155,7 @@ def lotleth_giant_etb(state):
     deal_damage_to_opponent(state, creature_count)
 
 
-def bojuka_bog_etb(state):
+def bojuka_bog_etb(state, permanent):
     """When Bojuka Bog enters, exile target player's graveyard. "Exile a
     graveyard" just empties it here -- exile is untracked, same convention
     as Relic of Progenitus' own graveyard-exile (game.catalog.colorless_
@@ -164,19 +164,20 @@ def bojuka_bog_etb(state):
     a 1-player game), the opponent becomes a second option once one exists,
     and the model picks explicitly.
 
-    Runs as this ETB triggered ability RESOLVES off the stack (ETBs now go
-    through the trigger queue -- casting.enters_battlefield). The target is
-    chosen here at resolution rather than locked at stack-placement: "target
-    player" is always legal (no way to make a player an illegal target), and
-    nothing in this pool manipulates a graveyard at instant speed in response
-    to the trigger, so the two orderings are outcome-identical -- no
-    observable difference, same reasoning begin_choose_graveyard_card's own
-    docstring already applies to Relic's cross-player pick."""
+    Target-at-promotion (project_targeted_triggered_abilities): the target
+    player is chosen as the ability goes on the stack, and the exile happens at
+    resolution. "Target player" is always legal (no way to make a player an
+    illegal target), so this never fizzles -- but choosing at promotion still
+    surfaces the decision one priority window earlier, which can inform play,
+    so it's modeled faithfully rather than collapsed to resolution."""
     def _on_player_chosen(state, idx):
-        target = state.players[idx]
-        exiled = [c.name for c in target.graveyard]
-        target.graveyard.clear()
-        state.log_event("graveyard_exiled", target_player_idx=idx, exiled=exiled)
+        def _resolve(state, card_def):
+            target = state.players[idx]
+            exiled = [c.name for c in target.graveyard]
+            target.graveyard.clear()
+            state.log_event("graveyard_exiled", target_player_idx=idx, exiled=exiled)
+
+        push_to_stack(state, permanent.card_def, _resolve, reserves_hand_card=False, is_spell=False)
 
     resolution.begin_choose_target_player(state, _on_player_chosen)
 
@@ -201,10 +202,10 @@ def mesmeric_fiend_etb(state, permanent):
     opponent = state.opponent
     opponent_idx = state.players.index(opponent)
 
-    def _on_chosen(state, name):
-        if name is None:
+    def _on_chosen(state, chosen):
+        if chosen is None:
             return  # no nonland card in the opponent's hand
-        card = next(c for c in opponent.hand if c.name == name)
+        card = chosen  # the exact hand card (hand is DEFERRED -- still CardDefs, interned)
         opponent.hand.remove(card)
         # Tracked exile, linked to this exact Fiend -- returned by its LTB.
         permanent.flags["mesmeric_exiled"] = (card, opponent_idx)
@@ -247,20 +248,20 @@ def _dread_return_choose_and_push(state, card_def, to_graveyard, reserves_hand_c
     Dread Return card reaches the graveyard on resolution: from hand (hard
     cast) or a no-op (Flashback -- exiled, untracked).
 
-    Duplicate-target note: graveyard cards are shared CardDef objects, so two
-    copies of the same creature card are indistinguishable -- the fizzle
-    check is "no copy of this card remains", not per-physical-copy identity
-    (which the shared-CardDef graveyard cannot represent)."""
-    def _on_chosen(state, name):
-        captured = next((c for c in state.graveyard if c.name == name), None) if name is not None else None
+    Target is locked at cast BY OBJECT IDENTITY: the exact chosen graveyard
+    instance is captured, and the fizzle check at resolution is "is that exact
+    instance still in the graveyard" -- so two same-named copies are now
+    distinct (one can leave while the other stays), per real MTG 400.7/608.2b."""
+    def _on_chosen(state, chosen):
+        captured = chosen  # the exact graveyard instance, locked at cast
 
         def _resolve(state, card_def):
             to_graveyard(state, card_def)
             if captured is None or captured not in state.graveyard:
-                _log_target_fizzle(state, card_def, (name, "graveyard") if name is not None else None)
+                _log_target_fizzle(state, card_def, (captured.name, "graveyard") if captured is not None else None)
                 return
             state.graveyard.remove(captured)
-            enters_battlefield(state, captured, from_zone="graveyard")
+            enters_battlefield(state, captured.card_def, from_zone="graveyard")
 
         push_to_stack(state, card_def, _resolve, reserves_hand_card=reserves_hand_card, exiles_on_resolve=exiles_on_resolve)
 
@@ -275,18 +276,22 @@ def cast_dread_return(state, card_def):
     _dread_return_choose_and_push(state, card_def, to_graveyard=discard_from_hand_to_graveyard, reserves_hand_card=True)
 
 
-def flashback_dread_return(state, card_def):
+def flashback_dread_return(state, inst):
     """Flashback -- Sacrifice three creatures instead of {2}{B}{B}. Same
     reanimation; the target is chosen as the spell is put on the stack (after
     the sacrifice cost is paid), not at resolution. The newly sacrificed
     creatures are in the graveyard by then, so they're eligible targets (a
     real interaction). Dread Return is exiled afterward (untracked, per its
-    own text), so its resolve makes no further zone move for itself."""
-    state.graveyard.remove(card_def)  # leaves the graveyard the moment Flashback is chosen; exiled after (untracked)
+    own text), so its resolve makes no further zone move for itself.
+
+    inst: the exact graveyard CardInstance being flashed back (resolved once at
+    the action boundary, drl_env._actions._graveyard_instance) -- removed by
+    object identity, never by a name re-lookup."""
+    state.graveyard.remove(inst)  # leaves the graveyard the moment Flashback is chosen; exiled after (untracked)
     resolution.begin_sacrifice(
         state, lambda p: p.card_type == CardType.CREATURE, 3,
         on_complete=lambda s, ok: _dread_return_choose_and_push(
-            s, card_def, to_graveyard=lambda st, cd: None, reserves_hand_card=False, exiles_on_resolve=True,
+            s, inst, to_graveyard=lambda st, cd: None, reserves_hand_card=False, exiles_on_resolve=True,
         ) if ok else None,
     )
 
@@ -321,7 +326,7 @@ def cast_alms_of_the_vein(state, card_def):
 
 
 def madness_alms_of_the_vein(state, card_def):
-    state.graveyard.append(card_def)
+    state.move_card(card_def, state.graveyard)
     _alms_of_the_vein_damage(state)
 
 
@@ -388,13 +393,16 @@ def cast_eviscerators_insight(state, card_def):
     _sac_artifact_or_creature(state, _after_sac)
 
 
-def flashback_eviscerators_insight(state, card_def):
+def flashback_eviscerators_insight(state, inst):
     """Flashback {4}{B} (mana paid by the graveyard-cast machinery) + the same
-    sacrifice-an-artifact-or-creature additional cost: draw two, then exile."""
-    state.graveyard.remove(card_def)  # leaves gy; exiled after resolution
+    sacrifice-an-artifact-or-creature additional cost: draw two, then exile.
+
+    inst: the exact graveyard CardInstance being flashed back -- see
+    flashback_dread_return."""
+    state.graveyard.remove(inst)  # leaves gy; exiled after resolution
 
     def _after_sac(state, _sacced):
-        push_to_stack(state, card_def, lambda st, cd: st.draw(2), reserves_hand_card=False, exiles_on_resolve=True)
+        push_to_stack(state, inst, lambda st, cd: st.draw(2), reserves_hand_card=False, exiles_on_resolve=True)
 
     _sac_artifact_or_creature(state, _after_sac)
 
@@ -405,25 +413,25 @@ def blood_fountain_return(state, permanent):
     sacrifice_to_graveyard(state, permanent)  # cost
 
     def _effect(st):
-        def _first(st, name1):
-            if name1 is None:
+        def _first(st, chosen1):
+            if chosen1 is None:
                 return
-            _return_creature_from_graveyard(st, name1)
+            _return_creature_from_graveyard(st, chosen1)
             resolution.begin_choose_graveyard_card(
                 st, lambda c: c.card_type == CardType.CREATURE,
-                lambda st2, name2: _return_creature_from_graveyard(st2, name2) if name2 else None, optional=True,
+                lambda st2, chosen2: _return_creature_from_graveyard(st2, chosen2) if chosen2 else None, optional=True,
             )
         resolution.begin_choose_graveyard_card(st, lambda c: c.card_type == CardType.CREATURE, _first, optional=True)
 
     push_ability_to_stack(state, permanent.card_def, _effect)
 
 
-def _return_creature_from_graveyard(state, name):
-    found = next((c for c in state.graveyard if c.name == name), None)
-    if found is not None:
-        state.graveyard.remove(found)
-        state.hand.append(found)
-        state.log_event("zone_move", card=found.name, from_zone="graveyard", to_zone="hand", reason="blood_fountain")
+def _return_creature_from_graveyard(state, chosen):
+    # chosen: the exact graveyard instance (or None if the optional pick declined).
+    if chosen is not None:
+        state.graveyard.remove(chosen)
+        state.hand.append(chosen.card_def)  # hand is DEFERRED -- CardDefs
+        state.log_event("zone_move", card=chosen.name, from_zone="graveyard", to_zone="hand", reason="blood_fountain")
 
 
 def refurbished_familiar_etb(state):
@@ -554,7 +562,8 @@ BLACK_EFFECT_REGISTRY = {
     EffectId.BOJUKA_BOG: {
         "mana": ("fixed", "B"),
         "enters_tapped": True,
-        "etb_trigger": lambda state, permanent: bojuka_bog_etb(state),
+        "etb_trigger": lambda state, permanent: bojuka_bog_etb(state, permanent),
+        "etb_targets": True,  # target player chosen at promotion (never fizzles, but surfaces the choice early)
         "pending_kinds": {"choose_target_player"},
     },
     EffectId.BALUSTRADE_SPY: {
@@ -622,30 +631,34 @@ if __name__ == "__main__":
     dr = CardDef("Dread Return", CardType.SORCERY, {"generic": 2, "B": 2}, EffectId.DREAD_RETURN)
     grizzly = CardDef("Grizzly Bears", CardType.CREATURE, {"G": 1}, EffectId.FILLER, power=2, toughness=2)
 
-    # (a) hard cast reanimates the chosen creature card
+    # (a) hard cast reanimates the chosen creature card. The graveyard holds a
+    # CardInstance; the pick captures that EXACT instance.
     state = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
     state.hand = [dr]
-    state.graveyard = [grizzly]
+    grizzly_inst = state.new_instance(grizzly)
+    state.graveyard = [grizzly_inst]
     cast_dread_return(state, dr)  # precast: begins the graveyard-target choice
     assert state.pending_resolution["kind"] == "choose_graveyard_card"
-    resolution.execute_choose_graveyard_card_option(state, "Grizzly Bears")
+    resolution.execute_choose_graveyard_card_option(state, grizzly_inst)  # the exact instance
     assert state.hand == [] and len(state.stack) == 1  # Dread Return LEFT hand at cast, now on the stack
     resolve_top_of_stack(state)
-    assert dr in state.graveyard  # Dread Return resolved -> graveyard
-    assert any(p.card_def is grizzly for p in state.battlefield) and grizzly not in state.graveyard  # reanimated
+    assert any(c.name == "Dread Return" for c in state.graveyard)  # Dread Return resolved -> graveyard
+    assert any(p.card_def is grizzly for p in state.battlefield)  # reanimated
+    assert all(c.name != "Grizzly Bears" for c in state.graveyard)  # left the graveyard
 
-    # (b) fizzle: the chosen card leaves the graveyard before resolution
+    # (b) fizzle: the chosen instance leaves the graveyard before resolution
     state = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
     state.hand = [dr]
-    state.graveyard = [grizzly]
+    grizzly_inst = state.new_instance(grizzly)
+    state.graveyard = [grizzly_inst]
     cast_dread_return(state, dr)
-    resolution.execute_choose_graveyard_card_option(state, "Grizzly Bears")
-    state.graveyard.remove(grizzly)  # exiled by graveyard hate before Dread Return resolves
+    resolution.execute_choose_graveyard_card_option(state, grizzly_inst)
+    state.graveyard.remove(grizzly_inst)  # exiled by graveyard hate before Dread Return resolves
     _log = io.StringIO()
     with contextlib.redirect_stdout(_log):
         resolve_top_of_stack(state)
     assert "fizzle" in _log.getvalue().lower()
-    assert dr in state.graveyard  # Dread Return still goes to the graveyard
+    assert any(c.name == "Dread Return" for c in state.graveyard)  # Dread Return still goes to the graveyard
     assert not any(p.card_def is grizzly for p in state.battlefield)  # nothing reanimated
 
     print("black_cards.py Dread Return target-at-cast + fizzle self-check: OK")
@@ -664,13 +677,15 @@ if __name__ == "__main__":
     enters_battlefield(state, bog, from_zone="hand")
     bog_perm = next(p for p in state.battlefield if p.card_def.name == "Bojuka Bog")
     assert bog_perm.tapped  # enters tapped
-    # ETB queued (faithful timing), not run inline -- promote + resolve opens the target choice.
+    # ETB queued (faithful timing), not run inline. Target-at-promotion: promote
+    # opens the target-player choice; picking it pushes the exile effect.
     assert state.pending_resolution is None
     assert [e["type"] for e in state.trigger_queue] == ["etb"]
-    promote_triggers_to_stack(state)
-    resolve_top_of_stack(state)
+    promote_triggers_to_stack(state)  # opens the target-player choice at promotion
     assert state.pending_resolution["kind"] == "choose_target_player"
-    execute_choose_target_player_option(state, 1)  # target the opponent
+    execute_choose_target_player_option(state, 1)  # target the opponent -> effect pushed onto the stack
+    assert state.pending_resolution is None and len(state.stack) == 1
+    resolve_top_of_stack(state)  # exile that player's graveyard
     assert state.players[1].graveyard == []  # their graveyard exiled
     assert [c.name for c in state.players[0].graveyard] == ["Mine"]  # own graveyard untouched
 
@@ -698,8 +713,9 @@ if __name__ == "__main__":
         promote_triggers_to_stack(st)
         resolve_top_of_stack(st)  # ETB resolves -> choose a nonland from the opponent's hand
         assert st.pending_resolution["kind"] == "choose_graveyard_card"
-        assert choose_graveyard_card_options(st) == ["Their Spell"]  # the LAND is excluded (nonland only)
-        execute_choose_graveyard_card_option(st, "Their Spell")
+        fiend_opts = choose_graveyard_card_options(st)
+        assert [c.name for c in fiend_opts] == ["Their Spell"]  # the LAND is excluded (nonland only)
+        execute_choose_graveyard_card_option(st, fiend_opts[0])
         assert [c.name for c in st.players[1].hand] == ["Their Land"]  # nonland exiled from their hand
         assert fiend.flags["mesmeric_exiled"][0] is a_spell  # tracked, linked to this Fiend
         return st, fiend, a_spell
@@ -839,25 +855,25 @@ if __name__ == "__main__":
     state.turn_player_idx = 0
     state.active_idx = 0
     state.hand = [registry.CARD_DEFS["Gurmag Angler"]]
-    state.graveyard = [_CD("g1", CardType.INSTANT, {"U": 1}, EffectId.FILLER), _CD("g2", CardType.INSTANT, {"U": 1}, EffectId.FILLER)]
+    # Graveyard holds distinct CardInstances (object-identity model); delve
+    # exiles the exact chosen instance, so seed + pick by object, not by name.
+    state.graveyard = [state.new_instance(_CD("g1", CardType.INSTANT, {"U": 1}, EffectId.FILLER)),
+                       state.new_instance(_CD("g2", CardType.INSTANT, {"U": 1}, EffectId.FILLER))]
     state.battlefield = [Permanent(registry.CARD_DEFS["Swamp"]) for _ in range(5)]  # {6}{B} minus delve 2 = {4}{B} = 5 mana
+    from ..mana import activate_mana_source, execute_pool_spend, pool_spend_options
+    for _sw in state.battlefield:
+        activate_mana_source(state, _sw)  # float-first: float 5 B into the pool BEFORE casting
     legal, execute = byname["Cast Gurmag Angler (delve 2)"]
     assert legal(state)
     execute(state)
-    from ..resolution import execute_choose_graveyard_card_option as _egc
-    _egc(state, "g1")
-    _egc(state, "g2")
-    from ..mana import execute_pool_spend, pool_spend_options, execute_tap_cost_option, tap_cost_options
+    from ..resolution import execute_choose_graveyard_card_option as _egc, choose_graveyard_card_options as _gopts
+    _egc(state, _gopts(state)[0])  # exile the first eligible graveyard instance (delve 1)
+    _egc(state, _gopts(state)[0])  # and the next (delve 2)
     _guard = 0
     while state.pending_resolution is not None and state.pending_resolution["kind"] == "pay_cost":
         _guard += 1
         assert _guard < 30
-        taps = tap_cost_options(state)
-        if taps:
-            n, cc, f = taps[0]
-            execute_tap_cost_option(state, n, cc, f)
-        else:
-            execute_pool_spend(state, pool_spend_options(state)[0])
+        execute_pool_spend(state, pool_spend_options(state)[0])
     resolve_top_of_stack(state)
     assert any(p.card_def.name == "Gurmag Angler" for p in state.battlefield) and state.graveyard == []
     print("black_cards.py Gurmag Angler (Delve) self-check: OK")
@@ -909,3 +925,22 @@ if __name__ == "__main__":
     _drive8(state)
     assert state.life_total == 25 and len(state.hand) == 2  # +5 MV, drew 2
     print("black_cards.py Reckoner's Bargain (gain MV + draw 2) self-check: OK")
+
+    # Cross-player routing: Refurbished Familiar's "each opponent discards a
+    # card" is the OPPONENT's own choice, not the caster's. The ETB flips
+    # active_idx to the opponent for the forced discard and restores it after --
+    # which is exactly what makes the training harness (keyed on
+    # state.active_idx, see rl.train.collect_rollout) query the OPPONENT's own
+    # net, never the active player deciding on their behalf.
+    from ..resolution import execute_discard_option
+    rf = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
+    rf.turn_player_idx = 0
+    rf.active_idx = 0  # caster is the turn/active player
+    rf.players[1].hand = [registry.CARD_DEFS["Swamp"], registry.CARD_DEFS["Gurmag Angler"]]
+    refurbished_familiar_etb(rf)
+    assert rf.active_idx == 1, "the OPPONENT (seat 1), not the caster, must be active for their own discard"
+    assert rf.pending_resolution["kind"] == "discard"
+    execute_discard_option(rf, "Swamp")  # answered as seat 1 -- the opponent picks their own discard
+    assert rf.active_idx == 0, "active_idx restored to the caster once the opponent's forced choice is made"
+    assert [c.name for c in rf.players[1].graveyard] == ["Swamp"]
+    print("black_cards.py Refurbished Familiar cross-player discard-routing self-check: OK")

@@ -32,12 +32,34 @@ def on_cast_trigger(state, card_def):
             state.trigger_queue.append({"type": "cast_trigger", "card_def": permanent.card_def, "permanent": permanent})
 
 
-def push_to_stack(state, card_def, resolve, reserves_hand_card=True, is_spell=True, exiles_on_resolve=False):
+def push_to_stack(state, card_def, resolve, reserves_hand_card=True, is_spell=True, exiles_on_resolve=False, targets=()):
     """Defer `resolve(state, card_def)` onto state.stack instead of running it
     now, giving both players a priority window before it resolves. Pushed only
     once the spell's cost is fully paid -- never mid-payment (an alt cost that
     is itself a resolution, e.g. Fireblast's sacrifice-2-Mountains, pushes from
     that resolution's own on_complete).
+
+    targets: this entry's DECLARED targets (real Magic: public the instant
+    they're chosen, 601.2c -- stays visible even if one later becomes illegal
+    and the spell fizzles at resolution, so this is never re-derived from
+    target_still_legal). A tuple of tagged descriptors, one per target chosen
+    at cast/activation time (empty for the common non-targeted push -- lands,
+    vanilla creatures, untargeted triggers):
+      ("player", seat_idx)              -- capture_any_target's player case
+      ("creature", permanent)           -- capture_any_target's permanent case
+                                            (any permanent type, not just
+                                            creatures -- e.g. Cleansing
+                                            Wildfire's land target; the tag
+                                            name is capture_any_target's own)
+      ("graveyard_card", card_instance) -- begin_choose_up_to_graveyard's
+                                            picks (Rooftop Percher)
+      ("stack_entry", other_entry)      -- begin_choose_stack_target's pick
+                                            (Counterspell/Dispel/Spell Pierce)
+    Consumed by rl.features.build_token_set/_stack_target_map to surface
+    "what is currently being targeted" to the agent -- never read by engine
+    resolution logic itself (each resolve closure already carries its own
+    captured target(s) independently; this is purely an observation-side
+    mirror of the same data).
 
     A pushed card stays physically in its origin zone until `resolve` moves it
     (resolve does its own hand/graveyard/exile removal, not here) -- so a paid-
@@ -64,6 +86,7 @@ def push_to_stack(state, card_def, resolve, reserves_hand_card=True, is_spell=Tr
         # into the graveyard. resolve_top_of_stack does that exile (+ logs it), so
         # every Flashback push sets this instead of leaving the card untracked.
         "exiles_on_resolve": exiles_on_resolve,
+        "targets": tuple(targets),
     })
     # A normally-cast spell LEAVES its controller's hand the instant it goes on
     # the stack (real Magic: a cast spell is a stack object, not a hand card),
@@ -125,7 +148,7 @@ def counter_spell(state, entry):
         controller = state.players[entry["controller"]]
         if cd in controller.hand:
             controller.hand.remove(cd)
-        controller.graveyard.append(cd)
+        state.move_card(cd, controller.graveyard)
     state.log_event("countered", card=cd.name, controller=entry["controller"])
     return True
 
@@ -203,14 +226,15 @@ if __name__ == "__main__":
 
     def _spell_resolve(s, c):
         seen["in_hand_during_resolve"] = c in s.hand  # MUST be False -- never back in hand
-        s.graveyard.append(c)  # off hand since cast: stack -> graveyard
+        s.move_card(c, s.graveyard)  # off hand since cast: stack -> graveyard (fresh instance)
 
     push_to_stack(state_r, spell, _spell_resolve)
     assert spell not in state_r.hand, "a cast spell must leave hand AT CAST (else it stays re-castable off the stack)"
     assert len(state_r.stack) == 1 and state_r.stack[0]["card_def"] is spell
     resolve_top_of_stack(state_r)
     assert seen["in_hand_during_resolve"] is False, "a resolving spell must NEVER be in hand during its own resolution"
-    assert spell not in state_r.hand and spell in state_r.graveyard, "a resolved spell ends in graveyard, not hand"
+    # ends in graveyard as a FRESH instance (move_card), not the hand CardDef itself.
+    assert spell not in state_r.hand and [g.name for g in state_r.graveyard] == ["Reserved Spell"], "a resolved spell ends in graveyard, not hand"
 
     # A countered reserved-hand-card spell (already off hand at cast) still goes
     # to its controller's graveyard exactly once, never stranded in hand.
@@ -220,7 +244,7 @@ if __name__ == "__main__":
     push_to_stack(state_c, spell_c, lambda s, c: None)
     assert spell_c not in state_c.hand
     assert counter_spell(state_c, state_c.stack[0]) is True
-    assert spell_c in state_c.graveyard and spell_c not in state_c.hand and state_c.stack == []
+    assert [g.name for g in state_c.graveyard] == ["Countered Spell"] and spell_c not in state_c.hand and state_c.stack == []
 
     # controller restoration: pushed while active_idx=1, resolved while
     # active_idx has since moved to 0 -- resolve must still see active_idx=1.

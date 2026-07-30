@@ -131,7 +131,7 @@ def cast_agony_warp(state, card_def):
                     cap2[1].temp_toughness -= 3  # -0/-3 until end of turn
                 check_state_based_actions(state)  # 0-toughness -> dies
 
-            push_to_stack(state, card_def, _resolve)
+            push_to_stack(state, card_def, _resolve, targets=tuple(t for t in (cap1, cap2) if t is not None))
 
         resolution.begin_choose_any_target(
             state, lambda p: p.card_type == CardType.CREATURE and can_be_targeted(state, p, idx),

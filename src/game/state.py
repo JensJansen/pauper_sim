@@ -9,8 +9,9 @@ they only ever meant "my own board," and the proxy makes that correct for the
 active player in both 1- and 2-player games. state.opponent is the one
 opponent-facing accessor (win_check.deal_damage_to_opponent).
 
-mana_pool holds tapped-but-unspent mana; spending it is always an explicit
-model action, never automatic, and it clears each turn (turn.untap_step)."""
+mana_pool holds floated-but-unspent mana; spending it is always an explicit
+model action, never automatic, and it empties at every step/phase boundary
+for both players (turn._empty_mana_pools, rule 500.4), not just once per turn."""
 
 import random
 
@@ -34,11 +35,59 @@ class DeckedOut(Exception):
     same bare-failure outcome as before this exception existed."""
 
 
-class Permanent:
-    """A specific physical card sitting on the battlefield."""
+class CardInstance:
+    """A specific physical card, distinct from every other copy of the same
+    name, in whatever zone holds it. Wraps the shared, interned CardDef (its
+    unchanging rules identity, one object per name -- game.registry.CARD_DEFS)
+    and adds a per-game `iid` so two same-named copies are tellable apart.
 
-    def __init__(self, card_def, tapped=False):
+    IDENTITY IS OBJECT IDENTITY. A target/selection captures the exact instance
+    object and stays legal only while that object is still in its zone; every
+    zone change mints a NEW instance (see GameState.move_card), so a card that
+    changes zones is genuinely a new object (MTG rule 400.7) and any target
+    locked on the old object fizzles. `iid` is engine-internal (deterministic
+    logging/debugging so `(name, slot)`/name aren't ambiguous once duplicates
+    exist) -- NEVER shown to the agent and NEVER the targeting handle (the
+    object reference is). Deliberately does NOT override __eq__/__hash__:
+    default identity is the whole point.
+
+    Attribute access PROXIES to card_def (`.name`, `.card_type`, `.cast_cost`,
+    `.effect_id`, `.extra`, ...) via __getattr__, so the large body of engine
+    code that reads those straight off a zone element keeps working unchanged
+    once that element became a CardInstance.
+
+    SCOPE (this pass): the graveyard holds CardInstances and the battlefield
+    holds Permanents (which subclass this). hand/library/exile are DEFERRED --
+    still list[CardDef] -- until a card needs distinct instances there; see
+    plans/object-identity-zone-model.md. FUTURE (400.7 exceptions): no pool
+    card yet has a linked ability that TRACKS an object across a zone change
+    (Adventure/Foretell/"return THIS card"); that would need the instance to
+    stay linked across the specific move rather than being reminted here."""
+
+    def __init__(self, card_def, iid=None):
         self.card_def = card_def
+        self.iid = iid
+
+    def __getattr__(self, attr):
+        # Reached only when `attr` isn't a real attribute of this object
+        # (card_def/iid, or a Permanent subclass's own battlefield fields) --
+        # forward the rest to the shared CardDef. Guard card_def to avoid
+        # infinite recursion if it's ever missing (copy/unpickle).
+        if attr == "card_def":
+            raise AttributeError(attr)
+        return getattr(self.card_def, attr)
+
+    def __repr__(self):
+        return f"CardInstance({self.card_def.name!r}#{self.iid})"
+
+
+class Permanent(CardInstance):
+    """A specific physical card sitting on the battlefield -- a CardInstance
+    (shared card_def + per-game iid) plus battlefield-only runtime state
+    (tapped, counters, damage, summoning sickness, slot, ...)."""
+
+    def __init__(self, card_def, tapped=False, iid=None):
+        super().__init__(card_def, iid)
         self.tapped = tapped
         # True until the untap step that first sees this permanent already
         # on the battlefield -- matches real Magic's "under your control
@@ -396,6 +445,11 @@ class GameState:
         # instead of expecting the card in hand. None whenever nothing resolves.
         self.resolving_card = None
 
+        # Monotonic per-game counter minting the `iid` of every CardInstance/
+        # Permanent (see new_instance/new_permanent/mint_iid). Never reused, so
+        # a flickered/returned card gets a genuinely fresh identity in logs.
+        self._next_iid = 0
+
     hand = _active_player_property("hand")
     battlefield = _active_player_property("battlefield")
     library = _active_player_property("library")
@@ -443,6 +497,49 @@ class GameState:
             if drawn:
                 self.log_event("zone_move", cards=[c.name for c in drawn],
                                from_zone="library", to_zone="hand", reason="draw")
+
+    def mint_iid(self):
+        """Next never-reused per-game instance id. The single source of iids
+        for both new_instance (non-battlefield) and new_permanent (board), so
+        every physical card in a game has a distinct one."""
+        iid = self._next_iid
+        self._next_iid += 1
+        return iid
+
+    def new_instance(self, card_def):
+        """Mint a fresh CardInstance for `card_def` -- the ONE place a
+        non-battlefield card instance is born. Reached via move_card whenever a
+        card ENTERS a tracked non-battlefield zone (the graveyard, today) as a
+        new object, so a card that changes zones is genuinely a new object
+        (MTG 400.7) and stale targets on it fizzle."""
+        return CardInstance(card_def, self.mint_iid())
+
+    def new_permanent(self, card_def, tapped=False):
+        """Battlefield counterpart of new_instance: mint a fresh Permanent with
+        the next iid. game.effects.casting.enters_battlefield uses this so board
+        permanents share the same per-game identity counter as graveyard cards."""
+        return Permanent(card_def, tapped=tapped, iid=self.mint_iid())
+
+    def move_card(self, card, destination):
+        """THE choke point for a card entering a tracked non-battlefield zone as
+        a NEW object. Mints a fresh CardInstance (new iid) from `card`'s
+        underlying CardDef into `destination` (a zone list) and returns it.
+        `card` may be a CardDef or an existing CardInstance/Permanent (its
+        .card_def is used) -- the source object is NOT reused, so any target
+        captured on the old object is now stale and fizzles (MTG 400.7).
+
+        Removal from the SOURCE zone stays at the existing removal sites
+        (state-based death, stack resolution, hand discard): those already drop
+        the old object, which is what makes a board target fizzle. This helper
+        owns only the minting half. Battlefield entry has its own minting choke
+        point, enters_battlefield (a Permanent, for its ETB/slot logic).
+
+        Today `destination` is always a graveyard list; hand/library/exile are
+        DEFERRED (still CardDef-based) -- see plans/object-identity-zone-model.md."""
+        card_def = card.card_def if isinstance(card, CardInstance) else card
+        inst = self.new_instance(card_def)
+        destination.append(inst)
+        return inst
 
     def log_event(self, kind, **fields):
         """Appends one structured event to self.event_log, if logging is on
@@ -589,7 +686,7 @@ if __name__ == "__main__":
     def bolt_resolve(s, cd):
         if cd in s.hand:
             s.hand.remove(cd)
-        s.graveyard.append(cd)
+        s.move_card(cd, s.graveyard)
         deal_damage_to_opponent(s, 3)
 
     def _burn_policy(state):
@@ -600,11 +697,10 @@ if __name__ == "__main__":
             return lambda: resolution.execute_discard_option(state, name)
         if state.active_idx != 0:
             return None  # player 1 never acts otherwise
-        if state.pending_resolution is not None:  # paying the Bolt's {R}
-            tap_opts = mana.tap_cost_options(state)
-            if tap_opts:
-                name, color, is_filter = tap_opts[0]
-                return lambda: mana.execute_tap_cost_option(state, name, color, is_filter)
+        if state.pending_resolution is not None:  # paying the Bolt's {R} -- spend floated pool mana
+            # Float-first: a tap floats mana into the pool via a top-level mana
+            # ability BEFORE the cast (below); during payment there is only pool
+            # mana to spend, never a source to tap.
             color = mana.pool_spend_options(state)[0]
             return lambda: mana.execute_pool_spend(state, color)
         if state.lands_played_this_turn == 0 and any(c.name == "Mountain" for c in state.hand):
@@ -615,10 +711,15 @@ if __name__ == "__main__":
         # only removes it once it actually resolves) but isn't really available.
         hand_count = sum(1 for c in state.hand if c.name == "Lightning Bolt")
         stacked_count = sum(1 for e in state.stack if e["card_def"].name == "Lightning Bolt")
-        if hand_count > stacked_count and mana.plan_payment(state, bolt_def.cast_cost) is not None:
-            def _cast_bolt():
-                mana.begin_pay_cost(state, bolt_def.cast_cost, on_complete=lambda s: push_to_stack(s, bolt_def, bolt_resolve))
-            return _cast_bolt
+        if hand_count > stacked_count:
+            if mana.plan_payment(state, bolt_def.cast_cost) is not None:
+                def _cast_bolt():
+                    mana.begin_pay_cost(state, bolt_def.cast_cost, on_complete=lambda s: push_to_stack(s, bolt_def, bolt_resolve))
+                return _cast_bolt
+            # Can't pay yet -- float {R} from an untapped Mountain first (float-first).
+            mtn = next((p for p in state.battlefield if p.card_def.name == "Mountain" and not p.tapped), None)
+            if mtn is not None:
+                return lambda: mana.activate_mana_source(state, mtn)
         return None  # Pass -- resolves the stack if non-empty, else advances the phase
 
     events = []

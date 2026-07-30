@@ -1,4 +1,4 @@
-# azul modeling — Magic: the Gathering engine + RL training harness
+# Magic: the Gathering engine + RL training harness
 
 ## RULES FAITHFULNESS MANDATE (standing instruction — highest priority for game behavior)
 
@@ -26,3 +26,20 @@ authorized a simplification for that specific case.
 
 Known deviations still being resolved are tracked as work items; the goal state
 is zero unauthorized deviations.
+
+## COMMENT & DOC PARITY (standing instruction)
+
+After every code change, verify that the surrounding documentation still matches
+the code — a comment or doc that describes the old behavior is a bug.
+
+- **Local comments.** Review the comments on and around the lines you changed,
+  including the enclosing function/class docstring. Update any that no longer
+  describe what the code does.
+- **Non-local but related comments.** Comments elsewhere that reference the
+  changed behavior — callers, related modules, self-check assertions that
+  narrate an invariant, cross-references by name — must be checked and brought
+  back into parity too. If in doubt whether a comment is related, grep for the
+  symbol/behavior you changed.
+- **README.** After each code change, review the related sections of the README
+  and update them to match. Do not leave the README describing superseded
+  behavior.

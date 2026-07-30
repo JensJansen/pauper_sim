@@ -74,7 +74,9 @@ import event_create_token_pb2 as pb_createtoken  # noqa: E402
 import event_delete_arrow_pb2 as pb_deletearrow  # noqa: E402
 import event_destroy_card_pb2 as pb_destroy  # noqa: E402
 import event_draw_cards_pb2 as pb_draw  # noqa: E402
+import event_flip_card_pb2 as pb_flip  # noqa: E402
 import event_game_state_changed_pb2 as pb_gsc  # noqa: E402
+import event_reveal_cards_pb2 as pb_reveal  # noqa: E402
 import event_move_card_pb2 as pb_move  # noqa: E402
 import event_set_active_phase_pb2 as pb_setphase  # noqa: E402
 import event_set_active_player_pb2 as pb_setplayer  # noqa: E402
@@ -661,6 +663,14 @@ JSON_ZONE_TO_COCKATRICE = {
 }
 
 
+def _norm_zone(z):
+    """The engine tags some exiles as exile_untracked / exile_mesmeric (delve and
+    other exile-costs, impulse draws, Mesmeric-style effects). To a replay viewer
+    they're all just the exile zone; collapse them so the move actually renders
+    instead of being dropped by the `dst_zone is None` guards below."""
+    return "exile" if z and z.startswith("exile") else z
+
+
 class EventStreamReplayBuilder(BaseReplayBuilder):
     """Event-stream format: an actual atomic event log (zone_move, mana_tap,
     attack_declared, life_change, ...). Every draw is logged explicitly and by
@@ -730,9 +740,18 @@ class EventStreamReplayBuilder(BaseReplayBuilder):
                 handler(self, e)
             # pass, priority_flip, resolution_begin, resolution_complete,
             # cleanup_damage_cleared, trigger_fired: no Cockatrice-visible effect.
-            # combat_damage: superseded by life_change, which fires for the same
-            # damage with the resulting total already computed; creature-vs-creature
-            # damage was never visualized here anyway (state_based_death covers deaths).
+            # combat_damage / fight_damage: superseded by life_change, which fires for
+            # the same damage with the resulting total already computed; creature-vs-
+            # creature damage was never visualized here (state_based_death covers deaths).
+            # impulse_expired: no-op -- an unplayed impulse card stays in exile (see
+            # _handle_impulse_exile). Deliberately still unrendered (no clean Cockatrice
+            # primitive, and no reliable data to render them from):
+            #   pump          -- P/T buff, but the event-stream entry doesn't carry base
+            #                    P/T and the amount's shape (+N/+N vs +N/+0) is ambiguous.
+            #   block_unassigned -- a removed block; arrows aren't keyed by pair and clear
+            #                    at the next phase boundary anyway.
+            #   undercity_enter_room, take_initiative, goaded, ward_triggered -- dungeon /
+            #                    initiative / goad / ward status with no board-visible analog.
 
         # flush any spells still awaiting a fate when the recorded game ends
         self._flush_pending_resolutions(self._new_container())
@@ -882,12 +901,13 @@ class EventStreamReplayBuilder(BaseReplayBuilder):
             d.zone_name = Z_TABLE
             d.card_id = old["id"]
             return
+        front = self._revert_dfc_face(cont, owner, old)
         self._move(cont, owner, Z_TABLE, owner, Z_GRAVE, old["id"], old["id"])
-        owner.graveyard.append({"id": old["id"], "name": name})
+        owner.graveyard.append({"id": old["id"], "name": front or name})
 
     def _handle_zone_move(self, e):
-        from_zone = e.get("from_zone")
-        to_zone = e.get("to_zone")
+        from_zone = _norm_zone(e.get("from_zone"))
+        to_zone = _norm_zone(e.get("to_zone"))
         if "permanent" in e:
             self._handle_permanent_move(e, from_zone, to_zone)
         else:
@@ -963,10 +983,11 @@ class EventStreamReplayBuilder(BaseReplayBuilder):
         dst_zone = JSON_ZONE_TO_COCKATRICE.get(to_zone)
         if dst_zone is None:
             return
+        front = self._revert_dfc_face(cont, p, old)
         self._move(cont, p, Z_TABLE, p, dst_zone, old["id"], old["id"])
         dst_pool = {"hand": p.hand, "graveyard": p.graveyard, "exile": p.exile}.get(to_zone)
         if dst_pool is not None:
-            dst_pool.append({"id": old["id"], "name": name})
+            dst_pool.append({"id": old["id"], "name": front or name})
 
     def _resolve_incoming_hand_like(self, p, name):
         c = pop_by_name(p.hand, name)
@@ -1068,6 +1089,209 @@ class EventStreamReplayBuilder(BaseReplayBuilder):
             self._move(cont, p, Z_HAND, p, Z_DECK, c["id"], c["id"])
             p.library_draws = max(0, p.library_draws - 1)
 
+    def _find_perm(self, name_slot):
+        """Locate a permanent on either player's battlefield by [name, slot];
+        effect taps/untaps and orphaned auras can target either side."""
+        key = tuple(name_slot)
+        for p in self.players:
+            if key in p.battlefield:
+                return p, key
+        return None, None
+
+    def _revert_dfc_face(self, cont, p, entry):
+        """A transformed double-faced permanent shows its FRONT face again the
+        moment it leaves the battlefield (real Magic 712.4a). Emit an
+        Event_FlipCard back to the stored front name so the card reverts before it
+        lands in the new zone, and return that front name (for the destination
+        pool's tracked name); None if this entry was never a transformed DFC."""
+        front = entry.get("front_name")
+        if front is None:
+            return None
+        fc = add_event(cont, p.idx, pb_flip.Event_FlipCard.ext)
+        fc.zone_name = Z_TABLE
+        fc.card_id = entry["id"]
+        fc.card_name = front
+        return front
+
+    def _handle_transform(self, e):
+        # A double-faced permanent flips to its back face (Delver of Secrets ->
+        # Insectile Aberration). The engine logs permanent=(front name, slot) +
+        # to_card + the back-face power/toughness. Cockatrice keeps the card's id
+        # across a flip, so emit Event_FlipCard to rename the SAME card to the back
+        # face, refresh its P/T, and re-key our battlefield entry to the new name so
+        # every later event for this permanent (which the engine now logs under the
+        # back-face name) still resolves. _revert_dfc_face flips it back on leave.
+        from_name, slot = e["permanent"]
+        to_card = e.get("to_card")
+        if to_card is None:
+            return  # older logs logged transform without the back-face name -- nothing to flip to
+        p, key = self._find_perm([from_name, slot])
+        if key is None:
+            return
+        entry = p.battlefield.pop(key)
+        cont = self._new_container()
+        fc = add_event(cont, p.idx, pb_flip.Event_FlipCard.ext)
+        fc.zone_name = Z_TABLE
+        fc.card_id = entry["id"]
+        fc.card_name = to_card
+        if e.get("power") is not None and e.get("toughness") is not None:
+            self._set_attr(cont, p, Z_TABLE, entry["id"], pb_attr.AttrPT, f'{e["power"]}/{e["toughness"]}')
+        entry["front_name"] = from_name
+        p.battlefield[(to_card, slot)] = entry
+
+    def _handle_reveal(self, e):
+        # Delver's upkeep look: the revealed top-of-library card, shown to both
+        # players (Event_RevealCards from the deck zone). The card stays in the
+        # library -- this is purely the reveal, no zone change.
+        p = self.players[e["active_idx"]]
+        name = e.get("card")
+        if name is None:
+            return
+        cont = self._new_container()
+        rc = add_event(cont, p.idx, pb_reveal.Event_RevealCards.ext)
+        rc.zone_name = Z_DECK
+        rc.number_of_cards = 1
+        ci = rc.cards.add()
+        ci.id = 0
+        ci.name = name
+
+    def _handle_mill(self, e):
+        # Cards milled off the top of the library into the graveyard. Logged as its
+        # own event (named cards, count) rather than a zone_move, so without this the
+        # graveyard never grew -- and, downstream, delve/flashback/dredge that pull
+        # those names couldn't find them and minted phantoms straight from the deck.
+        p = self.players[e["player_idx"]]
+        names = e.get("cards") or []
+        if not names:
+            return
+        cont = self._new_container()
+        for name in names:
+            card_id = self._mint_from_library(p)
+            self._move(cont, p, Z_DECK, p, Z_GRAVE, 0, card_id, card_name=name)
+            p.graveyard.append({"id": card_id, "name": name})
+
+    def _handle_graveyard_exiled(self, e):
+        # Graveyard-exile (Bojuka Bog / Cling to Dust-style). Two shapes:
+        #   * {target_player_idx, exiled:[names]} -- specific named cards exiled.
+        #   * {player_idx}                        -- the whole graveyard, no list.
+        # In both cases move the affected cards we're tracking from graveyard to exile.
+        if "exiled" in e:
+            p = self.players[e["target_player_idx"]]
+            cont = self._new_container()
+            for name in e["exiled"]:
+                c = pop_by_name(p.graveyard, name)
+                if c is None:
+                    continue  # not tracked in our graveyard model -- nothing on screen to move
+                self._move(cont, p, Z_GRAVE, p, Z_EXILE, c["id"], c["id"])
+                p.exile.append(c)
+            return
+        p = self.players[e["player_idx"]]
+        if not p.graveyard:
+            return
+        cont = self._new_container()
+        for c in list(p.graveyard):
+            self._move(cont, p, Z_GRAVE, p, Z_EXILE, c["id"], c["id"])
+            p.exile.append(c)
+        p.graveyard.clear()
+
+    def _handle_impulse_exile(self, e):
+        # "Impulse draw": exile the top card(s) of the library face-up, playable for
+        # a while. Render as library->exile so they show in the exile zone; if one is
+        # later played its from_zone is exile and _resolve_* finds it there. The
+        # matching impulse_expired is a no-op -- an unplayed impulse card physically
+        # stays in exile, it just stops being castable.
+        p = self.players[e["active_idx"]]
+        names = e.get("cards") or []
+        if not names:
+            return
+        cont = self._new_container()
+        for name in names:
+            card_id = self._mint_from_library(p)
+            self._move(cont, p, Z_DECK, p, Z_EXILE, 0, card_id, card_name=name)
+            p.exile.append({"id": card_id, "name": name})
+
+    def _set_tapped(self, e, tapped):
+        p, key = self._find_perm(e["permanent"])
+        if key is None:
+            return
+        entry = p.battlefield[key]
+        if entry["tapped"] == tapped:
+            return
+        cont = self._new_container()
+        self._set_attr(cont, p, Z_TABLE, entry["id"], pb_attr.AttrTapped, "1" if tapped else "0")
+        entry["tapped"] = tapped
+
+    def _handle_tap(self, e):
+        self._set_tapped(e, True)
+
+    def _handle_untap(self, e):
+        self._set_tapped(e, False)
+
+    def _handle_tap_or_untap(self, e):
+        self._set_tapped(e, bool(e.get("now_tapped")))
+
+    def _handle_tuck(self, e):
+        # Put a permanent into its owner's library (Deem Inferior-style). No
+        # accompanying zone_move is logged, so without this the tucked permanent
+        # lingered on the battlefield (and got redrawn as a second copy). Deck order
+        # isn't modeled (hidden zone), so "top2" is just "back into the deck" here.
+        p = self.players[e.get("owner_idx", e["active_idx"])]
+        key = next((k for k in p.battlefield if k[0] == e["card"]), None)
+        if key is None:
+            return
+        old = p.battlefield.pop(key)
+        cont = self._new_container()
+        if old.get("is_token"):
+            d = add_event(cont, p.idx, pb_destroy.Event_DestroyCard.ext)
+            d.zone_name = Z_TABLE
+            d.card_id = old["id"]
+            return
+        self._move(cont, p, Z_TABLE, p, Z_DECK, old["id"], old["id"])
+        p.library_draws = max(0, p.library_draws - 1)
+
+    def _handle_destroy(self, e):
+        # A destroy logged as its own event (permanent + owner_idx + to_zone) rather
+        # than a zone_move / state_based_death. Route it off the battlefield to the
+        # given zone, crediting the permanent's OWNER (active_idx is the destroyer).
+        p = self.players[e.get("owner_idx", e["active_idx"])]
+        name, slot = e["permanent"]
+        old = p.battlefield.pop((name, slot), None)
+        if old is None:
+            return
+        cont = self._new_container()
+        if old.get("is_token"):
+            d = add_event(cont, p.idx, pb_destroy.Event_DestroyCard.ext)
+            d.zone_name = Z_TABLE
+            d.card_id = old["id"]
+            return
+        dst_zone = JSON_ZONE_TO_COCKATRICE.get(_norm_zone(e.get("to_zone")), Z_GRAVE)
+        self._move(cont, p, Z_TABLE, p, dst_zone, old["id"], old["id"])
+        pool = {Z_GRAVE: p.graveyard, Z_EXILE: p.exile, Z_HAND: p.hand}.get(dst_zone)
+        if pool is not None:
+            pool.append({"id": old["id"], "name": name})
+
+    def _handle_aura_orphaned(self, e):
+        # The creature an aura was enchanting left, so the aura falls off. No
+        # zone_move is logged for the aura; its fate is in `outcome` (Rancor -> hand,
+        # most auras -> graveyard). Without this the aura stayed stuck on the now-empty
+        # slot on the battlefield.
+        p, key = self._find_perm(e["aura"])
+        if key is None:
+            return
+        old = p.battlefield.pop(key)
+        cont = self._new_container()
+        if old.get("is_token"):
+            d = add_event(cont, p.idx, pb_destroy.Event_DestroyCard.ext)
+            d.zone_name = Z_TABLE
+            d.card_id = old["id"]
+            return
+        outcome = e.get("outcome", "graveyard")
+        dst_zone = {"hand": Z_HAND, "exile": Z_EXILE}.get(outcome, Z_GRAVE)
+        self._move(cont, p, Z_TABLE, p, dst_zone, old["id"], old["id"])
+        pool = {Z_GRAVE: p.graveyard, Z_EXILE: p.exile, Z_HAND: p.hand}.get(dst_zone)
+        if pool is not None:
+            pool.append({"id": old["id"], "name": key[0]})
+
     _HANDLERS = {
         "turn_start": _handle_turn_start,
         "phase_change": _handle_phase_change,
@@ -1079,10 +1303,21 @@ class EventStreamReplayBuilder(BaseReplayBuilder):
         "attack_declared": _handle_attack_declared,
         "block_assigned": _handle_block_assigned,
         "aura_attached": _handle_aura_attached,
+        "aura_orphaned": _handle_aura_orphaned,
         "life_change": _handle_life_change,
         "state_based_death": _handle_state_based_death,
+        "destroy": _handle_destroy,
         "countered": _handle_countered,
         "put_on_top": _handle_put_on_top,
+        "mill": _handle_mill,
+        "graveyard_exiled": _handle_graveyard_exiled,
+        "impulse_exile": _handle_impulse_exile,
+        "tap": _handle_tap,
+        "untap": _handle_untap,
+        "tap_or_untap": _handle_tap_or_untap,
+        "tuck": _handle_tuck,
+        "transform": _handle_transform,
+        "reveal": _handle_reveal,
     }
 
 

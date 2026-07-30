@@ -15,15 +15,13 @@ real ETB life-gain effect wired for real. Each one's OWN complicating
 clause is a deliberate, documented drop rather than a guess:
 - Rooftop Percher: Changeling (every creature type) is a no-op -- no
   tribal-synergy card exists anywhere in this catalog to care. Its own
-  "exile up to two target cards from graveyards" is also dropped: in this
-  solitaire sim the only legal targets are this player's own graveyard,
-  and nothing rewards emptying it, so a rational cast always chooses zero
-  targets anyway -- unlike Relic of Progenitus' own repeatable graveyard-
-  exile ability (this file, activate_relic_of_progenitus_exile), which IS
-  implemented despite the identical "no real upside" reasoning, simply
-  because it was worth building as its own always-available action
-  rather than an ETB-only one-off choice bundled into a bigger creature
-  spell.
+  "exile up to two target cards from graveyards" IS implemented
+  (rooftop_percher_etb below) -- a real ETB trigger, up to two targets
+  chosen from EITHER player's graveyard as it goes on the stack, exiling
+  every still-present target at resolution (608.2c partial fizzle); the
+  +3 life is unconditional even if every target leaves the graveyard
+  first (an owner-authorized simplification, see that function's own
+  docstring).
 - Boulderbranch Golem: Prototype ({3}{G} for a 3/3 instead) is IMPLEMENTED --
   a second CardDef (BOULDERBRANCH_GOLEM_PROTOTYPE_CARD_DEF) with its own
   stats/effect_id for the same display name, offered as a "Cast X (prototype)"
@@ -69,9 +67,9 @@ clause is a deliberate, documented drop rather than a guess:
 {symbols}) -- caller chooses one of several. "filter_mana": {"colors":
 {...}} marks Barrels of Blasting Jelly's and Conduit Pylons' colored-pip
 filter ability (as opposed to Conduit Pylons' plain {T}: Add {C}, which
-IS a "fixed" mana source below) -- offered by mana.tap_cost_options for
-any of the 5 colors, same as a flexible source (its own {1} activation
-cost is tracked separately, see mana.execute_tap_cost_option)."""
+IS a "fixed" mana source below) -- an ATOMIC pool->pool conversion
+(drl_env._filter_mana_legal/_execute: spend one floating pip, add one of
+any of the 5 colors), never a nested cost payment."""
 
 from .. import registry
 from ..cards import CardDef, CardType, EffectId
@@ -85,7 +83,8 @@ from ..effects.win_check import gain_life
 from ..mana import COLORS
 from ..resolution import (
     begin_choose_any_target, begin_choose_graveyard_card, begin_choose_mana_color, begin_choose_opponent_permanent,
-    begin_choose_permanent, begin_choose_target_player, begin_pay_unless, begin_scry_surveil, begin_search_fetch, scry, surveil,
+    begin_choose_permanent, begin_choose_target_player, begin_choose_up_to_graveyard, begin_may_cast, begin_pay_unless,
+    begin_scry_surveil, begin_search_fetch, scry, surveil,
 )
 from ..turn import Speed
 
@@ -110,7 +109,6 @@ COLORLESS_CARD_CATALOG = {
     ),
     "Barrels of Blasting Jelly": CardDef(
         "Barrels of Blasting Jelly", CardType.ARTIFACT, {"generic": 1}, EffectId.BARRELS_OF_BLASTING_JELLY,
-        mana_ability_cost={"generic": 1},
     ),
     "Relic of Progenitus": CardDef(
         "Relic of Progenitus", CardType.ARTIFACT, {"generic": 1}, EffectId.RELIC_OF_PROGENITUS,
@@ -215,15 +213,19 @@ def lembas_sac(state, permanent):
 
 def lembas_dies(state, permanent):
     """"When put into a graveyard from the battlefield, its owner shuffles it
-    into their library." It's in the owner's graveyard now (this trigger
-    resolves for that owner -> state.graveyard is theirs); move it to the
-    library and shuffle."""
-    card_def = permanent.card_def
-    if card_def in state.graveyard:
-        state.graveyard.remove(card_def)
-        state.library.append(card_def)
+    into their library." A 400.7 linked ability -- it must reference the EXACT
+    card that died, not just any same-named graveyard card. The death that
+    queued this trigger stashed the fresh graveyard instance on `permanent`'s
+    own flags (state_based._destroy_creature / execute_sacrifice_option); it's
+    in the owner's graveyard now (this trigger resolves for that owner ->
+    state.graveyard is theirs) unless something else already moved it (e.g. a
+    Dread Return reanimated it first) -- in which case there's nothing to do."""
+    inst = permanent.flags.get("graveyard_instance")
+    if inst is not None and inst in state.graveyard:
+        state.graveyard.remove(inst)
+        state.library.append(inst.card_def)  # library is DEFERRED (CardDefs)
         state.rng.shuffle(state.library)
-        state.log_event("zone_move", card=card_def.name, from_zone="graveyard", to_zone="library", reason="lembas_shuffle")
+        state.log_event("zone_move", card=inst.name, from_zone="graveyard", to_zone="library", reason="lembas_shuffle")
 
 
 def _twisted_landscape_fetch_eligible(card_def):
@@ -239,7 +241,7 @@ def activate_twisted_landscape_fetch(state, permanent):
     Expedition Map, except the fetch lands on the battlefield tapped
     (force_tapped) rather than in hand."""
     state.battlefield.remove(permanent)
-    state.graveyard.append(permanent.card_def)
+    state.move_card(permanent.card_def, state.graveyard)
     state.log_event(
         "zone_move", permanent=(permanent.card_def.name, permanent.slot), from_zone="battlefield",
         to_zone="graveyard", reason="sacrifice",
@@ -280,7 +282,7 @@ def activate_expedition_map(state, permanent):
     sacrifice are COSTS (paid now); the search is the effect, so it goes on
     the stack and resolves (opening the search) after a priority window."""
     state.battlefield.remove(permanent)
-    state.graveyard.append(permanent.card_def)
+    state.move_card(permanent.card_def, state.graveyard)
     state.log_event(
         "zone_move", permanent=(permanent.card_def.name, permanent.slot), from_zone="battlefield",
         to_zone="graveyard", reason="sacrifice",
@@ -303,7 +305,7 @@ def activate_candy_trail_sac(state, permanent):
     the effect, so they go on the stack and resolve after a priority
     window."""
     state.battlefield.remove(permanent)
-    state.graveyard.append(permanent.card_def)
+    state.move_card(permanent.card_def, state.graveyard)
     state.log_event(
         "zone_move", permanent=(permanent.card_def.name, permanent.slot), from_zone="battlefield",
         to_zone="graveyard", reason="sacrifice",
@@ -352,12 +354,12 @@ def activate_relic_of_progenitus_exile(state, permanent):
     legal choice (true in real Magic even alone), "the opponent" becomes
     a second one the moment a real one exists, and the model picks
     explicitly either way via drl_env's own fixed "Target: yourself"/
-    "Target: opponent" actions. Whichever player is targeted, then chooses
-    (simplified to the ACTIVATING player's own choice, same "no observable
-    difference in this solitaire sim" precedent begin_choose_graveyard_
-    card's own docstring already documents) one of THAT player's
-    graveyard cards to exile -- untracked, same convention as this same
-    artifact's other, one-shot exile-self ability above. Repeatable (no
+    "Target: opponent" actions. Whichever player is targeted then chooses one
+    of THEIR OWN graveyard cards to exile -- made by THAT player themselves via
+    the active_idx flip (see "Faithful timing + cross-player choice" below), NOT
+    the old simplify-to-the-activating-player approximation. Untracked exile,
+    same convention as this same artifact's other, one-shot exile-self ability
+    above. Repeatable (no
     mana cost, {T} only), independent of that other ability. An empty
     target graveyard -> nothing to choose, the same empty-options safety
     net begin_choose_graveyard_card already provides.
@@ -383,14 +385,13 @@ def activate_relic_of_progenitus_exile(state, permanent):
             activator = state.active_idx
             target_player = state.players[idx]
 
-            def _on_card_chosen(state, name):
+            def _on_card_chosen(state, chosen):
                 state.active_idx = activator  # the targeted player's forced choice is done
-                if name is None:
+                if chosen is None:
                     return
-                found = next(c for c in target_player.graveyard if c.name == name)
-                target_player.graveyard.remove(found)  # exiled, not removed-to-nowhere; exile is untracked
+                target_player.graveyard.remove(chosen)  # the exact chosen instance; exiled (untracked)
                 state.log_event(
-                    "zone_move", card=found.name, from_zone="graveyard", to_zone="exile_untracked",
+                    "zone_move", card=chosen.name, from_zone="graveyard", to_zone="exile_untracked",
                     target_player_idx=idx,
                 )
 
@@ -406,16 +407,11 @@ def _lotus_petal_on_tap(state, permanent):
     """{T}, Sacrifice: add one mana of any color -- consumed, not just
     tapped, unlike every other mana source in this engine."""
     state.battlefield.remove(permanent)
-    state.graveyard.append(permanent.card_def)
+    state.move_card(permanent.card_def, state.graveyard)
     state.log_event(
         "zone_move", permanent=(permanent.card_def.name, permanent.slot), from_zone="battlefield",
         to_zone="graveyard", reason="sacrifice",
     )
-
-
-def _lotus_petal_on_tap_undo(state, permanent):
-    state.graveyard.remove(permanent.card_def)
-    state.battlefield.append(permanent)
 
 
 def _treasure_on_tap(state, permanent):
@@ -428,10 +424,6 @@ def _treasure_on_tap(state, permanent):
         "zone_move", permanent=(permanent.card_def.name, permanent.slot), from_zone="battlefield",
         to_zone="ceases_to_exist", reason="sacrifice",
     )
-
-
-def _treasure_on_tap_undo(state, permanent):
-    state.battlefield.append(permanent)
 
 
 def _basic_land(card_def):
@@ -503,19 +495,29 @@ def cast_maelstrom_colossus(state, card_def):
     extra_legal = cast_spec.get("extra_legal") if cast_spec is not None else None
     can_cast = cast_spec is not None and (extra_legal is None or extra_legal(state))
 
-    # Every exiled card goes to the bottom EXCEPT the hit, and only if
-    # it's actually being cast -- a whiff, a hit with no "cast" spec, or
-    # one whose own extra_legal fails all leave it right here among the
-    # rest (real text: "Put THE EXILED CARDS on the bottom" -- a card
-    # that was never cast is still one of them).
-    remaining = [c for c in exiled if not (can_cast and c is hit)]
-    state.rng.shuffle(remaining)
-    state.library.extend(remaining)
+    def _bottom(cards):
+        state.rng.shuffle(cards)  # real text: "the exiled cards, on the bottom in a random order"
+        state.library.extend(cards)
 
     def _enter_colossus(state):
         enters_battlefield(state, card_def)
 
-    if can_cast:
+    if not can_cast:
+        # A whiff, a hit with no "cast" spec, or one whose extra_legal fails:
+        # there is no may-cast decision -- every exiled card just bottoms.
+        _bottom(exiled)
+        _enter_colossus(state)
+        return
+
+    def _resolve_hit(state, do_cast):
+        # Real Cascade is "you MAY cast it." Cast -> the OTHERS bottom and the
+        # hit is cast for free via its own normal cast machinery. Decline -> the
+        # hit bottoms with the others (it's still one of "the exiled cards").
+        if not do_cast:
+            _bottom(exiled)
+            _enter_colossus(state)
+            return
+        _bottom([c for c in exiled if c is not hit])
         state.hand.append(hit)
         cast_spec["resolve"](state, hit)
         if state.pending_resolution is not None:
@@ -528,7 +530,50 @@ def cast_maelstrom_colossus(state, card_def):
 
             pending["on_complete"] = _finish_cascade
             return
-    _enter_colossus(state)
+        _enter_colossus(state)
+
+    # The CASTER's own may-cast decision (Cascade is the caster's trigger -- no
+    # active_idx flip). Two drl_env actions "Cast (may)" / "Decline (may)".
+    begin_may_cast(state, on_complete=_resolve_hit)
+
+
+def rooftop_percher_etb(state, permanent):
+    """ETB: "exile up to two target cards from graveyards. You gain 3 life."
+    Faithful targeting (project_targeted_triggered_abilities): the up-to-2
+    graveyard targets are chosen NOW, as the ability goes on the stack
+    (target-at-promotion), captured by object identity, and the exile fizzles
+    per-target at resolution -- exiling every still-present target, doing nothing
+    only if ALL chosen targets have left the graveyard (608.2c). Targets can come
+    from EITHER player's graveyard ("from graveyardS").
+
+    The +3 life is a SEPARATE, non-targeted effect that ALWAYS happens at
+    resolution -- even if the exile fully fizzles.
+    # AUTHORIZED SIMPLIFICATION (owner, 2026-07-29): the ability never
+    # wholesale-fizzles on all-targets-illegal (strict 608.2b would counter it,
+    # dropping the life gain too); the life gain is unconditional here."""
+    percher_def = registry.CARD_DEFS["Rooftop Percher"]
+    combined = [c for pl in state.players for c in pl.graveyard]  # either player's graveyard
+
+    def _on_targets(state, chosen):
+        captured = list(chosen)  # exact graveyard instances, locked as the ability is put on the stack
+
+        def _resolve(state, card_def):
+            gain_life(state, 3)  # unconditional -- happens even if the exile fully fizzles (owner directive)
+            survivors = [inst for inst in captured if any(inst in pl.graveyard for pl in state.players)]
+            if captured and not survivors:
+                _log_target_fizzle(state, card_def, None)  # every exile target left the graveyard -> exile does nothing
+                return
+            for inst in survivors:
+                owner = next(pl for pl in state.players if inst in pl.graveyard)
+                owner.graveyard.remove(inst)  # exiled, untracked
+                state.log_event(
+                    "zone_move", card=inst.name, from_zone="graveyard", to_zone="exile_untracked", reason="rooftop_percher",
+                )
+
+        push_to_stack(state, percher_def, _resolve, reserves_hand_card=False, is_spell=False,  # ETB effect -- not a spell
+                      targets=tuple(("graveyard_card", inst) for inst in captured))
+
+    begin_choose_up_to_graveyard(state, lambda c: True, 2, _on_targets, graveyard=combined)
 
 
 def pinnacle_kill_ship_etb(state):
@@ -555,7 +600,8 @@ def pinnacle_kill_ship_etb(state):
             captured[1].damage_marked += 10
             check_state_based_actions(state)
 
-        push_to_stack(state, kill_ship_def, _resolve, reserves_hand_card=False, is_spell=False)  # ETB (triggered ability) -- not a spell
+        push_to_stack(state, kill_ship_def, _resolve, reserves_hand_card=False, is_spell=False,  # ETB (triggered ability) -- not a spell
+                      targets=() if captured is None else (captured,))
 
     begin_choose_any_target(
         state,
@@ -731,7 +777,6 @@ COLORLESS_EFFECT_REGISTRY = {
         # this is a token so it ceases rather than going to the graveyard.
         "mana": ("flexible", set(COLORS)),
         "on_tap": lambda state, permanent: _treasure_on_tap(state, permanent),
-        "on_tap_undo": lambda state, permanent: _treasure_on_tap_undo(state, permanent),
     },
     EffectId.BARRELS_OF_BLASTING_JELLY: {
         "cast": {"resolve": lambda state, card_def: cast_permanent_from_hand(state, card_def)},
@@ -755,7 +800,6 @@ COLORLESS_EFFECT_REGISTRY = {
         "cast": {"resolve": lambda state, card_def: cast_permanent_from_hand(state, card_def)},
         "mana": ("flexible", set(COLORS)),
         "on_tap": lambda state, permanent: _lotus_petal_on_tap(state, permanent),
-        "on_tap_undo": lambda state, permanent: _lotus_petal_on_tap_undo(state, permanent),
     },
     # EffectId.FILLER's single canonical registry entry -- every reader
     # consults it via EFFECT_REGISTRY.get(effect_id, {}), which already
@@ -767,7 +811,9 @@ COLORLESS_EFFECT_REGISTRY = {
     EffectId.FILLER: {},
     EffectId.ROOFTOP_PERCHER: {
         "cast": {"resolve": lambda state, card_def: cast_permanent_from_hand(state, card_def)},
-        "etb_trigger": lambda state, permanent: gain_life(state, 3),
+        "etb_trigger": lambda state, permanent: rooftop_percher_etb(state, permanent),
+        "etb_targets": True,  # up-to-2 graveyard targets chosen at promotion, exile fizzles at resolution
+        "pending_kinds": {"choose_graveyard_card"},  # the up-to-2 target picks (from EITHER graveyard)
         "keywords": {"flying"},
     },
     EffectId.BOULDERBRANCH_GOLEM: {
@@ -796,10 +842,12 @@ COLORLESS_EFFECT_REGISTRY = {
     },
     EffectId.MAELSTROM_COLOSSUS: {
         "cast": {"resolve": lambda state, card_def: cast_maelstrom_colossus(state, card_def)},
+        "pending_kinds": {"may_cast"},  # Cascade's may-cast of the hit (the hit's own kinds come via union_pending)
     },
     EffectId.PINNACLE_KILL_SHIP: {
         "cast": {"resolve": lambda state, card_def: cast_permanent_from_hand(state, card_def)},
         "etb_trigger": lambda state, permanent: pinnacle_kill_ship_etb(state),
+        "etb_targets": True,  # "up to one target creature" -- chosen at promotion, fizzles at resolution (project_targeted_triggered_abilities)
         "activated_abilities": {
             "station": {
                 "speed": Speed.SORCERY,  # real text: "Station only as a sorcery"
@@ -982,8 +1030,9 @@ if __name__ == "__main__":
     assert state.pending_resolution is None and len(state.stack) == 1
     resolve_top_of_stack(state)
     assert state.pending_resolution["kind"] == "choose_graveyard_card"
-    assert choose_graveyard_card_options(state) == ["Bramble Wurm", "Breath Weapon"]
-    execute_choose_graveyard_card_option(state, "Bramble Wurm")
+    relic_opts = choose_graveyard_card_options(state)
+    assert [c.name for c in relic_opts] == ["Bramble Wurm", "Breath Weapon"]
+    execute_choose_graveyard_card_option(state, next(o for o in relic_opts if o.name == "Bramble Wurm"))
     assert state.pending_resolution is None
     assert [c.name for c in state.graveyard] == ["Breath Weapon"]  # only the chosen one removed
 
@@ -1013,24 +1062,23 @@ if __name__ == "__main__":
     execute_choose_target_player_option(state2, 1)  # target the opponent (locked at activation)
     resolve_top_of_stack(state2)  # effect resolves -> the TARGETED player picks the card
     assert state2.active_idx == 1  # active_idx flipped to the targeted player for their choice
-    assert choose_graveyard_card_options(state2) == ["Theirs"]  # THEIR graveyard, not "Mine"
-    execute_choose_graveyard_card_option(state2, "Theirs")
+    theirs_opts = choose_graveyard_card_options(state2)
+    assert [c.name for c in theirs_opts] == ["Theirs"]  # THEIR graveyard, not "Mine"
+    execute_choose_graveyard_card_option(state2, theirs_opts[0])
     assert state2.active_idx == 0  # restored to the activator once the choice is made
     assert state2.players[1].graveyard == []
     assert [c.name for c in state2.players[0].graveyard] == ["Mine"]  # own graveyard untouched
     print("colorless_cards.py Relic of Progenitus (real opponent target) self-check: OK")
 
-    # Rooftop Percher / Boulderbranch Golem: real ETB gain-life triggers,
-    # the one piece of genuinely new logic these two add now that they're
-    # no longer inert EffectId.FILLER entries (cast_permanent_from_hand
-    # and enters_battlefield's own etb_trigger dispatch are already
-    # self-checked elsewhere -- casting.py, this just confirms these two
-    # cards' own specific gain amounts are wired to the right effect_id).
+    # Boulderbranch Golem: real ETB gain-life trigger. Rooftop Percher's ETB
+    # (exile up to two + gain 3) gets its own dedicated block below.
+    # With no graveyard cards, Percher's up-to-2 pick auto-completes empty and
+    # the ability just gains 3 (the unconditional co-effect).
     state = GameState(on_the_play=True)
     percher = CardDef("Rooftop Percher", CardType.CREATURE, {"generic": 5}, EffectId.ROOFTOP_PERCHER, power=3, toughness=3)
     state.hand = [percher]
     cast_permanent_from_hand(state, percher)
-    _resolve_etb(state)  # ETB gain-3 is queued now (faithful timing), resolved off the stack
+    _resolve_etb(state)  # ETB (target-at-promotion): empty graveyard -> no exile targets, gain 3
     assert state.life_total == 23  # STARTING_LIFE (20) + 3
 
     golem = CardDef("Boulderbranch Golem", CardType.CREATURE, {"generic": 7}, EffectId.BOULDERBRANCH_GOLEM, power=6, toughness=5)
@@ -1040,6 +1088,78 @@ if __name__ == "__main__":
     assert state.life_total == 29  # +6 on top of the 23 above
 
     print("colorless_cards.py Tron filler creature self-check: OK")
+
+    # Rooftop Percher's ETB, in full: "exile up to two target cards from
+    # graveyards. You gain 3 life." Targets chosen at PROMOTION
+    # (target-at-promotion, project_targeted_triggered_abilities), exile fizzles
+    # per-target at resolution; the +3 life ALWAYS happens. Exercises two
+    # same-named copies (distinct instances), partial fizzle, and the
+    # always-gain-3 all-gone case.
+    from ..state import PlayerState as _PSrp
+    from ..resolution import (
+        choose_graveyard_card_options as _rp_opts,
+        execute_choose_graveyard_card_decline as _rp_decline,
+        execute_choose_graveyard_card_option as _rp_pick,
+    )
+
+    def _rp_state():
+        st = GameState(on_the_play=True, players=[_PSrp(True), _PSrp(False)])
+        st.active_idx = 0
+        return st
+
+    def _mk_gy(name):
+        return CardDef(name, CardType.INSTANT, {"R": 1}, EffectId.FILLER)
+
+    # (a) exile two DISTINCT instances (two same-named "Bolt" in my gy + opp's card)
+    st = _rp_state()
+    b1 = st.new_instance(_mk_gy("Bolt")); b2 = st.new_instance(_mk_gy("Bolt"))
+    st.players[0].graveyard = [b1, b2]
+    opp = st.new_instance(_mk_gy("Opp Card")); st.players[1].graveyard = [opp]
+    st.players[0].hand = [percher]
+    cast_permanent_from_hand(st, percher)
+    promote_triggers_to_stack(st)  # target-at-promotion opens the up-to-2 pick
+    assert st.pending_resolution["kind"] == "choose_graveyard_card"
+    assert sorted(o.name for o in _rp_opts(st)) == ["Bolt", "Bolt", "Opp Card"]  # both same-named copies offered
+    _rp_pick(st, b1)
+    assert b1 not in _rp_opts(st) and b2 in _rp_opts(st)  # a1 excluded BY IDENTITY, its twin still choosable
+    _rp_pick(st, opp)  # 2nd pick -> max reached, ability's effect pushed
+    assert st.pending_resolution is None and len(st.stack) == 1
+    resolve_top_of_stack(st)
+    assert st.players[0].life_total == 23  # +3 (always)
+    assert b1 not in st.players[0].graveyard and b2 in st.players[0].graveyard  # b1 exiled, unpicked b2 stays
+    assert opp not in st.players[1].graveyard  # opp's card exiled from ITS graveyard
+
+    # (b) partial fizzle (608.2c): pick both, one leaves before resolution -> only the survivor is exiled, life still gained
+    st = _rp_state()
+    p1 = st.new_instance(_mk_gy("X")); p2 = st.new_instance(_mk_gy("Y")); st.players[0].graveyard = [p1, p2]
+    st.players[0].hand = [percher]
+    cast_permanent_from_hand(st, percher); promote_triggers_to_stack(st)
+    _rp_pick(st, p1); _rp_pick(st, p2)
+    st.players[0].graveyard.remove(p1)  # p1 exiled by other hate before this resolves
+    resolve_top_of_stack(st)
+    assert st.players[0].life_total == 23 and p2 not in st.players[0].graveyard  # survivor exiled, life gained
+
+    # (c) all exile targets gone -> exile does nothing, but +3 life STILL happens (owner directive)
+    st = _rp_state()
+    z1 = st.new_instance(_mk_gy("Z")); st.players[0].graveyard = [z1]
+    st.players[0].hand = [percher]
+    cast_permanent_from_hand(st, percher); promote_triggers_to_stack(st)
+    _rp_pick(st, z1)  # only eligible card -> selection auto-ends
+    st.players[0].graveyard.remove(z1)  # its only target leaves
+    resolve_top_of_stack(st)
+    assert st.players[0].life_total == 23  # life ALWAYS gained even when the exile fully fizzles
+
+    # (d) explicit decline (the "up to" slack): two available, take one, decline the second
+    st = _rp_state()
+    d1 = st.new_instance(_mk_gy("P")); d2 = st.new_instance(_mk_gy("Q")); st.players[0].graveyard = [d1, d2]
+    st.players[0].hand = [percher]
+    cast_permanent_from_hand(st, percher); promote_triggers_to_stack(st)
+    _rp_pick(st, d1)
+    assert st.pending_resolution["kind"] == "choose_graveyard_card"  # a 2nd pick is offered...
+    _rp_decline(st)  # ...but the agent stops at one
+    resolve_top_of_stack(st)
+    assert d1 not in st.players[0].graveyard and d2 in st.players[0].graveyard and st.players[0].life_total == 23
+    print("colorless_cards.py Rooftop Percher (up-to-2 exile, target-at-promotion, partial fizzle, always-gain-3) self-check: OK")
 
     # Boulderbranch Golem Prototype {3}{G} -- 3/3: a second cast option (own
     # cheaper cost, smaller stats, own ETB "gain life = its power" = 3). Cast
@@ -1081,7 +1201,9 @@ if __name__ == "__main__":
         state.hand = [colossus]
         state.library = [a_land, hit, after]
         cast_maelstrom_colossus(state, colossus)
-        assert state.graveyard == [colossus]
+        assert state.pending_resolution["kind"] == "may_cast"  # Cascade offers the caster a may-cast
+        resolution.execute_may_cast(state, True)               # choose to cast the hit for free
+        assert [c.name for c in state.graveyard] == [colossus.name]
         assert sorted(p.card_def.name for p in state.battlefield) == ["Free Hit", "Maelstrom Colossus"]
         # Real Cascade only exiles cards UP TO AND INCLUDING the hit --
         # "Never Seen" was still sitting below it, never revealed/exiled
@@ -1089,7 +1211,21 @@ if __name__ == "__main__":
         # actually exiled alongside the hit ("A Land") gets shuffled and
         # returned, appended after it.
         assert [c.name for c in state.library] == ["Never Seen", "A Land"]
-        print("colorless_cards.py Maelstrom Colossus Cascade (hit) self-check: OK")
+        print("colorless_cards.py Maelstrom Colossus Cascade (may-cast: cast) self-check: OK")
+
+        # DECLINE the may-cast: the hit is NOT cast; it bottoms with the rest.
+        state1b = _GS(on_the_play=True)
+        colossus1b = CardDef("Maelstrom Colossus", CardType.CREATURE, {"generic": 8}, EffectId.MAELSTROM_COLOSSUS, power=7, toughness=7)
+        hit1b = CardDef("Declined Hit", CardType.ARTIFACT, {"generic": 2}, EffectId.FILLER)
+        state1b.hand = [colossus1b]
+        state1b.library = [a_land, hit1b, after]
+        cast_maelstrom_colossus(state1b, colossus1b)
+        assert state1b.pending_resolution["kind"] == "may_cast"
+        resolution.execute_may_cast(state1b, False)            # decline -> hit stays in the library
+        assert [p.card_def.name for p in state1b.battlefield] == ["Maelstrom Colossus"]  # hit NOT cast
+        assert state1b.library[0].name == "Never Seen"  # below the hit, never touched
+        assert sorted(c.name for c in state1b.library[1:]) == ["A Land", "Declined Hit"]  # both bottomed
+        print("colorless_cards.py Maelstrom Colossus Cascade (may-cast: decline) self-check: OK")
 
         # Whiff: nothing eligible (everything's either a land or costs 8+)
         # -- Colossus still enters, nothing else does.
@@ -1127,7 +1263,7 @@ if __name__ == "__main__":
 
             def _on_complete(state, taken):
                 if taken:
-                    state.graveyard.append(card_def)
+                    state.move_card(card_def, state.graveyard)
                 entered_before_decision.append(any(p.card_def.name == "Maelstrom Colossus" for p in state.battlefield))
 
             resolution.begin_resolution(state, "fake_choice", _on_complete)
@@ -1139,6 +1275,8 @@ if __name__ == "__main__":
         state4.hand = [colossus4]
         state4.library = [decision_hit]
         cast_maelstrom_colossus(state4, colossus4)
+        assert state4.pending_resolution["kind"] == "may_cast"  # the may-cast comes first
+        resolution.execute_may_cast(state4, True)               # cast it -> its own resolve opens fake_choice
         assert state4.pending_resolution["kind"] == "fake_choice"  # Colossus genuinely hasn't entered yet
         assert not any(p.card_def.name == "Maelstrom Colossus" for p in state4.battlefield)
         resolution.complete_resolution(state4, True)
@@ -1321,19 +1459,34 @@ if __name__ == "__main__":
     assert len(state.players[0].hand) == 1  # paid, drew
     print("colorless_cards.py Nihil Spellbomb (exile gy + dies pay-B draw) self-check: OK")
 
-    # Lembas: dies -> shuffle itself back into the library (recurs).
+    # Lembas: dies -> shuffle itself back into the library (recurs). Driven
+    # through the real sacrifice path (lembas_sac -> sacrifice_to_graveyard),
+    # so the 400.7 linked-instance tracking (graveyard_instance stashed on the
+    # dying permanent's own flags) is exercised for real, not hand-simulated.
     state = GameState(on_the_play=True)
     lembas = Permanent(registry.CARD_DEFS["Lembas"])
     lembas.slot = 1
     state.battlefield = [lembas]
-    lembas_dies(state, lembas)  # simulate the dies-trigger (card would be in graveyard)
-    # (direct call with card not in graveyard is a no-op; exercise via the graveyard path)
-    state = GameState(on_the_play=True)
-    state.graveyard = [registry.CARD_DEFS["Lembas"]]
-    lem_perm = Permanent(registry.CARD_DEFS["Lembas"])
-    lembas_dies(state, lem_perm)
-    assert registry.CARD_DEFS["Lembas"] in state.library and registry.CARD_DEFS["Lembas"] not in state.graveyard
+    lembas_sac(state, lembas)
+    _drive(state)
+    assert registry.CARD_DEFS["Lembas"] in state.library and not any(c.name == "Lembas" for c in state.graveyard)
+    assert state.life_total == 23  # the sac ability's own +3 life
     print("colorless_cards.py Lembas (dies -> shuffle into library) self-check: OK")
+
+    # A second same-named Lembas already sitting in the graveyard must NOT be
+    # the one shuffled back -- the exact dying instance is tracked, not any
+    # same-named graveyard card (the bug the old by-name bridge could hit).
+    state = GameState(on_the_play=True)
+    other_lembas_in_gy = state.new_instance(registry.CARD_DEFS["Lembas"])
+    state.graveyard = [other_lembas_in_gy]
+    lembas2 = Permanent(registry.CARD_DEFS["Lembas"])
+    lembas2.slot = 1
+    state.battlefield = [lembas2]
+    lembas_sac(state, lembas2)
+    _drive(state)
+    assert registry.CARD_DEFS["Lembas"] in state.library
+    assert other_lembas_in_gy in state.graveyard  # untouched -- the OTHER copy stayed put
+    print("colorless_cards.py Lembas (exact-instance tracking, not by-name) self-check: OK")
 
     # Chromatic Star: "{1},{T},Sacrifice: Add one mana of ANY color" -- the
     # activator picks the color (all five offered, never {C}); the dies-draw

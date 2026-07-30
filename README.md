@@ -66,8 +66,10 @@ src/
     turn.py                  Phase/Speed enums; priority rounds; mulligan; the turn
                              loop; game_coroutine + run_multiplayer_game (the 2-player
                              driver the training loop drives).
-    mana.py                  Mana production, cost payment (batch and one-tap-at-a-time),
-                             pure payment planning / legality checks.
+    mana.py                  Float-first mana: mana abilities float into a per-player
+                             pool at any priority window (never the stack), paying a
+                             cost spends floated pool mana explicitly, pure pool-
+                             affordability legality checks (pool_can_pay).
     decklist.py              Parse data/*.txt decklists against CARD_DEFS.
     registry.py              Union of every color catalog -> CARD_DEFS + EFFECT_REGISTRY;
                              derive_pending_kinds.
@@ -150,8 +152,10 @@ and play out matches on its own. Highlights:
   Robot, Warrior, Eldrazi Spawn, Food, Clue, Treasure, and more), affinity/
   delve/escape cost reductions, state-based actions, decking out, and
   life-total win checks.
-- **Hidden information is respected.** Hand and library contents stay hidden;
-  only public zones (battlefield/graveyard/stack/exile) are ever encoded.
+- **Hidden information is respected.** Hand and library CONTENTS stay hidden;
+  only public zones (battlefield/graveyard/stack/exile) are ever tokenized.
+  Their SIZE isn't hidden in real Magic (either player can count a library or
+  a hand), so it's surfaced to the agent separately, as a scalar.
 
 The engine's effect functions defensively handle a no-opponent (1-player)
 configuration — a remnant of the original single-deck Tron experiments — but
@@ -161,12 +165,23 @@ the active surface, and everything the DRL system drives, is 2-player.
 
 ## The DRL system (`src/rl/`)
 
-The observation is a **variable-length set of card tokens**, one per
-public-zone card for both players. Each token = a learned **identity
-embedding** (via `CardVocab`) concatenated with a deterministic **static
-feature vector** (mana cost, type, base P/T, keywords) plus **dynamic
-per-instance state** (tapped, effective P/T, combat commitments, zone,
-mine/theirs side flag).
+The observation has two parts. The first is a **variable-length set of card
+tokens**, one per public-zone card for both players. Each token = a learned
+**identity embedding** (via `CardVocab`) concatenated with a deterministic
+**static feature vector** (mana cost, type, base P/T, keywords) plus
+**dynamic per-instance state** (tapped, effective P/T, combat commitments,
+whether currently targeted by a spell/ability on the stack — mine or the
+opponent's, including a spell targeting another spell — zone, mine/theirs
+side flag).
+
+The second is a **scalar vector** (`rl/agent.py`'s `_scalar_features`) of
+non-tokenized globals: turn number, lands-played, mulligans taken, whose
+turn it is, floating mana pool, phase, life totals, each player's library
+size, the opponent's hand size, and whether anything on the stack currently
+targets either player directly (a burn spell to the face has no token to
+carry a bit on, so that one case is scalar-only). Library/hand size and a
+declared target are all public knowledge in real Magic, unlike hand/library
+*contents* — see "Hidden information is respected" above.
 
 The network is split into a **shared** stack and a **per-deck** head:
 

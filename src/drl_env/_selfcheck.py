@@ -28,10 +28,9 @@ def _run_self_checks():
     _generous_ent_backup = game.EFFECT_REGISTRY[EffectId.GENEROUS_ENT]
 
     PLOT_COST = {"generic": 1, "B": 1}  # {B}, not {R} -- EffectId.SWAMP is a real, already-correctly-wired
-    # mana source (registry.py's derived views like SIMPLE_MANA_SOURCE_EFFECTS/_FIXED_SOURCE_COLOR are built
-    # once at import time; injecting a fake "mana" spec onto FILLER here wouldn't be reflected in them, so the
-    # legality pre-check (plan_payment) would wrongly see no valid source -- reusing a real fixed-color land
-    # sidesteps that entirely rather than also having to patch the derived views to match).
+    # mana source (registry.py's per-effect_id EFFECT_REGISTRY entries are consulted directly by
+    # mana_ability_options/activate_mana_source; injecting a fake "mana" spec onto FILLER wouldn't
+    # be picked up as a real source's real color, so reusing a real fixed-color land sidesteps that).
 
     on_cast_calls = []
     plot_spell = CardDef("Fake Plot Spell", CardType.SORCERY, PLOT_COST, EffectId.FILLER)
@@ -55,25 +54,17 @@ def _run_self_checks():
             Permanent(CardDef("Guttersnipe-ish", CardType.CREATURE, None, EffectId.GENEROUS_ENT)),
         ]
 
-        # Plot it: pay {1}{B}, exile with this turn's stamp. Both Swamps
-        # are needed (1 generic + 1 B); pay_cost is always interactive
-        # regardless of what the legality pre-check found, so this taps
-        # them one at a time.
+        # Plot it: pay {1}{B}, exile with this turn's stamp. Float-first: float
+        # {B}{B} from the two Swamps BEFORE plotting (1 generic + 1 B needed --
+        # a mana ability floats immediately and never uses the stack), then pay
+        # by spending from the pool.
+        game.activate_mana_source(state, state.battlefield[0])
+        game.activate_mana_source(state, state.battlefield[1])
         assert _plot_legal("Fake Plot Spell", PLOT_COST, game.turn.Speed.SORCERY)(state)
         _plot_execute("Fake Plot Spell", PLOT_COST, game.EFFECT_REGISTRY[EffectId.FILLER]["plot"]["resolve"])(state)
         assert state.pending_resolution["kind"] == "pay_cost"
         while state.pending_resolution is not None:
-            tap_opts = game.tap_cost_options(state)
-            if tap_opts:
-                name, _color, is_filter = tap_opts[0]
-                game.execute_tap_cost_option(state, name, None, is_filter)
-            else:
-                # Both Swamps produce only B -- the 2nd tap's B floats
-                # into the pool instead of auto-filling the outstanding
-                # {generic:1} pip (this engine deliberately never
-                # auto-spends floated mana toward generic -- mana.py's
-                # own documented design). Spend it explicitly.
-                game.execute_pool_spend(state, game.pool_spend_options(state)[0])
+            game.execute_pool_spend(state, game.pool_spend_options(state)[0])
         assert state.pending_resolution is None
         assert state.hand == []
         assert [c.name for c, _stamp in state.exile] == ["Fake Plot Spell"]
@@ -111,14 +102,11 @@ def _run_self_checks():
             Permanent(CardDef("Swamp", CardType.LAND, None, EffectId.SWAMP)),
             Permanent(CardDef("Swamp", CardType.LAND, None, EffectId.SWAMP)),
         ]
+        game.activate_mana_source(state, state.battlefield[0])
+        game.activate_mana_source(state, state.battlefield[1])
         _plot_execute("Fake Plot Spell", PLOT_COST, game.EFFECT_REGISTRY[EffectId.FILLER]["plot"]["resolve"])(state)
         while state.pending_resolution is not None:
-            tap_opts = game.tap_cost_options(state)
-            if tap_opts:
-                name, _color, is_filter = tap_opts[0]
-                game.execute_tap_cost_option(state, name, None, is_filter)
-            else:
-                game.execute_pool_spend(state, game.pool_spend_options(state)[0])
+            game.execute_pool_spend(state, game.pool_spend_options(state)[0])
         state.turn_number += 1
         assert not _cast_from_exile_legal("Fake Plot Spell", game.EFFECT_REGISTRY[EffectId.FILLER]["cast"]["extra_legal"], game.turn.Speed.SORCERY)(state)
     finally:
@@ -129,15 +117,12 @@ def _run_self_checks():
 
     print("drl_env Plot + on-cast-trigger self-check: OK")
 
-    # Regression: on_cast_trigger (Guttersnipe) must only fire once a
-    # spell's cost is actually, irreversibly paid. Casting a spell and
-    # then choosing "Abandon payment" (game.abandon_pay_cost) must NOT
-    # have collected the trigger for free -- and must be repeatable
-    # without ever firing it, since the card never actually left hand and
-    # no mana was ever spent. Before the fix, _cast_execute fired
-    # on_cast_trigger BEFORE begin_pay_cost even started, so this exact
-    # cast-then-abandon loop collected Guttersnipe's damage for free,
-    # indefinitely.
+    # Regression: on_cast_trigger (Guttersnipe) must fire only once a spell's
+    # cost is actually paid -- queued in _cast_execute's _after_pay, never
+    # inline the instant the cast is announced. Float-first: float {B}, announce
+    # the cast (opens pay_cost), confirm the trigger has NOT fired while payment
+    # is still pending, then spend to complete it and confirm it queues, then
+    # fires only on resolve.
     _card_defs_backup = dict(game.CARD_DEFS)
     _filler_backup = game.EFFECT_REGISTRY[EffectId.FILLER]
     _generous_ent_backup = game.EFFECT_REGISTRY[EffectId.GENEROUS_ENT]
@@ -153,37 +138,20 @@ def _run_self_checks():
         state = GameState(on_the_play=True)
         state.phase = game.turn.Phase.MAIN1
         state.hand = [fake_bolt]
+        swamp = Permanent(CardDef("Swamp", CardType.LAND, None, EffectId.SWAMP))
         state.battlefield = [
-            Permanent(CardDef("Swamp", CardType.LAND, None, EffectId.SWAMP)),
+            swamp,
             Permanent(CardDef("Guttersnipe-ish", CardType.CREATURE, None, EffectId.GENEROUS_ENT)),
         ]
         cast_legal = _cast_legal("Fake Bolt", None, game.turn.Speed.INSTANT)
         cast_execute = _cast_execute("Fake Bolt", game.EFFECT_REGISTRY[EffectId.FILLER]["cast"]["resolve"])
 
-        for _ in range(5):  # "infinitely" -- a handful of reps proves the loop, not just one
-            assert cast_legal(state)
-            cast_execute(state)
-            assert on_cast_calls == []  # not fired yet -- cost isn't paid
-            assert state.pending_resolution["kind"] == "pay_cost"
-            game.abandon_pay_cost(state)
-            assert state.pending_resolution is None
-            assert on_cast_calls == []  # declining payment must never have collected it
-            assert state.hand == [fake_bolt]  # never actually cast -- still sitting in hand
-
-        # Actually pay this time -- now, and only now, the trigger is queued
-        # (once), then fires when promoted to the stack and resolved.
+        game.activate_mana_source(state, swamp)  # float {B} BEFORE casting (float-first)
         assert cast_legal(state)
         cast_execute(state)
-        while state.pending_resolution is not None:
-            tap_opts = game.tap_cost_options(state)
-            if tap_opts:
-                name, color, is_filter = tap_opts[0]
-                game.execute_tap_cost_option(state, name, color, is_filter)
-            else:
-                # A tap only floats mana into the pool -- never auto-spends
-                # it toward the cost (mana.py's own design, see the Plot
-                # check above) -- spend it explicitly.
-                game.execute_pool_spend(state, game.pool_spend_options(state)[0])
+        assert state.pending_resolution["kind"] == "pay_cost"
+        assert on_cast_calls == []  # NOT fired yet -- the cost isn't paid
+        game.execute_pool_spend(state, "B")  # pay {B} from the pool -> cost complete
         # Paid: the spell is on the stack and the on_cast trigger is queued
         # (not fired inline). Promote + resolve to fire it, above the spell.
         assert on_cast_calls == []
@@ -199,7 +167,7 @@ def _run_self_checks():
         game.EFFECT_REGISTRY[EffectId.FILLER] = _filler_backup
         game.EFFECT_REGISTRY[EffectId.GENEROUS_ENT] = _generous_ent_backup
 
-    print("drl_env abandon-payment on-cast-trigger regression: OK")
+    print("drl_env on-cast-trigger timing (float-first) regression: OK")
 
     # Tokens (item 8): build_action_table's token_card_defs param is what
     # actually makes "Activate Blood (sac)" exist as an action at all --
@@ -220,16 +188,14 @@ def _run_self_checks():
     state.hand = [CardDef("Card To Discard", CardType.SORCERY, {}, None)]
     state.library = [CardDef("Library Card", CardType.SORCERY, {}, None)]
 
+    swamp = next(p for p in state.battlefield if p.card_def.name == "Swamp")
+    game.activate_mana_source(state, swamp)  # float-first: float {B} BEFORE activating (Blood's {1})
     assert activate_legal(state)
     activate_execute(state)  # pays {1} via the real begin_pay_cost path, same as every other cost_key ability
     assert state.pending_resolution["kind"] == "pay_cost"
-    tap_name, tap_color, tap_filter = game.tap_cost_options(state)[0]
-    game.execute_tap_cost_option(state, tap_name, tap_color, tap_filter)
-    if state.pending_resolution is not None:
-        # Swamp produces B, which floats into the pool instead of
-        # auto-filling the {generic:1} need -- same lesson as the Plot
-        # check above. Spend it explicitly.
-        game.execute_pool_spend(state, game.pool_spend_options(state)[0])
+    # The floated B pays the {generic:1} (this engine never auto-spends floated
+    # mana toward generic -- mana.py's own design -- so spend it explicitly).
+    game.execute_pool_spend(state, game.pool_spend_options(state)[0])
 
     assert state.pending_resolution["kind"] == "discard"  # Blood's discard -- a COST, paid before the effect
     game.execute_discard_option(state, "Card To Discard")
@@ -459,11 +425,11 @@ def _run_self_checks():
     state.hand = [rancor_card]
 
     _, cast_rancor_legal, cast_rancor_execute = targeting_actions[_gidx("Cast Rancor")]
+    targeting_actions[_gidx("Tap Forest")][2](state)  # float-first: float {G} BEFORE casting
     assert cast_rancor_legal(state)
     cast_rancor_execute(state)
     assert state.pending_resolution["kind"] == "pay_cost"
-    targeting_actions[_gidx("Choose: Forest")][2](state)  # tap the Forest -- floats {G}
-    targeting_actions[_gidx("Spend G from pool")][2](state)  # pays Rancor's {G}
+    targeting_actions[_gidx("Spend G from pool")][2](state)  # pays Rancor's {G} from the pool
 
     # Cost fully paid -- precast_choice means cast_aura runs its target
     # choice IMMEDIATELY here, NOT deferred to when this eventually pops
@@ -499,8 +465,8 @@ def _run_self_checks():
     state.battlefield = [bogle_1, forest]
     state.hand = [rancor_card]
 
+    targeting_actions[_gidx("Tap Forest")][2](state)  # float-first: float {G} first
     targeting_actions[_gidx("Cast Rancor")][2](state)
-    targeting_actions[_gidx("Choose: Forest")][2](state)
     targeting_actions[_gidx("Spend G from pool")][2](state)
     game.execute_choose_any_target_creature(state, 0, "Slippery Bogle", 1)  # Aura targets via the any-target pointer path now
     assert len(state.stack) == 1
@@ -508,7 +474,7 @@ def _run_self_checks():
 
     game.resolve_top_of_stack(state)
     assert state.hand == []
-    assert rancor_card in state.graveyard
+    assert any(c.card_def is rancor_card for c in state.graveyard)  # fizzled to graveyard as a fresh instance (400.7)
     assert not any(p.card_def.name == "Rancor" for p in state.battlefield)
 
     print("drl_env Aura target-fizzle (end to end) self-check: OK")
@@ -520,26 +486,146 @@ def _run_self_checks():
     assert _lost(type("S", (), {"winner": None})(), 0) is False
     print("drl_env _lost self-check: OK")
 
-    # tap_cost_options memoization never returns a stale answer (docs/
-    #): build a pay_cost resolution with exactly 1
-    # untapped Mountain, sweep the mask (populating the cache -- "Choose:
-    # Mountain" legal), tap it (a real mutation -- zero untapped sources
-    # left, so tap_cost_options itself now returns empty), then sweep
-    # again -- the second sweep must see the mutation, not the first
-    # sweep's cached answer, proving the cache doesn't leak across
-    # separate legal_action_mask calls.
+    # _mana_ability_options_cache memoization never returns a stale answer:
+    # build a state with exactly 1 untapped Mountain, sweep the mask
+    # (populating the cache -- "Tap Mountain" legal), activate it (a real
+    # mutation -- 0 untapped sources left, so the ability is gone), then sweep
+    # again -- the second sweep must see the mutation, not the first sweep's
+    # cached answer, proving the cache doesn't leak across separate
+    # legal_action_mask calls.
     perf_decklist = [("Mountain", 10), ("Lightning Bolt", 5)]
     perf_pending = game.derive_pending_kinds(perf_decklist)
     perf_actions = build_action_table(perf_decklist, game.EFFECT_REGISTRY, pending_kinds=perf_pending)
-    perf_choose_mountain = next(i for i, (nm, _l, _e) in enumerate(perf_actions) if nm == "Choose: Mountain")
+    perf_tap_mountain = next(i for i, (nm, _l, _e) in enumerate(perf_actions) if nm == "Tap Mountain")
     perf_state = GameState(on_the_play=True, players=[PlayerState(True)])
-    perf_state.hand = [game.CARD_DEFS["Lightning Bolt"]]
-    perf_state.battlefield = [Permanent(game.CARD_DEFS["Mountain"])]
-    game.begin_pay_cost(perf_state, {"R": 1}, on_complete=lambda s: None)
-    assert legal_action_mask(perf_state, perf_actions)[perf_choose_mountain]
-    assert _actions._tap_cost_options_cache is None  # cleared again once the sweep itself returns
-    game.execute_tap_cost_option(perf_state, "Mountain", None, False)  # taps the only Mountain -- 0 untapped sources left
-    assert game.tap_cost_options(perf_state) == []  # ground truth: nothing left to tap
-    assert not legal_action_mask(perf_state, perf_actions)[perf_choose_mountain]  # would be wrongly True if the first sweep's stale cache leaked through
+    perf_mtn = Permanent(game.CARD_DEFS["Mountain"])
+    perf_state.battlefield = [perf_mtn]
+    assert legal_action_mask(perf_state, perf_actions)[perf_tap_mountain]
+    assert _actions._mana_ability_options_cache is None  # cleared again once the sweep itself returns
+    game.activate_mana_source(perf_state, perf_mtn)  # taps the only Mountain -- 0 untapped sources left
+    assert ("Mountain", None) not in game.mana_ability_options(perf_state)  # ground truth: nothing left to tap
+    assert not legal_action_mask(perf_state, perf_actions)[perf_tap_mountain]  # would be wrongly True if the first sweep's stale cache leaked through
 
-    print("drl_env tap_cost_options cache self-check: OK")
+    print("drl_env mana-ability options cache self-check: OK")
+
+    # Saruli Caretaker (F11 atomic redesign): its extra cost -- tap ANOTHER
+    # untapped creature -- is a COST CHOICE (602.5g), not a target, so it's
+    # enumerated directly as "Tap Saruli Caretaker for <color>, tapping <name>
+    # (slot k)" -- both taps + the float happen in ONE atomic action, never a
+    # nested resolution. Two Slippery Bogles: only the untapped one is a legal
+    # tap-target; Saruli can never target itself even though it's also a
+    # (Defender) creature.
+    saruli_decklist = [("Saruli Caretaker", 2), ("Slippery Bogle", 2)]
+    saruli_actions = build_action_table(saruli_decklist, game.EFFECT_REGISTRY)
+
+    def _sidx(action_name):
+        return next(i for i, (nm, _l, _e) in enumerate(saruli_actions) if nm == action_name)
+
+    saruli = Permanent(game.CARD_DEFS["Saruli Caretaker"])
+    saruli.summoning_sick = False  # Saruli's own {T} ability needs this (302.6) -- the TARGET's own sickness doesn't matter (being tapped as a cost isn't a {T} ability of its own)
+    bogle_1 = Permanent(game.CARD_DEFS["Slippery Bogle"])
+    bogle_2 = Permanent(game.CARD_DEFS["Slippery Bogle"])
+    bogle_2.slot = 2
+    bogle_2.tapped = True  # already tapped -- NOT a legal tap-target
+    state = GameState(on_the_play=True)
+    state.battlefield = [saruli, bogle_1, bogle_2]
+
+    _, legal_bogle1, execute_bogle1 = saruli_actions[_sidx("Tap Saruli Caretaker for G, tapping Slippery Bogle (slot 1)")]
+    _, legal_bogle2, _ = saruli_actions[_sidx("Tap Saruli Caretaker for G, tapping Slippery Bogle (slot 2)")]
+    _, legal_self, _ = saruli_actions[_sidx("Tap Saruli Caretaker for G, tapping Saruli Caretaker (slot 1)")]
+
+    assert legal_bogle1(state)       # untapped, another creature -- legal
+    assert not legal_bogle2(state)   # already tapped -- not a legal target
+    assert not legal_self(state)     # Saruli can never tap itself
+
+    execute_bogle1(state)
+    assert saruli.tapped and bogle_1.tapped and bogle_2.tapped  # bogle_2 was already tapped, untouched otherwise
+    assert state.mana_pool == {"G": 1}
+    assert not legal_bogle1(state)   # Saruli itself now tapped -- no longer offered at all
+
+    print("drl_env Saruli Caretaker (atomic extra-cost mana ability) self-check: OK")
+
+    # Mana filter (Barrels of Blasting Jelly / Conduit Pylons), F11 atomic
+    # redesign: "Filter X for <output>, paying <input>" spends one floating
+    # <input> pip and adds one <output> pip in ONE action -- no nested
+    # pay_cost. Float {U}: filtering it into {B} is legal only while that U
+    # pip is actually floating; illegal for a color not currently floating.
+    filter_decklist = [("Barrels of Blasting Jelly", 2)]
+    filter_actions = build_action_table(filter_decklist, game.EFFECT_REGISTRY)
+
+    def _fmidx(action_name):
+        return next(i for i, (nm, _l, _e) in enumerate(filter_actions) if nm == action_name)
+
+    barrels = Permanent(game.CARD_DEFS["Barrels of Blasting Jelly"])
+    state = GameState(on_the_play=True)
+    state.battlefield = [barrels]
+    state.mana_pool = {"U": 1}
+
+    _, legal_ub, execute_ub = filter_actions[_fmidx("Filter Barrels of Blasting Jelly for B, paying U")]
+    _, legal_wb, _ = filter_actions[_fmidx("Filter Barrels of Blasting Jelly for B, paying W")]
+
+    assert legal_ub(state)
+    assert not legal_wb(state)  # no floating W to spend
+
+    execute_ub(state)
+    assert state.mana_pool == {"B": 1}  # U spent, B produced -- net one pip converted
+    assert barrels.flags.get("used_this_turn", False) is True
+    assert not legal_ub(state)  # Barrels' own once-per-turn gate now closed
+
+    print("drl_env mana filter (atomic pool->pool conversion) self-check: OK")
+
+    # F11: mana abilities used to be masked during ANY pending resolution -- a
+    # real deviation from 605.1a/605.3b (a mana ability may be activated even
+    # mid-resolution of something else, INCLUDING while paying a cost). Prove
+    # the originally-reported case: a Ward/Spell-Pierce-style pay_unless opens,
+    # the payer floats mana IN RESPONSE (not pre-floated), then pays.
+    pu_decklist = [("Mountain", 4)]
+    pu_actions = build_action_table(pu_decklist, game.EFFECT_REGISTRY, pending_kinds={"pay_unless"})
+    pu_tap_idx = next(i for i, (nm, _l, _e) in enumerate(pu_actions) if nm == "Tap Mountain")
+    pu_pay_idx = next(i for i, (nm, _l, _e) in enumerate(pu_actions) if nm == "Pay (unless)")
+    pu_state = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
+    pu_mtn = Permanent(game.CARD_DEFS["Mountain"])
+    pu_state.players[0].battlefield = [pu_mtn]
+
+    pu_results = []
+    game.begin_pay_unless(pu_state, 0, {"generic": 1}, lambda s, paid: pu_results.append(paid))
+    assert pu_state.pending_resolution["kind"] == "pay_unless"
+    assert not legal_action_mask(pu_state, pu_actions)[pu_pay_idx]  # can't pay yet -- nothing floated
+    assert legal_action_mask(pu_state, pu_actions)[pu_tap_idx]  # but CAN float mana right now, mid-resolution
+
+    pu_actions[pu_tap_idx][2](pu_state)
+    assert pu_state.pending_resolution["kind"] == "pay_unless"  # untouched by the tap
+    assert legal_action_mask(pu_state, pu_actions)[pu_pay_idx]  # now payable -- just floated it
+
+    pu_actions[pu_pay_idx][2](pu_state)
+    while pu_state.pending_resolution is not None and pu_state.pending_resolution["kind"] == "pay_cost":
+        game.execute_pool_spend(pu_state, game.pool_spend_options(pu_state)[0])
+    assert pu_results == [True]
+
+    print("drl_env mana ability legal mid-pay_unless (F11: 605.1a/605.3b) self-check: OK")
+
+    # Generalize past pay_unless specifically: a mana ability must stay legal
+    # mid-resolution of an ENTIRELY UNRELATED pending kind too (discard), and
+    # activating it must not disturb that unrelated resolution at all.
+    mid_decklist = [("Mountain", 4), ("Lightning Bolt", 2)]
+    mid_actions = build_action_table(mid_decklist, game.EFFECT_REGISTRY, pending_kinds=game.derive_pending_kinds(mid_decklist))
+    mid_tap_idx = next(i for i, (nm, _l, _e) in enumerate(mid_actions) if nm == "Tap Mountain")
+    mid_state = GameState(on_the_play=True)
+    mid_mtn = Permanent(game.CARD_DEFS["Mountain"])
+    mid_state.battlefield = [mid_mtn]
+    mid_state.hand = [game.CARD_DEFS["Lightning Bolt"]]
+
+    discard_completed = []
+    game.begin_discard(mid_state, 1, False, on_complete=lambda s, cards: discard_completed.append(cards))
+    assert mid_state.pending_resolution["kind"] == "discard"
+    assert legal_action_mask(mid_state, mid_actions)[mid_tap_idx]  # legal even mid-discard now
+
+    mid_actions[mid_tap_idx][2](mid_state)
+    assert mid_state.mana_pool == {"R": 1}
+    assert mid_state.pending_resolution["kind"] == "discard"  # untouched -- still open, still needs its own answer
+
+    game.execute_discard_option(mid_state, "Lightning Bolt")
+    assert discard_completed == [[game.CARD_DEFS["Lightning Bolt"]]]
+    assert mid_state.pending_resolution is None
+
+    print("drl_env mana ability legal mid-ANY-pending-resolution (605.1a/605.3b) self-check: OK")
