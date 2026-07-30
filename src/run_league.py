@@ -33,8 +33,17 @@ every game played, written as one JSON file. Logging is threaded through
 both the sequential and parallel worker paths (event dicts are picklable).
 
 Usage:
-  python run_league.py [--n-iterations N] [--games-per-iteration N] [--snapshot-every N] [--n-workers N]
+  python run_league.py --run-config PATH --league-config PATH
+      Normal training: run-mechanics defaults (training_configs/run_default.json) + one league's identity
+      (training_configs/league_*.json: league_name, roster, optional train_decks, total_games, max_batch_size).
+      No game count given -- it's computed automatically from the league's own progress.json (doubles each
+      batch, 1/2/4/8/..., capped at max_batch_size, stopping once total_games is reached). Either config's
+      individual values, or --league-name/--roster/--n-workers/etc. directly, still override for one call.
+  python run_league.py --n-iterations N [--games-per-iteration N] [--snapshot-every N] [--n-workers N]
+      Debug / one-off: force an exact iteration count, bypassing auto-sizing (and its progress.json bookkeeping)
+      entirely. Config files still apply for anything not explicitly overridden.
   python run_league.py --matchup DECK_A DECK_B [--games N] [--log PATH]
+      Fixed A-vs-B pairing, no league opponent sampling, no auto-sizing.
 """
 import argparse
 import json
@@ -117,11 +126,42 @@ def _save_live_checkpoints(live_nets, optimizers, deck_names, session, session_p
         f.write(str(session))
 
 
+def _load_progress(league_dir):
+    """This league's own auto-sizing state (checkpoints/<league_name>/
+    progress.json) -- never hand-edited, only ever written by _save_progress
+    below. Absent (a brand-new league) reads as "nothing run yet": the
+    doubling sequence's own start-at-1 case, per _next_batch_games."""
+    path = f"{league_dir}/progress.json"
+    if not os.path.exists(path):
+        return {"last_batch_size": 0, "cumulative_games_per_deck": 0}
+    return json.load(open(path))
+
+
+def _save_progress(league_dir, last_batch_size, cumulative_games_per_deck):
+    os.makedirs(league_dir, exist_ok=True)
+    with open(f"{league_dir}/progress.json", "w") as f:
+        json.dump({"last_batch_size": last_batch_size, "cumulative_games_per_deck": cumulative_games_per_deck}, f)
+
+
+def _next_batch_games(league_dir, max_batch_size, total_games):
+    """The next auto-sized batch's games-per-deck: doubles from the last real
+    batch this league actually ran (1 if none yet), capped at max_batch_size
+    once reached (then held there every batch after), and never overshooting
+    total_games on the final batch. Returns None once total_games is already
+    met -- the caller's signal to run nothing at all."""
+    progress = _load_progress(league_dir)
+    remaining = total_games - progress["cumulative_games_per_deck"]
+    if remaining <= 0:
+        return None
+    next_size = progress["last_batch_size"] * 2 if progress["last_batch_size"] > 0 else 1
+    return min(next_size, max_batch_size, remaining)
+
+
 def _run_session(n_iterations, games_per_iteration, snapshot_every, executor, n_workers,
                   batch_size_start=32, batch_size_cap=2048, batch_size_steps=6,
                   fresh_stack=False, league_dir=None, seed=None,
-                  salvage_opponents=True, train_deck=True, train_mulligan=True, train_decks=None,
-                  matchup=None, game_logs=None, checkpoint_rate=0.0):
+                  train_deck=True, train_mulligan=True, train_decks=None,
+                  matchup=None, game_logs=None, checkpoint_rate=0.0, roster=None):
     # fresh_stack + league_dir + seed let the benchmark harness drive this EXACT
     # loop with untrained (but identical-config) models over a throwaway dir,
     # reproducibly -- the only intended differences from a real training
@@ -141,6 +181,20 @@ def _run_session(n_iterations, games_per_iteration, snapshot_every, executor, n_
         random.seed(seed)  # collect_rollout_league_parallel draws its worker seeds from the global random module
     decklists, vocab, deck_ctxs, fixed_tables = build_pool()
     deck_names = list(decklists)
+    # roster: a TRUE isolated sub-league -- restricts the entire opponent pool (not
+    # just which decks receive a training round, see train_decks below) to this
+    # subset. vocab/shared_stack/deck_ctxs/fixed_tables still come from the FULL
+    # build_pool() roster above, unchanged -- only WHICH deck_names this session ever
+    # constructs a live net/optimizer for, or ever samples as an opponent, narrows.
+    # This preserves checkpoint/vocab compatibility with the full-roster league (a
+    # sub-league can seed its decks straight from full-league live.pt checkpoints)
+    # while genuinely never loading, training, or pairing against anyone outside the
+    # subset -- unlike train_decks alone, which still samples opponents from the
+    # WHOLE roster (that's train_decks' own intended use: onboarding a new deck
+    # against an already-established field, not an isolated sub-league).
+    if roster is not None:
+        assert set(roster) <= set(deck_names), f"roster {roster} not all in the full pool roster {deck_names}"
+        deck_names = list(roster)
     # matchup = (A, B): a fixed A-vs-B pairing instead of league opponent sampling
     # (snapshotting off); it trains exactly those two decks, so it IS a train_decks
     # subset. Both share the SAME loading/optimizer/checkpoint setup below -- no
@@ -253,9 +307,21 @@ def _run_session(n_iterations, games_per_iteration, snapshot_every, executor, n_
                     mull_by_deck_iter[deck_name].extend(tr)
             t_update0 = time.time()
             # PPO-update every TRAIN deck that received transitions this round (only
-            # when deck training is on). The training deck's own bucket always; a
-            # live-opponent bucket only when salvage_opponents. A frozen deck / a
-            # non-subset opponent is never updated -- just an opponent.
+            # when deck training is on). ONE gate, unconditionally: deck_name must be
+            # in train_set (a frozen deck / a non-subset opponent -- e.g. an
+            # established field a new deck is onboarding against, see train_decks'
+            # own docstring above -- is NEVER updated, just an opponent). Past that
+            # single preliminary check, the invariant is absolute: the training
+            # deck's own bucket always updates, and so does ANY live-opponent bucket
+            # that shows up here at all -- a live opponent outside train_set never
+            # reaches this loop in the first place (buffers_by_deck only ever
+            # contains a bucket for a live opponent, per _make_league_pairing's own
+            # record_as logic; a frozen-snapshot opponent records nothing regardless).
+            # There used to be a second, optional gate here (salvage_opponents,
+            # on by default) letting a caller train the deck's own bucket only and
+            # discard a live opponent's -- removed: within train_set, "live opponent
+            # got real transitions this round" and "that deck should learn from them"
+            # are the same fact, never a configurable choice.
             policy_loss = value_loss = entropy = 0.0
             salvaged = 0
             if train_deck:
@@ -265,7 +331,7 @@ def _run_session(n_iterations, games_per_iteration, snapshot_every, executor, n_
                     if deck_name == name:
                         policy_loss, value_loss, entropy = ppo_update(
                             live_nets[name], [optimizers[name]], buf, "cpu", batch_size=batch_size)
-                    elif salvage_opponents:
+                    else:
                         ppo_update(live_nets[deck_name], [optimizers[deck_name]], buf, "cpu", batch_size=batch_size)
                         salvaged += len(buf)
             update_time_total += time.time() - t_update0
@@ -396,17 +462,33 @@ def _write_event_log(log_path, game_logs, meta):
 
 def build_arg_parser():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--n-iterations", type=int, default=1)
-    parser.add_argument("--games-per-iteration", type=int, default=2)
-    parser.add_argument("--snapshot-every", type=int, default=20)
-    parser.add_argument("--n-workers", type=int, default=6)
+    # Every flag below whose default is None (instead of a real value) is
+    # CONFIG-BACKED: main() resolves it as explicit-flag > --run-config /
+    # --league-config value > the hardcoded fallback commented alongside each
+    # one -- see main()'s own resolution block, the ONE place all three tiers
+    # are reconciled. None here means "the user didn't say," never "off" or
+    # "zero" -- so a config-backed value can still validly BE 0 or empty
+    # without being mistaken for "not given" (e.g. checkpoint_opponent_rate=0.0).
+    parser.add_argument("--n-iterations", type=int, default=None,
+                         help="Force this exact number of iterations, bypassing auto-sizing entirely (debugging / "
+                              "one-off runs only -- never written to progress.json, never fed back into the "
+                              "doubling sequence). Omit this for normal training: the size is computed from "
+                              "--league-config's total_games/max_batch_size and how far that league has already "
+                              "gotten (checkpoints/<league_name>/progress.json).")
+    parser.add_argument("--games-per-iteration", type=int, default=None, help="Default 2 (run config).")
+    parser.add_argument("--snapshot-every", type=int, default=None,
+                         help="Snapshot cadence in ITERATIONS. Prefer --run-config's snapshot_every_games (a fixed "
+                              "games-count, independent of games_per_iteration) -- this raw flag is a lower-level "
+                              "override. Default 20 if neither is given.")
+    parser.add_argument("--n-workers", type=int, default=None, help="Default 6 (run config).")
     parser.add_argument("--matchup", nargs=2, metavar=("DECK_A", "DECK_B"), default=None,
-                         help="Fixed A-vs-B pairing instead of league opponent sampling (snapshotting off). Trains "
-                              "both decks with their real mulligan models via the unified loop.")
+                         help="Fixed A-vs-B pairing instead of league opponent sampling (snapshotting off, no "
+                              "auto-sizing). Trains both decks with their real mulligan models via the unified loop.")
     parser.add_argument("--games", type=int, default=50, help="Total games (per deck round) for --matchup mode.")
     parser.add_argument("--decks", type=str, default=None, metavar="A,B,...",
                          help="Train only this comma-separated subset of the roster; the rest stay loaded as FROZEN "
-                              "opponents (onboarding a new deck / targeted retraining). Default: the whole roster.")
+                              "opponents (onboarding a new deck / targeted retraining). Falls back to --league-config's "
+                              "own train_decks, then to the full roster (train everyone in it).")
     parser.add_argument("--train-deck-only", action="store_true",
                          help="Train the per-deck policies only; freeze the mulligan models.")
     parser.add_argument("--train-mulligan-only", action="store_true",
@@ -422,38 +504,76 @@ def build_arg_parser():
     parser.add_argument("--log", type=str, default=None, metavar="PATH",
                          help="Write the game engine's own event log for every game this session to PATH as JSON "
                               "(sequential collection only).")
-    parser.add_argument("--batch-size-start", type=int, default=32,
-                         help="ppo_update batch_size at the first iteration (small/granular early).")
-    parser.add_argument("--batch-size-cap", type=int, default=2048,
-                         help="ppo_update batch_size ceiling by the end of the session.")
-    parser.add_argument("--batch-size-steps", type=int, default=6,
-                         help="Number of doublings from --batch-size-start to --batch-size-cap, spread evenly across the session.")
-    parser.add_argument("--no-opponent-salvage", action="store_true",
-                         help="Disable Path A: when the sampled opponent is another deck's LIVE net, train THAT deck "
-                              "too from its (on-policy) transitions this round, at no extra collection cost -- on by "
-                              "default. Pass this to fall back to training only the round's own deck (for A/B).")
-    parser.add_argument("--checkpoint-opponent-rate", type=float, default=0.0,
+    parser.add_argument("--batch-size-start", type=int, default=None,
+                         help="ppo_update batch_size at the first iteration. Default 32 (run config) -- this PPO "
+                              "minibatch ramp is unrelated to games-per-invocation sizing; it's expected to stay "
+                              "fixed across every league, not vary per-experiment.")
+    parser.add_argument("--batch-size-cap", type=int, default=None, help="ppo_update batch_size ceiling. Default 2048 (run config).")
+    parser.add_argument("--batch-size-steps", type=int, default=None,
+                         help="Doublings from --batch-size-start to --batch-size-cap, spread evenly across the "
+                              "session. Default 6 (run config).")
+    parser.add_argument("--checkpoint-opponent-rate", type=float, default=None,
                          help="Probability that a sampled opponent is a frozen historical snapshot rather than that "
                               "deck's current live net, independent of how many snapshots exist (rl.league.LeaguePool."
-                              "sample_opponent). Default 0.0: every game is real-model-vs-real-model, no checkpoint "
-                              "opponents at all -- deliberately off during early training, when the snapshot pool is "
-                              "mostly barely-trained early copies. Raise this later to reintroduce checkpoint "
-                              "diversity as an explicit choice.")
+                              "sample_opponent). Default 0.0 (run config): every game is real-model-vs-real-model, no "
+                              "checkpoint opponents at all -- deliberately off during early training, when the "
+                              "snapshot pool is mostly barely-trained early copies. The one run-config value expected "
+                              "to be overridden deliberately per-invocation (e.g. a scheduled 0.0 -> 0.20 switch "
+                              "partway through a long run), rather than edited in the file.")
+    parser.add_argument("--league-name", type=str, default=None,
+                         help="Store this session's checkpoints under checkpoints/<league-name>/ instead of the "
+                              "default checkpoints/league/. Prefer --league-config, which sets this AND the roster "
+                              "together; this flag is the lower-level override (or use it alone with no config at "
+                              "all, matching the pre-config-file interface).")
+    parser.add_argument("--roster", type=str, default=None, metavar="A,B,...",
+                         help="Restrict the ENTIRE opponent pool (not just which decks train -- see --decks) to "
+                              "this comma-separated subset: a true isolated sub-league where no deck outside the "
+                              "set is ever loaded, trained, or sampled as an opponent. Reuses the full roster's "
+                              "vocab/shared stack unchanged. Prefer --league-config; this is the lower-level override.")
+    parser.add_argument("--total-games", type=int, default=None,
+                         help="Games/deck this league trains to in total -- drives auto-sizing and the stop "
+                              "condition. Default: --league-config's own total_games.")
+    parser.add_argument("--max-batch-size", type=int, default=None,
+                         help="Auto-sizing ceiling: batches double (1, 2, 4, 8, ...) each session until reaching "
+                              "this, then hold here every session after. Default: --league-config's own max_batch_size.")
+    parser.add_argument("--run-config", type=str, default=None, metavar="PATH",
+                         help="JSON of run-mechanics defaults shared across leagues (n_workers, games_per_iteration, "
+                              "snapshot_every_games, the PPO batch-size ramp, checkpoint_opponent_rate) -- see "
+                              "training_configs/run_default.json. Any individual value can still be overridden by "
+                              "passing its own flag explicitly for one invocation.")
+    parser.add_argument("--league-config", type=str, default=None, metavar="PATH",
+                         help="JSON describing one league (league_name, roster, optional train_decks, total_games, "
+                              "max_batch_size) -- see training_configs/league_*.json. Drives automatic batch sizing "
+                              "whenever --n-iterations is not given.")
     return parser
 
 
 def main():
     args = build_arg_parser().parse_args()
 
+    # Both configs optional -- {} when omitted, so every .get() below falls
+    # through to its own hardcoded default exactly as if no config existed
+    # at all (the pre-config-file interface keeps working unchanged).
+    run_cfg = json.load(open(args.run_config)) if args.run_config else {}
+    league_cfg = json.load(open(args.league_config)) if args.league_config else {}
+
     train_deck = not args.train_mulligan_only
     train_mulligan = not args.train_deck_only
     assert train_deck or train_mulligan, "cannot freeze BOTH layers (--train-deck-only + --train-mulligan-only)"
-    train_decks = args.decks.split(",") if args.decks else None
+
+    # Deck identity: explicit flag > --league-config > (roster itself, for
+    # train_decks -- omitting it from the config means "train everyone in
+    # the roster," _run_session's own existing default).
+    roster = args.roster.split(",") if args.roster else league_cfg.get("roster")
+    train_decks = args.decks.split(",") if args.decks else league_cfg.get("train_decks", roster)
     matchup = tuple(args.matchup) if args.matchup else None
     game_logs = [] if args.log else None
+    league_name = args.league_name or league_cfg.get("league_name")
+    league_dir = f"{CHECKPOINT_DIR}/{league_name}" if league_name else None
 
     if args.eval:  # no training: round-robin (or single matchup) over current live agents
-        resolved_decks = _run_eval(train_decks, args.games, args.greedy, args.seed, game_logs, matchup=matchup)
+        resolved_decks = _run_eval(train_decks, args.games, args.greedy, args.seed, game_logs, matchup=matchup,
+                                    league_dir=league_dir)
         if args.log:
             # "decks" logs the RESOLVED roster _run_eval actually played, not the raw
             # --decks arg -- train_decks is None whenever --decks was omitted (the
@@ -463,28 +583,89 @@ def main():
                                                    "decks": resolved_decks, "greedy": args.greedy, "games_logged": len(game_logs)})
         return
 
-    # --matchup counts by --games (per deck round), otherwise by --n-iterations x
-    # --games-per-iteration. Logging is threaded through BOTH the sequential and MP
-    # league paths (event dicts are picklable), so --log no longer forces sequential.
-    n_iterations, games_per_iteration = args.n_iterations, args.games_per_iteration
+    # Run mechanics: explicit flag > --run-config > hardcoded default -- the
+    # SAME three-tier resolution as deck identity above, just against
+    # run_cfg instead of league_cfg. batch_size_start/cap/steps are the one
+    # set of values nobody has ever needed to override this way in practice
+    # (PPO's own minibatch ramp, unrelated to games-per-invocation sizing --
+    # see their own --help text), but get the identical treatment for
+    # consistency rather than being special-cased out of it.
+    games_per_iteration = args.games_per_iteration if args.games_per_iteration is not None else run_cfg.get("games_per_iteration", 2)
+    n_workers = args.n_workers if args.n_workers is not None else run_cfg.get("n_workers", 6)
+    batch_size_start = args.batch_size_start if args.batch_size_start is not None else run_cfg.get("batch_size_start", 32)
+    batch_size_cap = args.batch_size_cap if args.batch_size_cap is not None else run_cfg.get("batch_size_cap", 2048)
+    batch_size_steps = args.batch_size_steps if args.batch_size_steps is not None else run_cfg.get("batch_size_steps", 6)
+    checkpoint_rate = args.checkpoint_opponent_rate if args.checkpoint_opponent_rate is not None else run_cfg.get("checkpoint_opponent_rate", 0.0)
+    # snapshot_every_games (a fixed games-count) is the preferred run-config
+    # path; the raw --snapshot-every flag (iterations) is a lower-level
+    # override for either it or the config -- converted using games_per_
+    # iteration ABOVE this line since it's already fully resolved by here.
+    if args.snapshot_every is not None:
+        snapshot_every = args.snapshot_every
+    elif "snapshot_every_games" in run_cfg:
+        snapshot_every = max(1, run_cfg["snapshot_every_games"] // games_per_iteration)
+    else:
+        snapshot_every = 20
+
+    # Sizing: --matchup counts by --games (per deck round, its own scheme,
+    # unaffected by any of this); an explicit --n-iterations forces an exact
+    # size and is a pure debug escape hatch (see its own --help text -- never
+    # written to progress.json, never fed back into the doubling sequence);
+    # otherwise this league's own total_games/max_batch_size + how far it's
+    # already gotten (progress.json) determine the next batch automatically.
+    # Logging is threaded through BOTH the sequential and MP league paths
+    # (event dicts are picklable), so --log no longer forces sequential.
+    auto_sizing = False
     if matchup is not None:
-        games_per_iteration = min(max(args.games_per_iteration, 10), args.games)
+        games_per_iteration = min(max(games_per_iteration, 10), args.games)
         n_iterations = max(1, args.games // games_per_iteration)
+    elif args.n_iterations is not None:
+        n_iterations = args.n_iterations
+    else:
+        total_games = args.total_games if args.total_games is not None else league_cfg.get("total_games")
+        max_batch_size = args.max_batch_size if args.max_batch_size is not None else league_cfg.get("max_batch_size")
+        assert league_dir is not None, (
+            "no --n-iterations given and no league to auto-size from -- pass --league-config (or at least "
+            "--league-name together with --total-games/--max-batch-size), or force an exact size with "
+            "--n-iterations for a one-off debug run"
+        )
+        assert total_games is not None and max_batch_size is not None, (
+            f"auto-sizing needs both total_games and max_batch_size -- got total_games={total_games!r} "
+            f"max_batch_size={max_batch_size!r} (from --league-config, or --total-games/--max-batch-size directly)"
+        )
+        next_batch_games = _next_batch_games(league_dir, max_batch_size, total_games)
+        if next_batch_games is None:
+            progress = _load_progress(league_dir)
+            print(f"{league_name!r} already at {progress['cumulative_games_per_deck']}/{total_games} "
+                  f"games/deck -- nothing to run")
+            return
+        n_iterations = max(1, next_batch_games // games_per_iteration)
+        auto_sizing = True
 
-    schedule_kwargs = dict(batch_size_start=args.batch_size_start,
-                            batch_size_cap=args.batch_size_cap, batch_size_steps=args.batch_size_steps,
-                            salvage_opponents=not args.no_opponent_salvage, seed=args.seed,
+    schedule_kwargs = dict(batch_size_start=batch_size_start,
+                            batch_size_cap=batch_size_cap, batch_size_steps=batch_size_steps,
+                            seed=args.seed,
                             train_deck=train_deck, train_mulligan=train_mulligan, train_decks=train_decks,
-                            matchup=matchup, game_logs=game_logs, checkpoint_rate=args.checkpoint_opponent_rate)
+                            matchup=matchup, game_logs=game_logs, checkpoint_rate=checkpoint_rate,
+                            league_dir=league_dir, roster=roster)
 
-    sequential = matchup is not None or args.n_workers <= 1  # matchup uses collect_rollout directly (no worker path)
+    sequential = matchup is not None or n_workers <= 1  # matchup uses collect_rollout directly (no worker path)
     if not sequential:
         # ONE executor for the whole session, reused across every iteration --
         # process-spawn/import overhead is paid once, not per collection round.
-        with ProcessPoolExecutor(max_workers=args.n_workers) as executor:
-            _run_session(n_iterations, games_per_iteration, args.snapshot_every, executor, args.n_workers, **schedule_kwargs)
+        with ProcessPoolExecutor(max_workers=n_workers) as executor:
+            _run_session(n_iterations, games_per_iteration, snapshot_every, executor, n_workers, **schedule_kwargs)
     else:
-        _run_session(n_iterations, games_per_iteration, args.snapshot_every, None, 1, **schedule_kwargs)
+        _run_session(n_iterations, games_per_iteration, snapshot_every, None, 1, **schedule_kwargs)
+
+    # Feed this batch's own size back into the doubling sequence and advance
+    # the league's cumulative count -- skipped entirely for a forced
+    # --n-iterations run (auto_sizing stays False), per --n-iterations' own
+    # "never written to progress.json" contract above.
+    if auto_sizing:
+        progress = _load_progress(league_dir)
+        played_this_batch = n_iterations * games_per_iteration
+        _save_progress(league_dir, played_this_batch, progress["cumulative_games_per_deck"] + played_this_batch)
 
     if args.log:
         meta = {"mode": "matchup" if matchup else "league", "matchup": list(matchup) if matchup else None,

@@ -1,0 +1,10 @@
+{
+  "_note": "Run mechanics -- how a batch actually executes, independent of which league/decks. Values match what the 4-deck sub-league has been running with since 2026-07-30. checkpoint_opponent_rate is the one field expected to be overridden per-invocation on purpose (e.g. the sub-league's planned 0.0 -> 0.20 switch at ~10k games/deck) rather than edited here.",
+  "games_per_iteration": 2,
+  "snapshot_every_games": 200,
+  "n_workers": 6,
+  "batch_size_start": 32,
+  "batch_size_cap": 2048,
+  "batch_size_steps": 6,
+  "checkpoint_opponent_rate": 0.0
+}

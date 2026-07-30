@@ -2,7 +2,6 @@
 models/
 logs/
 reports/
-checkpoints/
 # Cockatrice replay files written by sim_replay_converter/convert.py
 *.cor
 

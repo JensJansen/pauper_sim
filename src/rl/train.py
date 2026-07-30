@@ -359,7 +359,14 @@ def _league_rollout_worker(training_deck_name, all_state_dicts, all_trunk_hidden
         net.eval()
         live_nets[name] = net
 
-    pool = LeaguePool(league_root_dir, list(decklists))  # read-only here -- this worker never calls register_snapshot
+    # Deck names come from all_state_dicts' own keys, NOT list(decklists) (this
+    # worker's fresh build_pool() call always returns the FULL roster, regardless of
+    # any roster= restriction the orchestrating _run_session applied) -- live_nets
+    # above already reflects exactly the (possibly narrowed) roster the orchestrator
+    # built, so mirroring its keys here is what keeps this worker's own opponent
+    # pool scoped the same way, without needing a separate parameter to carry the
+    # restriction across the process boundary redundantly.
+    pool = LeaguePool(league_root_dir, list(all_state_dicts.keys()))  # read-only here -- this worker never calls register_snapshot
     rng = random.Random(seed)
 
     mulligan_nets = None
