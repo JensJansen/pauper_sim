@@ -1,16 +1,26 @@
 """Opponent pool for league-style training (in place of the old pairwise
 Stage 1/Stage 2 curriculum) -- per confirmed design: historical checkpoint
 snapshots per deck (not latest-only, so a deck can't quietly drift away
-from skills it needed against an opponent's earlier self), sampled
-uniformly (not skill-weighted -- no reliable skill signal to weight by
-yet; revisit if that changes).
+from skills it needed against an opponent's earlier self).
 
-Sampling is two-level uniform: pick a deck uniformly from the whole
-roster (including the training deck itself, for mirror play), then pick
-a snapshot of THAT deck uniformly (its current live weights count as one
-option, each historical snapshot another) -- keeps one deck's snapshot
-count from skewing the overall distribution for reasons unrelated to
-which decks exist."""
+Sampling is two-level: pick a deck uniformly from the whole roster
+(including the training deck itself, for mirror play), THEN decide live vs.
+checkpoint for that deck via `checkpoint_rate` (a live/checkpoint coin flip
+with a caller-set probability, default 0.0 -- always live), and if a
+checkpoint is drawn, pick uniformly among that deck's currently-held
+snapshots. This replaced an earlier "uniform among {live} union {every
+snapshot}" scheme: that scheme let the live-net probability silently shrink
+as the snapshot window filled (1/(N+1), so 80% checkpoint odds once a deck
+had 4 snapshots) -- nobody chose that ratio, it just fell out of window
+size. checkpoint_rate makes the live/checkpoint split an explicit, stable
+number instead of a side effect of how many snapshots happen to exist.
+Owner directive (2026-07-30): early training should see NO checkpoint
+opponents at all (checkpoint_rate=0.0, the default) -- an early snapshot is
+barely-trained and teaches little as an opponent, so paying collection cost
+against one is close to wasted relative to a live opponent that's ALSO
+improving. Reintroducing checkpoint diversity later is an explicit,
+deliberate choice (a nonzero rate), not an automatic side effect of the pool
+filling up."""
 
 import os
 
@@ -70,15 +80,29 @@ class LeaguePool:
             os.remove(evicted_path)
             self._net_cache.pop(evicted_path, None)
 
-    def sample_opponent(self, training_deck_name, rng):
+    def sample_opponent(self, training_deck_name, rng, checkpoint_rate=0.0):
         """Returns (opponent_deck_name, snapshot_path_or_None). None means
         "use that deck's current live net" (the caller already holds every
         deck's live net; when opponent_deck_name == training_deck_name AND
         snapshot_path is None, that IS the training net itself -- true
-        mirror, not a frozen copy of it)."""
+        mirror, not a frozen copy of it).
+
+        checkpoint_rate: the live/checkpoint split for whichever deck gets
+        picked, decided independently of how many snapshots that deck
+        happens to have banked (see this module's own docstring for why --
+        the old "uniform over {live} union {snapshots}" scheme let this
+        ratio drift with window occupancy instead of being a deliberate
+        choice). 0.0 (default): always live, structurally -- the rng.random()
+        draw and comparison never happen, so this is exact, not "very
+        unlikely," even before any snapshots exist. A deck with an EMPTY
+        snapshot list always resolves to live regardless of checkpoint_rate
+        (nothing to draw yet), same fallback the old code's [None]-first
+        candidate list gave for free."""
         opponent_deck_name = rng.choice(self.deck_names)
-        candidates = [None] + [path for _id, path in self.snapshots[opponent_deck_name]]
-        return opponent_deck_name, rng.choice(candidates)
+        snaps = self.snapshots[opponent_deck_name]
+        if snaps and rng.random() < checkpoint_rate:
+            return opponent_deck_name, rng.choice([path for _id, path in snaps])
+        return opponent_deck_name, None
 
     def load_snapshot_agent(self, snapshot_path, shared_stack, deck_ctx):
         """Builds (or returns a cached) frozen SeatAgent for a historical
@@ -151,14 +175,38 @@ if __name__ == "__main__":
         for i in (0, 1):
             assert not os.path.exists(os.path.join(tmp_dir, "deck_a", f"snapshot_{i}.pt")), "evicted snapshot file must be deleted from disk"
 
-        # Sampling now must be able to return real snapshot paths for deck_a.
-        saw_snapshot = False
+        # DEFAULT checkpoint_rate (0.0): must stay live-only EVEN THOUGH deck_a
+        # now has 3 real snapshots on disk -- the whole point of this change
+        # (see this module's own docstring) is that a full snapshot window no
+        # longer silently implies mostly-checkpoint sampling.
         for _ in range(200):
             name, path = pool.sample_opponent("deck_a", rng)
-            if name == "deck_a" and path is not None:
+            if name == "deck_a":
+                assert path is None, "checkpoint_rate defaults to 0.0 -- must never draw a snapshot"
+
+        # checkpoint_rate=1.0: must always return a real snapshot path when
+        # the sampled deck actually has any.
+        saw_snapshot = False
+        for _ in range(200):
+            name, path = pool.sample_opponent("deck_a", rng, checkpoint_rate=1.0)
+            if name == "deck_a":
                 saw_snapshot = True
-                assert os.path.exists(path)
-        assert saw_snapshot, "expected at least one snapshot sample across 200 draws once deck_a has 3 snapshots"
+                assert path is not None and os.path.exists(path), "checkpoint_rate=1.0 must always draw a snapshot when one exists"
+            else:
+                assert path is None, "deck_b has zero snapshots -- must fall back to live regardless of checkpoint_rate"
+        assert saw_snapshot, "expected at least one deck_a draw across 200 samples"
+
+        # checkpoint_rate=0.5: the live/checkpoint split must roughly track
+        # the requested rate, independent of how many snapshots exist (3
+        # here) -- confirms the split is no longer 1/(1+N) as it used to be.
+        # Filtered to deck_a draws only: deck_b has zero snapshots and would
+        # always read as "live" regardless of rate, diluting the measured
+        # fraction if mixed in (opponent-deck selection is a SEPARATE uniform
+        # draw from the live/checkpoint decision -- see this function's own
+        # docstring on the two-level structure).
+        deck_a_draws = [p for n, p in (pool.sample_opponent("deck_a", rng, checkpoint_rate=0.5) for _ in range(4000)) if n == "deck_a"]
+        checkpoint_frac = sum(1 for p in deck_a_draws if p is not None) / len(deck_a_draws)
+        assert abs(checkpoint_frac - 0.5) < 0.05, f"checkpoint_rate=0.5 should draw a snapshot ~50% of the time deck_a is picked, got {checkpoint_frac:.3f}"
 
         # load_snapshot_agent must load a frozen SeatAgent (deck + mulligan) and be cached.
         deck_ctx = (None, [("Pass", None, None)] * 4, ())

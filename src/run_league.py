@@ -121,7 +121,7 @@ def _run_session(n_iterations, games_per_iteration, snapshot_every, executor, n_
                   batch_size_start=32, batch_size_cap=2048, batch_size_steps=6,
                   fresh_stack=False, league_dir=None, seed=None,
                   salvage_opponents=True, train_deck=True, train_mulligan=True, train_decks=None,
-                  matchup=None, game_logs=None):
+                  matchup=None, game_logs=None, checkpoint_rate=0.0):
     # fresh_stack + league_dir + seed let the benchmark harness drive this EXACT
     # loop with untrained (but identical-config) models over a throwaway dir,
     # reproducibly -- the only intended differences from a real training
@@ -203,7 +203,7 @@ def _run_session(n_iterations, games_per_iteration, snapshot_every, executor, n_
     if train_set != set(deck_names):
         mode.append(f"train_decks={train_decks}")
     print(f"League session {session}: n_iterations={n_iterations} games_per_iteration={games_per_iteration} "
-          f"snapshot_every={snapshot_every} decks={deck_names} n_workers={n_workers} "
+          f"snapshot_every={snapshot_every} checkpoint_rate={checkpoint_rate} decks={deck_names} n_workers={n_workers} "
           f"batch_size={batch_size_start}->{batch_size_cap} ({batch_size_steps} steps)"
           f"{' [' + ', '.join(mode) + ']' if mode else ''}")
     t0 = time.time()
@@ -235,11 +235,13 @@ def _run_session(n_iterations, games_per_iteration, snapshot_every, executor, n_
                 buffers_by_deck, mull_by_deck, played = collect_rollout_league_parallel(
                     name, live_nets, reward_fn_name, league_dir, horizon, games_per_iteration,
                     executor, n_workers, SHARED_HPARAMS, mulligan_state_dicts, game_logs=game_logs,
+                    checkpoint_rate=checkpoint_rate,
                 )
             else:
                 buffers_by_deck, mull_by_deck, played = collect_rollout_league(
                     name, live_nets, mulligan_nets, deck_ctxs, decklists, pool, reward_fn,
                     horizon, games_per_iteration, rng, device="cpu", game_logs=game_logs,
+                    checkpoint_rate=checkpoint_rate,
                 )
             collect_time_total += time.time() - t_collect0
             total_games += played
@@ -311,7 +313,10 @@ def _run_eval(eval_decks, games_per_pairing, greedy, seed, game_logs, matchup=No
     Pairing is a round-robin with mirrors (combinations_with_replacement) over
     eval_decks, or a single A-vs-B pairing when `matchup` is given. Sampled by
     default; greedy=True argmaxes. game_logs (a list) collects one engine
-    event_log per game."""
+    event_log per game. Returns the RESOLVED deck roster actually played
+    (eval_decks falls back to the full roster when called with None) -- the
+    caller logs this into the event log's meta so a log written without an
+    explicit --decks still records which decks it actually used."""
     import itertools
     league_dir = league_dir or LEAGUE_DIR
     decklists, vocab, deck_ctxs, fixed_tables = build_pool()
@@ -354,6 +359,7 @@ def _run_eval(eval_decks, games_per_pairing, greedy, seed, game_logs, matchup=No
         total += played
         print(f"  {a} vs {b}: {played} games", flush=True)
     print(f"eval done: {total} games in {time.time() - t0:.1f}s")
+    return eval_decks
 
 
 def _json_default(obj):
@@ -426,6 +432,13 @@ def build_arg_parser():
                          help="Disable Path A: when the sampled opponent is another deck's LIVE net, train THAT deck "
                               "too from its (on-policy) transitions this round, at no extra collection cost -- on by "
                               "default. Pass this to fall back to training only the round's own deck (for A/B).")
+    parser.add_argument("--checkpoint-opponent-rate", type=float, default=0.0,
+                         help="Probability that a sampled opponent is a frozen historical snapshot rather than that "
+                              "deck's current live net, independent of how many snapshots exist (rl.league.LeaguePool."
+                              "sample_opponent). Default 0.0: every game is real-model-vs-real-model, no checkpoint "
+                              "opponents at all -- deliberately off during early training, when the snapshot pool is "
+                              "mostly barely-trained early copies. Raise this later to reintroduce checkpoint "
+                              "diversity as an explicit choice.")
     return parser
 
 
@@ -440,10 +453,14 @@ def main():
     game_logs = [] if args.log else None
 
     if args.eval:  # no training: round-robin (or single matchup) over current live agents
-        _run_eval(train_decks, args.games, args.greedy, args.seed, game_logs, matchup=matchup)
+        resolved_decks = _run_eval(train_decks, args.games, args.greedy, args.seed, game_logs, matchup=matchup)
         if args.log:
+            # "decks" logs the RESOLVED roster _run_eval actually played, not the raw
+            # --decks arg -- train_decks is None whenever --decks was omitted (the
+            # common case), which used to leave meta["decks"] as None even though a
+            # real (full-roster) round-robin had just been played.
             _write_event_log(args.log, game_logs, {"mode": "eval", "matchup": list(matchup) if matchup else None,
-                                                   "decks": train_decks, "greedy": args.greedy, "games_logged": len(game_logs)})
+                                                   "decks": resolved_decks, "greedy": args.greedy, "games_logged": len(game_logs)})
         return
 
     # --matchup counts by --games (per deck round), otherwise by --n-iterations x
@@ -458,7 +475,7 @@ def main():
                             batch_size_cap=args.batch_size_cap, batch_size_steps=args.batch_size_steps,
                             salvage_opponents=not args.no_opponent_salvage, seed=args.seed,
                             train_deck=train_deck, train_mulligan=train_mulligan, train_decks=train_decks,
-                            matchup=matchup, game_logs=game_logs)
+                            matchup=matchup, game_logs=game_logs, checkpoint_rate=args.checkpoint_opponent_rate)
 
     sequential = matchup is not None or args.n_workers <= 1  # matchup uses collect_rollout directly (no worker path)
     if not sequential:

@@ -188,7 +188,8 @@ def collect_rollout(pairing, n_games, horizon, rng, device="cpu", record=True, g
 
 
 def collect_rollout_league(training_deck_name, live_nets, mulligan_nets, deck_ctxs, decklists_by_name,
-                            pool, reward_fn, horizon, n_games, rng, device="cpu", record=True, game_logs=None):
+                            pool, reward_fn, horizon, n_games, rng, device="cpu", record=True, game_logs=None,
+                            checkpoint_rate=0.0):
     """League collection: builds a pairing that RESAMPLES the opponent from
     `pool` before every game (true mirror / another deck's live net / a frozen
     snapshot), then runs the ONE loop (collect_rollout). Returns
@@ -201,20 +202,27 @@ def collect_rollout_league(training_deck_name, live_nets, mulligan_nets, deck_ct
     live_nets / mulligan_nets / deck_ctxs / decklists_by_name: dicts keyed by
     deck name over the WHOLE roster (an opponent may be any other deck's live
     net). mulligan_nets=None -> every seat uses AlwaysKeep (no mulligan dispatch/
-    training), e.g. a matchup or deck-only collection."""
+    training), e.g. a matchup or deck-only collection. checkpoint_rate: forwarded
+    to _make_league_pairing/pool.sample_opponent verbatim -- see rl.league.
+    LeaguePool.sample_opponent's own docstring."""
     pairing = _make_league_pairing(training_deck_name, live_nets, mulligan_nets, deck_ctxs,
-                                    decklists_by_name, pool, reward_fn)
+                                    decklists_by_name, pool, reward_fn, checkpoint_rate=checkpoint_rate)
     return collect_rollout(pairing, n_games, horizon, rng, device=device, record=record, game_logs=game_logs)
 
 
-def _make_league_pairing(training_deck_name, live_nets, mulligan_nets, deck_ctxs, decklists_by_name, pool, reward_fn):
+def _make_league_pairing(training_deck_name, live_nets, mulligan_nets, deck_ctxs, decklists_by_name, pool, reward_fn,
+                          checkpoint_rate=0.0):
     """Builds a pairing closure: samples one opponent per game, randomizes which
     seat the training deck takes, wraps each side as a SeatAgent (its live/loaded
     DeckNetwork + its mulligan decider), and sets record_as -- the training
     deck's name for its seat; the opponent's name only if the opponent is a
     mirror (pooled into the training bucket) or another deck's LIVE net (its own
     bucket -- salvage); None for a frozen snapshot (off-policy). Opponent-sampling
-    and which-seat-to-record rules live here, in one place."""
+    and which-seat-to-record rules live here, in one place.
+
+    checkpoint_rate: forwarded to pool.sample_opponent verbatim (see its own
+    docstring) -- the live/checkpoint split, independent of snapshot-window
+    occupancy. Default 0.0: every game is real-model-vs-real-model."""
     training_net = live_nets[training_deck_name]
     training_ctx = deck_ctxs[training_deck_name]
     training_decklist = decklists_by_name[training_deck_name]
@@ -223,7 +231,7 @@ def _make_league_pairing(training_deck_name, live_nets, mulligan_nets, deck_ctxs
         return mulligan_nets[name] if mulligan_nets is not None else AlwaysKeep()
 
     def pairing(rng):
-        opp_name, snapshot_path = pool.sample_opponent(training_deck_name, rng)
+        opp_name, snapshot_path = pool.sample_opponent(training_deck_name, rng, checkpoint_rate=checkpoint_rate)
         is_self = snapshot_path is None and opp_name == training_deck_name
         opp_is_live = snapshot_path is None and not is_self  # another deck's current net -> salvageable
 
@@ -307,7 +315,7 @@ def _sanitize_events(game_logs):
 
 def _league_rollout_worker(training_deck_name, all_state_dicts, all_trunk_hidden, shared_state_dict,
                             shared_hparams, reward_fn_name, league_root_dir, horizon, n_games, seed,
-                            mulligan_state_dicts=None, collect_logs=False):
+                            mulligan_state_dicts=None, collect_logs=False, checkpoint_rate=0.0):
     """Runs in a SEPARATE PROCESS (spawned fresh -- Windows only supports
     the "spawn" start method, no fork, so this re-imports the whole module
     graph from scratch rather than inheriting any parent-process memory).
@@ -367,7 +375,7 @@ def _league_rollout_worker(training_deck_name, all_state_dicts, all_trunk_hidden
     worker_logs = [] if collect_logs else None  # engine event logs are plain dicts -> picklable, cross the boundary as-is
     buffers_by_deck, mull_by_deck, played = collect_rollout_league(
         training_deck_name, live_nets, mulligan_nets, deck_ctxs, decklists, pool, reward_fn,
-        horizon, n_games, rng, device="cpu", game_logs=worker_logs,
+        horizon, n_games, rng, device="cpu", game_logs=worker_logs, checkpoint_rate=checkpoint_rate,
     )
     # Serialize each deck's buffer to picklable entries (identities stripped);
     # mulligan transitions and event logs are already plain data.
@@ -378,7 +386,8 @@ def _league_rollout_worker(training_deck_name, all_state_dicts, all_trunk_hidden
 
 
 def collect_rollout_league_parallel(training_deck_name, live_nets, reward_fn_name, league_root_dir, horizon, n_games,
-                                     executor, n_workers, shared_hparams, mulligan_state_dicts=None, game_logs=None):
+                                     executor, n_workers, shared_hparams, mulligan_state_dicts=None, game_logs=None,
+                                     checkpoint_rate=0.0):
     """Orchestrator (runs in the MAIN process): splits n_games across
     n_workers, submits one _league_rollout_worker task per worker via the
     given (already-created, reused-across-calls) ProcessPoolExecutor --
@@ -388,7 +397,10 @@ def collect_rollout_league_parallel(training_deck_name, live_nets, reward_fn_nam
     boundary (not just training_deck_name's own), since a worker needs the
     SAME opponent-sampling capability collect_rollout_league already has
     in-process -- including sampling some OTHER deck's current live net,
-    not just training_deck_name's own or frozen snapshots."""
+    not just training_deck_name's own or frozen snapshots.
+
+    checkpoint_rate: forwarded to every worker's own pool.sample_opponent
+    call verbatim -- see rl.league.LeaguePool.sample_opponent's docstring."""
     shared = live_nets[training_deck_name].shared_stack
     shared_state_dict = shared.state_dict()
     all_state_dicts = {name: net.state_dict() for name, net in live_nets.items()}
@@ -402,7 +414,7 @@ def collect_rollout_league_parallel(training_deck_name, live_nets, reward_fn_nam
     futures = [
         executor.submit(_league_rollout_worker, training_deck_name, all_state_dicts, all_trunk_hidden,
                          shared_state_dict, shared_hparams, reward_fn_name, league_root_dir, horizon, chunk,
-                         random.randrange(2 ** 31), mulligan_state_dicts, collect_logs)
+                         random.randrange(2 ** 31), mulligan_state_dicts, collect_logs, checkpoint_rate)
         for chunk in chunks if chunk > 0
     ]
     buffers_by_deck = {}   # deck name -> merged RolloutBuffer across workers
@@ -795,14 +807,14 @@ if __name__ == "__main__":
         pool.register_snapshot("a", net_a)  # gives the "frozen snapshot of self" path something real to load
         snapshot_path = pool.snapshots["a"][0][1]
 
-        pool.sample_opponent = lambda training_deck_name, rng: ("a", None)  # true mirror
+        pool.sample_opponent = lambda training_deck_name, rng, checkpoint_rate=0.0: ("a", None)  # true mirror
         bufs_self, _mull, played = collect_rollout_league("a", live_nets, None, ctxs_by_name, decklists_by_name,
                                                           pool, reward_fn, horizon, n_games=1, rng=rng, device=device)
         assert played == 1 and len(bufs_self.get("a", RolloutBuffer())) > 0, "true mirror must record a non-empty 'a' bucket"
         assert set(bufs_self) == {"a"}, "a true mirror records ONLY the training bucket (both seats pooled into it)"
         buf_self = bufs_self["a"]
 
-        pool.sample_opponent = lambda training_deck_name, rng: ("b", None)  # another deck's live net
+        pool.sample_opponent = lambda training_deck_name, rng, checkpoint_rate=0.0: ("b", None)  # another deck's live net
         bufs_cross, _mull, played = collect_rollout_league("a", live_nets, None, ctxs_by_name, decklists_by_name,
                                                            pool, reward_fn, horizon, n_games=1, rng=rng, device=device)
         assert played == 1 and len(bufs_cross.get("a", RolloutBuffer())) > 0, "cross-deck opponent must record the training bucket"
@@ -810,7 +822,7 @@ if __name__ == "__main__":
         assert "b" in bufs_cross and len(bufs_cross["b"]) > 0, "a live-net opponent must salvage its own bucket 'b'"
         assert all(np.isfinite(v) for v in bufs_cross["b"].value) and all(np.isfinite(r) for r in bufs_cross["b"].reward)
 
-        pool.sample_opponent = lambda training_deck_name, rng: ("a", snapshot_path)  # frozen snapshot of self
+        pool.sample_opponent = lambda training_deck_name, rng, checkpoint_rate=0.0: ("a", snapshot_path)  # frozen snapshot of self
         bufs_snap, _mull, played = collect_rollout_league("a", live_nets, None, ctxs_by_name, decklists_by_name,
                                                           pool, reward_fn, horizon, n_games=1, rng=rng, device=device)
         assert played == 1 and len(bufs_snap.get("a", RolloutBuffer())) > 0, "a frozen snapshot opponent still records the training bucket"

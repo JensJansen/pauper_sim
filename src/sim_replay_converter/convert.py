@@ -16,6 +16,15 @@ Two source JSON shapes are supported, auto-detected per game:
     whose identity is only ever revealed at the moment they leave a zone
     (this format never logs a card entering a player's hand).
 
+One JSON file can hold many games (--matchup runs write one deck-pair per
+file; --eval runs write a whole round-robin, all pairings interleaved with
+mirrors, in one file). The per-game output filename/description prefers
+meta["config_name"], then meta["matchup"] (--matchup runs), then
+meta["deck_a"]/["deck_b"] (older logs); a round-robin --eval log currently
+carries none of those (see run_league.py's _run_eval docstring), so its
+per-game deck pair is instead recovered from the sibling .log file's
+"A vs B: N games" lines, in the same order games were logged.
+
 Usage:
     python convert.py <sim.json> <output_dir> [--game INDEX]
 
@@ -228,6 +237,7 @@ class BaseReplayBuilder:
         self.active_phase = None
         self.next_arrow_id = 0
         self.live_arrow_ids = []
+        self.live_attacker_ids = []  # (player_idx, card_id) currently flagged AttrAttacking="1"
         self.step_seconds = 0
 
     def _new_container(self):
@@ -393,6 +403,19 @@ class BaseReplayBuilder:
             da = add_event(cont, owner_idx, pb_deletearrow.Event_DeleteArrow.ext)
             da.arrow_id = arrow_id
         self.live_arrow_ids = []
+
+    def _clear_attackers(self, cont):
+        # Event-stream builder only, mirroring _clear_arrows' lifecycle (an
+        # attacker stays flagged through declare_blockers so its blocker's
+        # target reads clearly, then clears on the next phase change). The
+        # snapshot-diff builder needs no equivalent -- it already derives this
+        # per-step from a full before/after attacker-set diff (PASS 5).
+        if not self.live_attacker_ids:
+            return
+        for player_idx, card_id in self.live_attacker_ids:
+            p = self.players[player_idx]
+            self._set_attr(cont, p, Z_TABLE, card_id, pb_attr.AttrAttacking, "0")
+        self.live_attacker_ids = []
 
 
 class ReplayBuilder(BaseReplayBuilder):
@@ -739,7 +762,10 @@ class EventStreamReplayBuilder(BaseReplayBuilder):
             if handler is not None:
                 handler(self, e)
             # pass, priority_flip, resolution_begin, resolution_complete,
-            # cleanup_damage_cleared, trigger_fired: no Cockatrice-visible effect.
+            # cleanup_damage_cleared, trigger_fired, declare_blockers_cap_abandoned,
+            # destroy_failed_indestructible, menace_unblocked, aura_no_target:
+            # no Cockatrice-visible effect (bookkeeping / a decision or safety-cap
+            # outcome with no board-state change of its own).
             # combat_damage / fight_damage: superseded by life_change, which fires for
             # the same damage with the resulting total already computed; creature-vs-
             # creature damage was never visualized here (state_based_death covers deaths).
@@ -748,10 +774,16 @@ class EventStreamReplayBuilder(BaseReplayBuilder):
             # primitive, and no reliable data to render them from):
             #   pump          -- P/T buff, but the event-stream entry doesn't carry base
             #                    P/T and the amount's shape (+N/+N vs +N/+0) is ambiguous.
+            #   explore       -- "plus_counter" result is the same kind of P/T buff as
+            #                    pump, for the same reason.
+            #   animated      -- a permanent becomes a creature type-change; the
+            #                    battlefield row it's drawn in never gets reclassified.
             #   block_unassigned -- a removed block; arrows aren't keyed by pair and clear
             #                    at the next phase boundary anyway.
             #   undercity_enter_room, take_initiative, goaded, ward_triggered -- dungeon /
             #                    initiative / goad / ward status with no board-visible analog.
+            # ponder: the shuffled/ordered LOOK is invisible either way (deck order isn't
+            #                    tracked); nothing here ever needs to move or reveal a card.
 
         # flush any spells still awaiting a fate when the recorded game ends
         self._flush_pending_resolutions(self._new_container())
@@ -788,6 +820,7 @@ class EventStreamReplayBuilder(BaseReplayBuilder):
         self.active_phase = phase_idx
         if phase_idx != PHASE_BY_NAME["declare_blockers"]:
             self._clear_arrows(cont)
+            self._clear_attackers(cont)
         self._flush_pending_resolutions(cont)
         # Draws are NOT synthesized here: this format logs every draw explicitly
         # as a named library->hand zone_move (handled by _handle_card_move).
@@ -819,21 +852,19 @@ class EventStreamReplayBuilder(BaseReplayBuilder):
             if entry is not None and entry["tapped"]:
                 self._set_attr(cont, p, Z_TABLE, entry["id"], pb_attr.AttrTapped, "0")
                 entry["tapped"] = False
-        for color in e.get("mana_cleared") or {}:
-            p.mana_pool[color] = 0
-            self.set_counter(cont, p, color, 0)
 
-    def _handle_payment_abandoned(self, e):
-        p = self.players[e["active_idx"]]
+    def _handle_mana_emptied(self, e):
+        # Rule 500.4: unused mana empties at every step/phase boundary, for
+        # whichever players actually had a nonzero pool (keyed by player index,
+        # stringified by the JSON round-trip). Replaces the old once-per-turn
+        # untap_step clear, so this is now the only place mana pool counters
+        # reset to 0 in the replay.
         cont = self._new_container()
-        for name, slot in e.get("untapped") or []:
-            entry = p.battlefield.get((name, slot))
-            if entry is not None and entry["tapped"]:
-                self._set_attr(cont, p, Z_TABLE, entry["id"], pb_attr.AttrTapped, "0")
-                entry["tapped"] = False
-        for color, delta in (e.get("pool_delta_reversed") or {}).items():
-            p.mana_pool[color] = max(0, p.mana_pool.get(color, 0) + delta)
-            self.set_counter(cont, p, color, p.mana_pool[color])
+        for idx_str, pool in (e.get("pools") or {}).items():
+            p = self.players[int(idx_str)]
+            for color in pool:
+                p.mana_pool[color] = 0
+                self.set_counter(cont, p, color, 0)
 
     def _handle_attack_declared(self, e):
         p = self.players[e["active_idx"]]
@@ -843,6 +874,7 @@ class EventStreamReplayBuilder(BaseReplayBuilder):
             return
         cont = self._new_container()
         self._set_attr(cont, p, Z_TABLE, entry["id"], pb_attr.AttrAttacking, "1")
+        self.live_attacker_ids.append((p.idx, entry["id"]))
         self._create_arrow(cont, p, entry["id"], self.other(p))
 
     def _handle_block_assigned(self, e):
@@ -906,6 +938,14 @@ class EventStreamReplayBuilder(BaseReplayBuilder):
         owner.graveyard.append({"id": old["id"], "name": front or name})
 
     def _handle_zone_move(self, e):
+        if "disposed" in e:
+            # Scry/surveil: no "card"/"cards"/"permanent" field at all -- the moved
+            # names live in "disposed" (dispose target: "disposed_to") and
+            # "kept_to_library_top" instead, so the generic dispatch below never
+            # fires for this shape. Without this branch a surveil-to-graveyard
+            # silently vanished from the replay.
+            self._handle_disposed(e)
+            return
         from_zone = _norm_zone(e.get("from_zone"))
         to_zone = _norm_zone(e.get("to_zone"))
         if "permanent" in e:
@@ -989,30 +1029,67 @@ class EventStreamReplayBuilder(BaseReplayBuilder):
         if dst_pool is not None:
             dst_pool.append({"id": old["id"], "name": front or name})
 
-    def _resolve_incoming_hand_like(self, p, name):
-        c = pop_by_name(p.hand, name)
-        if c:
-            return c["id"], Z_HAND, None
+    def _resolve_incoming_hand_like(self, p, name, from_zone):
+        """Get (card_id, src_zone, revealed_name_or_None) for a card about to
+        go onto the stack. from_zone is only ever "hand" or None here (see
+        game.effects.stack.push_to_stack: it logs "hand" when the cast
+        reserves a hand card, else None for every reserves_hand_card=False
+        cast -- Flashback/Escape from the graveyard, Madness/Plot/Adventure
+        from exile, an eagerly-discarded alt cost, a copy). None can't be
+        told apart further from the event alone, so those all fall back to
+        the same name-based search across the non-hand pools.
+
+        from_zone == "hand" must check ONLY p.hand, never fall through to
+        the other pools: a same-named card can easily sit in more than one
+        place at once (e.g. a second physical copy still in hand while the
+        first is being flashed back from the graveyard), and checking hand
+        unconditionally used to steal that unrelated hand copy's identity
+        for the graveyard-sourced cast -- confirmed live, a mono red madness
+        Lava Dart hard-cast-then-flashback: the flashback grabbed the OTHER
+        Lava Dart still sitting in hand instead of the resolved one in the
+        graveyard, leaving the real graveyard copy untouched and making the
+        replay look like the same card was recast while still on the stack,
+        unresolved."""
+        if from_zone == "hand":
+            c = pop_by_name(p.hand, name)
+            if c:
+                return c["id"], Z_HAND, None
+            return self._mint_from_library(p), Z_DECK, name
         c = pop_by_name(p.exile, name)
         if c:
             return c["id"], Z_EXILE, None
+        # A same-turn recast (the resolved card hasn't hit a phase boundary
+        # yet, so _flush_pending_resolutions hasn't moved it into p.graveyard)
+        # -- same identity source _resolve_incoming_permanent already draws on
+        # just above, for the same reason (a resolution marker draws no
+        # visual move of its own; see _handle_card_move's "resolution marker
+        # only" branch below).
+        for i, c in enumerate(p.pending_resolution):
+            if c["name"] == name:
+                return p.pending_resolution.pop(i)["id"], Z_STACK, None
+        c = pop_by_name(p.graveyard, name)
+        if c:
+            return c["id"], Z_GRAVE, None
         # not tracked anywhere -- came straight from the hidden deck zone,
-        # revealing its name for the first time now.
+        # revealing its name for the first time now (or a token-like copy
+        # spell with no physical card behind it at all).
         return self._mint_from_library(p), Z_DECK, name
 
     def _handle_card_move(self, e, name, from_zone, to_zone):
         if to_zone == "stack":
             p = self.players[e.get("controller", e["active_idx"])]
             cont = self._new_container()
-            card_id, src_zone, reveal = self._resolve_incoming_hand_like(p, name)
+            card_id, src_zone, reveal = self._resolve_incoming_hand_like(p, name, from_zone)
             self._move(cont, p, src_zone, p, Z_STACK, card_id, card_id, card_name=reveal)
             p.stack.append({"id": card_id, "name": name})
             return
 
         if from_zone == "stack" and to_zone is None:
             # resolution marker only -- no destination given. Deferred: claimed by a
-            # battlefield entry for the same name, else flushed to graveyard at the
-            # next phase boundary (see _flush_pending_resolutions).
+            # battlefield entry (_resolve_incoming_permanent) or a same-phase recast
+            # (_resolve_incoming_hand_like, e.g. Flashback) for the same name, else
+            # flushed to graveyard at the next phase boundary (see
+            # _flush_pending_resolutions).
             p = self.players[e["active_idx"]]
             c = pop_by_name(p.stack, name)
             if c:
@@ -1155,6 +1232,12 @@ class EventStreamReplayBuilder(BaseReplayBuilder):
         ci.id = 0
         ci.name = name
 
+    def _mint_and_move_to_graveyard(self, cont, p, names):
+        for name in names:
+            card_id = self._mint_from_library(p)
+            self._move(cont, p, Z_DECK, p, Z_GRAVE, 0, card_id, card_name=name)
+            p.graveyard.append({"id": card_id, "name": name})
+
     def _handle_mill(self, e):
         # Cards milled off the top of the library into the graveyard. Logged as its
         # own event (named cards, count) rather than a zone_move, so without this the
@@ -1164,11 +1247,20 @@ class EventStreamReplayBuilder(BaseReplayBuilder):
         names = e.get("cards") or []
         if not names:
             return
-        cont = self._new_container()
-        for name in names:
-            card_id = self._mint_from_library(p)
-            self._move(cont, p, Z_DECK, p, Z_GRAVE, 0, card_id, card_name=name)
-            p.graveyard.append({"id": card_id, "name": name})
+        self._mint_and_move_to_graveyard(self._new_container(), p, names)
+
+    def _handle_disposed(self, e):
+        # Scry puts disposed cards on the library bottom (disposed_to ==
+        # "library_bottom"); surveil sends them to the graveyard. Library-bottom
+        # is invisible here (deck order isn't tracked, same as kept_to_library_top),
+        # so only the graveyard case needs an actual move.
+        if e.get("disposed_to") != "graveyard":
+            return
+        names = e.get("disposed") or []
+        if not names:
+            return
+        p = self.players[e["active_idx"]]
+        self._mint_and_move_to_graveyard(self._new_container(), p, names)
 
     def _handle_graveyard_exiled(self, e):
         # Graveyard-exile (Bojuka Bog / Cling to Dust-style). Two shapes:
@@ -1193,6 +1285,19 @@ class EventStreamReplayBuilder(BaseReplayBuilder):
             self._move(cont, p, Z_GRAVE, p, Z_EXILE, c["id"], c["id"])
             p.exile.append(c)
         p.graveyard.clear()
+
+    def _handle_graveyards_exiled(self, e):
+        # Relic of Progenitus-style "exile all graveyards" -- both players' whole
+        # graveyards at once, no per-player fields at all (unlike the singular
+        # graveyard_exiled above, which always names a player/target).
+        cont = self._new_container()
+        for p in self.players:
+            if not p.graveyard:
+                continue
+            for c in list(p.graveyard):
+                self._move(cont, p, Z_GRAVE, p, Z_EXILE, c["id"], c["id"])
+                p.exile.append(c)
+            p.graveyard.clear()
 
     def _handle_impulse_exile(self, e):
         # "Impulse draw": exile the top card(s) of the library face-up, playable for
@@ -1299,7 +1404,7 @@ class EventStreamReplayBuilder(BaseReplayBuilder):
         "mana_tap": _handle_mana_tap,
         "mana_spend": _handle_mana_spend,
         "untap_step": _handle_untap_step,
-        "payment_abandoned": _handle_payment_abandoned,
+        "mana_emptied": _handle_mana_emptied,
         "attack_declared": _handle_attack_declared,
         "block_assigned": _handle_block_assigned,
         "aura_attached": _handle_aura_attached,
@@ -1311,6 +1416,7 @@ class EventStreamReplayBuilder(BaseReplayBuilder):
         "put_on_top": _handle_put_on_top,
         "mill": _handle_mill,
         "graveyard_exiled": _handle_graveyard_exiled,
+        "graveyards_exiled": _handle_graveyards_exiled,
         "impulse_exile": _handle_impulse_exile,
         "tap": _handle_tap,
         "untap": _handle_untap,
@@ -1331,6 +1437,46 @@ def build_replay_for_game(game, meta):
     return rb.replay
 
 
+PAIRING_LINE_RE = re.compile(r"^\s*(\S+) vs (\S+): (\d+) games$")
+
+
+def _pairing_labels_from_log(json_path, expected_total):
+    """run_league.py's --eval round-robin path (no --decks/--matchup override)
+    writes meta.decks/matchup as None even though a real deck roster drove the
+    run: _write_event_log logs the raw, unresolved CLI args instead of the
+    roster _run_eval actually resolved and played (see that function's own
+    docstring). Recover a label per game_index from the sibling .log file's
+    "A vs B: N games" lines instead -- printed in the exact pairing order
+    games were appended in, so slicing by count reconstructs it exactly.
+    Returns a list of length expected_total, or None if no sibling .log
+    exists or its game count doesn't match (stale/foreign .log)."""
+    log_path = json_path.with_suffix(".log")
+    if not log_path.exists():
+        return None
+    labels = []
+    for line in log_path.read_text(encoding="utf-8").splitlines():
+        m = PAIRING_LINE_RE.match(line)
+        if m:
+            a, b, n = m.group(1), m.group(2), int(m.group(3))
+            labels.extend([f"{a}_vs_{b}"] * n)
+    return labels if len(labels) == expected_total else None
+
+
+def _resolve_config_name(meta, pairing_labels, game_index):
+    """The single label used for both the in-replay description (read by
+    BaseReplayBuilder via meta["config_name"]) and the output filename."""
+    if meta.get("config_name"):
+        return meta["config_name"]
+    matchup = meta.get("matchup")
+    if matchup:
+        return f"{matchup[0]}_vs_{matchup[1]}"
+    if meta.get("deck_a"):
+        return f'{meta["deck_a"]}_vs_{meta.get("deck_b", "sim")}'
+    if pairing_labels is not None and game_index < len(pairing_labels):
+        return pairing_labels[game_index]
+    return "sim_vs_sim"
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("json_path", help="path to the simulator's JSON game log")
@@ -1338,19 +1484,24 @@ def main():
     ap.add_argument("--game", type=int, help="only convert this game_index")
     args = ap.parse_args()
 
-    with open(args.json_path, encoding="utf-8") as f:
+    json_path = Path(args.json_path)
+    with open(json_path, encoding="utf-8") as f:
         data = json.load(f)
 
     out_dir = Path(args.output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
     meta = data["meta"]
-    name_prefix = meta.get("config_name") or f'{meta.get("deck_a", "sim")}_vs_{meta.get("deck_b", "sim")}'
+    pairing_labels = None
+    if not (meta.get("config_name") or meta.get("matchup") or meta.get("deck_a")):
+        pairing_labels = _pairing_labels_from_log(json_path, len(data["games"]))
+
     count = 0
     for game in data["games"]:
         if args.game is not None and game["game_index"] != args.game:
             continue
-        replay = build_replay_for_game(game, meta)
+        name_prefix = _resolve_config_name(meta, pairing_labels, game["game_index"])
+        replay = build_replay_for_game(game, {**meta, "config_name": name_prefix})
         out_path = out_dir / f'{name_prefix}_game{game["game_index"]}.cor'
         out_path.write_bytes(replay.SerializeToString())
         print(

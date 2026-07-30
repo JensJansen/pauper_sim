@@ -104,7 +104,15 @@ For each batch:
      `n_iter = 4`, `gpi = max(1, round(batch / 4))` (spreads updates).
    - **league**: `python -u run_league.py --n-iterations <n_iter> --games-per-iteration
      <gpi> --snapshot-every <snap> --n-workers <W>` with `gpi = 2`,
-     `n_iter = max(1, round(batch / 2))`, `snap = max(1, n_iter // 4)`.
+     `n_iter = max(1, round(batch / 2))`, `snap = max(1, 200 // gpi)` — a FIXED ~200
+     games/deck between snapshots, independent of batch size. (NOT `n_iter // 4`, the old
+     formula: that scaled snapshot frequency with batch size, so early small batches
+     snapshotted every 2-16 games — flooding the opponent pool with near-random,
+     barely-trained early copies before anything worth preserving existed.)
+     `--checkpoint-opponent-rate` defaults to 0.0 (no checkpoint opponents at all, every
+     game real-model-vs-real-model) — leave it unset unless the owner explicitly asks to
+     reintroduce checkpoint-opponent diversity; don't pass a nonzero rate on your own
+     initiative.
      **Compute ramp**: `W = 1` (sequential CPU) for the shakeout and until one league
      batch giving each deck ≥ ~15 games has run clean; after that use `W = 6` (parallel
      collection) — the throughput sweet spot. **NEVER use the GPU** — do NOT pass
