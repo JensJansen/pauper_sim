@@ -290,10 +290,11 @@ wired only through `--matchup` mode.)
   `action_count_win_reward_200_floor02` — loss/draw → `0.0`, win → `1.0` down
   to a `0.2` floor scaled by the *winning seat's* action count (so a policy
   can't pad a turn with free actions to inflate its reward). **League** play
-  uses `deploy_reward_v1`, a two-band terminal reward: a win scores `0.5`→`1.0`
-  by gameplay efficiency (actions taken minus pregame mulligan picks), a loss
-  scores a `0.25` floor decremented per turn the seat discarded to cleanup
-  (punishing hoarding), so every win outscores every loss. The **mulligan
+  uses `deploy_reward_v2`: a flat `1.0` on any win (no efficiency scaling — the
+  earlier `deploy_reward_v1`'s efficiency band induced an action-space-
+  minimization pathology where policies learned to shrink their own board to
+  "win in fewer actions"), and the same `0.25` floor decremented per turn the
+  seat discarded to cleanup (punishing hoarding) on a loss. The **mulligan
   model** trains on its own reward (`rl/mulligan.py`): win payout minus a convex
   (quadratic) per-mulligan penalty.
 - **Win condition**: the engine's real one — an opponent's life total hitting
@@ -304,8 +305,8 @@ wired only through `--matchup` mode.)
 ## Watching games in Cockatrice
 
 `src/sim_replay_converter/convert.py` turns an engine JSON log (from a
-`--matchup --log` run) into a Cockatrice `.cor` replay so a game can be
-watched in Cockatrice's built-in replay viewer:
+`--matchup --log` or `--eval --log` run) into Cockatrice `.cor` replays so a
+game can be watched in Cockatrice's built-in replay viewer:
 
 ```
 cd src/sim_replay_converter
@@ -315,6 +316,14 @@ python convert.py <sim.json> <output_dir> [--game INDEX]
 It auto-detects two log shapes (snapshot-diff and event-stream) and, on first
 run, generates protobuf bindings from the vendored Cockatrice `.proto` files
 (`proto/`, overridable via `COCKATRICE_PROTO_DIR`). Requires `grpcio-tools`.
+
+One JSON file can hold many games — a `--matchup` run logs one deck pair, an
+`--eval` run logs a whole round-robin (every pairing, with mirrors) in one
+file — and each game's output filename/description is labeled with its own
+deck pairing, not just the file's. Run `python test_convert.py` from this
+directory to self-check the converter against `../../logs/*.json` (and a few
+fabricated-event checks that always run) after an engine change to the event
+log shape.
 
 ---
 

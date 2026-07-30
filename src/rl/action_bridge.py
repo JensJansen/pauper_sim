@@ -24,6 +24,26 @@ import drl_env
 
 _TARGETING_PREFIXES = ("Choose target: ", "Attack: ", "Assign Blocker: ", "Choose opponent's: ")
 
+# Pending kinds whose pointer targets are matched by OBJECT IDENTITY
+# (id()-keyed, never `ref in <set(...)>`, since choose_stack_target's own
+# option set holds unhashable stack-entry dicts) rather than by (name, slot):
+# each is a case where two same-named/same-shaped copies must stay
+# independently addressable -- choose_cast_copy (WHICH graveyard copy is cast,
+# MTG 601.2a: casting the one a Rooftop Percher trigger targets saves it from
+# exile, casting the other doesn't), choose_graveyard_card (WHICH graveyard
+# copy leaves the yard -- no whole-league "Choose: X" fixed row exists, and
+# both seats' graveyards, e.g. Relic of Progenitus, are reachable), and
+# choose_stack_target (WHICH spell on the stack to counter, very often the
+# OPPONENT's -- confirmed live via an all-False mask in real cross-deck league
+# play; two simultaneous same-named spells must stay independently
+# addressable too, unlike the old by-name version which could only ever reach
+# the topmost of duplicates). Maps kind -> (options-fetcher, executor) names.
+_ID_MATCHED_KINDS = {
+    "choose_cast_copy": ("choose_cast_copy_options", "execute_choose_cast_copy_option"),
+    "choose_graveyard_card": ("choose_graveyard_card_options", "execute_choose_graveyard_card_option"),
+    "choose_stack_target": ("choose_stack_target_options", "execute_choose_stack_target_option"),
+}
+
 
 def build_fixed_action_table(decklist, token_card_defs=(), pending_kinds=(), extra_choosable_names=()):
     """Every non-targeting action for this decklist (Play land, Cast,
@@ -132,54 +152,17 @@ def pointer_legal_mask(state, identities_row):
                 mask[i] = True
         return mask
 
-    if pending is not None and pending["kind"] == "choose_cast_copy":
-        # WHICH same-named copy in the caster's OWN graveyard is being cast
-        # (Flashback/Escape/graveyard ability -- MTG 601.2a, the object is chosen
-        # at announcement). Matched by OBJECT IDENTITY against the pending's own
-        # option list, so two same-named instances are genuinely distinct picks:
-        # casting the copy a Rooftop Percher trigger is targeting saves it from
-        # that exile (the target becomes illegal and fizzles), casting the other
-        # copy does not. Pointer-only by design -- there is no fixed "Choose: X"
-        # row for this kind, so no deck's action-space width changes.
-        #
-        # id()-KEYED, not `ref in set(...)`: identities_row can now also carry
-        # STACK-ENTRY dicts (choose_stack_target below), and a dict is
-        # unhashable -- `in <set>` would crash the instant one reached this
-        # branch, even though this branch never matches one. id() sidesteps
-        # that for every object type, no exceptions, the same reasoning
-        # rl.features._stack_target_map already established.
-        legal_ids = {id(o) for o in game.choose_cast_copy_options(state)}
-        for i, ref in enumerate(identities_row):
-            if ref is not None and id(ref) in legal_ids:
-                mask[i] = True
-        return mask
-
-    if pending is not None and pending["kind"] == "choose_graveyard_card":
-        # Match by OBJECT IDENTITY: the token carries the exact graveyard
-        # CardInstance (or, for the deferred hand-reveal path, the CardDef) -- the
-        # same object choose_graveyard_card_options returns. So two same-named
-        # graveyard copies are DISTINCT targets, and both seats' graveyards
-        # (Relic of Progenitus) are reachable, with no whole-league "Choose: X"
-        # fixed rows. A battlefield Permanent is never in that set, so it's never
-        # wrongly masked here. id()-keyed for the same unhashable-dict reason as
-        # choose_cast_copy just above.
-        legal_ids = {id(o) for o in game.choose_graveyard_card_options(state)}
-        for i, ref in enumerate(identities_row):
-            if ref is not None and id(ref) in legal_ids:
-                mask[i] = True
-        return mask
-
-    if pending is not None and pending["kind"] == "choose_stack_target":
-        # WHICH spell on the stack to counter (Counterspell/Dispel/Spell
-        # Pierce). Matched by OBJECT IDENTITY (id()-keyed -- a stack entry is
-        # an unhashable dict, so this is the ONE branch that would crash
-        # outright on a plain `in <set of entries>`). Pointer-only because the
-        # spell being countered is very often the OPPONENT's -- no per-deck
-        # "Choose: X" row could ever represent that (confirmed the hard way:
-        # an all-False mask in real cross-deck league play). Two simultaneous
-        # same-named spells stay independently addressable too -- the old
-        # by-name version could only ever reach the topmost of duplicates.
-        legal_ids = {id(e) for e in game.choose_stack_target_options(state)}
+    if pending is not None and pending["kind"] in _ID_MATCHED_KINDS:
+        # id()-KEYED, not `ref in set(...)`: identities_row can carry graveyard
+        # CardInstances, revealed-hand CardDefs, or STACK-ENTRY dicts depending
+        # on which of these three kinds is pending, and a dict is unhashable --
+        # `in <set>` would crash outright the instant one reached this branch.
+        # id() sidesteps that for every object type, no exceptions, the same
+        # reasoning rl.features._stack_target_map already established. See
+        # _ID_MATCHED_KINDS' own docstring-comment above for why each of these
+        # three kinds needs identity (not name/slot) matching in the first place.
+        options_fn = getattr(game, _ID_MATCHED_KINDS[pending["kind"]][0])
+        legal_ids = {id(o) for o in options_fn(state)}
         for i, ref in enumerate(identities_row):
             if ref is not None and id(ref) in legal_ids:
                 mask[i] = True
@@ -215,12 +198,12 @@ def execute_pointer_choice(state, chosen):
     closures already expect) -- just sourced from a pointer-head selection
     instead of a fixed-table lookup."""
     pending = state.pending_resolution
-    if pending is not None and pending["kind"] == "choose_cast_copy":
-        return game.execute_choose_cast_copy_option(state, chosen)  # the exact graveyard instance being cast
-    if pending is not None and pending["kind"] == "choose_graveyard_card":
-        return game.execute_choose_graveyard_card_option(state, chosen)  # chosen is the exact chosen object
-    if pending is not None and pending["kind"] == "choose_stack_target":
-        return game.execute_choose_stack_target_option(state, chosen)  # the exact stack entry to counter
+    if pending is not None and pending["kind"] in _ID_MATCHED_KINDS:
+        # chosen is the exact object (graveyard instance, revealed-hand
+        # CardDef, or stack-entry dict) selected by object identity -- see
+        # _ID_MATCHED_KINDS' own docstring-comment for why each of these
+        # kinds is pointer-only and identity-matched.
+        return getattr(game, _ID_MATCHED_KINDS[pending["kind"]][1])(state, chosen)
     name, slot = chosen.card_def.name, chosen.slot
     if pending is None:
         return drl_env._attack_execute(name, slot)(state)

@@ -1638,14 +1638,20 @@ def build_action_table(decklist, registry, token_card_defs=(), pending_kinds=(),
     # (name, slot) this side's battlefield could ever hold, same "choose
     # target: X (slot k)" convention below; _mana_extra_tap_legal's own
     # extra_pred check gates precisely at runtime (rejecting non-creatures,
-    # the source itself, and anything already tapped).
+    # the source itself, and anything already tapped). target_name is
+    # pre-filtered to creature names here (same card_type_by_name filter
+    # attackable_names uses below) since a non-creature target can never pass
+    # extra_pred -- pure row-count reduction, zero behavior change.
     extra_tap_source_names = sorted(
         {name for name in distinct_names if "mana_extra_choose" in registry.get(game.CARD_DEFS[name].effect_id, {})}
         | {cd.name for cd in token_card_defs if "mana_extra_choose" in registry.get(cd.effect_id, {})}
     )
+    extra_tap_target_names = sorted(
+        name for name in choosable_names if card_type_by_name[name] == game.CardType.CREATURE
+    )
     for name in extra_tap_source_names:
         for color in game.POOL_COLORS:
-            for target_name in choosable_names:
+            for target_name in extra_tap_target_names:
                 max_slot = qty_by_name.get(target_name, game.TOKEN_LIMIT)
                 for slot in range(1, max_slot + 1):
                     actions.append((
@@ -2220,7 +2226,7 @@ def _cached_battlefield_lookup(state):
 
 
 
-_mana_ability_options_cache = None  # (state, result) -- one legal_action_mask sweep, like _tap_cost_options_cache
+_mana_ability_options_cache = None  # (state, result) -- one legal_action_mask sweep, same lifecycle as _battlefield_lookup_cache above
 
 
 def _cached_mana_ability_options(state):
@@ -2265,6 +2271,26 @@ def _find_mana_source(state, name, color):
     return None
 
 
+_mana_source_cache = None  # (state, {(name, color): Permanent or None}) -- one legal_action_mask sweep, same lifecycle as _battlefield_lookup_cache above
+
+
+def _cached_mana_source(state, name, color):
+    """Memoizes _find_mana_source(state, name, color) per (name, color) for one
+    legal_action_mask sweep -- every extra-tap row sharing a (name, color) pair
+    (one per target name/slot) would otherwise re-scan state.battlefield from
+    scratch; same "profiled, not guessed" caching _cached_battlefield_lookup/
+    _cached_mana_ability_options already apply to the analogous per-row scans
+    above."""
+    global _mana_source_cache
+    if _mana_source_cache is None or _mana_source_cache[0] is not state:
+        _mana_source_cache = (state, {})
+    cache = _mana_source_cache[1]
+    key = (name, color)
+    if key not in cache:
+        cache[key] = _find_mana_source(state, name, color)
+    return cache[key]
+
+
 def _mana_ability_execute(name, color):
     def execute(state):
         p = _find_mana_source(state, name, color)
@@ -2282,17 +2308,19 @@ def _mana_extra_tap_legal(name, color, target_name, target_slot):
     docstring gives -- this whole action, extra cost included, is atomic).
     Legal iff `name` can currently produce `color`, AND the specific
     (target_name, target_slot) permanent is untapped, isn't the source
-    itself, and satisfies the source's own mana_extra_choose predicate."""
+    itself, and satisfies the source's own mana_extra_choose predicate.
+    Uses the sweep-scoped _cached_mana_source/_cached_battlefield_lookup
+    caches, not a fresh scan -- this legal() runs once per (source, color,
+    target, slot) row, so an uncached scan here is the O(battlefield) cost
+    per row _cached_battlefield_lookup's own docstring was profiled against."""
     def legal(state):
-        p = _find_mana_source(state, name, color)
+        p = _cached_mana_source(state, name, color)
         if p is None:
             return False
         extra_pred = game.EFFECT_REGISTRY.get(p.card_def.effect_id, {}).get("mana_extra_choose")
         if extra_pred is None:
             return False
-        target = next(
-            (q for q in state.battlefield if q.card_def.name == target_name and q.slot == target_slot), None,
-        )
+        target = _cached_battlefield_lookup(state).get((target_name, target_slot))
         return target is not None and target is not p and not target.tapped and extra_pred(target)
     return legal
 
@@ -2318,6 +2346,23 @@ def _find_filter_source(state, name):
     return None
 
 
+_filter_source_cache = None  # (state, {name: Permanent or None}) -- one legal_action_mask sweep, same lifecycle as _battlefield_lookup_cache above
+
+
+def _cached_filter_source(state, name):
+    """Memoizes _find_filter_source(state, name) per source name for one
+    legal_action_mask sweep -- every (output_color, input_color) row for the
+    same filter source (up to len(POOL_COLORS)**2 of them) would otherwise
+    re-scan state.battlefield from scratch."""
+    global _filter_source_cache
+    if _filter_source_cache is None or _filter_source_cache[0] is not state:
+        _filter_source_cache = (state, {})
+    cache = _filter_source_cache[1]
+    if name not in cache:
+        cache[name] = _find_filter_source(state, name)
+    return cache[name]
+
+
 def _filter_mana_legal(name, output_color, input_color):
     """A mana filter is a pool->pool conversion -- "{1}[, {T}]: add one mana of
     any color" -- ATOMIC, like every other mana ability (605.1a): spending the
@@ -2329,9 +2374,11 @@ def _filter_mana_legal(name, output_color, input_color):
     and the pool already holds a floating `input_color` pip to spend on its
     {1} activation cost (any color, including colorless, can pay a generic
     cost) -- AND, mid-payment, converting that pip away must not strand the
-    payment (see _filter_would_strand_payment)."""
+    payment (see _filter_would_strand_payment). Uses the sweep-scoped
+    _cached_filter_source cache, not a fresh scan -- this legal() runs once
+    per (source, output_color, input_color) row."""
     def legal(state):
-        if _find_filter_source(state, name) is None or state.mana_pool.get(input_color, 0) <= 0:
+        if _cached_filter_source(state, name) is None or state.mana_pool.get(input_color, 0) <= 0:
             return False
         return not _filter_would_strand_payment(state, input_color)
     return legal
@@ -2482,19 +2529,22 @@ def legal_action_mask(state, actions):
     always called, exactly like every closure was before this fix -- the
     fail-safe default, not an optimization gap that can go wrong.
 
-    Resets _battlefield_lookup_cache, _mana_ability_options_cache, and
-    game.mana's own _enchanting_cache (game.reset_mana_cache) before AND
-    after the sweep itself (not just before): guarantees none of these
-    caches can ever leak past this call's own scope into a later
-    execute_fn call or an unrelated sweep against a different/mutated
-    state, even though nothing in the current single-threaded, synchronous
-    call pattern would actually trigger that -- belt-and-suspenders for a
-    module-level global, not load-bearing. mana.py's own cache is reset
-    from here, not self-invalidating there, for the same reason the other
-    two aren't: see game.mana._enchanting's own docstring."""
-    global _battlefield_lookup_cache, _mana_ability_options_cache
+    Resets _battlefield_lookup_cache, _mana_ability_options_cache,
+    _mana_source_cache, _filter_source_cache, and game.mana's own
+    _enchanting_cache (game.reset_mana_cache) before AND after the sweep
+    itself (not just before): guarantees none of these caches can ever leak
+    past this call's own scope into a later execute_fn call or an unrelated
+    sweep against a different/mutated state, even though nothing in the
+    current single-threaded, synchronous call pattern would actually trigger
+    that -- belt-and-suspenders for a module-level global, not load-bearing.
+    mana.py's own cache is reset from here, not self-invalidating there, for
+    the same reason the others aren't: see game.mana._enchanting's own
+    docstring."""
+    global _battlefield_lookup_cache, _mana_ability_options_cache, _mana_source_cache, _filter_source_cache
     _battlefield_lookup_cache = None
     _mana_ability_options_cache = None
+    _mana_source_cache = None
+    _filter_source_cache = None
     game.reset_mana_cache()
     pending = state.pending_resolution
     pending_kind = pending["kind"] if pending is not None else None
@@ -2513,6 +2563,8 @@ def legal_action_mask(state, actions):
     finally:
         _battlefield_lookup_cache = None
         _mana_ability_options_cache = None
+        _mana_source_cache = None
+        _filter_source_cache = None
         game.reset_mana_cache()
 
 

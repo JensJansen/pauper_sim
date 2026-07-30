@@ -491,6 +491,55 @@ if __name__ == "__main__":
 
     print("casting.py Aura target-fizzle self-check: OK")
 
+    # captured=None end-to-end: cast_targeting_creature's own MANDATORY pick
+    # can still auto-complete with None (zero legal creature targets right
+    # NOW, not one that died later -- reachable in real play when this
+    # spell's own cost payment, paid AFTER targeting under this engine's
+    # cost-then-target order, kills the caster's last legal target; a real
+    # pretrain run crashed exactly this way through a different
+    # begin_choose_any_target caller, cast_aura, covered just below). No
+    # creature anywhere at cast time, so begin_choose_any_target's own
+    # zero-candidate contract fires before this even reaches the stack.
+    state = GameState(on_the_play=True)
+    snuff_out = CardDef("Snuff Out", CardType.INSTANT, {"B": 1}, EffectId.FILLER)
+    state.hand = [snuff_out]
+    resolved_calls = []
+    cast_targeting_creature(state, snuff_out, on_resolve=lambda s, target: resolved_calls.append(target))
+    assert state.pending_resolution is None  # auto-completed immediately, no resolution left dangling
+    assert state.hand == [] and len(state.stack) == 1  # left hand at cast, sitting on the stack with zero targets
+    resolve_top_of_stack(state)
+    assert resolved_calls == []  # on_resolve never ran -- captured=None fizzled, same contract as a target dying first
+    assert any(c.name == "Snuff Out" for c in state.graveyard)  # the spell itself still goes to the graveyard
+
+    print("casting.py cast_targeting_creature captured=None (zero legal targets at cast) self-check: OK")
+
+    # cast_aura's no_target_fallback (Bestow, MTG 702.103e): captured=None at
+    # cast time should NOT plain-fizzle when a fallback is given -- the spell
+    # enters the battlefield (as a creature, for real Bestow) instead of
+    # going to the graveyard. Same zero-candidate cast-time gap as above,
+    # routed through cast_aura's own captured-is-None branch instead of
+    # cast_targeting_creature's.
+    no_target_fallback_calls = []
+
+    def _bestow_no_target_fallback(state, card_def):
+        no_target_fallback_calls.append(card_def)
+        enters_battlefield(state, card_def, from_zone="hand")  # 702.103e: enters as a creature instead of fizzling
+
+    state = GameState(on_the_play=True)
+    bestow_aura = CardDef("Fake Bestow Aura", CardType.ENCHANTMENT, {"G": 1}, EffectId.FILLER, power=2, toughness=2)
+    state.hand = [bestow_aura]
+    cast_aura(
+        state, bestow_aura, lambda p: p.card_type == CardType.CREATURE, no_target_fallback=_bestow_no_target_fallback,
+    )
+    assert state.pending_resolution is None
+    assert state.hand == [] and len(state.stack) == 1
+    resolve_top_of_stack(state)
+    assert no_target_fallback_calls == [bestow_aura]  # the fallback ran instead of the plain graveyard fizzle
+    assert not any(c.name == "Fake Bestow Aura" for c in state.graveyard)
+    assert any(p.card_def.name == "Fake Bestow Aura" for p in state.battlefield)  # entered as a creature, per 702.103e
+
+    print("casting.py cast_aura no_target_fallback (captured=None, Bestow 702.103e) self-check: OK")
+
     # capture_any_target / target_still_legal: the shared cast-time lock +
     # resolution-time legality for begin_choose_any_target. Two same-named
     # creatures on opposite sides -- capture must lock the EXACT one named

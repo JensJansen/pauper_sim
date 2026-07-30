@@ -457,10 +457,11 @@ if __name__ == "__main__":
     execute_pool_spend(state, "G")
     assert state.pending_resolution is None  # {G} covered via the granted color
 
-    # execute_tap_cost_option must pick the ENCHANTED Plains specifically
-    # when tapping for the granted color, even with an identical-by-name
-    # plain Plains also in play -- same-named sources are normally fully
-    # interchangeable in this engine; a granted-mana Aura breaks that for
+    # mana_ability_options must offer the granted color only via the ENCHANTED
+    # Plains, so the caller can activate_mana_source that exact permanent
+    # specifically -- even with an identical-by-name plain Plains also in
+    # play. Same-named sources are normally fully interchangeable in this
+    # engine; a granted-mana Aura breaks that for
     # the first time (this is the exact bug a full-decklist smoke test
     # caught: picking an arbitrary same-named Plains raised "has no color
     # choice" whenever it happened to pick the unenchanted one).

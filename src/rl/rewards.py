@@ -104,9 +104,10 @@ def deploy_reward(plateau_actions=80, max_actions=200, win_floor=0.5, loss_defau
 # 1 - 0.2" spec -- this is the reward pretraining (run_pretrain.py) uses.
 action_count_win_reward_200_floor02 = action_count_win_reward(min_reward=0.2)
 
-# The reward league self-play uses now (run_league.py). Win band 0.5->1.0 by
-# gameplay efficiency; loss band 0.25 minus 0.05 per cleanup-discard turn,
-# floored at 0.
+# The reward league self-play used BEFORE deploy_reward_v2 replaced it below --
+# kept for reference/comparison, not wired into run_league.py. Win band
+# 0.5->1.0 by gameplay efficiency; loss band 0.25 minus 0.05 per
+# cleanup-discard turn, floored at 0.
 deploy_reward_v1 = deploy_reward()
 
 
