@@ -1,5 +1,4 @@
-"""pytest transcription of src/game/catalog/black_cards.py's former
-`if __name__ == "__main__":` self-check block.
+"""Tests for game.catalog.black_cards.
 
 black_cards.py's own module docstring: every card's cost/type/oracle-text is
 a direct Scryfall pull, except creature power/toughness (a design choice,
@@ -349,15 +348,24 @@ def test_gurmag_angler_delve_exiles_graveyard_cards_to_pay_generic():
 
 def _drive8(s):
     promote_triggers_to_stack(s)
+    # Ichor Wellspring's own "dies: draw" LTB trigger and Gixian Infiltrator's
+    # "sacrifice: +1/+1" trigger can queue simultaneously for the same
+    # controller -- real Magic (603.3b) lets that player choose the
+    # placement order, opening an order_triggers pending resolution instead
+    # of placing both automatically (resolution.begin_order_triggers).
+    while s.pending_resolution is not None and s.pending_resolution["kind"] == "order_triggers":
+        resolution.execute_order_triggers_option(s, resolution.order_triggers_options(s)[0])
     while s.stack:
         resolve_top_of_stack(s)
 
 
 def test_gixian_infiltrator_gains_counter_on_sacrifice():
     """Gixian Infiltrator: "Whenever you sacrifice another permanent, put a
-    +1/+1 counter on this creature." Fired by shared.fire_sacrifice_triggers
-    from every sacrifice path (it only iterates the sacrificer's OTHER
-    battlefield permanents, so "another" is automatic)."""
+    +1/+1 counter on this creature." A real triggered ability: queued by
+    shared.fire_sacrifice_triggers from every sacrifice path (it only
+    iterates the sacrificer's OTHER battlefield permanents, so "another" is
+    automatic) and placed on the stack at the next priority window, not
+    applied immediately."""
     state = GameState(on_the_play=True)
     gix = Permanent(registry.CARD_DEFS["Gixian Infiltrator"])
     gix.slot = 1
@@ -366,6 +374,7 @@ def test_gixian_infiltrator_gains_counter_on_sacrifice():
     state.battlefield = [gix, fodder]
     state.library = [CardDef("x", CardType.LAND, None, EffectId.SWAMP, basic=True)]
     sacrifice_to_graveyard(state, fodder)
+    _drive8(state)
     assert gix.counters.get("+1/+1") == 1
 
 

@@ -71,8 +71,8 @@ def _reward_for(state, seat, reward_fn, horizon, done):
     state.active_idx to `seat`, so the reward_fn reads that seat's own zones/
     counters and compares state.winner to it). NO external loser gate: the
     reward_fn itself decides win vs loss vs no-winner -- deploy_reward needs the
-    LOSER to reach its own (nonzero) loss band, not be forced to 0. Legacy
-    reward_fns that still want "loser -> 0" self-contain that check now
+    LOSER to reach its own (nonzero) loss band, not be forced to 0. A reward_fn
+    that wants "loser -> 0" self-contains that check itself
     (rl.rewards.action_count_win_reward), so this stays correct for both."""
     if done:
         return drl_env._for_player(state, seat, lambda s: reward_fn(s, True, horizon))
@@ -81,9 +81,9 @@ def _reward_for(state, seat, reward_fn, horizon, done):
 
 # The per-seat DECISION primitives (_seat_step, _build_decision,
 # _scalar_features, _executor_for, _padded_full_mask, _Decision,
-# _raise_all_false, _is_pass) now live in rl.agent -- collect_rollout drives
-# them through SeatAgent.decide, so nothing here calls them directly anymore.
-# _reward_for stays: it's ATTRIBUTION (a rollout concern), not decision.
+# _raise_all_false, _is_pass) live in rl.agent -- collect_rollout drives them
+# through SeatAgent.decide rather than calling them directly.
+# _reward_for stays here: it's ATTRIBUTION (a rollout concern), not decision.
 
 
 def _constant_pairing(agents, decklists, reward_fns, record_as):
@@ -117,9 +117,9 @@ def collect_rollout(pairing, n_games, horizon, rng, device="cpu", record=True, g
     Returns (buffers_by_deck, mull_by_deck, games_played): dicts keyed by the
     deck-name buckets from record_as. A mirror routes BOTH seats to one bucket
     (pooled single-policy self-play); a live cross-deck opponent routes its own
-    seat to its own bucket (the former Path-A salvage, now uniform). Each seat's
-    per-game trajectory is appended to its bucket CONTIGUOUSLY and ends done=True,
-    so a later GAE pass never bootstraps across a trajectory boundary."""
+    seat to its own bucket. Each seat's per-game trajectory is appended to its
+    bucket CONTIGUOUSLY and ends done=True, so a later GAE pass never
+    bootstraps across a trajectory boundary."""
     buffers_by_deck = {}   # bucket -> RolloutBuffer (main PPO transitions)
     mull_by_deck = {}      # bucket -> list of mulligan transitions (bandit)
     games_played = 0
@@ -196,8 +196,8 @@ def collect_rollout_league(training_deck_name, live_nets, mulligan_nets, deck_ct
     (buffers_by_deck, mull_by_deck, games_played) keyed by deck name -- the
     training deck's bucket (training seat always; BOTH seats on a mirror) plus,
     for any game whose opponent was another deck's CURRENT live net, that deck's
-    own bucket (on-policy for it -- the former Path-A salvage, now just another
-    bucket). A frozen-snapshot opponent is off-policy and records nothing.
+    own bucket (on-policy for it). A frozen-snapshot opponent is off-policy and
+    records nothing.
 
     live_nets / mulligan_nets / deck_ctxs / decklists_by_name: dicts keyed by
     deck name over the WHOLE roster (an opponent may be any other deck's live
@@ -242,7 +242,8 @@ def _make_league_pairing(training_deck_name, live_nets, mulligan_nets, deck_ctxs
             opp_agent = SeatAgent(live_nets[opp_name], _mull(opp_name), deck_ctxs[opp_name])
         else:
             # A frozen snapshot loads as a whole frozen SeatAgent (deck + its
-            # era-matched mulligan, or AlwaysKeep for a pre-refactor snapshot).
+            # era-matched mulligan, or AlwaysKeep for a snapshot with no
+            # mulligan state).
             opp_agent = pool.load_snapshot_agent(snapshot_path, training_net.shared_stack, deck_ctxs[opp_name])
 
         training_seat = rng.randint(0, 1)  # randomized so the training net isn't always seat 0/1
@@ -486,9 +487,9 @@ def _precompute_frozen_shared(net, token_lists, device, chunk_size=256):
 
 def ppo_update(net, optimizers, buf, device, n_epochs=4, batch_size=64, gamma=0.99, gae_lambda=0.95,
                 clip_range=0.2, ent_coef=0.01, vf_coef=0.5, max_grad_norm=0.5):
-    # ent_coef default 0.01 (was 0.0): with no entropy bonus the main policy
-    # collapses onto a narrow low-branching behavior (pass, shrink its own board) --
-    # the action-space-minimization pathology; see rl.rewards.deploy_reward_v2. The
+    # ent_coef default 0.01: with no entropy bonus the main policy collapses
+    # onto a narrow low-branching behavior (pass, shrink its own board) -- the
+    # action-space-minimization pathology; see rl.rewards.deploy_reward_v2. The
     # mulligan model has its own ENTROPY_COEF; this is the DeckNetwork policy's.
     """PPO update over a buffer of variable-length token lists -- pads ONCE
     per minibatch (not once for the whole buffer up front), since a buffer
@@ -503,12 +504,10 @@ def ppo_update(net, optimizers, buf, device, n_epochs=4, batch_size=64, gamma=0.
     point at the same SetTransformer+FiLM instance); giving each net's
     call site its own single optimizer over net.parameters() would create
     TWO independent Adam instances tracking separate, unsynchronized
-    momentum/variance state for the identical shared_stack tensors,
-    stepping on them in alternation -- confirmed the hard way (see git
-    history) as the exact bug this signature change fixes. Passing a
-    single-net-only optimizer as [optimizer] (league training, where the
-    shared stack is frozen and only one optimizer ever touches this net's own
-    params) still works unchanged."""
+    momentum/variance state for the identical shared_stack tensors, stepping
+    on them in alternation. Passing a single-net-only optimizer as [optimizer]
+    (league training, where the shared stack is frozen and only one optimizer
+    ever touches this net's own params) still works unchanged."""
     values = np.array(buf.value, dtype=np.float32)
     rewards_ = np.array(buf.reward, dtype=np.float32)
     dones = np.array(buf.done, dtype=np.float32)
@@ -569,9 +568,8 @@ def ppo_update(net, optimizers, buf, device, n_epochs=4, batch_size=64, gamma=0.
             # above). n_fixed read directly off the net (never inferred from
             # mask_length - token_count): pad_token_batch pads a ZERO-token entry
             # (a legitimate empty-board state, e.g. before either seat has played
-            # a land) to ONE dummy slot, which would make that inference silently
-            # off-by-one -- caught by this module's own smoke test hitting it in
-            # the very first rollout.
+            # a land) to ONE dummy slot, which would make that inference
+            # silently off-by-one.
             full_mask_mb = torch.zeros((len(mb), n_fixed + max_tokens), dtype=torch.bool, device=device)
             for row, i in enumerate(mb):
                 stored = buf.mask[i]
@@ -612,11 +610,9 @@ def batch_size_for_iteration(iteration, n_iterations, start=32, cap=2048, n_step
     of decaying the learning rate" schedule shape (Smith et al. 2017: more
     frequent, noisier early gradient steps to cover ground quickly on a
     policy far from any optimum; larger, smoother steps later as it
-    approaches convergence), not the reverse -- see this session's own
-    design discussion for why that direction has actual empirical
-    precedent and the opposite one doesn't. n_steps doublings spread
-    evenly across the run (a step schedule, not continuous growth --
-    simplest thing that matches "incrementally increasing")."""
+    approaches convergence), not the reverse. n_steps doublings spread evenly
+    across the run (a step schedule, not continuous growth -- simplest thing
+    that matches "incrementally increasing")."""
     if n_iterations <= 1:
         return start
     progress = iteration / n_iterations

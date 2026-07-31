@@ -1,16 +1,15 @@
 """Tests for game.resolution.handlers: the deck-agnostic pending-resolution
 handlers (discard, mulligan, madness routing, sacrifice, cross-player/any-
 target choosing, blocking, trigger ordering, explore, up-to-N multi-target
-selection). Migrated from game/resolution/handlers.py's former
-`if __name__ == "__main__":` self-check block. Exercises these primitives
-directly against hand-built states, bypassing drl_env entirely (no card
-wires into every one of these yet)."""
+selection). Exercises these primitives directly against hand-built states,
+bypassing drl_env entirely (no card wires into every one of these yet)."""
 
 from game import registry
 from game.cards import CardDef, CardType, EffectId
 from game.resolution.handlers import (
     begin_choose_any_target,
     begin_choose_opponent_permanent,
+    begin_choose_permanent,
     begin_choose_up_to_any_target,
     begin_choose_up_to_graveyard,
     begin_declare_blockers,
@@ -19,11 +18,13 @@ from game.resolution.handlers import (
     begin_mulligan,
     begin_order_triggers,
     begin_sacrifice,
+    begin_search_fetch,
     bottom_options,
     choose_any_target_creature_options,
     choose_any_target_options,
     choose_graveyard_card_options,
     choose_opponent_permanent_options,
+    choose_permanent_options,
     complete_resolution,
     declare_blocker_assignment,
     discard_options,
@@ -45,6 +46,7 @@ from game.resolution.handlers import (
     madness_decision_options,
     mulligan_decision_options,
     order_triggers_options,
+    refizzle_if_now_targetless,
     sacrifice_options,
 )
 from game.state import GameState, Permanent, PlayerState
@@ -150,10 +152,9 @@ def test_mulligan_london_style_bottoms_and_logs_draws():
     assert len(state.hand) == 5  # 7 - 2 bottomed
     assert [c.name for c in state.library[-2:]] == bottomed  # bottomed, in the order chosen
 
-    # There is no "mulligan_hand" event any more. Every hand SEEN is a
-    # library->hand "draw" zone_move (GameState.draw, the single generic
-    # hook): three here -- the opener, then the two redraws -- 7 cards each,
-    # in order.
+    # Every hand SEEN is a library->hand "draw" zone_move (GameState.draw,
+    # the single generic hook): three here -- the opener, then the two
+    # redraws -- 7 cards each, in order.
     draws = [e["cards"] for e in events if e.get("reason") == "draw"]
     assert len(draws) == 3 and all(len(d) == 7 for d in draws)
     # Each thrown-back hand (mulligan_take) is exactly the hand drawn just
@@ -197,8 +198,8 @@ def test_discard_madness_routes_to_exile_and_queues_decision():
         assert state.trigger_queue == [{"type": "decision", "kind": "madness", "card_def": madness_card}]
 
         # Promoting the queue (game.effects.triggers.promote_triggers_to_
-        # stack's job in real play,) and declining:
-        # back out of exile, into the graveyard.
+        # stack's job in real play) and declining: back out of exile, into
+        # the graveyard.
         state.trigger_queue.clear()
         drain_completed = []
         begin_madness_decision(state, madness_card, on_complete=lambda s: drain_completed.append(True))
@@ -213,8 +214,8 @@ def test_discard_madness_routes_to_exile_and_queues_decision():
 
 def test_sacrifice_creature_predicate():
     # begin_sacrifice: predicate-based, not hardcoded to creatures --
-    # exercise a creature predicate (Dread Return's own shape, post-
-    # migration) against the primitive.
+    # exercise a creature predicate (Dread Return's own shape) against
+    # the primitive.
     state = GameState(on_the_play=True)
     state.battlefield = [
         _permanent("Bear", CardType.CREATURE),
@@ -282,6 +283,96 @@ def test_choose_opponent_permanent_empty_options_fizzles():
         state, lambda p: p.card_def.card_type == CardType.CREATURE, lambda s, choice: completed.append(choice),
     )
     assert completed == [None]
+
+
+def test_refizzle_if_now_targetless_fizzles_choose_opponent_permanent():
+    # begin_choose_opponent_permanent only validates non-empty options ONCE,
+    # at open time. If a state_based_actions pass removes the only legal
+    # target before the next decision point, the pending resolution would
+    # otherwise sit there with an all-False mask and no recovery --
+    # game.turn._run_priority_round_gen's own refizzle_if_now_targetless call
+    # is what catches that. Simulates the gap directly: open with one legal
+    # target, remove it (standing in for an SBA), then confirm the re-check
+    # fizzles cleanly with None instead of leaving a dead resolution.
+    target = _permanent("Slippery Bogle", CardType.CREATURE)
+    state = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
+    state.players[0].battlefield = [target]
+    state.active_idx = 1
+    completed = []
+    begin_choose_opponent_permanent(
+        state, lambda p: p.card_def.card_type == CardType.CREATURE, lambda s, choice: completed.append(choice),
+    )
+    assert completed == []  # still open -- one legal target existed at open time
+    state.players[0].battlefield = []  # the SBA's own effect: the only target just died
+    assert refizzle_if_now_targetless(state) is True
+    assert completed == [None]
+    assert state.pending_resolution is None
+
+
+def test_refizzle_if_now_targetless_fizzles_choose_permanent():
+    # Same gap, own-battlefield half (begin_choose_permanent).
+    target = _permanent("Slippery Bogle", CardType.CREATURE)
+    state = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
+    state.players[0].battlefield = [target]
+    completed = []
+    begin_choose_permanent(
+        state, lambda p: p.card_def.card_type == CardType.CREATURE, lambda s, choice: completed.append(choice),
+    )
+    assert completed == []
+    state.players[0].battlefield = []
+    assert refizzle_if_now_targetless(state) is True
+    assert completed == [None]
+    assert state.pending_resolution is None
+
+
+def test_refizzle_if_now_targetless_fizzles_choose_any_target_creature_only():
+    # Same gap, choose_any_target's creature-only mode (allow_players=False,
+    # optional=False -- the one configuration that can ever go all-False; with
+    # allow_players=True a player is always legal, and optional=True always
+    # offers a decline, so neither ever needs this re-check).
+    target = _permanent("Slippery Bogle", CardType.CREATURE)
+    state = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
+    state.players[0].battlefield = [target]
+    completed = []
+    begin_choose_any_target(
+        state, lambda p: p.card_def.card_type == CardType.CREATURE, lambda s, choice: completed.append(choice),
+        allow_players=False, optional=False,
+    )
+    assert completed == []
+    state.players[0].battlefield = []
+    assert refizzle_if_now_targetless(state) is True
+    assert completed == [None]
+    assert state.pending_resolution is None
+
+
+def test_refizzle_if_now_targetless_leaves_still_legal_resolution_alone():
+    # No-op when the pending resolution's options are still non-empty -- the
+    # common case, every priority-loop iteration.
+    target = _permanent("Slippery Bogle", CardType.CREATURE)
+    state = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
+    state.players[0].battlefield = [target]
+    state.active_idx = 1
+    completed = []
+    begin_choose_opponent_permanent(
+        state, lambda p: p.card_def.card_type == CardType.CREATURE, lambda s, choice: completed.append(choice),
+    )
+    assert refizzle_if_now_targetless(state) is False
+    assert completed == []  # untouched -- the target is still there
+    assert state.pending_resolution is not None
+
+
+def test_refizzle_if_now_targetless_ignores_unrelated_kinds():
+    # search_fetch reads the library, which state_based_actions never mutates --
+    # not in refizzle_if_now_targetless's covered set, so even an empty-options
+    # search_fetch (its own open-time safety net already fizzled it) is simply
+    # not its concern. No pending resolution at all is the other no-op case.
+    state = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
+    state.library = []
+    completed = []
+    begin_search_fetch(state, lambda c: True, lambda s, name: completed.append(name))
+    assert completed == [None]  # already fizzled by its OWN open-time check
+    assert state.pending_resolution is None
+    assert refizzle_if_now_targetless(state) is False  # nothing pending -- no-op
 
 
 def test_choose_any_target_creature_and_player():
@@ -369,9 +460,8 @@ def test_declare_blockers_gang_blocking_and_done():
     assert state.players[0].blocked_by == {bear: [grizzly]}  # attacker -> LIST of blockers (gang-blocking)
 
     # GANG-BLOCKING: re-open the consult and assign Panther to the SAME
-    # attacker (Bear). An already-blocked attacker is STILL offered -- the
-    # old 1:1 "already spoken for" exclusion is gone -- and multiple
-    # blockers may pile onto one attacker.
+    # attacker (Bear). An already-blocked attacker is STILL offered --
+    # multiple blockers may pile onto one attacker.
     completed = []
     begin_declare_blockers(state, on_complete=lambda s: completed.append(True))
     assert completed == []

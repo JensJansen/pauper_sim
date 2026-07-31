@@ -1,8 +1,6 @@
-"""Tests for game.catalog.colorless_cards -- migrated from that module's
-former `if __name__ == "__main__":` ponytail self-check block. Each test
-below preserves the original assertions' exact semantics; see the module
-under test for the card-implementation rationale (real-rules citations,
-etc.) these checks were guarding."""
+"""Tests for game.catalog.colorless_cards. See the module under test for
+the card-implementation rationale (real-rules citations, etc.) each test
+below guards."""
 
 import contextlib
 import io
@@ -118,8 +116,7 @@ def test_relic_of_progenitus_exile_targeting_yourself():
     real Magic even alone), chosen explicitly here via drl_env's own fixed
     "Target: yourself" action equivalent. Whichever player is targeted
     then chooses one of THEIR OWN graveyard cards to exile -- made by THAT
-    player themselves via the active_idx flip, never the old
-    simplify-to-the-activating-player approximation.
+    player themselves via the active_idx flip.
 
     Faithful timing + cross-player choice: the {T} is a COST (paid now);
     the target player is chosen as the ability is put on the stack
@@ -664,8 +661,7 @@ def test_lembas_dies_shuffles_itself_into_library():
 def test_lembas_dies_does_not_shuffle_a_different_same_named_graveyard_copy():
     """A second same-named Lembas already sitting in the graveyard must NOT
     be the one shuffled back -- the EXACT dying instance is tracked (a
-    400.7 linked ability), not any same-named graveyard card (the bug the
-    old by-name bridge could hit)."""
+    400.7 linked ability), not any same-named graveyard card."""
     state = GameState(on_the_play=True)
     other_lembas_in_gy = state.new_instance(registry.CARD_DEFS["Lembas"])
     state.graveyard = [other_lembas_in_gy]

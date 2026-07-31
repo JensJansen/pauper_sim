@@ -25,11 +25,9 @@ def _loggable(value):
     """complete_resolution's own *args can carry raw CardDef objects
     directly -- e.g. execute_discard_option's own discarded_cards list
     (appends the real card, never just its name, since _discard_one and
-    the madness trigger queue both need the actual object) -- not
-    JSON-serializable, confirmed the hard way: a real 50-game mono_red_
-    madness/rakdos_madness match (both madness decks, discarding
-    constantly) crashed run_league.py's own event-log write on exactly
-    this path. Converts a CardDef (or a list of them) to its own .name;
+    the madness trigger queue both need the actual object) -- and a
+    CardDef isn't JSON-serializable, which run_league.py's own event-log
+    write requires. Converts a CardDef (or a list of them) to its own .name;
     every other args shape already used elsewhere (strings, (name, slot)
     tuples, bools, ints, None, plain lists of those) passes through
     unchanged -- this only ever touches the LOGGED copy, never what

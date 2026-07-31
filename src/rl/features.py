@@ -1,7 +1,6 @@
 """Per-card, per-token feature extraction for the attention-based observation
-encoding (docs discussed on the attention-opponent-encoding branch -- full
-per-card fidelity instead of the old fixed per-(name, slot) observation
-slots). Two independent pieces per token, deliberately kept separate:
+encoding: full per-card fidelity, not a fixed per-(name, slot) observation
+scheme. Two independent pieces per token, deliberately kept separate:
 
 1. A card VOCABULARY INDEX (this module's CardVocab) -- looked up by the
    consuming network into a learned nn.Embedding, so the network can tell
@@ -55,15 +54,10 @@ class CardVocab:
     token_card_defs: real CardDef objects (e.g. game.BLOOD_TOKEN_CARD_DEF),
     same objects the runner's own TOKEN_CARD_DEFS_BY_NAME resolves configs
     through -- required because a token (Blood, Robot, ...) can appear on
-    the battlefield mid-game but is NEVER a game.CARD_DEFS entry (confirmed
-    the hard way: the first version of this module assumed every
-    battlefield permanent's name resolves via game.CARD_DEFS[name] and
-    crashed with a KeyError the first time a mono_red_madness game actually
-    created a Blood token). The old fixed-slot observation just dropped
-    tokens from the encoding entirely (a token had no observation
-    representation at all) -- reproducing that gap here would be a real,
-    avoidable fidelity loss this token encoding exists to remove, not a
-    corner worth cutting again."""
+    the battlefield mid-game but is NEVER a game.CARD_DEFS entry. Omitting a
+    token from token_card_defs would leave it with no observation
+    representation at all -- a real, avoidable fidelity loss this token
+    encoding exists to avoid."""
 
     def __init__(self, decklists, token_card_defs=(), vocab_path=None):
         """vocab_path: optional JSON file persisting name -> index across
@@ -77,8 +71,8 @@ class CardVocab:
         reflects the FULL persisted vocabulary, not just this call's own
         decklists, so a shared embedding table stays valid for any deck
         roster this file has ever seen, not only the current one. Omitting
-        vocab_path keeps the old behavior (fresh, non-persisted, this call's
-        decklists only) for every existing non-league caller/test."""
+        vocab_path gives fresh, non-persisted behavior (this call's decklists
+        only), the default for every non-league caller/test."""
         self.card_def_by_name = dict(game.CARD_DEFS)
         for card_def in token_card_defs:
             self.card_def_by_name[card_def.name] = card_def
@@ -162,13 +156,11 @@ def cached_static_card_features(name, vocab):
 
 # ---------------------------------------------------------------------------
 # Tokenization: turn each PUBLIC zone (battlefield/graveyard/stack/exile,
-# both seats) into a variable-length list of per-token feature rows, instead
-# of the old fixed per-(name, slot) observation slots. Deliberately
-# does NOT touch hand or library -- those stay hidden (aggregate count only),
-# preserving the existing
-# hidden-information guarantee. See this module's own docstring for the
-# static/dynamic split; DYNAMIC_FEATURE_DIM below is this function's own
-# per-instance half.
+# both seats) into a variable-length list of per-token feature rows.
+# Deliberately does NOT touch hand or library -- those stay hidden (aggregate
+# count only), preserving the existing hidden-information guarantee. See this
+# module's own docstring for the static/dynamic split; DYNAMIC_FEATURE_DIM
+# below is this function's own per-instance half.
 # ---------------------------------------------------------------------------
 
 ZONES = ("battlefield", "graveyard", "stack", "exile")
@@ -267,9 +259,9 @@ def build_token_set(state, my_seat_idx, vocab):
     """Every public-zone card for BOTH seats, as a flat list of (vocab_index,
     feature_row, identity) triples -- one shared token set, side-flagged
     rather than two separately-encoded halves, so a joint Set Transformer
-    can let tokens from both sides attend to each other (docs discussion:
-    relative valuations depend on cross-side context, e.g. an attacker's
-    real threat level depends on what can block it). Order within the
+    can let tokens from both sides attend to each other (relative valuations
+    depend on cross-side context, e.g. an attacker's real threat level
+    depends on what can block it). Order within the
     returned list is NOT meaningful (a permutation-invariant encoder
     consumes it) but IS deterministic given the same state, for
     reproducibility.
@@ -289,7 +281,7 @@ def build_token_set(state, my_seat_idx, vocab):
     an unhashable dict, see rl.action_bridge -- so two same-named graveyard
     copies or simultaneous same-named spells are each individually
     addressable, and an opponent's graveyard/stack entry is reachable, which
-    is why the per-name "Choose: X" fixed rows for either no longer exist).
+    is why no per-name "Choose: X" fixed rows exist for either.
     Exile cards have no pointer-addressable resolution, so None.
 
     Every token also carries two dynamic targeted-by-mine/targeted-by-theirs

@@ -46,8 +46,7 @@ WHITE_EFFECT_REGISTRY = {
     },
     EffectId.CARTOUCHE_OF_SOLIDARITY: {
         # Real text: enchanted creature also gets +1/+1 (both pt_bonus and
-        # toughness_bonus below -- full-stats pass)
-        # and has first strike.
+        # toughness_bonus below -- full-stats pass) and has first strike.
         "cast": {
             "resolve": lambda state, card_def: cast_cartouche_of_solidarity(state, card_def),
             "extra_legal": lambda state: any_creature_on_battlefield(state),
@@ -61,8 +60,7 @@ WHITE_EFFECT_REGISTRY = {
     EffectId.ETHEREAL_ARMOR: {
         # Real text: +1/+1 for each enchantment you control -- INCLUDING
         # itself (unlike Ancestral Mask's "each OTHER enchantment";
-        # verified via Scryfall, not guessed) -- and has first strike
-        #.
+        # verified via Scryfall, not guessed) -- and has first strike.
         "cast": {
             "resolve": lambda state, card_def: cast_ethereal_armor(state, card_def),
             "extra_legal": lambda state: any_creature_on_battlefield(state),

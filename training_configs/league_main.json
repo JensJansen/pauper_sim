@@ -1,5 +1,5 @@
 {
-  "_note": "The original full-roster league (checkpoints/league/). Reached its 3000-games/deck target 2026-07-30 (session 12) before this config file existed -- max_batch_size=1024 continues the doubling sequence the manual escalation ladder was actually on (...,256,512) at the point it finished; not yet exercised by the auto-sizing code.",
+  "_note": "The original full-roster league (checkpoints/league/). max_batch_size=1024 continues the manual escalation ladder's doubling sequence (...,256,512,1024); not yet exercised by the auto-sizing code.",
   "league_name": "league",
   "roster": ["mono_red_madness", "rakdos_madness", "spy_combo", "boggles", "monster_tron", "dmir_terror", "elves", "grixis_affinity", "jund_wildfire", "mono_blue_terror", "mono_red_rally"],
   "total_games": 3000,

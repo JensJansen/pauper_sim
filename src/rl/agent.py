@@ -12,8 +12,8 @@ record nothing (a forced move, an AlwaysKeep pregame pick, or a non-recording
 eval play).
 
 This module also owns the decision-side primitives (_seat_step and the token/
-mask/feature builders it needs) -- relocated here from rl.train so that
-rl.train can import SeatAgent without a circular dependency (rl.agent depends on
+mask/feature builders it needs), keeping them out of rl.train so that rl.train
+can import SeatAgent without a circular dependency (rl.agent depends on
 nothing in rl.train)."""
 
 from collections import namedtuple
@@ -101,8 +101,8 @@ def _raise_all_false(state, seat):
                 print(f"    pending[{k}]={[getattr(c, 'name', c) for c in v] if isinstance(v, list) else v}", flush=True)
     # A STRANDED PAYMENT (pending_kind=pay_cost) is the one all-False shape whose
     # cause is invisible from the pending alone: it depends on what mana is
-    # floating and what could still be tapped. Float-first removed "Abandon
-    # payment", so a payment the agent cannot finish is unescapable by
+    # floating and what could still be tapped. Float-first mana has no "Abandon
+    # payment" action, so a payment the agent cannot finish is unescapable by
     # construction -- meaning the mana state at this instant IS the bug report.
     # Dump both pools, every mana source and whether it is still untapped, and
     # what each untapped one could produce.
@@ -121,12 +121,10 @@ def _raise_all_false(state, seat):
             elif "filter_mana" in spec or "mana_extra_choose" in spec:
                 # Pool->pool converters (filter_mana) have no mana_output at all
                 # -- that helper only understands a "mana" spec, so calling it
-                # here unconditionally used to throw ValueError and blind this
-                # exact dump to a filter's real state (confirmed live:
-                # monster_tron, "Barrels of Blasting Jelly#1-><ValueError>" on
-                # the very crash this diagnostic exists to explain). Report
-                # whether it's spent for the turn instead -- the one fact that
-                # actually matters for "why can't this pay {G}".
+                # here unconditionally would throw ValueError and blind this
+                # exact dump to a filter's real state. Report whether it's spent
+                # for the turn instead -- the one fact that actually matters for
+                # "why can't this pay {G}".
                 used = p.flags.get("used_this_turn", p.tapped)
                 sources.append(f"{p.card_def.name}#{p.slot}{'(used)' if used else '(available)'}")
         print(f"    seat{idx} mana sources={sources}", flush=True)
@@ -223,7 +221,7 @@ def _seat_step(state, seat, deck_ctx, net, horizon, device, greedy=False):
 # Pregame pending kinds owned by the mulligan decider, never the main policy.
 # The authoritative set: SeatAgent.decide intercepts these before the main net's
 # fixed table is ever consulted, which is what lets the fixed table drop its
-# mulligan actions entirely (see the harness-refactor plan, structural removal).
+# mulligan actions entirely.
 PREGAME_KINDS = ("mulligan_decision", "mulligan_bottom")
 
 # executor: zero-arg callable applying the chosen action (None => Pass).

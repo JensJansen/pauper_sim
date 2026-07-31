@@ -117,10 +117,9 @@ For each batch:
      batch=32 -> n_iter=round(32/12)=3 -> 36 actual games, a step that's neither exactly
      nominal nor an exact 2x of the previous session), so past the seam `n_iter` IS the
      ladder, not a derived value. `snap = max(1, 200 // gpi)`
-     — a FIXED ~200 games/deck between snapshots, independent of batch size. (NOT `n_iter // 4`, the old
-     formula: that scaled snapshot frequency with batch size, so early small batches
-     snapshotted every 2-16 games — flooding the opponent pool with near-random,
-     barely-trained early copies before anything worth preserving existed.)
+     — a FIXED ~200 games/deck between snapshots, independent of batch size, so early
+     small batches don't flood the opponent pool with near-random, barely-trained
+     early copies.
      `--checkpoint-opponent-rate` defaults to 0.0 (no checkpoint opponents at all, every
      game real-model-vs-real-model) — leave it unset unless the owner explicitly asks to
      reintroduce checkpoint-opponent diversity; don't pass a nonzero rate on your own
@@ -128,18 +127,18 @@ For each batch:
      **Compute ramp**: `W = 1` (sequential CPU) for the shakeout and until one league
      batch giving each deck ≥ ~15 games has run clean; after that use `W = 6` (parallel
      collection) — the throughput sweet spot. **NEVER use the GPU** — do NOT pass
-     `--gpu-threshold` (leave it unset so every update stays on CPU). Owner directive
-     (2026-07-26): treat GPU as axiomatically slower at ALL sizes; it is not to be used
-     until the owner's own benchmark says otherwise. (Consistent with the measurement
-     that prompted it: the per-update net + optimizer CPU↔GPU round-trip costs more than
-     the tiny matmuls save.) Keep small batches sequential-CPU — easier to diagnose.
+     `--gpu-threshold` (leave it unset so every update stays on CPU). Owner directive:
+     treat GPU as axiomatically slower at this model size — the per-update net +
+     optimizer CPU↔GPU round-trip costs more than the tiny matmuls save. Not to be used
+     until the owner's own benchmark says otherwise. Keep small batches sequential-CPU —
+     easier to diagnose.
 2. **Launch harness-tracked, logged to a file**, so completion/errors auto-notify:
    run with `run_in_background: true`, as
    `python -u <cmd> > ../logs/<phase>_<batch>.log 2>&1; grep -q "session .* done"
    ../logs/<phase>_<batch>.log`. The trailing grep makes the COMMAND's exit code track
    real success — **a parallel `run_league` (`--n-workers > 1`) exits 1 on Windows from
    `ProcessPoolExecutor` teardown even when the session fully completed and checkpointed**
-   (confirmed 2026-07-26: "session done" + saved live.pt, zero tracebacks, exit 1). So
+   ("session done" + saved live.pt, zero tracebacks, still exit 1). So
    never trust the raw python exit code for parallel runs; the grep wrapper (0 iff the
    session-done line was printed) is the reliable signal. Do NOT use `nohup ... &` — that
    detaches from the harness and loses the notification. One batch at a time; wait for

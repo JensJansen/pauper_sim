@@ -1,4 +1,5 @@
-"""Migrated from game/effects/stack.py's __main__ ponytail self-check."""
+"""The priority stack: push, pop-and-resolve, and the one cast-time trigger
+hook (stack.py)."""
 from game import registry
 from game.cards import CardDef, CardType, EffectId
 from game.effects.stack import counter_spell, on_cast_trigger, push_ability_to_stack, push_to_stack, resolve_top_of_stack
@@ -16,12 +17,11 @@ def test_push_and_resolve_basic():
 
 
 def test_reserved_hand_card_lifecycle():
-    # reserved-hand-card lifecycle (regression: the reserved-stack-card
-    # double-cast bug). A normally-cast spell must LEAVE hand at cast -- else it
-    # stays castable off the stack and a second copy's resolve finds it already
-    # gone (a real crash, Lorien Revealed ~turn 39 in league training). Cast it,
-    # confirm it left hand AT CAST, then resolve: resolve_top_of_stack
-    # transiently restores it so the unchanged resolve moves it to graveyard.
+    # Reserved-hand-card lifecycle: a normally-cast spell must LEAVE hand at
+    # cast -- else it stays castable off the stack while a second, distinct
+    # copy's own resolve would find it already gone. Cast it, confirm it left
+    # hand AT CAST, then resolve: resolve_top_of_stack transiently restores it
+    # so the unchanged resolve moves it to graveyard.
     state_r = GameState(on_the_play=True)
     spell = CardDef("Reserved Spell", CardType.INSTANT, {}, EffectId.FILLER)
     state_r.hand.append(spell)
@@ -92,13 +92,13 @@ def test_on_cast_trigger_queues_and_fires_only_on_resolution():
 
 
 def test_ability_on_stack_never_logged_as_a_card_zone_move():
-    # Regression (ability-logged-as-a-card-on-the-stack bug): an activated/
-    # triggered ability going on -- or resolving off -- the stack moves no card,
-    # so it must emit NO card zone_move. Emitting one made the replay converter
-    # mint a phantom library copy per activation (Makeshift Munitions,
-    # Krark-Clan Shaman, ...), inflating the shown deck size; and marking such an
-    # ability is_spell=True would also make it a wrongly-legal Counterspell
-    # target. A real spell still logs hand->stack then a stack resolution.
+    # An activated/triggered ability going on -- or resolving off -- the stack
+    # moves no card, so it must emit NO card zone_move: emitting one would make
+    # the replay converter mint a phantom library copy per activation
+    # (Makeshift Munitions, Krark-Clan Shaman, ...), inflating the shown deck
+    # size; and marking such an ability is_spell=True would also make it a
+    # wrongly-legal Counterspell target. A real spell still logs hand->stack
+    # then a stack resolution.
     log = []
     logged = GameState(on_the_play=True, event_log=log)
     enchantment = CardDef("An Enchantment", CardType.ENCHANTMENT, {}, EffectId.FILLER)

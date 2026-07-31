@@ -5,7 +5,8 @@ plus which cards to bottom on a keep) whose reward is the whole game's outcome.
 So its credit assignment is DIRECT -- the game that follows is a black box that
 turns "the hand I kept" into a single number -- unlike the main in-game policy,
 whose terminal reward has to survive ~100 steps of GAE discounting to reach the
-mulligan choice (why the in-reward mulligan penalty never worked: rl.rewards).
+mulligan choice, too diluted a signal to train a mulligan decision through (see
+rl.rewards's deploy_reward docstring).
 
 This model OWNS the pregame phase (rl.agent.SeatAgent routes mulligan_decision /
 mulligan_bottom decisions here instead of the main net) and is trained by

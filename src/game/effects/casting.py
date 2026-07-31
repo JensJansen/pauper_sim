@@ -56,8 +56,7 @@ def cast_targeting_creature(state, card_def, on_resolve, eligible=lambda p: True
     target. target_still_legal(None) returns True by design (correct for the
     OPTIONAL-pick callers that check captured is None themselves first), so it
     must be checked explicitly here too, or resolution falls through into
-    `captured[1]` -- confirmed the hard way, a real pretrain run crashed doing
-    exactly that via a different begin_choose_any_target caller (cast_aura)."""
+    `captured[1]`."""
     idx = state.active_idx
 
     def _on_target(state, descriptor):
@@ -102,11 +101,9 @@ def _log_target_fizzle(state, card_def, chosen_name_slot):
     """Console-visible record of a targeted spell failing to resolve (see
     cast_aura's own docstring for the rule this enforces) -- otherwise this
     branch is silent and looks, from the outside, identical to "cast a
-    spell that legitimately does nothing," which is exactly the kind of
-    gap that made the original crash (a stale choose_permanent resolution)
-    hard to diagnose. where=None when there was never a captured target at
-    all -- begin_choose_any_target's own empty-candidate-pool auto-complete
-    (confirmed reachable for an Aura: a cast's own cost payment, paid after
+    spell that legitimately does nothing." where=None when there was never a
+    captured target at all -- begin_choose_any_target's own empty-candidate-pool
+    auto-complete (reachable for an Aura: a cast's own cost payment, paid after
     targeting under this engine's cost-then-target order, can kill the
     caster's last legal target before _resolve ever runs) or an analogous
     begin_choose_permanent/search_fetch safety net."""
@@ -114,15 +111,14 @@ def _log_target_fizzle(state, card_def, chosen_name_slot):
     print(f"[target fizzle] turn {state.turn_number}: {card_def.name} failed to resolve -- target was {where}, not on the battlefield anymore.")
 
 
-# FUTURE WORK (MTG 400.7 exceptions -- owner-flagged, not needed by the current
-# pool): a card that changes zones becomes a NEW object, and targeting here
+# MTG 400.7: a card that changes zones becomes a NEW object. Targeting here
 # captures the exact object, so a flickered/returned permanent or graveyard card
-# correctly makes an old target fizzle. The ONE thing not modeled is a LINKED
-# ability that deliberately TRACKS an object across a zone change (Adventure,
-# Foretell, "exile, then you may play THIS card") -- that returned object is
-# still new, but the linked ability references it. No pool card does this today;
-# add cross-zone object linkage here (and to game.state.move_card's minting) when
-# one arrives. See plans/object-identity-zone-model.md.
+# correctly makes an old target fizzle. Not modeled: a LINKED ability that
+# deliberately TRACKS an object across a zone change (Adventure, Foretell,
+# "exile, then you may play THIS card") -- the returned object is still new,
+# but the linked ability references it across the change. No card in this pool
+# needs that tracking; add cross-zone object linkage here (and to
+# game.state.move_card's minting) if one arrives. See plans/object-identity-zone-model.md.
 def capture_any_target(state, target):
     """Cast/activation time: lock a resolution.begin_choose_any_target
     descriptor onto a concrete, identity-stable target to carry on the
@@ -166,13 +162,11 @@ def _maybe_trigger_ward(state, permanent):
     # never to caster_idx (the opponent who triggered it, and who is
     # state.active_idx right now, mid-cast). Writing through the
     # state.trigger_queue active-player PROXY would append into caster_idx's
-    # own queue instead -- confirmed live: a real league game crashed
-    # drl_env's coverage guard because the ACTIVE (casting) player was handed
-    # an order_triggers choice naming "Tolarian Terror", a card from the
-    # WARDED player's deck, same failure mode
-    # game.effects.state_based._queue_leave_triggers already hit and fixed
-    # for LTB triggers -- this producer needed the identical owner_idx
-    # threading.
+    # own queue instead of the controller's -- wrong, since the ACTIVE
+    # (casting) player would then be handed an order_triggers choice naming a
+    # card from the WARDED player's own deck. This producer needs the same
+    # explicit owner_idx threading game.effects.state_based._queue_leave_triggers
+    # uses for LTB triggers.
     state.players[controller].trigger_queue.append(
         {"type": "ward", "card_def": permanent.card_def, "payer_idx": caster_idx, "cost": ward}
     )
@@ -218,9 +212,7 @@ def cast_aura(state, card_def, target_predicate, on_attached=None, no_target_fal
     (begin_choose_any_target's own auto-complete-with-None on an empty
     candidate pool -- reachable when THIS SAME cast's own cost payment, paid
     after targeting under this engine's cost-then-target order, kills the
-    caster's last legal target: confirmed the hard way, a real pretrain run
-    tapping its own Wall of Roots for the 5th and lethal time while paying
-    for a Bestow cast), the spell fails outright: no effect -- see
+    caster's last legal target), the spell fails outright: no effect -- see
     _resolve's own fizzle branch below, logged via _log_target_fizzle so
     this doesn't silently look like "cast a spell that did nothing."
 
@@ -302,8 +294,8 @@ def enters_battlefield(state, card_def, force_tapped=False, from_zone=None):
     to always-tapped -- a one-off per-trigger condition, not a property of
     the card itself (Sneaky Snacker enters battlefield normally untapped
     when cast, but tapped specifically when its own "third card drawn"
-    trigger returns it from the graveyard
-    item 7). Every existing caller omits it, unaffected."""
+    trigger returns it from the graveyard). Every existing caller omits it,
+    unaffected."""
     # Accept a CardInstance/Permanent (a graveyard-return or flicker path passing
     # the leaving object) or a raw CardDef: the permanent is always minted FRESH
     # from the underlying CardDef (a NEW object, MTG 400.7), never wrapping an
@@ -363,8 +355,8 @@ def enters_battlefield(state, card_def, force_tapped=False, from_zone=None):
 
 
 def bounce_land_etb(state):
-    """ETB: return a land you control to hand (Rakdos Carnarium --
-   ). resolution.begin_choose_permanent
+    """ETB: return a land you control to hand (Rakdos Carnarium).
+    resolution.begin_choose_permanent
     already covers "pick one of my own permanents matching a predicate, by
     exact (name, slot)" exactly -- no new resolution kind needed. Not a
     real MTG "target" (no "target" in this ability's own text -- it's an

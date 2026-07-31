@@ -1,5 +1,5 @@
 {
-  "_note": "Long-horizon convergence test: does the current implementation reach strong/optimal-looking play given far more games than the main league gets? All 4 decks seeded from their checkpoints/league/ live.pt+mulligan.pt (not trained from scratch) -- started 2026-07-30.",
+  "_note": "Long-horizon convergence test: does the current implementation reach strong/optimal-looking play given far more games than the main league gets? All 4 decks seeded from their checkpoints/league/ live.pt+mulligan.pt, not trained from scratch.",
   "league_name": "4_deck_subleague_test",
   "roster": ["rakdos_madness", "dmir_terror", "elves", "mono_red_rally"],
   "total_games": 50000,

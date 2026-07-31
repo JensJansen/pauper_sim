@@ -3,10 +3,7 @@ on_the_play/turns_taken, life_total loss, deck-out-as-instant-loss, a real
 game played through actual cards (not a synthetic no-op deck), the
 _declare_blockers_gen flip-drive-restore shape, the turn-owner vs
 priority-holder split in speed_legal, and rule 500.4's per-phase-boundary
-mana clear. Migrated from game/turn_selfcheck.py's `_run_self_checks()`
-body (game/turn.py's own former `__main__` block only ever delegated to
-that dedicated self-check module, which existed purely to hold these
-checks -- both are now retired in favor of this file)."""
+mana clear."""
 
 import random
 
@@ -46,10 +43,9 @@ def test_turn_alternation_and_on_the_play():
         # actually drives the resolution to completion instead of
         # silently abandoning it on a stray Pass).
         if state.pending_resolution is not None:
-            # run_multiplayer_game now runs the pregame mulligan phase
-            # (game.turn.run_mulligan_phase) before turn 1 -- always keep
-            # (0 mulligans taken), same net opening-hand outcome this
-            # policy already had before mulligans existed.
+            # run_multiplayer_game runs the pregame mulligan phase
+            # (game.turn._run_mulligan_gen) before turn 1 -- always keep
+            # (0 mulligans taken).
             if state.pending_resolution["kind"] == "mulligan_decision":
                 return lambda: resolution.execute_mulligan_keep(state)
             name = resolution.discard_options(state)[0]
@@ -146,14 +142,12 @@ def test_real_two_player_game_through_actual_cards():
 
     def _burn_policy(state):
         if state.pending_resolution is not None and state.pending_resolution["kind"] == "mulligan_decision":
-            # run_multiplayer_game now runs the pregame mulligan phase for
-            # BOTH players first -- always keep (0 mulligans taken), same
-            # net opening-hand outcome this policy already had before
-            # mulligans existed.
+            # run_multiplayer_game runs the pregame mulligan phase for BOTH
+            # players first -- always keep (0 mulligans taken).
             return lambda: resolution.execute_mulligan_keep(state)
         if state.pending_resolution is not None and state.pending_resolution["kind"] == "discard":
             # cleanup_step's own hand-size discard
-            # can now happen to EITHER player at the end of THEIR OWN
+            # can happen to EITHER player at the end of THEIR OWN
             # turn -- unlike every other resolution below (which only
             # ever belongs to player 0, the only one who ever casts/taps
             # anything), so this has to be checked before the "player 1
@@ -199,13 +193,13 @@ def test_real_two_player_game_through_actual_cards():
 
 def test_declare_blockers_gen_flips_active_idx_to_defender_and_restores():
     # _declare_blockers_gen: the defender's own consult, active_idx flip.
-    # handlers.py's own self-check already covers begin_declare_blockers/
+    # test_handlers.py already covers begin_declare_blockers/
     # declare_blocker_assignment directly; this one is specifically about
-    # the flip-drive-restore shape unique to this generator, driven the
-    # same way drl_env._assign_blocker_execute's own nested on_complete
-    # re-opens begin_declare_blockers after each assignment -- now via the
-    # generator's own yield protocol (like every other decision point in
-    # this file) instead of a directly-invoked callback.
+    # the flip-drive-restore shape unique to this generator, driven via
+    # the generator's own yield protocol -- the same nested-on_complete
+    # re-open of begin_declare_blockers that drl_env._assign_blocker_execute
+    # uses after each assignment, just routed through this generator's
+    # yield protocol like every other decision point in this file.
     bear = Permanent(CardDef("Bear", CardType.CREATURE, None, None))
     grizzly = Permanent(CardDef("Grizzly Bears", CardType.CREATURE, None, None))
     state = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
@@ -255,9 +249,69 @@ def test_declare_blockers_gen_noop_with_fewer_than_two_players():
     assert state_1p.pending_resolution is None
 
 
+def test_declare_blockers_gen_abandons_stuck_menace_instead_of_deadlocking():
+    # A menace attacker with exactly ONE committed blocker makes "Done"
+    # illegal (menace_block_incomplete), by design -- 509.1c is 0 or 2+,
+    # never 1. If the defender has no OTHER creature left to add as a
+    # second blocker, "Assign Blocker" is also illegal for everyone
+    # (creature_block_eligible excludes an already-committed blocker) -- a
+    # genuine zero-legal-action deadlock, not merely an unproductive one
+    # (unlike the ordinary action-cap-exhaustion path the sibling test
+    # above covers, where some action is always resubmittable). This
+    # proves the generator detects that exact dead end proactively and
+    # abandons immediately instead of hanging -- the OUTCOME (a lone
+    # menace block gets dropped) is enforce_menace's job at combat damage,
+    # a separate call site already covered by
+    # test_menace_block_incomplete_and_enforce_menace in
+    # tests/game/effects/test_combat.py; this test only proves the
+    # generator itself doesn't hang on the way there.
+    _fb = registry.EFFECT_REGISTRY[EffectId.FILLER]
+    registry.EFFECT_REGISTRY[EffectId.FILLER] = {"keywords": {"menace"}}
+    try:
+        bear = Permanent(CardDef("Menacer", CardType.CREATURE, None, EffectId.FILLER, power=4, toughness=1))
+        grizzly = Permanent(CardDef("Grizzly Bears", CardType.CREATURE, None, None))
+        state = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
+        state.players[0].battlefield = [bear]
+        state.players[1].battlefield = [grizzly]  # the defender's ONLY creature -- no second blocker exists
+        state.players[0].attackers = [bear]
+        state.active_idx = 0
+
+        def _defender_policy(state):
+            pending = state.pending_resolution
+            if pending["kind"] == "declare_blockers":
+                # Only ever reached once (assign grizzly) -- the SECOND time
+                # this generator would ask for a declare_blockers decision, the
+                # proactive stuck-check must fire first and abandon without
+                # yielding again, so this branch is never called twice.
+                outer_on_complete = pending["on_complete"]
+                return lambda: resolution.declare_blocker_assignment(
+                    state, grizzly, on_complete=lambda s: resolution.begin_declare_blockers(s, outer_on_complete),
+                )
+            name, slot = resolution.choose_opponent_permanent_options(state)[0]  # the nested "which attacker" pick -- only bear
+            return lambda: resolution.execute_choose_opponent_permanent_option(state, name, slot)
+
+        gen = _declare_blockers_gen(state)
+        try:
+            next(gen)
+            while True:
+                gen.send(_defender_policy(state))
+        except StopIteration:
+            pass  # reached cleanly, no RuntimeError
+
+        assert state.pending_resolution is None  # abandoned, not left stuck open
+        assert state.active_idx == 0  # flipped back to the attacker via the generator's own finally
+        # The lone illegal block is still recorded here -- dropping it is
+        # enforce_menace's job at combat damage (a later, separate call site),
+        # not this generator's -- so the precondition this test exists to
+        # cover is confirmed still genuinely present at this point.
+        assert state.players[0].blocked_by == {bear: [grizzly]}
+    finally:
+        registry.EFFECT_REGISTRY[EffectId.FILLER] = _fb
+
+
 def test_speed_legal_turn_owner_vs_priority_holder():
     # Turn-owner / priority-holder split:
-    # speed_legal's Speed.SORCERY (and the new Speed.YOUR_TURN) branches
+    # speed_legal's Speed.SORCERY (and Speed.YOUR_TURN) branches
     # must refuse the non-turn player even when state.phase/state.stack
     # alone would otherwise say "legal" -- state.phase is a single shared
     # field describing the TURN's phase, not whichever player is currently

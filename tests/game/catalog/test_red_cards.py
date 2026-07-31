@@ -1,8 +1,6 @@
-"""Tests for game.catalog.red_cards -- migrated from that module's former
-`if __name__ == "__main__":` ponytail self-check block. Each test below
-preserves the original assertions' exact semantics; see the module under
-test for the card-implementation rationale (real-rules citations, etc.)
-these checks were guarding."""
+"""Tests for game.catalog.red_cards. See the module under test for the
+card-implementation rationale (real-rules citations, etc.) each test below
+guards."""
 
 import contextlib
 import io
@@ -16,6 +14,7 @@ from game.catalog.red_cards import (
     cast_breath_weapon,
     cast_chain_lightning,
     cast_cleansing_wildfire,
+    cast_end_the_festivities,
     cast_galvanic_blast,
     cast_highway_robbery,
     cast_lightning_bolt,
@@ -57,6 +56,33 @@ def test_breath_weapon_symmetric_two_damage_wipe():
     assert not_a_creature in state.players[0].battlefield  # a land is never a valid target
 
 
+def test_end_the_festivities_hits_only_the_opponent_not_the_caster():
+    # Real text (Innistrad: Crimson Vow, {R}) is "deals 1 damage to each
+    # opponent and each creature and planeswalker they control" --
+    # asymmetric, unlike Breath Weapon above: the caster's own life total and
+    # creatures are completely untouched, only the opponent's face and board
+    # take the 1 damage.
+    state = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
+    festivities = CardDef("End the Festivities", CardType.SORCERY, {"R": 1}, EffectId.END_THE_FESTIVITIES)
+    state.hand = [festivities]
+    mine_untouched = Permanent(CardDef("Mine (untouched)", CardType.CREATURE, None, EffectId.FILLER, power=1, toughness=1))
+    theirs_dies = Permanent(CardDef("Theirs (dies)", CardType.CREATURE, None, EffectId.FILLER, power=1, toughness=1))
+    theirs_survives = Permanent(CardDef("Theirs (survives)", CardType.CREATURE, None, EffectId.FILLER, power=1, toughness=2))
+    their_land = Permanent(CardDef("Their Land", CardType.LAND, None, EffectId.FILLER))
+    state.players[0].battlefield = [mine_untouched]
+    state.players[1].battlefield = [theirs_dies, theirs_survives, their_land]
+    opponent_life_before = state.players[1].life_total
+
+    cast_end_the_festivities(state, festivities)
+    assert state.hand == [] and any(c.name == festivities.name for c in state.graveyard)
+    assert state.players[1].life_total == opponent_life_before - 1  # the opponent's face takes the 1 damage
+    assert state.players[0].life_total == 20  # the CASTER is never damaged -- not symmetric
+    assert mine_untouched in state.players[0].battlefield and mine_untouched.damage_marked == 0  # own board untouched
+    assert theirs_dies not in state.players[1].battlefield  # 1 damage >= 1 toughness
+    assert theirs_survives in state.players[1].battlefield and theirs_survives.damage_marked == 1
+    assert their_land in state.players[1].battlefield  # a land is never a valid target
+
+
 def test_highway_robbery_discard_path_triggers_madness():
     """Highway Robbery: "discard a card or sacrifice a land. If you do, draw
     two cards." Discard path, discarding a Madness card: Madness's own
@@ -77,19 +103,25 @@ def test_highway_robbery_discard_path_triggers_madness():
 
 
 def test_highway_robbery_sacrifice_land_path():
-    """Sacrifice-a-land path -- the alternative cost the old implementation
-    dropped entirely."""
+    """Sacrifice-a-land path -- the alternative cost to discarding a card.
+    Also regression coverage: execute_discard_or_sacrifice_option's own
+    sacrifice branch now fires fire_sacrifice_triggers too (Gixian
+    Infiltrator used to never see a sacrifice paid this way)."""
     state2 = GameState(on_the_play=True)
     hr2 = CardDef("Highway Robbery", CardType.SORCERY, {"generic": 1, "R": 1}, EffectId.HIGHWAY_ROBBERY)
     mountain = Permanent(CardDef("Mountain", CardType.LAND, None, EffectId.MOUNTAIN))
+    gix = Permanent(registry.CARD_DEFS["Gixian Infiltrator"])
+    gix.slot = 1
     state2.hand = [hr2]
-    state2.battlefield = [mountain]
+    state2.battlefield = [mountain, gix]
     state2.library = [CardDef(f"Filler {i}", CardType.LAND, None, EffectId.MOUNTAIN) for i in range(2)]
     cast_highway_robbery(state2, hr2)
     resolution.execute_discard_or_sacrifice_option(state2, "sacrifice", "Mountain")
-    assert state2.battlefield == []
+    assert state2.battlefield == [gix]
     assert sorted(c.name for c in state2.graveyard) == ["Highway Robbery", "Mountain"]
     assert len(state2.hand) == 2
+    queued = [e for e in state2.trigger_queue if e["type"] == "on_sacrifice"]
+    assert queued and queued[0]["permanent"] is gix
 
 
 def test_highway_robbery_decline_no_draw():

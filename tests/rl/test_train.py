@@ -1,21 +1,17 @@
-"""Migrated from src/rl/train.py's __main__ self-check -- a tiny end-to-end
-smoke test: real 2-player games (mono_red_madness mirror, a genuine
-cross-matchup vs rakdos_madness), tiny network dims, few games/iterations,
-just enough to prove the whole pipeline (rollout collection -> padded/masked
-batching -> PPO update) runs without crashing, hanging, or producing
-NaN/inf, before any real training.
+"""A tiny end-to-end smoke test for the token/attention training pipeline:
+real 2-player games (mono_red_madness mirror, a genuine cross-matchup vs
+rakdos_madness), tiny network dims, few games/iterations -- just enough to
+prove the whole pipeline (rollout collection -> padded/masked batching -> PPO
+update) runs without crashing, hanging, or producing NaN/inf, before any real
+training.
 
-Each test below builds its own fresh fixture via _base_fixture() (nets get
-a fresh random init per test) rather than threading nets/optimizers across
-tests -- the original script's __main__ block built ONE net_a/net_b/opt_a/
-opt_b pair and reused it across several sequential blocks purely for
-script-level brevity (no fixed torch seed ties any block's outcome to a
-prior block's specific trained weights: every assertion here is a shape/
-finiteness/"did-something-change" check, not an exact-value one), so giving
-each test its own fresh fixture is a faithful, safe reorganization. The one
-real data dependency in the original (block 5's frozen-cache check reuses
-block 4's own collected buffer) is preserved by keeping those two blocks in
-one test function, test_league_smoke_and_frozen_cache_ppo_update.
+Each test below builds its own fresh fixture via _base_fixture() (nets get a
+fresh random init per test); every assertion here is a shape/finiteness/
+"did-something-change" check, not an exact-value one, so a fresh fixture per
+test is safe. test_league_smoke_and_frozen_cache_ppo_update keeps the league
+smoke test and the frozen-cache ppo_update check in ONE function because the
+frozen-cache check reuses the league smoke test's own collected buffer -- a
+real data dependency, not just convenience.
 """
 import random as _random
 import shutil
@@ -148,13 +144,12 @@ def test_game_logs_smoke():
 
 @pytest.mark.slow
 def test_split_optimizer_shared_stack_smoke():
-    # Split-optimizer smoke test -- the actual pattern run_pretrain.py
-    # needs: TWO throwaway heads sharing ONE SetTransformer instance, but
-    # only ONE optimizer (opt_shared2) ever touches the shared stack's own
-    # params, so its Adam momentum stays coherent across both decks'
-    # alternating mirror sessions instead of being split across two
-    # unsynchronized Adam instances (the exact bug this signature change
-    # exists to fix -- see ppo_update's own docstring).
+    # Split-optimizer smoke test -- the actual pattern run_pretrain.py needs:
+    # TWO throwaway heads sharing ONE SetTransformer instance, but only ONE
+    # optimizer (opt_shared2) ever touches the shared stack's own params, so
+    # its Adam momentum stays coherent across both decks' alternating mirror
+    # sessions instead of being split across two unsynchronized Adam
+    # instances (see ppo_update's own docstring).
     fx = _base_fixture()
     t0 = time.time()
     vocab_size = fx["deck_ctx_a"][0].size

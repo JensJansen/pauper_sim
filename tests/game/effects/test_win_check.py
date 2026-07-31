@@ -1,4 +1,5 @@
-"""Migrated from game/effects/win_check.py's __main__ ponytail self-check."""
+"""Life-total changes (gain/loss/damage) and the end-of-game check a lethal
+change can trigger."""
 from game.effects.win_check import deal_damage_to_opponent, gain_life, lose_life
 from game.state import GameState, PlayerState
 

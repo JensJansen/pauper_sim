@@ -1,6 +1,6 @@
 """The trigger queue: moving a queued trigger (Sneaky Snacker's automatic
-return, a Madness decision, an ETB/LTB/upkeep/venture/Ward/cast ability) onto
-the priority stack. Sits ABOVE casting.py and stack.py -- _trigger_resolve's
+return, a Madness decision, an ETB/LTB/upkeep/venture/Ward/cast/sacrifice
+ability) onto the priority stack. Sits ABOVE casting.py and stack.py -- _trigger_resolve's
 "automatic" branch needs casting.enters_battlefield, so it can't live under
 casting.py the way stack.py does (see casting.py's docstring)."""
 
@@ -111,6 +111,23 @@ def _trigger_resolve(entry):
             if trigger is not None:
                 trigger(state, permanent)
         return resolve
+    if entry["type"] == "on_sacrifice":
+        # "Whenever you sacrifice another permanent/Eldrazi" (Gixian
+        # Infiltrator, Writhing Chrysalis) -- shared.fire_sacrifice_triggers
+        # queued it. permanent is the creature carrying the ability;
+        # sacrificed_card_def is what was sacrificed. Same fresh lazy lookup
+        # + graceful no-op as the etb/ltb/upkeep branches above -- if
+        # `permanent` has since left the battlefield itself, the registry
+        # hook still runs (a non-targeted effect, so no fizzle), it just has
+        # no observable effect on an object no longer in the game.
+        permanent = entry["permanent"]
+        sacrificed_card_def = entry["sacrificed_card_def"]
+
+        def resolve(state, card_def):
+            hook = registry.EFFECT_REGISTRY.get(card_def.effect_id, {}).get("on_sacrifice")
+            if hook is not None:
+                hook(state, permanent, sacrificed_card_def)
+        return resolve
     if entry["type"] == "automatic":
         if entry["kind"] == "on_draw_count":
             def resolve(state, card_def):
@@ -122,8 +139,8 @@ def _trigger_resolve(entry):
                 # window, or another effect reanimating it. Real Magic:
                 # the return trigger then simply does nothing (the object
                 # it would move is gone). Fizzle gracefully instead of
-                # crashing on graveyard.remove -- confirmed the hard way, a
-                # cross-deck league game ~2500 games in raced exactly this.
+                # crashing on graveyard.remove -- this race is reachable in
+                # real play, not just hypothetical.
                 if card_def not in state.graveyard:
                     return
                 state.graveyard.remove(card_def)
@@ -144,8 +161,7 @@ def _etb_targets(entry):
     picked when the ability goes on the stack (603.3d), so its hook runs at
     PROMOTION -- opening target selection and pushing its own single effect
     entry, which fizzles per-target at resolution (608.2b/c) -- rather than at
-    resolution like a non-targeting ETB. Owner directive (see
-    project_targeted_triggered_abilities): every "enters and targets" effect
+    resolution like a non-targeting ETB. Every "enters and targets" effect
     works this way (Rooftop Percher, Pinnacle Kill-Ship)."""
     if entry["type"] != "etb":
         return False
@@ -154,17 +170,17 @@ def _etb_targets(entry):
 
 def promote_triggers_to_stack(state):
     """Moves every currently-queued trigger -- for EVERY player, not just
-    the active one -- onto state.stack, replacing the old
-    drain_trigger_queue (which ran each entry's own effect immediately
-    instead of deferring it onto the stack -- see _trigger_resolve for
-    what changed per trigger kind). Called once per priority round, right
-    before anyone would receive priority (game.turn's own priority round),
+    the active one -- onto state.stack, deferred there rather than run
+    immediately (see _trigger_resolve for how each trigger kind resolves).
+    Called once per priority round, right before anyone would receive
+    priority (game.turn's own priority round),
     matching real Magic's actual ordering (704.3: state-based actions,
     then triggers move to the stack, THEN priority is given).
 
     Reads each player's OWN trigger_queue (game.state.PlayerState.
     trigger_queue), not just state.trigger_queue (the active-player proxy).
-    Most producers (ETB, upkeep, cast triggers, Madness, venture, Ward) only
+    Most producers (ETB, upkeep, cast triggers, Madness, venture, Ward,
+    sacrifice) only
     ever fire because of an action the CURRENTLY active player is taking, so
     writing through the proxy already lands them in the right owner's list.
     The one exception is a leaves-the-battlefield trigger from a state-based
@@ -173,13 +189,12 @@ def promote_triggers_to_stack(state):
     turn it is, so the dying permanent's owner can be the NON-active player
     (their blocker died in combat, or a removal spell killed their creature,
     on the active player's own turn) -- _queue_leave_triggers writes into
-    that true owner's list directly for exactly this reason (confirmed
-    live: a real league game crashed drl_env's coverage guard because the
-    active player was handed an order_triggers choice naming the opponent's
-    Clockwork Percussionist).
+    that true owner's list directly for exactly this reason (writing through
+    the proxy instead would hand the active player an order_triggers choice
+    naming a card from the opponent's own deck).
 
-    Real Magic's own APNAP ordering (603.3b) now actually matters given the
-    above, so each player's queue becomes its own GROUP: the active
+    Real Magic's own APNAP ordering (603.3b) matters given the above, so each
+    player's queue becomes its own GROUP: the active
     player's group is placed FIRST (deepest on the stack, resolves LAST),
     then the other player's group is placed second (resolves FIRST) --
     see _place_trigger_groups. Each group gets its own placement-order

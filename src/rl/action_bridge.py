@@ -36,8 +36,7 @@ _TARGETING_PREFIXES = ("Choose target: ", "Attack: ", "Assign Blocker: ", "Choos
 # choose_stack_target (WHICH spell on the stack to counter, very often the
 # OPPONENT's -- confirmed live via an all-False mask in real cross-deck league
 # play; two simultaneous same-named spells must stay independently
-# addressable too, unlike the old by-name version which could only ever reach
-# the topmost of duplicates). Maps kind -> (options-fetcher, executor) names.
+# addressable too). Maps kind -> (options-fetcher, executor) names.
 _ID_MATCHED_KINDS = {
     "choose_cast_copy": ("choose_cast_copy_options", "execute_choose_cast_copy_option"),
     "choose_graveyard_card": ("choose_graveyard_card_options", "execute_choose_graveyard_card_option"),

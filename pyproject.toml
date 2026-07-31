@@ -5,5 +5,5 @@
 pythonpath = ["src"]
 testpaths = ["tests"]
 markers = [
-    "slow: exercises the real game engine + torch (RL self-checks) -- not run by the pre-commit hook",
+    "slow: exercises the real game engine + torch (RL self-checks) -- excluded via `-m \"not slow\"` for a fast, deterministic tier",
 ]

@@ -1,4 +1,4 @@
-"""Migrated from game/effects/madness_and_plot.py's __main__ ponytail self-check.
+"""Plot's own resolve shape (plot_to_exile).
 
 execute_madness_cast is exercised together with triggers.py/stack.py's own
 machinery -- the full discard -> exile + queue -> drain -> decision -> pay ->

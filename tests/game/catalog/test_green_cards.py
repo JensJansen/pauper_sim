@@ -1,8 +1,6 @@
-"""Tests for game.catalog.green_cards -- migrated from that module's former
-`if __name__ == "__main__":` ponytail self-check block. Each test below
-preserves the original assertions' exact semantics; see the module under
-test for the card-implementation rationale (real-rules citations, etc.)
-these checks were guarding."""
+"""Tests for game.catalog.green_cards. See the module under test for the
+card-implementation rationale (real-rules citations, etc.) each test below
+guards."""
 
 import contextlib
 import io
@@ -379,18 +377,18 @@ def _wall_of_roots():
 
 
 def test_wall_of_roots_no_tap_ability_and_counter_death():
-    """Wall of Roots: two real-rules bugs fixed together -- no {T} in the
-    real ability's own cost at all (unlike every other mana dork here), and
-    a real -0/-1 counter each use (not a private activation count).
-    Float-first: its mana ability IS activate_mana_source (immediate float,
-    no tap-during-payment), so both bugs are exercised through that path."""
+    """Wall of Roots: no {T} in the real ability's own cost at all (unlike
+    every other mana dork here), and a real -0/-1 counter each use (not a
+    private activation count). Float-first: its mana ability IS
+    activate_mana_source (immediate float, no tap-during-payment), so both
+    are exercised through that path."""
     state = GameState(on_the_play=True)
     wall = _wall_of_roots()
     state.battlefield = [wall]
 
     assert ("Wall of Roots", None) in mana_ability_options(state)
     activate_mana_source(state, wall)  # float {G} -- no {T} in this ability's cost, so it stays untapped
-    assert wall.tapped is False  # the real bug: no {T} in this ability's own cost
+    assert wall.tapped is False  # no {T} in this ability's own cost
     assert wall.counters["-0/-1"] == 1
     assert state.mana_pool.get("G", 0) == 1  # produced mana floated into the pool
 
@@ -400,9 +398,8 @@ def test_wall_of_roots_no_tap_ability_and_counter_death():
     assert ("Wall of Roots", None) not in mana_ability_options(state)
 
     # 4 more activations, one per (simulated) turn, reach the 5th counter --
-    # lethal against this wall's own 5 toughness, same real number as
-    # before, now via a genuine counter + the ordinary state-based-action
-    # check instead of a hardcoded remove-at-5.
+    # lethal against this wall's own 5 toughness, via a genuine counter and
+    # the ordinary state-based-action check.
     for _ in range(4):
         untap_step(state)  # resets used_this_turn, re-enabling the ability
         activate_mana_source(state, wall)

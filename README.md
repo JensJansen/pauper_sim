@@ -7,10 +7,6 @@ pool of historical opponents. The engine, the card catalog, the neural
 architecture, the training loop, and a Cockatrice replay exporter all live in
 this repo with essentially no framework dependencies beyond PyTorch.
 
-The project started life as a single-deck "Tron assembly" probability
-simulator; it has since grown into a general multi-deck engine and an
-adversarial RL agent.
-
 ---
 
 ## What's here
@@ -117,7 +113,6 @@ src/
                            vendored copy of Cockatrice's .proto files under proto/).
 
 data/                      Decklists (*.txt) + league_decks.json roster.
-docs/                      Design/plan documents.
 checkpoints/               Trained weights + vocab.json (gitignored; see below).
 logs/                      Game event logs from --log runs (gitignored).
 ```
@@ -156,8 +151,9 @@ and play out matches on its own. Highlights:
   a hand), so it's surfaced to the agent separately, as a scalar.
 
 The engine's effect functions defensively handle a no-opponent (1-player)
-configuration — a remnant of the original single-deck Tron experiments — but
-the active surface, and everything the DRL system drives, is 2-player.
+configuration — useful for a card-level unit test that doesn't need a second
+seat — but the active surface, and everything the DRL system drives, is
+2-player.
 
 ---
 
@@ -358,7 +354,7 @@ pytest -m slow                     # rl/ tier only: imports torch, plays real
                                     # seconds per test
 ```
 
-319 tests as of this migration (2026-07-30), all passing together in ~30s.
+The whole suite runs together in well under a minute.
 No pre-commit hook wired up yet — running the suite is still manual.
 
 `benchmarking/training_run.py` measures the real league loop under different
@@ -371,7 +367,7 @@ untrained stack — a benchmark, not a test.
 
 `checkpoints/` (trained weights + `vocab.json`) and `logs/` (event logs from
 `--log` runs) are gitignored — regenerable by rerunning training. `.gitignore`
-also lists `models/`, `reports/`, and `graphify-out/` from earlier tooling.
+also lists `models/`, `reports/`, and `graphify-out/`.
 
 ---
 
@@ -379,6 +375,6 @@ also lists `models/`, `reports/`, and `graphify-out/` from earlier tooling.
 
 The engine and DRL architecture are the current, active surface.
 
-- **The DRL pipeline is 2-player only.** The engine still tolerates a
-  no-opponent (1-player) configuration from the original Tron experiments, but
-  the token architecture always encodes an opponent seat.
+- **The DRL pipeline is 2-player only.** The engine tolerates a no-opponent
+  (1-player) configuration (useful for isolated card-behavior tests), but the
+  token architecture always encodes an opponent seat.

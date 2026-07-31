@@ -81,8 +81,8 @@ def cast_cast_down(state, card_def):
 
 def cast_snuff_out(state, card_def):
     """{3}{B} (or the 4-life alt cost below): Destroy target nonblack
-    creature. It can't be regenerated (a no-op -- regeneration isn't
-    modeled)."""
+    creature. It can't be regenerated -- a no-op, since no card in this
+    engine ever grants regeneration."""
     cast_targeting_creature(state, card_def, _destroy_on_resolve, eligible=_nonblack)
 
 

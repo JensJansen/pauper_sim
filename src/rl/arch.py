@@ -1,9 +1,8 @@
 """Set Transformer encoder + FiLM conditioning over rl.features's
-per-token representation -- the shared perception stack (docs discussion on
-the attention-opponent-encoding branch): card identity embeddings, a
-self-attention encoder over the variable-length token set, and a FiLM
-conditioner. Deliberately does NOT include a trunk, critic, or action head
--- those are per-deck (see rl.deck), not shared.
+per-token representation -- the shared perception stack: card identity
+embeddings, a self-attention encoder over the variable-length token set, and
+a FiLM conditioner. Deliberately does NOT include a trunk, critic, or action
+head -- those are per-deck (see rl.deck), not shared.
 
 Uses torch.nn.MultiheadAttention/TransformerEncoderLayer directly (already
 a torch dependency, no new library) rather than hand-rolling attention --

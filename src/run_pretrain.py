@@ -7,9 +7,9 @@ every round rather than one deck exhausted before the next starts.
 Gradients from every throwaway net flow into the ONE shared
 SetTransformer+FiLM instance -- exactly the "pretrain the shared layers
 with junk [per-deck heads], then freeze" design. Generalized over an
-arbitrary roster (was hardcoded to 2 decks) so the shared stack's embedding
-table + attention actually learn representations for every deck's cards,
-not just a hardcoded subset.
+arbitrary roster, so the shared stack's embedding table + attention
+actually learn representations for every deck's cards, not just a
+hardcoded subset.
 
 Checkpointed after every session (resumable across separate invocations)
 so this can be run in small batches per the explicit instruction: start
@@ -55,8 +55,8 @@ def main():
     # unique params. NOT one Adam per net over net.parameters() -- that
     # would give the shared stack's identical parameter tensors N
     # independent Adam instances with unsynchronized momentum/variance
-    # state, stepping on them in alternation (confirmed the hard way, see
-    # git history and rl.train.ppo_update's own docstring).
+    # state, stepping on them in alternation (see rl.train.ppo_update's own
+    # docstring).
     opt_shared = torch.optim.Adam(shared.parameters(), lr=3e-4)
     nets, head_opts = {}, {}
     for name in deck_names:

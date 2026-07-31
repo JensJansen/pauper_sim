@@ -1,4 +1,4 @@
-"""Migrated from src/rl/deck.py's __main__ self-check."""
+"""Tests for rl.deck.DeckNetwork: combined fixed-table + pointer action head."""
 import torch
 import pytest
 

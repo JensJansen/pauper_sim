@@ -26,8 +26,8 @@ def check_state_based_actions(state):
     source, dies -- to the graveyard, its Aura(s) orphaned. Collects all dead
     FIRST, then removes them (real Magic's simultaneous SBA semantics, not a
     one-at-a-time recheck). Scans the whole battlefield -- a strict, cheap
-    superset of "just-damaged," needed now that this runs before every priority
-    round, not just once per combat."""
+    superset of "just-damaged," since this runs before every priority round,
+    not just once per combat."""
     candidates = [
         p for player in state.players for p in player.battlefield if p.card_type == CardType.CREATURE
     ]
@@ -58,11 +58,12 @@ def _queue_leave_triggers(state, permanent, owner_idx):
     spell killed their creature, on the active player's own turn) -- writing
     through the proxy would silently misfile their trigger into the active
     player's queue, then hand the active player an order_triggers choice
-    naming a card from the OPPONENT's deck (confirmed live: a real league
-    game crashed drl_env's coverage guard this way, "Clockwork
-    Percussionist" offered to a deck that doesn't run it).
+    naming a card from the OPPONENT's deck (drl_env's own coverage guard
+    asserts every name it offers a player belongs to that player's own deck,
+    so a misfiled trigger here would surface as exactly that kind of
+    cross-deck name leak).
     game.effects.triggers.promote_triggers_to_stack reads every player's own
-    queue now, each ordering only ITS OWN simultaneous triggers (603.3b
+    queue, each ordering only ITS OWN simultaneous triggers (603.3b
     APNAP), so this is the one and only place that needs the true owner
     threaded through instead of the proxy.
 
@@ -220,9 +221,7 @@ def cleanup_step(state):
     own end); no-op if already at or under the limit (begin_discard's own
     n<=0 short-circuit handles that for free, no guard needed here).
 
-    Newly relevant now that 2-player games run uncapped
-    -- without this there was no
-    ceiling on hand size in an adversarial game at all."""
+    This is the only ceiling on hand size in an adversarial 2-player game."""
     damaged = [
         (p.card_def.name, p.slot) for player in state.players for p in player.battlefield if p.damage_marked > 0
     ]

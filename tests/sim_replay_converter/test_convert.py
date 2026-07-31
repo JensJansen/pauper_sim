@@ -1,10 +1,11 @@
 """Regression tests for the event-stream replay converter.
 
-Guards the two draw-handling bugs fixed 2026-07-27:
-  1. draws were double-counted (a phantom phase-inferred draw on top of the real
-     logged library->hand draw) -> ~2 cards into hand per turn.
-  2. every mulligan redraw piled permanently into hand (put-backs were dropped)
-     -> "drew 56 immediately", inflated deck size.
+Guards two draw-handling invariants:
+  1. draws must not be double-counted (no phantom phase-inferred draw on top
+     of the real logged library->hand draw), so hand counts stay exactly what
+     the log accounts for.
+  2. every mulligan redraw must net against its put-backs rather than piling
+     up permanently in hand or inflating the shown deck size.
 
 test_converter_matches_engine_log_hand_counts rebuilds the replay for every
 logs/*.json (if any are present) and asserts the cards the converter puts into
@@ -12,16 +13,12 @@ each hand exactly equal what the engine log accounts for: the net kept opening
 hand (draws minus mulligan put-backs, before turn 1) plus every in-game entry
 into hand.
 
-The other tests guard three engine-format changes fixed 2026-07-30 (surveil/scry's
-"disposed" zone_move shape, "mana_emptied" replacing the old untap_step mana
-clear, and the new plural "graveyards_exiled"), and one converter-only bug
-fixed the same day (an attacker's AttrAttacking flag was set on
-attack_declared but never cleared, so it stayed visually flagged as attacking
-for the rest of the game), with small self-contained fabricated-event checks
-that don't depend on any log file being present.
-
-Migrated from sim_replay_converter/test_convert.py's former assert-based
-check_*()/main() self-check (no pytest, run via `python test_convert.py`).
+The other tests cover three engine event shapes (surveil/scry's "disposed"
+zone_move shape, "mana_emptied" zeroing a player's tracked mana pool, and the
+plural "graveyards_exiled") and one converter-only invariant (an attacker's
+AttrAttacking flag must clear once combat moves past declare_blockers, not
+stay set for the rest of the game), with small self-contained fabricated-event
+checks that don't depend on any log file being present.
 """
 from __future__ import annotations
 
@@ -116,9 +113,9 @@ def test_surveil_disposed_to_graveyard():
 
 
 def test_mana_emptied_zeroes_pool():
-    """mana_emptied replaced the old untap_step "mana_cleared" field (removed from
-    the engine entirely -- see game/turn.py's _empty_mana_pools). Without a
-    handler, a tapped source's mana counter stayed visibly nonzero forever."""
+    """mana_emptied (game/turn.py's _empty_mana_pools) is the event this
+    converter reads to zero a tracked mana pool counter. Without a handler for
+    it, a tapped source's mana counter would stay visibly nonzero forever."""
     events = [
         _envelope("turn_start", phase=None),
         _envelope("mana_tap", permanent=["Mountain", 1], mode="tap", produced=["R"]),
@@ -147,11 +144,10 @@ def test_graveyards_exiled_clears_both_players():
 
 
 def test_attack_flag_clears_after_combat():
-    """AttrAttacking was set "1" on attack_declared but never reset -- a creature
-    that ever attacked stayed visually flagged as attacking for the rest of the
-    game (confirmed live: three Silhana Ledgewalkers looked "stuck" in a boggles
-    mirror). Must clear once combat phase moves on, mirroring _clear_arrows'
-    lifecycle (stays through declare_blockers, clears after)."""
+    """AttrAttacking is set "1" on attack_declared and must clear once combat
+    phase moves on, mirroring _clear_arrows' lifecycle (stays through
+    declare_blockers, clears after) -- otherwise a creature that ever attacked
+    would stay visually flagged as attacking for the rest of the game."""
     events = [
         _envelope("turn_start", phase=None),
         _envelope("zone_move", phase="main1", permanent=["Test Creature", 1],
@@ -175,11 +171,11 @@ def test_same_phase_flashback_reuses_resolved_card():
     engine logs stack->None "resolve" (no explicit destination; see
     game.effects.stack.resolve_top_of_stack) followed later by a phase
     boundary that would flush it to the graveyard, but a same-phase recast
-    can fire first. _resolve_incoming_hand_like used to only check hand/exile
-    and, finding no match, minted a brand-new phantom copy from the library --
-    so the replay showed TWO Lava Darts (one stuck forever on the stack) for
-    what the sim log recorded as one card resolving, then being flashed back
-    from the graveyard. Must instead reuse the same card id."""
+    can fire first. _resolve_incoming_hand_like must also check this
+    same-phase pending-resolution pool (not just hand/exile) and reuse the
+    resolved card's id -- otherwise the replay would show TWO Lava Darts (one
+    stuck forever on the stack) for what the sim log recorded as one card
+    resolving, then being flashed back from the graveyard."""
     events = [
         _envelope("turn_start", phase=None),
         _envelope("zone_move", card="Lava Dart", from_zone="hand", to_zone="stack", controller=0),
@@ -205,18 +201,15 @@ def test_same_phase_flashback_reuses_resolved_card():
 
 
 def test_flashback_does_not_steal_a_second_hand_copy():
-    """The real bug behind the mono_red_madness_vs_monster_tron report: with
-    TWO physical Lava Darts -- one hard-cast+resolved, one still genuinely
-    sitting untouched in hand -- _resolve_incoming_hand_like used to check
-    p.hand unconditionally (ignoring from_zone), so the graveyard-sourced
-    Flashback (from_zone=None) grabbed the OTHER, still-in-hand copy's id
-    instead of the resolved one waiting in pending_resolution/graveyard. That
-    left the real graveyard copy's identity untouched (never claimed, so it
-    would eventually phantom-flush to the graveyard on its own) and rendered
-    the replay as if the still-in-hand copy had been "cast" a second time
-    while the first was still on the stack, unresolved -- exactly what was
-    reported. from_zone == "hand" must be the ONLY thing that makes hand a
-    candidate pool."""
+    """With TWO physical Lava Darts -- one hard-cast+resolved, one still
+    genuinely sitting untouched in hand -- from_zone == "hand" must be the
+    ONLY thing that makes hand a candidate pool for
+    _resolve_incoming_hand_like. Checking p.hand unconditionally (ignoring
+    from_zone) would let a graveyard-sourced Flashback (from_zone=None) steal
+    the OTHER, still-in-hand copy's id instead of the resolved one waiting in
+    pending_resolution/graveyard -- leaving the real graveyard copy unclaimed
+    and rendering the replay as if the still-in-hand copy had been "cast" a
+    second time while the first was still on the stack, unresolved."""
     events = [
         _envelope("turn_start", phase=None),
         _envelope("zone_move", cards=["Lava Dart", "Lava Dart"], from_zone="library", to_zone="hand", reason="draw"),

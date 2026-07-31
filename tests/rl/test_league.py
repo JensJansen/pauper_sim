@@ -1,4 +1,5 @@
-"""Migrated from src/rl/league.py's __main__ self-check.
+"""Tests for rl.league.LeaguePool: opponent sampling, snapshot eviction, and
+load caching.
 
 No real game simulation needed here -- this module's own logic (sampling
 distribution, snapshot eviction, cache invalidation) is what's under test,
@@ -70,9 +71,9 @@ def test_sample_opponent_default_checkpoint_rate_stays_live(tmp_path):
     pool, _shared, _fake_net, _fake_mull = _registered_pool(tmp_path)
     rng = random.Random(0)
     # DEFAULT checkpoint_rate (0.0): must stay live-only EVEN THOUGH deck_a
-    # now has 3 real snapshots on disk -- the whole point of this change
-    # (see this module's own docstring) is that a full snapshot window no
-    # longer silently implies mostly-checkpoint sampling.
+    # now has 3 real snapshots on disk -- a full snapshot window must never
+    # silently imply mostly-checkpoint sampling (see this module's own
+    # docstring).
     for _ in range(200):
         name, path = pool.sample_opponent("deck_a", rng)
         if name == "deck_a":
@@ -100,9 +101,9 @@ def test_sample_opponent_checkpoint_rate_one_always_draws_snapshot(tmp_path):
 def test_sample_opponent_checkpoint_rate_half_tracks_requested_fraction(tmp_path):
     pool, _shared, _fake_net, _fake_mull = _registered_pool(tmp_path)
     rng = random.Random(0)
-    # checkpoint_rate=0.5: the live/checkpoint split must roughly track
-    # the requested rate, independent of how many snapshots exist (3
-    # here) -- confirms the split is no longer 1/(1+N) as it used to be.
+    # checkpoint_rate=0.5: the live/checkpoint split must roughly track the
+    # requested rate, independent of how many snapshots exist (3 here) -- not
+    # drift with snapshot count the way a 1/(1+N) split would.
     # Filtered to deck_a draws only: deck_b has zero snapshots and would
     # always read as "live" regardless of rate, diluting the measured
     # fraction if mixed in (opponent-deck selection is a SEPARATE uniform
@@ -134,7 +135,7 @@ def test_load_snapshot_agent_legacy_deck_only_falls_back_to_always_keep(tmp_path
 
     pool, shared, fake_net, _fake_mull = _registered_pool(tmp_path)
     deck_ctx = (None, [("Pass", None, None)] * 4, ())
-    # A deck-only (pre-refactor) snapshot must still load, falling back to AlwaysKeep.
+    # A deck-only snapshot (no mulligan state) must still load, falling back to AlwaysKeep.
     legacy_path = os.path.join(str(tmp_path), "deck_b", "snapshot_0.pt")
     os.makedirs(os.path.dirname(legacy_path), exist_ok=True)
     torch.save({"state_dict": fake_net.state_dict(),

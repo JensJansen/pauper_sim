@@ -12,7 +12,10 @@ from ..effects.casting import (
     target_still_legal,
 )
 from ..effects.madness_and_plot import plot_to_exile
-from ..effects.shared import card_subtypes, discard_from_hand_to_graveyard, find_and_remove_by_name, impulse_exile, is_artifact
+from ..effects.shared import (
+    card_subtypes, discard_from_hand_to_graveyard, find_and_remove_by_name, fire_sacrifice_triggers, impulse_exile,
+    is_artifact,
+)
 from ..effects.stack import push_ability_to_stack, push_to_stack
 from ..effects.state_based import check_state_based_actions, destroy_permanent, sacrifice_to_graveyard
 from ..effects.stats import can_be_targeted, controller_idx, has_keyword
@@ -43,9 +46,6 @@ RED_CARD_CATALOG = {
         sac_ability_cost={"generic": 3},
     ),
     "Fireblast": CardDef("Fireblast", CardType.INSTANT, {"generic": 4, "R": 2}, EffectId.FIREBLAST),
-    # power was previously 0 (an unexplained placeholder from before combat
-    # was real) -- corrected to Guttersnipe's real printed 2/2
-    #.
     "Guttersnipe": CardDef(
         "Guttersnipe", CardType.CREATURE, {"generic": 2, "R": 1}, EffectId.GUTTERSNIPE, power=2, toughness=2,
     ),
@@ -71,8 +71,10 @@ RED_CARD_CATALOG = {
     "Goblin Tomb Raider": CardDef(
         "Goblin Tomb Raider", CardType.CREATURE, {"R": 1}, EffectId.GOBLIN_TOMB_RAIDER, power=1, toughness=2,
     ),
-    # {R/G}{R/G} -- modeled {R}{R}: the green half is unreachable in mono-red
-    # rally (no green source), Slippery Bogle precedent (real cost per Scryfall).
+    # AUTHORIZED SIMPLIFICATION (owner, 2026-07-31): {R/G}{R/G} -- modeled
+    # {R}{R}: the green half is unreachable in mono_red_rally (no green
+    # source). Same deviation as Slippery Bogle's {G/U}->{G}
+    # (multicolor_cards.py's own module docstring; real cost per Scryfall).
     "Burning-Tree Emissary": CardDef(
         "Burning-Tree Emissary", CardType.CREATURE, {"R": 2}, EffectId.BURNING_TREE_EMISSARY, power=2, toughness=2,
         subtypes=("Human", "Shaman"),  # Human -- for Rally at the Hornburg
@@ -175,6 +177,7 @@ def activate_reckless_lackey_sac(state, permanent):
         "zone_move", permanent=(permanent.card_def.name, permanent.slot), from_zone="battlefield",
         to_zone="graveyard", reason="sacrifice",
     )
+    fire_sacrifice_triggers(state, state.active_idx, permanent.card_def)  # Gixian Infiltrator
 
     def _effect(st):
         st.draw(1)
@@ -567,6 +570,7 @@ def activate_melded_moxite_sac(state, permanent):
         "zone_move", permanent=(permanent.card_def.name, permanent.slot), from_zone="battlefield",
         to_zone="graveyard", reason="sacrifice",
     )
+    fire_sacrifice_triggers(state, state.active_idx, permanent.card_def)  # Gixian Infiltrator
     push_ability_to_stack(state, permanent.card_def, lambda st: create_token(st, ROBOT_TOKEN_CARD_DEF, tapped=True))
 
 
@@ -623,16 +627,16 @@ def flashback_lava_dart(state, inst):
 
 
 def cast_end_the_festivities(state, card_def):
-    """Real text: End the Festivities deals 1 damage to EACH CREATURE -- a
-    symmetric 1-damage board sweep hitting every creature on either
-    battlefield (this deck's own included), same shape as cast_breath_weapon's
-    2-damage wipe. It does NOT hit players (the prior "1 to the opponent's
-    face" was a misread of the card)."""
+    """Real text (Innistrad: Crimson Vow, {R}): "End the Festivities deals 1
+    damage to each opponent and each creature and planeswalker they
+    control." NOT symmetric: only the OPPONENT's face and the OPPONENT's own
+    board take damage -- this deck's own creatures are untouched. (No deck's
+    pool has planeswalkers, so that clause never applies here.)"""
     discard_from_hand_to_graveyard(state, card_def)
-    for player in state.players:
-        for permanent in player.battlefield:
-            if permanent.card_type == CardType.CREATURE:
-                permanent.damage_marked += 1
+    deal_damage_to_opponent(state, 1)
+    for permanent in state.opponent.battlefield:
+        if permanent.card_type == CardType.CREATURE:
+            permanent.damage_marked += 1
     check_state_based_actions(state)
 
 

@@ -1,9 +1,7 @@
 """Tests for drl_env's action table (drl_env._actions): build_action_table,
 legal_action_mask, and the Plot/on-cast-trigger/token/targeting/combat
 mechanics they wire together, end to end through the REAL production
-functions -- never a parallel reimplementation. Migrated from
-drl_env/_selfcheck.py's former `_run_self_checks()` (run via
-`python -m drl_env`)."""
+functions -- never a parallel reimplementation."""
 
 from pathlib import Path
 
@@ -388,12 +386,11 @@ def test_flying_blocker_restriction():
     state.active_idx = 1  # simulating _declare_blockers_gen's own flip to the defender
 
     game.begin_declare_blockers(state, on_complete=lambda s: None)
-    # GANG-BLOCKING eligibility fix: Slippery Bogle (no flying) is NOT even
+    # GANG-BLOCKING eligibility: Slippery Bogle (no flying) is NOT even
     # offered here -- the only attacker (Silhana Ledgewalker, modeled with
     # flying) can only be blocked by a flyer, so Bogle has no legal target
-    # and "Assign Blocker: Slippery Bogle" is illegal (it used to be an
-    # offered no-op that fizzled -- exactly what this fix removes at the
-    # source). Kitchen Imp (flying) IS a legal blocker.
+    # and "Assign Blocker: Slippery Bogle" is illegal. Kitchen Imp (flying)
+    # IS a legal blocker.
     assert not bogle_legal(state)
     assert imp_legal(state)
 
@@ -595,11 +592,10 @@ def test_mana_filter_atomic_pool_conversion():
 
 
 def test_mana_ability_legal_mid_pay_unless():
-    # F11: mana abilities used to be masked during ANY pending resolution -- a
-    # real deviation from 605.1a/605.3b (a mana ability may be activated even
-    # mid-resolution of something else, INCLUDING while paying a cost). Prove
-    # the originally-reported case: a Ward/Spell-Pierce-style pay_unless opens,
-    # the payer floats mana IN RESPONSE (not pre-floated), then pays.
+    # A mana ability must stay legal during ANY pending resolution (605.1a/
+    # 605.3b: a mana ability may be activated even mid-resolution of something
+    # else, INCLUDING while paying a cost). Covers a Ward/Spell-Pierce-style
+    # pay_unless: the payer floats mana IN RESPONSE (not pre-floated), then pays.
     pu_decklist = [("Mountain", 4)]
     pu_actions = build_action_table(pu_decklist, game.EFFECT_REGISTRY, pending_kinds={"pay_unless"})
     pu_tap_idx = _action_index(pu_actions, "Tap Mountain")

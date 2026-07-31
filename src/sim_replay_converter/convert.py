@@ -856,9 +856,8 @@ class EventStreamReplayBuilder(BaseReplayBuilder):
     def _handle_mana_emptied(self, e):
         # Rule 500.4: unused mana empties at every step/phase boundary, for
         # whichever players actually had a nonzero pool (keyed by player index,
-        # stringified by the JSON round-trip). Replaces the old once-per-turn
-        # untap_step clear, so this is now the only place mana pool counters
-        # reset to 0 in the replay.
+        # stringified by the JSON round-trip). This is the only place mana pool
+        # counters reset to 0 in the replay.
         cont = self._new_container()
         for idx_str, pool in (e.get("pools") or {}).items():
             p = self.players[int(idx_str)]
@@ -1442,9 +1441,9 @@ PAIRING_LINE_RE = re.compile(r"^\s*(\S+) vs (\S+): (\d+) games$")
 
 def _pairing_labels_from_log(json_path, expected_total):
     """run_league.py's --eval round-robin path (no --decks/--matchup override)
-    writes meta.decks/matchup as None even though a real deck roster drove the
-    run: _write_event_log logs the raw, unresolved CLI args instead of the
-    roster _run_eval actually resolved and played (see that function's own
+    records the overall resolved deck roster in meta.decks, but no per-game
+    pairing label -- meta.matchup stays None for a round-robin, since each
+    game_index can be a different pairing (see run_league.py's _run_eval
     docstring). Recover a label per game_index from the sibling .log file's
     "A vs B: N games" lines instead -- printed in the exact pairing order
     games were appended in, so slicing by count reconstructs it exactly.

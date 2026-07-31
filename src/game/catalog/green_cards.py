@@ -97,10 +97,7 @@ GREEN_CARD_CATALOG = {
     # --- G3: jund_wildfire ---
     "Pulse of Murasa": CardDef("Pulse of Murasa", CardType.INSTANT, {"generic": 2, "G": 1}, EffectId.PULSE_OF_MURASA),
 
-    # --- G9: elves. NOTE (pre-existing engine convention): creature {T}
-    # abilities here don't check summoning sickness (the mana framework never
-    # has -- Overgrown Battlement/Saruli Caretaker already tap the turn they
-    # enter), so these mana dorks / tap abilities inherit that uniformly. ---
+    # --- G9: elves ---
     "Llanowar Elves": CardDef("Llanowar Elves", CardType.CREATURE, {"G": 1}, EffectId.LLANOWAR_ELVES, power=1, toughness=1, subtypes=("Elf", "Druid")),
     "Fyndhorn Elves": CardDef("Fyndhorn Elves", CardType.CREATURE, {"G": 1}, EffectId.FYNDHORN_ELVES, power=1, toughness=1, subtypes=("Elf", "Druid")),
     "Priest of Titania": CardDef("Priest of Titania", CardType.CREATURE, {"generic": 1, "G": 1}, EffectId.PRIEST_OF_TITANIA, power=1, toughness=1, subtypes=("Elf", "Druid")),
@@ -632,7 +629,7 @@ def cast_malevolent_rumble(state, card_def):
     """{1}{G}: reveal top 4, may take one permanent card to hand, rest to
     graveyard, create a 0/1 Eldrazi Spawn token ("Sacrifice this
     creature: Add {C}."). No Madness -- real card has none (verified via
-    Scryfall; an earlier draft of this plan wrongly assumed it did)."""
+    Scryfall)."""
     discard_from_hand_to_graveyard(state, card_def)
     create_token(state, ELDRAZI_SPAWN_TOKEN_CARD_DEF)
     top = state.library[:4]
@@ -1116,8 +1113,8 @@ GREEN_EFFECT_REGISTRY = {
         # Real text also grants trample and
         # returns Rancor to hand instead of the graveyard when it's put
         # there from the battlefield -- modeled via
-        # returns_to_hand_when_orphaned now that combat death (step 6)
-        # makes that reachable; see effects.state_based._destroy_creature.
+        # returns_to_hand_when_orphaned, reachable via combat death (step 6);
+        # see effects.state_based._destroy_creature.
         # +2/+0, power only -- no toughness_bonus (unlike Ancestral Mask/
         # Ethereal Armor/Cartouche of Solidarity/Armadillo Cloak, all
         # symmetric +X/+X) -- see permanent_toughness's own docstring.
@@ -1216,7 +1213,5 @@ GREEN_EFFECT_REGISTRY = {
         "pending_kinds": {"choose_room", "throne_reveal", "search_fetch", "scry", "choose_any_target", "choose_target_player"},
     },
     EffectId.SKELETON_TOKEN: {"keywords": {"menace"}},  # 4/1 Undercity Catacombs Skeleton
-    # Ram Through (functional blank): deliberately no entry -- see the
-    # comment on its CardDef above.
 }
 

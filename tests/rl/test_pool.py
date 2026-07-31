@@ -1,9 +1,10 @@
-"""Migrated from src/rl/pool.py's __main__ self-check.
+"""Tests for rl.pool.build_pool: shared vocab/deck-ctx construction from the
+league roster.
 
 Relies on this directory's conftest.py chdir'ing to src/ for the duration
 of each test -- build_pool()'s defaults (DECK_MANIFEST, VOCAB_PATH) and
 rl.pool._load_roster's own per-deck path construction are all written
-relative to src/ (how `python -m rl.pool` originally ran this check).
+relative to src/.
 """
 import json
 import os

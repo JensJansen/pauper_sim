@@ -98,26 +98,24 @@ def enchantment_count(state, aura):
 
 
 def permanent_power(state, permanent, enchanting_auras=None):
-    """A creature's effective power for combat.combat_damage_step (and Ram
-    Through, once it's more than a functional blank): its own base power
-    (card_def.extra["power"], 0 if absent -- no creature is absent one
-    anymore, full-stats pass, but the default stays
-    for FILLER/synthetic self-check permanents) plus every Aura currently
-    enchanting it (_enchanting_auras above -- owner-agnostic, correct
-    regardless of state.active_idx). Each Aura's registry entry supplies
-    its own "pt_bonus" (state, aura_permanent) -> int -- a constant for a
-    static bonus (Rancor's +2), a battlefield-wide count for a dynamic one
-    (Ancestral Mask/Ethereal Armor's "for each [other] enchantment").
+    """A creature's effective power for combat.combat_damage_step and Ram
+    Through's fight damage: its own base power (card_def.extra["power"], 0 if
+    absent -- every real creature CardDef carries its own power/toughness, so
+    the 0 default only ever matters for FILLER/synthetic self-check
+    permanents) plus every Aura currently enchanting it (_enchanting_auras
+    above -- owner-agnostic, correct regardless of state.active_idx). Each
+    Aura's registry entry supplies its own "pt_bonus" (state, aura_permanent)
+    -> int -- a constant for a static bonus (Rancor's +2), a battlefield-wide
+    count for a dynamic one (Ancestral Mask/Ethereal Armor's "for each
+    [other] enchantment").
 
     enchanting_auras: optional pre-fetched result of _enchanting_auras(state,
     permanent), for a caller that already needs the same list for multiple
     creatures in one pass (the per-token feature builder does, calling this
     AND permanent_toughness for every battlefield creature in one
-    observation -- profiled: _enchanting_auras's own battlefield scan was a
-    real, measurable cost, repeated redundantly per call). None (every
-    existing caller) means "compute it myself," identical to before this
-    parameter existed -- purely additive, no behavior change for anyone who
-    doesn't pass it.
+    observation -- _enchanting_auras's own battlefield scan is a real,
+    measurable cost, so this avoids repeating it redundantly per call). None
+    (every existing caller) means "compute it myself."
 
     base also folds in _animate_spec (Pinnacle Kill-Ship's own animated
     power, once Station's threshold is met, overriding card_def.extra
@@ -222,29 +220,28 @@ def lifelink_count(state, permanent, enchanting_auras=None):
     return count
 
 
-# Real Magic keyword strings this engine models as a boolean set
-#: "vigilance" (Cartouche of
-# Solidarity's Warrior token), "flying" (Kitchen Imp's real flying; also
-# used for Silhana Ledgewalker's "can't be blocked except by creatures
-# with flying" -- functionally the identical blocking restriction in a
-# ruleset with no reach, so one flag covers both rather than a second
+# Real Magic keyword strings this engine models as a boolean set: "vigilance"
+# (Cartouche of Solidarity's Warrior token), "flying" (Kitchen Imp's real
+# flying; also used for Silhana Ledgewalker's "can't be blocked except by
+# creatures with flying" -- functionally the identical blocking restriction in
+# a ruleset with no reach, so one flag covers both rather than a second
 # near-duplicate), "trample" (Rancor, Armadillo Cloak), "first_strike"
 # (Cartouche of Solidarity, Ethereal Armor). "hexproof" (Slippery Bogle,
 # Gladecover Scout, Silhana Ledgewalker) and "shroud": the targeting
 # restriction (can_be_targeted below) -- once opponents can target across
 # sides (faithful burn/removal) these stop being no-ops and gate legal
-# targets. "deathtouch" IS modeled now (Toxin Analysis grants it until end
-# of turn via permanent.temp_keywords): combat.py marks a creature dealt
-# damage by a deathtouch source and state_based.check_state_based_actions
-# treats any such marked damage as lethal. "menace" IS modeled now (the
-# Undercity Catacombs Skeleton token has it -- an intrinsic registry
-# keyword, read here; game.effects.combat enforces the 2+-blocker rule at
-# block finalization). Double strike: still no card grants it -- not
-# modeled. (Reach is modeled per-card for Bramble Wurm.) Armadillo Cloak's own lifegain clause is NOT here -- see
-# lifelink_count above for why a boolean keyword is the wrong model for
-# a triggered, stacking ability (real, non-stacking keyword lifelink -- a
-# lifelink counter / an until-EOT grant -- IS folded into lifelink_count,
-# as a single non-stacking +1).
+# targets. "deathtouch" is modeled (Toxin Analysis grants it until end of
+# turn via permanent.temp_keywords): combat.py marks a creature dealt damage
+# by a deathtouch source and state_based.check_state_based_actions treats any
+# such marked damage as lethal. "menace" is modeled (the Undercity Catacombs
+# Skeleton token has it -- an intrinsic registry keyword, read here;
+# game.effects.combat enforces the 2+-blocker rule at block finalization).
+# Double strike: no card in this pool grants it, so it isn't modeled. (Reach
+# is modeled per-card for Bramble Wurm.) Armadillo Cloak's own lifegain clause
+# is NOT here -- see lifelink_count above for why a boolean keyword is the
+# wrong model for a triggered, stacking ability (real, non-stacking keyword
+# lifelink -- a lifelink counter / an until-EOT grant -- is folded into
+# lifelink_count instead, as a single non-stacking +1).
 def creature_keywords(state, permanent, enchanting_auras=None):
     """Union of this permanent's own intrinsic registry "keywords" set
     (a creature's own EFFECT_REGISTRY entry) plus every Aura currently

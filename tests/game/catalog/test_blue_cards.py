@@ -1,6 +1,6 @@
-"""Tests for game.catalog.blue_cards, transcribed from its former
-`if __name__ == "__main__":` self-check block (faithful transcription --
-every assertion and its rationale comment is preserved as-is)."""
+"""Tests for game.catalog.blue_cards. See the module under test for the
+card-implementation rationale (real-rules citations, etc.) each test below
+guards."""
 
 import drl_env
 
@@ -195,8 +195,7 @@ def test_brainstorm():
 def test_brainstorm_excludes_reserved_stack_card():
     """Brainstorm can NOT put a spell that's currently on the stack (reserved,
     still physically in the hand list) back on top of the library -- it's on
-    the stack, not in hand (real Magic). Regression for the reserved-hand-
-    card bug (Gurmag Angler mid-cast + Brainstorm + Mental Note crash)."""
+    the stack, not in hand (real Magic)."""
     state = GameState(on_the_play=True)
     reserved_spell = CardDef("Gurmag Angler", CardType.CREATURE, {"generic": 6, "B": 1}, EffectId.FILLER, power=5, toughness=5)
     state.hand = [CardDef("Brainstorm", CardType.INSTANT, {"U": 1}, EffectId.BRAINSTORM), reserved_spell]
@@ -254,10 +253,8 @@ def test_deep_analysis_flashback():
     The graveyard is built from a real CardInstance -- what an actual game
     puts there (plans/object-identity-zone-model.md) -- and the instance is
     what gets passed in, matching the contract drl_env._actions._flashback_
-    execute now honors. Building this fixture from a raw CardDef instead is
-    what let a real bug (state.graveyard.remove on the interned CardDef,
-    which can never match an instance) pass this check and crash only in
-    live self-play."""
+    execute honors: state.graveyard.remove is matched by object identity,
+    which only a CardInstance (never the interned CardDef) can satisfy."""
     state = GameState(on_the_play=True)
     da = CardInstance(CardDef("Deep Analysis", CardType.SORCERY, {"generic": 3, "U": 1}, EffectId.DEEP_ANALYSIS))
     state.graveyard = [da]

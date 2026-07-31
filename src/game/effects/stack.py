@@ -72,9 +72,9 @@ def push_to_stack(state, card_def, resolve, reserves_hand_card=True, is_spell=Tr
     caster's hand: Flashback/reanimate (already out of the graveyard),
     Plot/Adventure/Madness cast-from-exile (already out of exile), an alt cost
     that discards eagerly (Fireblast, Crop Rotation), or a promoted trigger.
-    (Confirmed live: two same-named Madness cards discarded back-to-back --
-    default True miscounted the first's promoted entry as reserving the second,
-    still-in-hand copy, leaving zero legal actions.)
+    (A promoted trigger's own card is not awaiting removal from hand at all --
+    treating it as reserving a hand slot would miscount it against a second,
+    still-in-hand copy of the same name, leaving that copy zero legal actions.)
 
     Records active_idx as the entry's controller: a priority round can flip
     active_idx before this resolves, but resolve must run against the CASTER's

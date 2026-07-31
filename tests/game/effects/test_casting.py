@@ -1,4 +1,6 @@
-"""Migrated from game/effects/casting.py's __main__ ponytail self-check."""
+"""Battlefield entry and the direct cast paths (casting.py): land bounce ETB,
+Aura targeting/attachment/fizzle, targeted-creature spells, and the shared
+capture_any_target / target_still_legal targeting contract."""
 import contextlib
 import io
 
@@ -121,9 +123,9 @@ def test_cast_targeting_creature_captured_none_when_no_legal_target_at_cast():
     # can still auto-complete with None (zero legal creature targets right
     # NOW, not one that died later -- reachable in real play when this
     # spell's own cost payment, paid AFTER targeting under this engine's
-    # cost-then-target order, kills the caster's last legal target; a real
-    # pretrain run crashed exactly this way through a different
-    # begin_choose_any_target caller, cast_aura, covered separately). No
+    # cost-then-target order, kills the caster's last legal target; the same
+    # gap is reachable through a different begin_choose_any_target caller,
+    # cast_aura, covered separately). No
     # creature anywhere at cast time, so begin_choose_any_target's own
     # zero-candidate contract fires before this even reaches the stack.
     state = GameState(on_the_play=True)

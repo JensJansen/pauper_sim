@@ -18,8 +18,7 @@ def creature_attack_eligible(state, permanent):
     is the only place haste needs to matter. Checked per creature (drl_env's
     "Attack: <name>" actions) so a model can declare SOME eligible
     creatures as attackers and hold others back (as blockers once those
-    exist, or as mana sources) instead of the old everyone-eligible-attacks
-    wholesale rule.
+    exist, or as mana sources).
 
     Also excludes anything already in state.attackers -- ordinarily
     redundant with the tapped check above (declare_attacker taps its
@@ -56,9 +55,11 @@ def can_block(state, blocker, attacker):
       with flying" (which is NOT itself flying) -- may be blocked only by a
       creature with flying or reach.
     - Reach lets a non-flying creature block a flier (Bramble Wurm).
-    Menace/other restrictions aren't modeled (no card grants them). Shared by
-    creature_block_eligible and drl_env's per-attacker choice predicate, so
-    the rule lives in one place."""
+    Menace isn't a per-blocker restriction -- any creature may still commit to
+    block a menace attacker -- so it plays no part here; menace's own "needs
+    2+ blockers" rule is enforced separately, by menace_block_incomplete and
+    enforce_menace below. Shared by creature_block_eligible and drl_env's
+    per-attacker choice predicate, so the rule lives in one place."""
     attacker_needs_flying_blocker = (
         stats.has_keyword(state, attacker, "flying")
         or stats.has_keyword(state, attacker, "cant_be_blocked_except_by_flying")
@@ -120,8 +121,7 @@ def declare_attackers_step(state):
     reset together -- a fresh combat has neither yet) so the model's own
     "Attack: <name> (slot k)" actions (drl_env.build_action_table, each
     one checking creature_attack_eligible and calling declare_attacker)
-    start this turn's declaration fresh, one creature at a time, rather
-    than the old wholesale auto-attack."""
+    start this turn's declaration fresh, one creature at a time."""
     state.attackers = []
     state.blocked_by = {}
 
@@ -153,12 +153,11 @@ def _attacker_deal_damage(state, attacker, blockers, amounts, opponent_amount, a
     pair (profiled at ~8-10 redundant stats.py scans per pair otherwise)."""
     # `amounts` is parallel to `blockers`: amounts[i] is the damage assigned to
     # blockers[i] -- the attacking player's own free choice for a multi-blocked
-    # attacker (Stage B: any portion to any blocker, not forced lethal -- user
-    # spec), or _default_damage_assignment's lethal-in-order split for a single
-    # blocker / the auto path. `opponent_amount` is the trample share spilled
-    # to the defending player. Lifelink counts damage ACTUALLY dealt (to
-    # blockers + to the player), which for a full-power assignment (the default
-    # / old 1:1 path) is exactly power.
+    # attacker (any portion to any blocker, not forced lethal), or
+    # _default_damage_assignment's lethal-in-order split for a single blocker
+    # / the auto path. `opponent_amount` is the trample share spilled to the
+    # defending player. Lifelink counts damage ACTUALLY dealt (to blockers +
+    # to the player), which for a full-power assignment is exactly power.
     assigned = 0
     for blocker, amount in zip(blockers, amounts):
         if amount <= 0:
@@ -221,8 +220,8 @@ def _default_damage_assignment(attacker_facts, blockers, facts_by_id):
     blockers -- used for a SINGLE blocker (no choice to make) and as the
     fallback when no explicit model assignment exists. Lethal-in-order to
     maximize kills; a trampler's leftover goes to the player, a non-
-    trampler's leftover piles onto the last blocker so all power lands
-    (matching the old 1:1 behaviour). Returns (amounts parallel to
+    trampler's leftover piles onto the last blocker so all power lands.
+    Returns (amounts parallel to
     `blockers`, opponent_amount). For a MULTI-blocked attacker the attacking
     player's OWN freely-chosen split (assign_combat_damage resolution)
     replaces this -- any portion to any blocker, non-lethal allowed."""
@@ -347,9 +346,9 @@ def combat_damage_step(state):
 
     # First-strike sub-step: first-strikers on each side deal now, then an
     # SBA check clears the dead before the regular sub-step. Gang-blocking:
-    # the attacker splits its damage across its LIVING blockers (Stage-A
-    # default split; Stage B swaps in the model's own choice), and every
-    # blocker deals its own power back to the attacker.
+    # the attacker splits its damage across its LIVING blockers (the default
+    # lethal-in-order split, or the attacking player's own recorded choice),
+    # and every blocker deals its own power back to the attacker.
     for attacker, blockers in groups:
         if creature_facts[id(attacker)]["first_strike"]:
             living = [b for b in blockers if _is_alive(state, b)]
@@ -393,8 +392,8 @@ def menace_block_incomplete(state):
     attacker has exactly one committed blocker is to add a second one. If none
     is available, this stays illegal until the phase's action cap forces
     completion and enforce_menace (below) drops the illegal lone block --
-    bounded, not a softlock, but no longer purely a pathological-policy-only
-    path (see enforce_menace's own docstring). Called only during the
+    bounded, not a softlock, and reachable by a rational policy too, not just
+    a pathological one (see enforce_menace's own docstring). Called only during the
     declare-blockers step, where active_idx is the defender, so the
     attacker's own blocked_by/attackers are reached via state.opponent (the
     attacking player, from the defender's point of view -- same accessor the
@@ -413,10 +412,11 @@ def enforce_menace(state):
     in two cases, only the first of which is pathological: (1)
     game.turn._declare_blockers_gen abandons a partial declaration on its
     action-cap (a policy that never finishes); (2) -- reachable by a
-    perfectly rational policy, not just a broken one, since Unassign Blocker
-    was removed (todo/no_undo_policy.md) -- the defender has exactly one
+    perfectly rational policy, not just a broken one, since there is no
+    Unassign Blocker action to reconsider a commitment (standing engine
+    policy, see todo/no_undo_policy.md) -- the defender has exactly one
     eligible blocker left and it's already committed to a menace attacker,
-    with no way to reconsider and no second blocker to add, so declaration
+    with no second blocker to add, so declaration
     stays illegal until the action cap forces it through. Either way, this
     drops any lone menace-block so the OUTCOME is still faithful (a lone
     creature can't stop a menace attacker). active_idx is back on the

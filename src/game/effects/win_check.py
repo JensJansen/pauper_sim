@@ -19,8 +19,8 @@ def _check_end_of_game(state):
         return
     # Active player's own life at 0 -- only reachable via life paid as a cost
     # or lost to a self-damage effect (lose_life); combat never damages the
-    # active player under this engine's whole-turn model, so this branch was
-    # inert (and unwritten) until self-damage existed. The opponent wins in a
+    # active player under this engine's whole-turn model, so this is the only
+    # way the active player's own life reaches 0. The opponent wins in a
     # 2-player game; 1-player has no one to award it to, so it's a bare
     # failure with winner=None, same as decking out.
     if active.life_total <= 0:

@@ -1,10 +1,8 @@
-"""Migrated from game/effects/stats.py's __main__ ponytail self-check.
-
-Cross-player Aura reads (a real bug found while building mutual combat
-damage): permanent_power/permanent_toughness/enchantment_count used to read
-state.battlefield (active-player-proxied) to find enchanting Auras --
-silently wrong for a BLOCKER (the defender's own creature), since
-combat_damage_step always runs with active_idx on the ATTACKER."""
+"""Cross-player Aura reads: permanent_power/permanent_toughness/
+enchantment_count read state.players directly (not the active-player-
+proxied state.battlefield) to find enchanting Auras, so a BLOCKER's stats
+(the defender's own creature) are still correct when combat_damage_step
+runs with active_idx on the ATTACKER."""
 from game import registry
 from game.cards import CardDef, CardType, EffectId
 from game.effects.stats import can_be_targeted, has_keyword, permanent_power, permanent_toughness

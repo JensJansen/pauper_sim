@@ -1,8 +1,7 @@
 """Multi-deck Magic-subset simulator -- package entry point.
 
-This package replaces what used to be a single game.py file, split by
-domain (cards, state, resolution, mana, effects, turn loop,
-per-color card catalogs, and the registry that unions every color). A
+Split by domain: cards, state, resolution, mana, effects, turn loop,
+per-color card catalogs, and the registry that unions every color. A
 deck is just a decklist file (data/*.txt, parsed by game.decklist)
 resolved against the shared card catalog (game.CARD_DEFS) each color
 catalog contributes to -- adding or reweighting a deck built entirely

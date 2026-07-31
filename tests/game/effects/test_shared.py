@@ -1,9 +1,16 @@
-"""Migrated from game/effects/shared.py's __main__ ponytail self-check."""
+"""Shared card-mechanic helpers reused by multiple color catalogs (shared.py)."""
 import pytest
 
+from game import registry
 from game.cards import CardDef, CardType, EffectId
+from game.catalog.colorless_cards import (
+    _lotus_petal_on_tap, _treasure_on_tap, activate_candy_trail_sac, activate_expedition_map,
+    activate_twisted_landscape_fetch,
+)
+from game.catalog.red_cards import activate_melded_moxite_sac, activate_reckless_lackey_sac
 from game.effects.shared import any_creature_on_battlefield, discard_from_hand_to_graveyard, find_to_hand
-from game.state import GameState
+from game.effects.tokens import activate_map_sac
+from game.state import GameState, Permanent
 
 
 def _make_state():
@@ -54,3 +61,34 @@ def test_discard_from_hand_to_graveyard_raises_when_not_in_hand():
     discard_from_hand_to_graveyard(state, forest)
     with pytest.raises(RuntimeError):
         discard_from_hand_to_graveyard(state, forest)
+
+
+# Every one of these independently removes a sacrificed permanent from the
+# battlefield instead of routing through state_based.sacrifice_to_graveyard/
+# handlers.execute_sacrifice_option -- each one used to skip
+# fire_sacrifice_triggers entirely (Gixian Infiltrator silently never saw
+# these sacrifices). Regression coverage: every site now queues an
+# "on_sacrifice" entry, no exceptions.
+_SACRIFICE_SITES = (
+    ("activate_twisted_landscape_fetch", activate_twisted_landscape_fetch),
+    ("activate_expedition_map", activate_expedition_map),
+    ("activate_candy_trail_sac", activate_candy_trail_sac),
+    ("_lotus_petal_on_tap", _lotus_petal_on_tap),
+    ("_treasure_on_tap", _treasure_on_tap),
+    ("activate_map_sac", activate_map_sac),
+    ("activate_reckless_lackey_sac", activate_reckless_lackey_sac),
+    ("activate_melded_moxite_sac", activate_melded_moxite_sac),
+)
+
+
+@pytest.mark.parametrize("name,fn", _SACRIFICE_SITES, ids=[n for n, _ in _SACRIFICE_SITES])
+def test_every_sacrifice_site_fires_gixian_trigger(name, fn):
+    state = GameState(on_the_play=True)
+    gix = Permanent(registry.CARD_DEFS["Gixian Infiltrator"])
+    gix.slot = 1
+    sacrificed = Permanent(CardDef(f"Sacrificed ({name})", CardType.ARTIFACT, {"generic": 1}, EffectId.FILLER))
+    sacrificed.slot = 1
+    state.battlefield = [gix, sacrificed]
+    fn(state, sacrificed)
+    queued = [e for e in state.trigger_queue if e["type"] == "on_sacrifice"]
+    assert queued and queued[0]["permanent"] is gix, f"{name} never called fire_sacrifice_triggers"

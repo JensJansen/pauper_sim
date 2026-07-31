@@ -26,9 +26,8 @@ class EffectId(Enum):
     GENEROUS_ENT = auto()
     FILLER = auto()
 
-    # --- monster_tron "filler" creatures, now fully implemented (real
-    # cost/stats/ETB) instead of routing through EffectId.FILLER's inert
-    # single canonical entry ---
+    # --- monster_tron "filler" creatures, each with its own real cost/
+    # stats/ETB (not EffectId.FILLER's inert single canonical entry) ---
     ROOFTOP_PERCHER = auto()
     BOULDERBRANCH_GOLEM = auto()
     BOULDERBRANCH_GOLEM_PROTOTYPE = auto()  # Prototype {3}{G} 3/3 mode -- own ETB gain amount (3, = its power)
@@ -56,9 +55,9 @@ class EffectId(Enum):
     LAND_GRANT = auto()
     DREAD_RETURN = auto()
 
-    # --- shared tokens (mono_red_madness / rakdos_madness engine work,
-    #) -- not decklist cards, never in
-    # CARD_DEFS/any decklist quantity; see game.effects.tokens.create_token.
+    # --- shared tokens (created by mono_red_madness/rakdos_madness engine
+    # effects) -- not decklist cards, never in CARD_DEFS/any decklist
+    # quantity; see game.effects.tokens.create_token.
     BLOOD_TOKEN = auto()
     ROBOT_TOKEN = auto()
     WARRIOR_TOKEN = auto()  # Cartouche of Solidarity
@@ -91,7 +90,7 @@ class EffectId(Enum):
     GUTTERSNIPE = auto()
     FIREBLAST = auto()
     LAVA_DART = auto()
-    BREATH_WEAPON = auto()  # monster_tron filler, now fully implemented -- see decklist comment
+    BREATH_WEAPON = auto()  # monster_tron filler creature -- see decklist comment
 
     # --- boggles deck ---
     PLAINS = auto()
@@ -105,7 +104,7 @@ class EffectId(Enum):
     CARTOUCHE_OF_SOLIDARITY = auto()
     ASH_BARRENS = auto()
     MALEVOLENT_RUMBLE = auto()
-    RAM_THROUGH = auto()  # functional blank -- see green_cards.py comment
+    RAM_THROUGH = auto()  # castable only in a 2-player game -- see green_cards.py comment
     UTOPIA_SPRAWL = auto()
     ABUNDANT_GROWTH = auto()
 

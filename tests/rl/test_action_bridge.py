@@ -1,4 +1,4 @@
-"""Migrated from src/rl/action_bridge.py's __main__ self-check."""
+"""Tests for rl.action_bridge: the fixed-table/pointer-head action space bridge to the game engine."""
 import json
 import random
 
@@ -20,16 +20,14 @@ from rl.features import CardVocab, build_token_set
 
 def _mono_red_fixture():
     """The mono_red_madness decklist/fixed-table/vocab fixture most of these
-    checks share -- Blood/Robot are the two tokens the deck creates mid-game
-    (see this module's own TOKEN_DEFS-adjacent comment in the original)."""
+    checks share -- Blood/Robot are the two tokens the deck creates mid-game."""
     decklist = game.parse_decklist_file("../data/mono_red_madness.txt")
     pending_kinds = game.derive_pending_kinds(decklist)
     # mono_red_madness creates BOTH of these mid-game (Blood from madness
-    # discards, Robot from Melded Moxite's own sacrifice ability) -- note
-    # the deck config's own "token_card_defs" only
-    # lists "Blood", missing "Robot" (confirmed the hard way: a real game
-    # creates one). Out of scope to fix that config from this branch, but
-    # this module needs the complete, correct set regardless.
+    # discards, Robot from Melded Moxite's own sacrifice ability) -- the deck
+    # config's own "token_card_defs" only lists "Blood", missing "Robot", so
+    # this fixture passes the complete, correct set explicitly rather than
+    # relying on that config.
     token_defs = (game.BLOOD_TOKEN_CARD_DEF, game.ROBOT_TOKEN_CARD_DEF)
     fixed_table = build_fixed_action_table(decklist, token_card_defs=token_defs, pending_kinds=pending_kinds)
     vocab = CardVocab([decklist], token_card_defs=token_defs)
@@ -45,13 +43,14 @@ def test_build_fixed_action_table_basic():
     )
     # NO-UNDO POLICY tripwire (todo/no_undo_policy.md): the engine must never
     # expose an action letting the agent reconsider/reverse an earlier
-    # commitment -- confirmed the hard way, Unassign Blocker (removed
-    # 2026-07-30) enabled a real observed pathological cycle (turn.py's own
-    # PRIORITY_ROUND_ACTION_CAP docstring: tens of thousands of assign/
-    # unassign iterations in one boggles_mirror evaluation). Hardcodes the
-    # literal substring independently of any prefix-filter tuple, so a
-    # future reintroduction of this exact shape fails loudly here rather
-    # than silently passing whatever filter happens to exist at the time.
+    # commitment -- an "Unassign Blocker" action would let the agent cycle
+    # assign/unassign indefinitely (turn.py's own PRIORITY_ROUND_ACTION_CAP
+    # docstring: tens of thousands of assign/unassign iterations in one
+    # boggles_mirror evaluation is exactly the pathology this rules out).
+    # Hardcodes the literal substring independently of any prefix-filter
+    # tuple, so a future reintroduction of this exact shape fails loudly here
+    # rather than silently passing whatever filter happens to exist at the
+    # time.
     assert not any("nassign" in name for name in fixed_names), (
         "no action may let the agent reconsider/reverse an earlier commitment -- see todo/no_undo_policy.md"
     )
@@ -62,10 +61,9 @@ def test_build_fixed_action_table_basic():
     # own "Choose: X" row, same as a token name -- a transformed permanent's
     # card_def swaps to the back face, so any BY-NAME resolution (order_
     # triggers, sacrifice, discard, search_fetch, ...) can need to reference it.
-    # Regression: a real pretrain run hit an all-False action mask for
-    # "order_triggers" the first time a transformed Delver's upkeep trigger
-    # needed ordering, because "Insectile Aberration" was missing from
-    # choosable_names entirely (drl_env._actions.build_action_table).
+    # Omitting it from choosable_names produces an all-False action mask the
+    # moment a by-name resolution needs to reference the back face
+    # (drl_env._actions.build_action_table).
     dfc_decklist = game.parse_decklist_file("../data/mono_blue_terror.txt")
     dfc_table = build_fixed_action_table(dfc_decklist, pending_kinds=game.derive_pending_kinds(dfc_decklist))
     dfc_names = [name for name, _l, _e in dfc_table]
@@ -80,14 +78,13 @@ def test_build_fixed_action_table_basic():
 def test_pointer_legal_mask_real_game_attack_block_choose_opponent():
     # pointer_legal_mask / execute_pointer_choice against a REAL 2-PLAYER
     # game (build_token_set is inherently 2-player -- it always indexes an
-    # opponent seat, so a 1-player game state doesn't fit its
-    # contract at all; confirmed the hard way, see this module's own git
-    # history for the IndexError that caught it). Mirror match, one shared
-    # choose_action dispatching on state.active_idx. Always prefers a pointer action when
-    # one is legal (Attack/Assign Blocker/Choose opponent's), else falls
-    # back to the fixed table's own "prefer Pass, else first legal" rule --
-    # exercises attacking, blocking, AND the cross-player "Choose
-    # opponent's" consult nested inside blocking, across real turns.
+    # opponent seat, so a 1-player game state doesn't fit its contract at
+    # all). Mirror match, one shared choose_action dispatching on
+    # state.active_idx. Always prefers a pointer action when one is legal
+    # (Attack/Assign Blocker/Choose opponent's), else falls back to the fixed
+    # table's own "prefer Pass, else first legal" rule -- exercises
+    # attacking, blocking, AND the cross-player "Choose opponent's" consult
+    # nested inside blocking, across real turns.
     decklist, _pending_kinds, _token_defs, fixed_table, vocab = _mono_red_fixture()
     pass_action = next(i for i, (name, _l, _e) in enumerate(fixed_table) if name == "Pass")
     saw_attack, saw_block, saw_choose_opponent = [False], [False], [False]
@@ -97,9 +94,9 @@ def test_pointer_legal_mask_real_game_attack_block_choose_opponent():
             seat = state.active_idx
             pend = state.pending_resolution
             if pend is not None and pend["kind"] in ("mulligan_decision", "mulligan_bottom"):
-                # Pregame is no longer in the fixed table (owned by the mulligan model
-                # in real play -- the harness refactor). Keep every hand here so
-                # this self-check's random fixed/pointer play still reaches real turns.
+                # Pregame decisions aren't in the fixed table -- owned by the
+                # mulligan model in real play. Keep every hand here so this
+                # test's random fixed/pointer play still reaches real turns.
                 return lambda state=state: game.execute_mulligan_keep(state)
             if any_pointer_legal(state):
                 tokens = build_token_set(state, seat, vocab)
@@ -118,21 +115,17 @@ def test_pointer_legal_mask_real_game_attack_block_choose_opponent():
                     return lambda state=state, chosen=chosen: execute_pointer_choice(state, chosen)
 
             # Prefer any NON-Pass legal action (randomly) so the game
-            # actually develops a board -- always preferring Pass would
-            # mean lands/creatures never get played at all, and combat
-            # would never happen for this self-check to exercise. Pass is
-            # the fallback of last resort, not the default preference
-            # (that inversion IS a bug this test already caught once, see
-            # git history: the first version always-preferred Pass and
-            # never once reached combat in 30 turns).
+            # actually develops a board -- always preferring Pass would mean
+            # lands/creatures never get played at all, and combat would never
+            # happen for this test to exercise. Pass is the fallback of last
+            # resort, not the default preference.
             #
             # Legality via ONE drl_env.legal_action_mask sweep, never by
-            # calling each action's own legal_fn independently -- also
-            # confirmed the hard way: drl_env's sweep-scoped caches (e.g.
-            # _mana_ability_options_cache) are explicitly documented as
-            # "valid only for the duration of one legal_action_mask sweep,"
-            # and calling legal_fn ad hoc, action by action, outside that
-            # sweep produced a real crash from exactly that staleness.
+            # calling each action's own legal_fn independently: drl_env's
+            # sweep-scoped caches (e.g. _mana_ability_options_cache) are
+            # explicitly documented as "valid only for the duration of one
+            # legal_action_mask sweep," so calling legal_fn ad hoc, action by
+            # action, outside that sweep would read stale cache state.
             mask = drl_env.legal_action_mask(state, fixed_table)
             non_pass_indices = [i for i, ok in enumerate(mask) if ok and i != pass_action]
             if non_pass_indices:
@@ -147,10 +140,9 @@ def test_pointer_legal_mask_real_game_attack_block_choose_opponent():
     # Random unguided play doesn't reliably reach every combat sub-case in
     # any ONE game (declare_blockers only yields a real decision if attacks
     # were declared AND the defender happens to have an eligible blocker
-    # alive at that moment) -- confirmed the hard way: a single 30-turn
-    # game reached Attack but never Assign-Blocker. Retrying across
-    # several independent games is the robust fix, not enlarging one game
-    # and hoping.
+    # alive at that moment). Retrying across several independent games is
+    # the robust way to cover every sub-case, not enlarging one game and
+    # hoping.
     for seed in range(10):
         if saw_attack[0] and saw_block[0] and saw_choose_opponent[0]:
             break
@@ -228,12 +220,13 @@ def test_saruli_mid_pay_unless():
     # an opponent's Ward creature -> pay_unless opens with the Saruli
     # player as payer -> they activate Saruli (BOTH mana_subdecision stages)
     # WHILE pay_unless is still open -> control returns to pay_unless,
-    # completely untouched, once the mana_subdecision closes. Confirmed
-    # reachable in the real 11-deck league (spy_combo's Quirion Ranger vs.
-    # mono_blue_terror/dmir_terror's Ward creatures) -- this is exactly the
-    # F11 bug class (mana abilities wrongly masked mid-ANY-resolution) that
-    # ruled out reusing the gated begin_choose_permanent/begin_choose_mana_
-    # color building blocks for this redesign in the first place.
+    # completely untouched, once the mana_subdecision closes. Reachable in
+    # the real 11-deck league (spy_combo's Quirion Ranger vs.
+    # mono_blue_terror/dmir_terror's Ward creatures). Gating mana abilities
+    # through the same building blocks pending_resolution itself uses
+    # (begin_choose_permanent/begin_choose_mana_color) would wrongly mask
+    # them mid-ANY-resolution, which is why mana_subdecision is its own
+    # separate field instead.
     _decklist, _pending_kinds, _token_defs, _fixed_table, vocab = _mono_red_fixture()
     pu_me = PlayerState(on_the_play=True)
     pu_opp = PlayerState(on_the_play=False)
@@ -282,10 +275,11 @@ def test_saruli_mid_pay_unless():
 
 @pytest.mark.slow
 def test_choose_graveyard_card_pointer_opponent_graveyard():
-    # choose_graveyard_card is now a pointer target (by object identity), not a
-    # fixed "Choose: X" row. Hand-build a real pending targeting the OPPONENT's
-    # graveyard (the cross-deck case the removed whole-league rows existed for)
-    # and confirm the pointer offers exactly that card and executes the pick.
+    # choose_graveyard_card is a pointer target (matched by object identity),
+    # not a fixed "Choose: X" row. Hand-build a real pending targeting the
+    # OPPONENT's graveyard -- the cross-deck case that needs per-object, not
+    # per-name, addressing -- and confirm the pointer offers exactly that card
+    # and executes the pick.
     _decklist, _pending_kinds, _token_defs, _fixed_table, vocab = _mono_red_fixture()
     gy_me = PlayerState(on_the_play=True)
     gy_opp = PlayerState(on_the_play=False)
@@ -332,12 +326,12 @@ def test_choose_graveyard_card_hand_reveal():
 
 @pytest.mark.slow
 def test_stranded_payment_filter_regression():
-    # STRANDED-PAYMENT regression (real pretrain crash, monster_tron turn 10):
-    # a mana FILTER is a pool->pool conversion, legal mid-payment, and used to be
-    # able to consume the very colored pip an already-begun payment still owed --
-    # leaving remaining={'G': 1} with no green source and, since float-first
-    # removed "Abandon payment", no legal action at all (all-False mask).
-    # drl_env._actions._filter_would_strand_payment now forbids exactly that.
+    # STRANDED-PAYMENT regression: a mana FILTER is a pool->pool conversion,
+    # legal mid-payment, that could otherwise consume the very colored pip an
+    # already-begun payment still owes -- leaving remaining={'G': 1} with no
+    # green source and, since float-first mana has no "Abandon payment"
+    # action, no legal action at all (all-False mask).
+    # drl_env._actions._filter_would_strand_payment forbids exactly that.
     tron_decklist = game.parse_decklist_file("../data/monster_tron.txt")
     tron_table = drl_env.build_action_table(
         tron_decklist, game.EFFECT_REGISTRY, pending_kinds=game.derive_pending_kinds(tron_decklist),
@@ -472,14 +466,14 @@ def test_choose_cast_copy_percher_response():
 
 @pytest.mark.slow
 def test_choose_cast_copy_stranded_payment_regression():
-    # STRANDED-PAYMENT regression #2 (real league crash, monster_tron turn 44):
-    # the same stranding the pay_cost-only guard above already forbids can ALSO
-    # happen one step earlier, during choose_cast_copy itself -- 2 Bramble Wurms
-    # in the graveyard, activating the {2}{G} graveyard ability (legal: the pool
-    # already covers it), then filtering the floating {G} away WHILE still
-    # choosing which copy, before begin_pay_cost ever opens. game.resolution.
-    # handlers.begin_choose_cast_copy's reserved_cost + drl_env._actions.
-    # _filter_would_strand_payment's own choose_cast_copy branch now forbid it.
+    # STRANDED-PAYMENT regression #2: the same stranding the pay_cost-only
+    # guard above already forbids can ALSO happen one step earlier, during
+    # choose_cast_copy itself -- 2 Bramble Wurms in the graveyard, activating
+    # the {2}{G} graveyard ability (legal: the pool already covers it), then
+    # filtering the floating {G} away WHILE still choosing which copy, before
+    # begin_pay_cost ever opens. game.resolution.handlers.
+    # begin_choose_cast_copy's reserved_cost + drl_env._actions.
+    # _filter_would_strand_payment's own choose_cast_copy branch forbid it.
     bw_def = game.CARD_DEFS["Bramble Wurm"]
     bw_a, bw_b = CardInstance(bw_def), CardInstance(bw_def)
     bw_me = PlayerState(on_the_play=True)
@@ -522,10 +516,9 @@ def test_universal_cross_player_decision_rows():
     # permanent's owner chooses), Chain Lightning (may_copy / a new target for the
     # copy), Cleansing Wildfire (search_fetch: the destroyed land's controller
     # searches). derive_pending_kinds reads a deck's OWN cards, so gating these
-    # rows on it left the ANSWERING seat with no row for the question and an
-    # all-False mask -- a hard crash, reproduced in cross-deck league play
-    # (mono_blue_terror vs elves: tuck_position; dmir_terror vs boggles:
-    # pay_unless). They are unconditional now; this asserts every deck has them.
+    # rows on it would leave the ANSWERING seat with no row for the question
+    # and an all-False mask. They are unconditional in every deck's table;
+    # this asserts every deck has them.
     universal_decision_rows = (
         "Pay (unless)", "Don't pay (unless)",
         "Tuck: 2nd from top", "Tuck: bottom",
@@ -556,12 +549,10 @@ def test_universal_cross_player_decision_rows():
 
 @pytest.mark.slow
 def test_choose_stack_target():
-    # choose_stack_target: the ACTUAL bug this session found. A spell to
-    # counter is very often the OPPONENT's -- no per-deck "Choose: X" row
-    # could ever represent that (confirmed the hard way: an all-False mask in
-    # real cross-deck league play, mono_blue_terror asked to name a spell
-    # dmir_terror cast). Now pointer-addressed, matching choose_graveyard_
-    # card's own precedent. Real cross-deck fixture, not a synthetic name.
+    # choose_stack_target: a spell to counter is very often the OPPONENT's --
+    # no per-deck "Choose: X" row could ever represent that. Pointer-
+    # addressed, matching choose_graveyard_card's own precedent. Real
+    # cross-deck fixture, not a synthetic name.
     sct_me_dl = game.parse_decklist_file("../data/mono_blue_terror.txt")  # has Counterspell, no Cast Down
     sct_opp_dl = game.parse_decklist_file("../data/dmir_terror.txt")      # has Cast Down
     assert not any(n == "Cast Down" for n, *_ in sct_me_dl), "fixture: Cast Down must be the OPPONENT's card, not mine"
@@ -570,8 +561,7 @@ def test_choose_stack_target():
     sct_opp = PlayerState(on_the_play=False)
     cast_down = game.CARD_DEFS["Cast Down"]
     # TWO simultaneous copies of the opponent's spell -- also exercises that
-    # same-named duplicates stay independently addressable (the old by-name
-    # version could only ever reach the topmost of duplicate-named entries).
+    # same-named duplicates stay independently addressable.
     entry_a = {"card_def": cast_down, "resolve": None, "controller": 1, "is_spell": True}
     entry_b = {"card_def": cast_down, "resolve": None, "controller": 1, "is_spell": True}
     sct_state = GameState(on_the_play=True, players=[sct_me, sct_opp])
@@ -595,9 +585,9 @@ def test_choose_stack_target():
 def test_order_triggers_unrepresentable_candidate_raises():
     # The durable runtime guard itself: a by-name kind whose candidates escape
     # the deciding player's own table must raise IMMEDIATELY, not silently
-    # produce an all-False mask deep in some later game. Simulate the exact
-    # shape of bug this session hit twice (order_triggers/DFC, choose_stack_
-    # target/opponent) by forging one into an otherwise-ordinary pending kind.
+    # produce an all-False mask deep in some later game (the shape of bug
+    # order_triggers/DFC and choose_stack_target/opponent can both take).
+    # Forge one into an otherwise-ordinary pending kind to exercise it.
     guard_dl = game.parse_decklist_file("../data/mono_red_madness.txt")
     guard_table = build_fixed_action_table(guard_dl, pending_kinds=game.derive_pending_kinds(guard_dl))
     guard_state = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])

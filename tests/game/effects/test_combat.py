@@ -1,6 +1,4 @@
-"""Migrated from game/effects/combat.py's __main__ ponytail self-check.
-
-Attack eligibility + declaration + damage, then the keyword trio
+"""Attack eligibility + declaration + damage, then the keyword trio
 (vigilance/trample/first strike) -- everything specific to THIS module. The
 combat+SBA creature-death handoff lives in
 tests/game/effects/test_integration_check.py instead (it exercises
@@ -37,7 +35,7 @@ def test_creature_attack_eligibility_and_damage():
     state.battlefield = [attacker, sick, already_tapped, vanilla, not_a_creature, defender]
 
     declare_attackers_step(state)
-    assert state.attackers == []  # phase-entry reset, no auto-population anymore
+    assert state.attackers == []  # phase-entry reset -- a fresh combat starts with no attackers declared
     assert creature_attack_eligible(state, attacker)
     assert creature_attack_eligible(state, vanilla)  # 0 power still eligible, same as a real 0-power creature
     assert not creature_attack_eligible(state, sick)
@@ -89,12 +87,12 @@ def test_vigilance_no_tap_and_no_redeclare():
     assert not vigilant.tapped and vigilant in state.attackers
     assert ordinary.tapped and ordinary in state.attackers
 
-    # Regression: a vigilant creature staying untapped must NOT make it
-    # re-declarable -- it already attacked this combat, tapped or not.
-    # Before creature_attack_eligible's own state.attackers guard existed,
-    # this stayed "eligible" forever (vigilance skips the only other
-    # exclusion, tapped) and repeated declare_attacker calls silently
-    # duplicated it in state.attackers, multiplying its power in
+    # A vigilant creature staying untapped must NOT make it re-declarable --
+    # it already attacked this combat, tapped or not. Without
+    # creature_attack_eligible's own state.attackers guard, a vigilant
+    # creature (which skips the only other exclusion, tapped) would stay
+    # "eligible" forever, and repeated declare_attacker calls would silently
+    # duplicate it in state.attackers, multiplying its power in
     # combat_damage_step's unblocked-damage total.
     assert not creature_attack_eligible(state, vigilant)
     assert state.attackers.count(vigilant) == 1
@@ -323,7 +321,7 @@ def test_gang_blocking_damage_split():
 
 
 def test_can_block_evasion_and_reach():
-    # can_block: evasion + reach (C8/C9). A real flier (Kitchen Imp) and
+    # can_block: evasion + reach. A real flier (Kitchen Imp) and
     # Silhana's "can't be blocked except by flying" both demand a flying or
     # reach blocker; reach (Bramble Wurm) satisfies that, a vanilla creature
     # doesn't, and -- crucially -- Silhana itself (evasion, NOT real flying)
@@ -338,12 +336,11 @@ def test_can_block_evasion_and_reach():
     assert can_block(kb_state, imp, imp)                # flying blocks flying
     assert not can_block(kb_state, vanilla_c, silhana)  # Silhana's evasion needs a flying/reach blocker
     assert can_block(kb_state, wurm, silhana)           # reach satisfies Silhana's evasion too
-    assert not can_block(kb_state, silhana, imp)        # Silhana is NOT flying -> can't block a flier (the C8 fix)
+    assert not can_block(kb_state, silhana, imp)        # Silhana is NOT flying -> can't block a flier
     assert can_block(kb_state, vanilla_c, vanilla_c)    # no restriction -> anyone blocks
 
 
 def test_menace_block_incomplete_and_enforce_menace():
-    # --- G12: menace, goad, initiative transfer ---
     # Menace (509.1c): a declaration leaving a menace attacker with exactly ONE
     # blocker is illegal. menace_block_incomplete flags it (so drl_env forbids
     # "Done" until fixed -- 0 or 2+); enforce_menace is the cap-abandon backstop
@@ -399,13 +396,14 @@ def test_goad_forces_declaration_and_excludes_non_turn_player():
     goaded.tapped = True
     assert not has_unfulfilled_goad(state)
 
-    # Regression: goad binds the turn player during THEIR own declare step, not
-    # a NON-turn player who merely holds priority during DECLARE_ATTACKERS
+    # Goad binds the turn player during THEIR own declare step, not a NON-turn
+    # player who merely holds priority during DECLARE_ATTACKERS
     # (game.turn._run_priority_round_gen flips active_idx to them). A forcing
     # goaded creature under the non-turn player must NOT block their priority-
     # Pass -- they cannot declare an attacker at all (_attack_legal needs
-    # active_idx == turn_player_idx), so blocking it left an all-False action
-    # mask (the rl.agent._seat_step crash this guards). turn_player_idx stays 0.
+    # active_idx == turn_player_idx), so blocking it would leave an all-False
+    # action mask (the rl.agent._seat_step crash this guards against).
+    # turn_player_idx stays 0.
     nonturn_goaded = Permanent(CardDef("NonturnGoaded", CardType.CREATURE, None, EffectId.FILLER, power=2, toughness=2))
     nonturn_goaded.summoning_sick = False
     nonturn_goaded.flags["goaded_by"] = 0  # goaded by the turn player (idx 0)

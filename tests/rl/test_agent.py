@@ -1,4 +1,4 @@
-"""Migrated from src/rl/agent.py's __main__ self-check."""
+"""Tests for rl.agent: SeatAgent's mulligan-vs-policy dispatch routing."""
 import random
 import types
 
@@ -66,9 +66,10 @@ def test_mulligan_net_branch_routes_and_records():
 
 @pytest.mark.slow
 def test_main_fixed_table_has_no_pregame_action():
-    # Phase-4 invariant: the main net's fixed table has ZERO pregame actions, so in
-    # a pregame state its legal mask is all-False and the SeatAgent MUST intercept
-    # (never reach _policy_decision). Guards against a future re-add of the actions.
+    # Fixed-table invariant: the main net's fixed table has ZERO pregame actions,
+    # so in a pregame state its legal mask is all-False and the SeatAgent MUST
+    # intercept before ever reaching _seat_step. Guards against a future re-add
+    # of the actions.
     decklist, _vocab, state = _mulligan_decision_state()
     ftable = build_fixed_action_table(decklist, pending_kinds=game.derive_pending_kinds(decklist))
     assert not any(drl_env.legal_action_mask(state, ftable)), (

@@ -1,5 +1,4 @@
-"""Tests for game.decklist.parse_decklist_text. Migrated from
-game/decklist.py's former `if __name__ == "__main__":` self-check block."""
+"""Tests for game.decklist.parse_decklist_text."""
 
 from game.decklist import parse_decklist_text
 

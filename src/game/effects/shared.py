@@ -11,20 +11,26 @@ _COLOR_PIPS = ("W", "U", "B", "R", "G")
 
 
 def fire_sacrifice_triggers(state, sacrificer_idx, sacrificed_card_def):
-    """Fire every "whenever you sacrifice [another permanent / another
+    """Queue every "whenever you sacrifice [another permanent / another
     Eldrazi]" trigger (Gixian Infiltrator, Writhing Chrysalis) on the
     SACRIFICING player's own battlefield, for a permanent that was just
     sacrificed. Called from every sacrifice path (sacrifice_to_graveyard,
-    execute_sacrifice_option, the token sac abilities). The +1/+1 counter is
-    applied inline rather than as a stacked triggered ability -- a deliberate,
-    documented timing collapse: it has no target and nothing in this pool can
-    respond to it, so on-stack vs inline is unobservable. Lazy registry import
+    execute_sacrifice_option, the token sac abilities). A real triggered
+    ability: queued onto the sacrificer's own trigger_queue (written directly,
+    not through the state.trigger_queue active-player proxy, in case the
+    sacrificer isn't the active player -- same reasoning state_based.
+    _queue_leave_triggers already documents) and promoted onto the stack at
+    the next priority window (effects.triggers._trigger_resolve's own
+    "on_sacrifice" branch runs the registry hook then). Lazy registry import
     (shared.py is imported very early)."""
     from .. import registry
     for permanent in state.players[sacrificer_idx].battlefield:
         spec = registry.EFFECT_REGISTRY.get(permanent.card_def.effect_id, {}).get("on_sacrifice")
         if spec is not None:
-            spec(state, permanent, sacrificed_card_def)
+            state.players[sacrificer_idx].trigger_queue.append({
+                "type": "on_sacrifice", "card_def": permanent.card_def,
+                "permanent": permanent, "sacrificed_card_def": sacrificed_card_def,
+            })
 
 
 def affinity_reduction(state):
@@ -139,8 +145,8 @@ def find_to_hand(state, name):
         # Log the library->hand move (real Magic: the card physically enters hand).
         # Every "search your library, put it into hand" effect routes through here
         # (forestcycle/Islandcycling, Ash Barrens, Land Grant, Expedition Map, ...);
-        # without this the fetched card appeared in hand with no logged event, so
-        # the replay never tracked it -- e.g. a later Brainstorm put-back that named
+        # without this the fetched card would enter hand with no logged event, so
+        # the replay wouldn't track it -- e.g. a later Brainstorm put-back naming
         # it couldn't find it. reason="search" distinguishes it from a normal draw.
         state.log_event("zone_move", card=found.name, from_zone="library", to_zone="hand", reason="search")
 

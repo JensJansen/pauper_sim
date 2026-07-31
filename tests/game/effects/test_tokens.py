@@ -1,4 +1,5 @@
-"""Migrated from game/effects/tokens.py's __main__ ponytail self-check."""
+"""Token creation (including the shared TOKEN_LIMIT) and the token-specific
+activated sac abilities (Blood's draw-a-card)."""
 from game import registry, resolution
 from game.cards import CardDef, CardType, EffectId
 from game.effects.stack import resolve_top_of_stack
@@ -10,6 +11,7 @@ from game.effects.tokens import (
     activate_blood_sac,
     create_token,
 )
+from game.effects.triggers import promote_triggers_to_stack
 from game.state import GameState, Permanent
 
 
@@ -48,6 +50,31 @@ def test_create_token_and_blood_sac():
         assert len(state.hand) == drawn_before
     finally:
         registry.EFFECT_REGISTRY[EffectId.FILLER] = _filler_backup
+
+
+def test_blood_sac_triggers_gixian_infiltrator():
+    """Regression: activate_blood_sac/activate_clue_sac/activate_food_sac
+    now call fire_sacrifice_triggers too, not just sacrifice_to_graveyard/
+    execute_sacrifice_option -- so sacrificing a TOKEN still triggers
+    "whenever you sacrifice another permanent" (Gixian Infiltrator), queued
+    and placed on the stack like any other triggered ability, not applied
+    immediately."""
+    state = GameState(on_the_play=True)
+    gix = Permanent(registry.CARD_DEFS["Gixian Infiltrator"])
+    gix.slot = 1
+    state.battlefield = [gix]
+    create_token(state, BLOOD_TOKEN_CARD_DEF)
+    blood = next(p for p in state.battlefield if p.card_def.name == "Blood")
+    state.hand = [CardDef("Filler", CardType.SORCERY, {}, None)]
+    state.library = [CardDef("Library Card", CardType.SORCERY, {}, None)]
+    activate_blood_sac(state, blood)
+    resolution.execute_discard_option(state, "Filler")
+    assert gix.counters.get("+1/+1") is None  # not applied yet -- still just queued
+    promote_triggers_to_stack(state)
+    resolve_top_of_stack(state)  # Gixian's own trigger -- placed last (LIFO), resolves first
+    assert gix.counters.get("+1/+1") == 1
+    resolve_top_of_stack(state)  # Blood's own draw
+    assert len(state.hand) == 1
 
 
 def test_token_limit_enforcement():

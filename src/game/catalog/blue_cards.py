@@ -47,9 +47,10 @@ BLUE_CARD_CATALOG = {
     "Counterspell": CardDef("Counterspell", CardType.INSTANT, {"U": 2}, EffectId.COUNTERSPELL),
     "Dispel": CardDef("Dispel", CardType.INSTANT, {"U": 1}, EffectId.DISPEL),
     "Spell Pierce": CardDef("Spell Pierce", CardType.INSTANT, {"U": 1}, EffectId.SPELL_PIERCE),
-    # {1}{U/R} -- modeled {1}{U}: the hybrid's red half is unreachable in
-    # dmir_terror (a U/B deck with no red source), same authorized
-    # simplification as Slippery Bogle's {G/U}->{G} (real cost per Scryfall).
+    # AUTHORIZED SIMPLIFICATION (owner, 2026-07-31): {1}{U/R} -- modeled
+    # {1}{U}: the hybrid's red half is unreachable in dmir_terror (a U/B deck
+    # with no red source). Same deviation as Slippery Bogle's {G/U}->{G}
+    # (multicolor_cards.py's own module docstring; real cost per Scryfall).
     "Abandon Attachments": CardDef("Abandon Attachments", CardType.INSTANT, {"generic": 1, "U": 1}, EffectId.ABANDON_ATTACHMENTS),
     "Sleep of the Dead": CardDef("Sleep of the Dead", CardType.SORCERY, {"U": 1}, EffectId.SLEEP_OF_THE_DEAD),
     # --- G6: dmir_terror ---
@@ -194,9 +195,8 @@ def escape_sleep_of_the_dead(state, inst):
     removal: it's also the exclusion passed to _exile_n_other_from_graveyard,
     whose predicate is `c is not exclude`, so a SECOND Sleep copy in the
     graveyard stays a legal choice to exile as part of the cost (faithful --
-    it genuinely is "another card") while the escaping copy itself never is.
-    This function used to re-derive it by name; the boundary now hands it
-    down (drl_env._actions._graveyard_instance)."""
+    it genuinely is "another card") while the escaping copy itself never is,
+    handed down directly by the caller (drl_env._actions._graveyard_instance)."""
     sleep_inst = inst
 
     def _after_exile(state):
@@ -422,10 +422,9 @@ def flashback_deep_analysis(state, inst):
     legal predicate.
 
     inst: the exact graveyard CardInstance being flashed back -- see
-    flashback_dread_return. This function is why that boundary exists: it used
-    to be handed the interned CardDef and call state.graveyard.remove on it,
-    which can never match a CardInstance, crashing a real pretrain run with
-    ValueError."""
+    flashback_dread_return. Matched and removed by object identity, not a
+    by-name lookup, since a graveyard can hold same-named CardInstances that
+    must stay distinct."""
     state.graveyard.remove(inst)
     lose_life(state, 3, reason="deep_analysis_flashback")
     push_to_stack(state, inst, _deep_analysis_effect, reserves_hand_card=False, exiles_on_resolve=True)

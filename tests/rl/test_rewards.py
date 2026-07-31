@@ -1,4 +1,4 @@
-"""Migrated from src/rl/rewards.py's __main__ self-check."""
+"""Tests for rl.rewards's win/loss reward functions."""
 import pytest
 
 from game.state import GameState, PlayerState
@@ -46,8 +46,8 @@ def test_action_count_win_reward():
     win_past_cap = rf(state2, done=True, horizon=120)
     assert win_at_cap == win_past_cap  # bottomed out -- doesn't keep decaying below this
 
-    # legacy reward now self-contains the loser gate (the external loser gate is
-    # gone): a non-winning seat (state.winner != state.active_idx) scores 0 on its own.
+    # This legacy reward self-contains the loser gate: a non-winning seat
+    # (state.winner != state.active_idx) scores 0 on its own.
     state2.active_idx = 1  # score seat 1; winner is 0 -> a loss for this seat
     assert rf(state2, done=True, horizon=120) == 0.0
     state2.active_idx = 0
@@ -56,7 +56,7 @@ def test_action_count_win_reward():
 @pytest.mark.slow
 def test_deploy_reward():
     # --- deploy_reward: two-band terminal reward, scored per seat ---
-    dr = deploy_reward()  # defaults: plateau 80, max 200, win_floor 0.5, 0.05 penalties
+    dr = deploy_reward()  # defaults: plateau 80, max 200, win_floor 0.5, discard_base 0.02
     s = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
     s.active_idx = 0  # score seat 0 throughout (rl.train._reward_for flips this in real use)
 
@@ -78,21 +78,27 @@ def test_deploy_reward():
     s.players[0].actions_taken = 5 + 5000
     assert abs(dr(s, done=True, horizon=120) - 0.5) < 1e-9  # floored, never below win_floor
 
-    # LOSS band (seat 0 is NOT the winner): 0.25 minus 0.05/discard-turn, floored
-    # at 0. Mulligans are NOT scored here (the mulligan model owns that now).
+    # LOSS band (seat 0 is NOT the winner): exactly 0.0 with no cleanup
+    # discards, else -(discard_base ** cleanup_discard_turns) -- SHRINKS toward
+    # 0 as discard-turns pile up (discard_base=0.02 < 1), so the FIRST one is
+    # the loudest signal, not the worst-case cumulative one. Mulligans are not
+    # scored here -- the mulligan model owns that.
     s.winner = 1
     s.players[0].cleanup_discard_turns = 0
-    s.players[0].mulligans_taken = 7   # mulligans no longer affect the loss band
-    assert abs(dr(s, done=True, horizon=120) - 0.25) < 1e-9  # played its hand, lost (mulligans ignored)
+    s.players[0].mulligans_taken = 7   # mulligans don't affect the loss band
+    assert dr(s, done=True, horizon=120) == 0.0  # played its hand, lost (mulligans ignored)
+    s.players[0].cleanup_discard_turns = 1
+    assert abs(dr(s, done=True, horizon=120) - (-0.02)) < 1e-9  # -(0.02**1) -- the loudest single penalty
     s.players[0].cleanup_discard_turns = 3
-    assert abs(dr(s, done=True, horizon=120) - 0.10) < 1e-9  # 0.25 - 3*0.05
+    assert abs(dr(s, done=True, horizon=120) - (-0.000008)) < 1e-12  # -(0.02**3) -- already much smaller
     s.players[0].cleanup_discard_turns = 6
-    assert dr(s, done=True, horizon=120) == 0.0  # over-penalized on discards -> clamped, never negative
+    val_6 = dr(s, done=True, horizon=120)
+    assert -1e-9 < val_6 < 0  # keeps shrinking toward (never reaching) 0 -- never grows past the n=1 case
 
     # No-winner timeout (winner None) uses the loss band for whichever seat.
     s.winner = None
     s.players[0].cleanup_discard_turns = 1
-    assert abs(dr(s, done=True, horizon=120) - 0.20) < 1e-9  # 0.25 - 1*0.05
+    assert abs(dr(s, done=True, horizon=120) - (-0.02)) < 1e-9
 
 
 @pytest.mark.slow

@@ -45,11 +45,11 @@ import game
 #   I. Decline (Ancient Stirrings)
 #   K. Choose target: <name> (slot k) -- exact-(name, slot)-addressed, the
 #      "choose_permanent" resolution's own actions (Aura enchant-targets,
-#      Crop Rotation's sacrifice cost, land bounce) -- NOT category F,
-#      unlike before: two same-named permanents stop being interchangeable
-#      the instant an Aura attaches to only one of them, and cast_aura's
-#      cast-time-target/resolve-time-fizzle contract depends on knowing
-#      exactly which physical permanent was chosen.
+#      Crop Rotation's sacrifice cost, land bounce) -- NOT category F:
+#      two same-named permanents stop being interchangeable the instant an
+#      Aura attaches to only one of them, and cast_aura's cast-time-target/
+#      resolve-time-fizzle contract depends on knowing exactly which
+#      physical permanent was chosen.
 #
 # spy_combo deck additions: B also covers Winding Way's modal cast (2
 # actions, one per mode), Land Grant's free alt-cost, Dread Return's
@@ -134,12 +134,9 @@ def _hand_count_available(state, name):
     """How many copies of `name` in state.hand are castable right now -- just
     the count in hand. A spell LEAVES hand the instant it is put on the stack
     (game.effects.stack.push_to_stack removes it at cast), so a copy already
-    paid-for and awaiting resolution is simply no longer in state.hand and can't
-    be re-cast -- the card physically leaving hand IS the re-cast guard. (Before
-    that, a cast copy stayed in hand until its resolve ran, so this had to
-    subtract on-stack copies by hand to stop the model casting the same physical
-    copy twice -- which still crashed once two entries both tried to remove it.
-    That bookkeeping is now subsumed by the faithful zone move.)"""
+    paid-for and awaiting resolution is simply not in state.hand and can't be
+    re-cast -- the card physically leaving hand IS the re-cast guard, so a
+    plain hand tally is all this needs."""
     return sum(1 for c in state.hand if c.name == name)
 
 
@@ -450,10 +447,9 @@ def _x_modal_execute(name, mode_items):
     the total cost is calculated/paid -- matches real sequencing (mode is
     part of announcing the spell; X is determined as part of costing it,
     strictly afterward). Nyxborn Hydra's Bestow mode still needs a real Aura
-    target (precast_choice), settled after payment, same as today --
+    target (precast_choice), settled after payment, same as a plain cast --
     make_resolve(x) (green_cards.cast_nyxborn_hydra_creature/_bestow) is
-    called once X is known, exactly as the old per-(mode,X) row baked it in
-    at table-build time, just deferred to runtime."""
+    called once X is known, at execute time rather than table-build time."""
     def execute(state):
         card_def = game.CARD_DEFS[name]
 
@@ -702,7 +698,7 @@ def _choose_name_options(state):
     # Float-first: no tap-during-payment. Mana is produced by top-level mana
     # abilities BEFORE casting; paying a cost only ever spends floated pool mana
     # (_pool_spend), never taps a source here. So "pay_cost" is absent from this
-    # by-name dispatch (it used to tap fixed sources).
+    # by-name dispatch.
     if kind == "search_fetch":
         return game.search_fetch_options(state)
     if kind == "throne_reveal":  # Undercity Throne: pick a creature card from the revealed top 10
@@ -808,9 +804,9 @@ def _attack_legal(name, slot):
 
 def _attack_execute(name, slot):
     """Declares the specific physical permanent occupying this (name,
-    slot) as an attacker -- unlike the old arbitrary-pick-by-name
-    behavior, this lets a model distinguish an Aura-enchanted copy
-    (different effective power) from a plain one of the same name."""
+    slot) as an attacker -- exact-slot addressing lets a model distinguish
+    an Aura-enchanted copy (different effective power) from a plain one of
+    the same name."""
     def execute(state):
         permanent = next(
             p for p in state.battlefield
@@ -995,11 +991,11 @@ def _dispose_execute(state):
     game.execute_scry_surveil_option(state, "dispose")
 
 
-# NOTE: the _mulligan_decision_legal / _mulligan_take_legal / _mulligan_keep_execute
-# / _mulligan_take_execute helpers were removed with the pregame fixed-table actions
-# (the harness refactor) -- the MulliganNet (rl.mulligan) owns the pregame phase
-# now, so nothing in the action table references them. The engine's own mulligan
-# (game.execute_mulligan_keep/take, game.turn.run_mulligan_phase) is untouched.
+# NOTE: nothing in this action table references pregame mulligan decisions --
+# the MulliganNet (rl.mulligan) owns the pregame phase instead (see the
+# pregame-mulligan note further down, near the universal decision rows). The
+# engine's own mulligan (game.execute_mulligan_keep/take, game.turn.
+# run_mulligan_phase) is unaffected.
 
 
 def _decline_legal(state):
@@ -1491,10 +1487,10 @@ def _with_chosen_copy(state, name, proceed, reserved_cost=None):
     choose_cast_copy pending and continues from its on_complete; the choice is
     made BEFORE any cost is paid, which is both the faithful order and what
     keeps the single pending_resolution slot free for the payment that follows.
-    With exactly one copy there is no choice to make, so it proceeds inline --
-    not a simplification, just the absence of a decision (the harness would
-    auto-resolve a one-option pending anyway; skipping it avoids a pointless
-    token-set build + mask sweep on the common path).
+    With exactly one copy there is no choice to make, so it proceeds inline:
+    this is not a simplification, just the absence of a decision (the harness
+    would auto-resolve a one-option pending anyway; skipping it avoids a
+    pointless token-set build + mask sweep on the common path).
 
     reserved_cost: the mana cost `proceed` will pay via begin_pay_cost once a
     copy is chosen (None if there is none, e.g. a life-only flashback cost) --
@@ -2041,7 +2037,7 @@ def build_action_table(decklist, registry, token_card_defs=(), pending_kinds=(),
             # ability's own spec is that opt-in override; every existing
             # ability (Blood, Candy Trail, Expedition Map, Bonders'
             # Ornament, Quirion Ranger, Barrels) has none, so all keep
-            # working in every phase exactly as before this feature existed.
+            # working in every phase, unrestricted by speed.
             speed = spec.get("speed", game.turn.Speed.INSTANT)
             if "cost_key" in spec:
                 actions.append((
@@ -2128,13 +2124,13 @@ def build_action_table(decklist, registry, token_card_defs=(), pending_kinds=(),
     # exactly that case legal-to-create but impossible-to-choose once a
     # token was the only eligible option, softlocking the game.
     # extra_choosable_names: card names that can be a "Choose: X" option despite
-    # not being in THIS deck (nor its tokens). Once served an OPPONENT's
-    # graveyard cards (Relic of Progenitus' cross-player exile), but the league
-    # (rl.pool) no longer passes it: choose_graveyard_card is now a POINTER
-    # target (rl.action_bridge), so an opponent's graveyard is reached by
-    # pointing at its token, not a whole-league "Choose: X" row per card name.
-    # Kept as a general knob (and used by scripts/migrate_pointer_graveyard.py
-    # to reconstruct the pre-pointer table); defaults to none. choosable_names
+    # not being in THIS deck (nor its tokens) -- e.g. an opponent's graveyard
+    # cards. The league (rl.pool) passes none: choose_graveyard_card is a
+    # POINTER target (rl.action_bridge), so an opponent's graveyard is reached
+    # by pointing at its token, not a whole-league "Choose: X" row per card
+    # name. Kept as a general knob, used by
+    # scripts/migrate_pointer_graveyard.py to reconstruct the pre-pointer
+    # table; defaults to none. choosable_names
     # itself (not just extra_choosable_names) also drives "Choose target: X
     # (slot k))" and "Attack: X (slot k)" below -- both strictly THIS side's
     # own battlefield permanents.
@@ -2194,17 +2190,18 @@ def build_action_table(decklist, registry, token_card_defs=(), pending_kinds=(),
     # resolution is pending -- see _assign_blocker_legal). "Done blocking"
     # is the explicit action that closes the consult, same "Done" precedent
     # as scry/surveil's own keep-then-order decomposition. Deliberately NO
-    # undo (no "Unassign Blocker") -- once committed, a blocker stays
-    # committed until Done: standing engine-wide policy (no action may let
-    # the agent reconsider/reverse an earlier commitment, see
-    # todo/no_undo_policy.md -- owner-authorized deviation from real
-    # Magic's single simultaneous declare-blockers action, 509.2, which this
-    # engine linearizes into one-creature-at-a-time picks with no way back).
-    # A prior version of this engine DID have Unassign Blocker; removed
-    # 2026-07-30 after it was confirmed to enable a real, observed
-    # pathological cycle (turn.py's own PRIORITY_ROUND_ACTION_CAP docstring:
-    # tens of thousands of assign/unassign iterations in one boggles_mirror
-    # evaluation, turn_number never advancing).
+    # AUTHORIZED SIMPLIFICATION (owner, 2026-07-31): no undo (no "Unassign
+    # Blocker") -- once committed, a blocker stays committed until Done. Real
+    # Magic's declare-blockers is a single simultaneous action (509.2); this
+    # engine linearizes it into one-creature-at-a-time picks with no way
+    # back, by design, across the whole engine (no action anywhere lets the
+    # agent reconsider/reverse an earlier commitment -- see
+    # todo/no_undo_policy.md for the broader rationale).
+    # An "Unassign Blocker" action would let assign/unassign cycle
+    # indefinitely with turn_number never advancing (turn.py's own
+    # PRIORITY_ROUND_ACTION_CAP docstring: tens of thousands of iterations in
+    # one boggles_mirror evaluation) -- the no-undo rule is what forecloses
+    # that pathology.
     for name in attackable_names:
         max_slot = qty_by_name.get(name, game.TOKEN_LIMIT)
         for slot in range(1, max_slot + 1):
@@ -2321,8 +2318,9 @@ def build_action_table(decklist, registry, token_card_defs=(), pending_kinds=(),
     # Float-first: NO "Abandon payment" -- there is no undo. Paying a cost is
     # just spending already-floated pool mana (the _pool_spend rows below), and
     # affordability was checked exactly (game.mana.pool_can_pay) before the
-    # payment began, so spending alone can never strand. Removing the action
-    # eliminates the tap/untap churn cycle the old dense abandon penalty fought.
+    # payment began, so spending alone can never strand. With no such action to
+    # take, there is no tap/untap churn cycle for a dense reward penalty to
+    # ever need to fight.
     #
     # That "cannot strand" guarantee is NOT self-enforcing, though: because
     # there is no undo, anything that DESTROYS floating mana mid-payment can
@@ -2334,13 +2332,13 @@ def build_action_table(decklist, registry, token_card_defs=(), pending_kinds=(),
     # {G}). _filter_would_strand_payment now upholds the guarantee for that
     # path; any FUTURE action that consumes floating mana must do the same.
     # NOTE: the pregame mulligan actions ("Keep hand" / "Mulligan") and the
-    # "mulligan_bottom" branch of the generic "Choose: X" action were REMOVED from
-    # this table (the harness refactor). The per-deck MulliganNet (rl.mulligan)
-    # now OWNS every pregame decision -- rl.agent.SeatAgent intercepts the pregame
-    # pending kinds before the main net's forward -- so the main policy's action
-    # space contains ZERO pregame actions and a game can never fall back to a
-    # fixed-table mulligan. The _mulligan_*_legal/_execute helpers are retained
-    # (still exported) but no longer wired into any table.
+    # "mulligan_bottom" branch of the generic "Choose: X" action have no rows in
+    # this table. The per-deck MulliganNet (rl.mulligan) owns every pregame
+    # decision -- rl.agent.SeatAgent intercepts the pregame pending kinds before
+    # the main net's forward -- so the main policy's action space contains ZERO
+    # pregame actions and a game can never fall back to a fixed-table mulligan.
+    # The _mulligan_*_legal/_execute helpers remain exported for the engine's own
+    # use, not wired into any table.
     # Refurbished Familiar already makes the OPPONENT discard from their own hand
     # (the "Choose: X" hand-name rows are their own, so those self-serve) -- but
     # the decline row is a constant button, so it is universal per the block above.
@@ -2807,9 +2805,9 @@ def legal_action_mask(state, actions):
     pending_resolution["kind"] values it could possibly be legal under --
     copied directly from that closure's own first-line check, changing WHEN
     it gets called, never WHAT it returns. A closure with no `._pending_gate`
-    stamped (attack, and anything this fix's own audit didn't touch) is
-    always called, exactly like every closure was before this fix -- the
-    fail-safe default, not an optimization gap that can go wrong.
+    stamped (attack, and anything the gate-stamping audit didn't touch) is
+    always called -- the fail-safe default, not an optimization gap that can
+    go wrong.
 
     A SEPARATE gate, `._mana_subdecision_gate`, governs the "Produce <color>"
     buttons (state.mana_subdecision's own choose_color stage) -- checked

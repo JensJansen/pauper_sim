@@ -1,17 +1,16 @@
-"""League driver: one continuous training loop in place of a discrete
-"mirror baseline, then one pairwise fine-tune" curriculum. Every deck in
-the roster (data/league_decks.json) trains every round, against an
-opponent RESAMPLED each game from a LeaguePool (rl.league) -- historical
-snapshots of every deck plus everyone's current live weights, picked
-uniformly. No separate "Stage 1"/"Stage 2":
+"""League driver: one continuous training loop, with no separate "Stage 1"/
+"Stage 2" curriculum. Every deck in the roster (data/league_decks.json)
+trains every round, against an opponent RESAMPLED each game from a
+LeaguePool (rl.league) -- historical snapshots of every deck plus everyone's
+current live weights, picked uniformly. No separate stages are needed:
 early on, with few decks and no snapshots yet, most games are naturally
 close to mirror play; cross-deck and cross-snapshot exposure grows
 organically as the pool fills in, without a hardcoded phase boundary.
 
-Same frozen shared stack as before (pretraining's shared_stack_frozen.pt,
-unaffected by this change). Each deck's own live net/optimizer persists
-in checkpoints/league/<deck_name>/live.pt; historical opponents live
-alongside as snapshot_<id>.pt (LeaguePool's own concern).
+Uses the same frozen shared stack as pretraining (shared_stack_frozen.pt).
+Each deck's own live net/optimizer persists in checkpoints/league/
+<deck_name>/live.pt; historical opponents live alongside as
+snapshot_<id>.pt (LeaguePool's own concern).
 
 Parallel rollout collection (rl.train.collect_rollout_league_parallel)
 is used whenever n_workers > 1 -- benchmarked at ~3.2-3.5x wall-clock
@@ -317,11 +316,9 @@ def _run_session(n_iterations, games_per_iteration, snapshot_every, executor, n_
             # reaches this loop in the first place (buffers_by_deck only ever
             # contains a bucket for a live opponent, per _make_league_pairing's own
             # record_as logic; a frozen-snapshot opponent records nothing regardless).
-            # There used to be a second, optional gate here (salvage_opponents,
-            # on by default) letting a caller train the deck's own bucket only and
-            # discard a live opponent's -- removed: within train_set, "live opponent
-            # got real transitions this round" and "that deck should learn from them"
-            # are the same fact, never a configurable choice.
+            # Within train_set, "live opponent got real transitions this round" and
+            # "that deck should learn from them" are the same fact -- never a
+            # separate, configurable choice.
             policy_loss = value_loss = entropy = 0.0
             salvaged = 0
             if train_deck:
@@ -449,8 +446,8 @@ def _json_default(obj):
 
 def _write_event_log(log_path, game_logs, meta):
     """Write the engine event logs collected this session to PATH as one compact
-    JSON doc (no indent -- an earlier oversized-log issue was pretty-printed
-    output). _json_default salvages any stray non-serializable field."""
+    JSON doc (no indent -- pretty-printing bloats an event log substantially).
+    _json_default salvages any stray non-serializable field."""
     os.makedirs(os.path.dirname(log_path) or ".", exist_ok=True)
     doc = {"meta": meta, "games": [{"game_index": i, "events": ev} for i, ev in enumerate(game_logs)]}
     with open(log_path, "w") as f:
@@ -577,8 +574,7 @@ def main():
         if args.log:
             # "decks" logs the RESOLVED roster _run_eval actually played, not the raw
             # --decks arg -- train_decks is None whenever --decks was omitted (the
-            # common case), which used to leave meta["decks"] as None even though a
-            # real (full-roster) round-robin had just been played.
+            # common case), which is not the same as "no decks played."
             _write_event_log(args.log, game_logs, {"mode": "eval", "matchup": list(matchup) if matchup else None,
                                                    "decks": resolved_decks, "greedy": args.greedy, "games_logged": len(game_logs)})
         return
@@ -614,7 +610,7 @@ def main():
     # otherwise this league's own total_games/max_batch_size + how far it's
     # already gotten (progress.json) determine the next batch automatically.
     # Logging is threaded through BOTH the sequential and MP league paths
-    # (event dicts are picklable), so --log no longer forces sequential.
+    # (event dicts are picklable), so --log does not force sequential collection.
     auto_sizing = False
     if matchup is not None:
         games_per_iteration = min(max(games_per_iteration, 10), args.games)

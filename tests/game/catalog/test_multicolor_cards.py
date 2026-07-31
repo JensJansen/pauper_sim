@@ -1,8 +1,6 @@
-"""Tests for game.catalog.multicolor_cards -- migrated from that module's
-former `if __name__ == "__main__":` ponytail self-check block. Each test
-below preserves the original assertions' exact semantics; see the module
-under test for the card-implementation rationale (real-rules citations,
-etc.) these checks were guarding."""
+"""Tests for game.catalog.multicolor_cards. See the module under test for
+the card-implementation rationale (real-rules citations, etc.) each test
+below guards."""
 
 from game import registry, resolution
 from game.cards import CardDef, CardType, EffectId
@@ -10,6 +8,7 @@ from game.catalog.multicolor_cards import cast_agony_warp, cast_terminate, cast_
 from game.effects.shared import card_colors
 from game.effects.stack import resolve_top_of_stack
 from game.effects.stats import permanent_power, permanent_toughness
+from game.effects.triggers import promote_triggers_to_stack
 from game.state import GameState, Permanent, PlayerState
 
 
@@ -18,9 +17,9 @@ def _two():
 
 
 def test_terminate_destroys_any_creature():
-    """{B}{R}: Destroy target creature. It can't be regenerated (a no-op --
-    regeneration isn't modeled). Destroys a black creature -- any creature
-    qualifies, including black."""
+    """{B}{R}: Destroy target creature. It can't be regenerated -- a no-op,
+    since no card in this engine ever grants regeneration. Destroys a black
+    creature -- any creature qualifies, including black."""
     state = _two()
     victim = Permanent(CardDef("Black Creature", CardType.CREATURE, {"B": 1}, EffectId.FILLER, power=2, toughness=2))
     victim.slot = 1
@@ -80,7 +79,8 @@ def test_writhing_chrysalis_devoid_eldrazi_spawn_and_sacrifice_counter():
     resolves), then the 2/3 enters on resolution as colorless (Devoid).
     Reach + "whenever you sacrifice another Eldrazi, +1/+1" (its
     on_sacrifice), exercised here via the Eldrazi Spawn token's own sac
-    ability."""
+    ability. A real triggered ability -- queued, then placed on the stack at
+    the next priority window, not applied immediately."""
     state = GameState(on_the_play=True)
     state.hand = [registry.CARD_DEFS["Writhing Chrysalis"]]
     cast_writhing_chrysalis(state, registry.CARD_DEFS["Writhing Chrysalis"])
@@ -90,4 +90,6 @@ def test_writhing_chrysalis_devoid_eldrazi_spawn_and_sacrifice_counter():
     assert card_colors(wr.card_def) == set()  # Devoid -> colorless
     spawn = next(p for p in state.battlefield if p.card_def.name == "Eldrazi Spawn")
     registry.EFFECT_REGISTRY[EffectId.ELDRAZI_SPAWN_TOKEN]["activated_abilities"]["sac"]["resolve"](state, spawn)
+    promote_triggers_to_stack(state)
+    resolve_top_of_stack(state)
     assert wr.counters.get("+1/+1") == 1  # "whenever you sacrifice another Eldrazi"

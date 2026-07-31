@@ -75,7 +75,9 @@ from .. import registry
 from ..cards import CardDef, CardType, EffectId
 from ..effects.casting import _log_target_fizzle, capture_any_target, cast_permanent_from_hand, enters_battlefield, target_still_legal
 from ..effects.stack import push_ability_to_stack, push_to_stack
-from ..effects.shared import affinity_reduction, discard_from_hand_to_graveyard, find_and_remove_by_name, find_to_hand
+from ..effects.shared import (
+    affinity_reduction, discard_from_hand_to_graveyard, find_and_remove_by_name, find_to_hand, fire_sacrifice_triggers,
+)
 from ..effects.state_based import check_state_based_actions, sacrifice_to_graveyard
 from ..effects.stats import can_be_targeted, permanent_power
 from ..effects.tokens import activate_blood_sac, activate_clue_sac, activate_map_sac
@@ -246,6 +248,7 @@ def activate_twisted_landscape_fetch(state, permanent):
         "zone_move", permanent=(permanent.card_def.name, permanent.slot), from_zone="battlefield",
         to_zone="graveyard", reason="sacrifice",
     )
+    fire_sacrifice_triggers(state, state.active_idx, permanent.card_def)  # Gixian Infiltrator
 
     def _effect(st):
         def _on_fetch(st, land_name):
@@ -287,6 +290,7 @@ def activate_expedition_map(state, permanent):
         "zone_move", permanent=(permanent.card_def.name, permanent.slot), from_zone="battlefield",
         to_zone="graveyard", reason="sacrifice",
     )
+    fire_sacrifice_triggers(state, state.active_idx, permanent.card_def)  # Gixian Infiltrator
     push_ability_to_stack(state, permanent.card_def, lambda st: begin_search_fetch(st, lambda c: c.card_type == CardType.LAND, find_to_hand))
 
 
@@ -310,6 +314,7 @@ def activate_candy_trail_sac(state, permanent):
         "zone_move", permanent=(permanent.card_def.name, permanent.slot), from_zone="battlefield",
         to_zone="graveyard", reason="sacrifice",
     )
+    fire_sacrifice_triggers(state, state.active_idx, permanent.card_def)  # Gixian Infiltrator
 
     def _effect(state):
         gain_life(state, 3)
@@ -356,10 +361,9 @@ def activate_relic_of_progenitus_exile(state, permanent):
     explicitly either way via drl_env's own fixed "Target: yourself"/
     "Target: opponent" actions. Whichever player is targeted then chooses one
     of THEIR OWN graveyard cards to exile -- made by THAT player themselves via
-    the active_idx flip (see "Faithful timing + cross-player choice" below), NOT
-    the old simplify-to-the-activating-player approximation. Untracked exile,
-    same convention as this same artifact's other, one-shot exile-self ability
-    above. Repeatable (no
+    the active_idx flip (see "Faithful timing + cross-player choice" below).
+    Untracked exile, same convention as this same artifact's other, one-shot
+    exile-self ability above. Repeatable (no
     mana cost, {T} only), independent of that other ability. An empty
     target graveyard -> nothing to choose, the same empty-options safety
     net begin_choose_graveyard_card already provides.
@@ -369,9 +373,7 @@ def activate_relic_of_progenitus_exile(state, permanent):
     is put on the stack (targets lock at activation); only the EFFECT waits
     on the stack. When it resolves, the TARGETED player -- not the activator
     -- chooses which of their own graveyard cards to exile: active_idx is
-    flipped to them for that forced choice and restored afterward. This
-    replaces the old "simplified to the activating player's choice"
-    approximation now that a real cross-player flip exists to do it right."""
+    flipped to them for that forced choice and restored afterward."""
     permanent.tapped = True  # {T} -- a COST, paid now on activation
     state.log_event("tap", permanent=(permanent.card_def.name, permanent.slot), reason="activate")
 
@@ -412,6 +414,7 @@ def _lotus_petal_on_tap(state, permanent):
         "zone_move", permanent=(permanent.card_def.name, permanent.slot), from_zone="battlefield",
         to_zone="graveyard", reason="sacrifice",
     )
+    fire_sacrifice_triggers(state, state.active_idx, permanent.card_def)  # Gixian Infiltrator
 
 
 def _treasure_on_tap(state, permanent):
@@ -424,6 +427,7 @@ def _treasure_on_tap(state, permanent):
         "zone_move", permanent=(permanent.card_def.name, permanent.slot), from_zone="battlefield",
         to_zone="ceases_to_exist", reason="sacrifice",
     )
+    fire_sacrifice_triggers(state, state.active_idx, permanent.card_def)  # Gixian Infiltrator
 
 
 def _basic_land(card_def):

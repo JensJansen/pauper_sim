@@ -1,8 +1,7 @@
 """Tests for game.mana float-first mana system: activate_mana_source,
 begin_pay_cost/execute_pool_spend, pool_can_pay/plan_payment, and the
 Boggles-style mana-fixing Auras (Utopia Sprawl automatic bonus, Abundant
-Growth competing granted ability). Migrated from game/mana.py's former
-`if __name__ == "__main__":` self-check block."""
+Growth competing granted ability)."""
 
 from game import mana, registry
 from game.cards import CardDef, CardType, EffectId
@@ -11,8 +10,8 @@ from game.state import GameState, Permanent
 
 def test_fixed_multi_source_floats_both_symbols_at_once():
     # fixed_multi: one tap of a Rakdos-Carnarium-like source covers both
-    # an outstanding B need and an outstanding R need at once -- the exact
-    # case a single-symbol-per-source approximation couldn't see at all.
+    # an outstanding B need and an outstanding R need at once, since it
+    # floats both symbols from a single activation.
     filler_backup = registry.EFFECT_REGISTRY[EffectId.FILLER]
     registry.EFFECT_REGISTRY[EffectId.FILLER] = {"mana": ("fixed_multi", ("B", "R"))}
     try:
@@ -29,9 +28,7 @@ def test_fixed_multi_source_floats_both_symbols_at_once():
 def test_count_source_produces_one_symbol_per_matching_permanent():
     # Overgrown Battlement (real card, "count" kind -- one G per Defender
     # you control, itself included): 3 Defenders on the battlefield means
-    # ONE tap of Battlement alone produces 3 G. The pre-rewrite solver
-    # credited count sources as if they always produced exactly 1,
-    # regardless of the real total -- confirm that undercount is gone.
+    # ONE tap of Battlement alone produces 3 G, not just 1.
     state = GameState(on_the_play=True)
     state.battlefield = [
         Permanent(CardDef("Overgrown Battlement", CardType.CREATURE, {"G": 1}, EffectId.OVERGROWN_BATTLEMENT, defender=True)),
@@ -115,10 +112,8 @@ def test_abundant_growth_granted_color_only_via_enchanted_permanent():
     # Plains, so the caller can activate_mana_source that exact permanent
     # specifically -- even with an identical-by-name plain Plains also in
     # play. Same-named sources are normally fully interchangeable in this
-    # engine; a granted-mana Aura breaks that for the first time (this is
-    # the exact bug a full-decklist smoke test caught: picking an arbitrary
-    # same-named Plains raised "has no color choice" whenever it happened
-    # to pick the unenchanted one).
+    # engine; a granted-mana Aura is the one case that breaks that, since
+    # only the enchanted copy can actually produce the granted color.
     state = GameState(on_the_play=True)
     plain_plains = Permanent(CardDef("Plains", CardType.LAND, None, EffectId.PLAINS))
     grant_plains = Permanent(CardDef("Plains", CardType.LAND, None, EffectId.PLAINS))

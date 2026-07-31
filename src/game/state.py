@@ -56,10 +56,10 @@ class CardInstance:
     code that reads those straight off a zone element keeps working unchanged
     once that element became a CardInstance.
 
-    SCOPE (this pass): the graveyard holds CardInstances and the battlefield
+    SCOPE: the graveyard holds CardInstances and the battlefield
     holds Permanents (which subclass this). hand/library/exile are DEFERRED --
-    still list[CardDef] -- until a card needs distinct instances there; see
-    plans/object-identity-zone-model.md. FUTURE (400.7 exceptions): no pool
+    still list[CardDef] -- until a card needs distinct instances there.
+    FUTURE (400.7 exceptions): no pool
     card yet has a linked ability that TRACKS an object across a zone change
     (Adventure/Foretell/"return THIS card"); that would need the instance to
     stay linked across the specific move rather than being reminted here."""
@@ -175,11 +175,11 @@ class Permanent(CardInstance):
 
 
 class PlayerState:
-    """One player's zones, turn-scoped counters, and life total -- what
-    used to be the entirety of GameState before the multiplayer refactor.
-    A 1-player game is just a GameState with a single PlayerState in it;
-    nothing in this class itself knows or cares how many other
-    PlayerStates, if any, exist alongside it."""
+    """One player's zones, turn-scoped counters, and life total. GameState
+    holds a list of these, one per player -- two for a real game, one for
+    a unit test that only needs to exercise a single board. Nothing in
+    this class itself knows or cares how many other PlayerStates, if any,
+    exist alongside it."""
 
     def __init__(self, on_the_play, life_total=STARTING_LIFE):
         self.library = []       # ordered list[CardDef], index 0 = top of deck
@@ -345,9 +345,10 @@ def _active_player_property(attr):
 
 class GameState:
     """Shared turn/stack/pending-resolution bookkeeping, plus a list of
-    PlayerStates (length 1 today for every existing config; 2 for a
-    multiplayer game). Every zone
-    accessor below (state.hand, state.battlefield, ...) is a property
+    PlayerStates -- two for a real game (self-play training always runs
+    2-player via turn.run_multiplayer_game), one for a unit test that only
+    needs a single board. Every zone accessor below (state.hand,
+    state.battlefield, ...) is a property
     proxying to state.players[state.active_idx] -- "whoever currently
     holds priority," which game.turn._declare_blockers_gen already
     temporarily flips away from the turn owner for its own narrow consult,
@@ -399,12 +400,11 @@ class GameState:
 
         # The turn the game ended on, and which player (index into
         # state.players) won it -- None/None while the game is still in
-        # progress. turn_won's meaning is unchanged from before the
-        # multiplayer refactor (every existing reader -- game/effects/*.py,
-        # drl_env, rl.rewards -- keeps working unmodified); winner is the
-        # new field 2-player games need to say *who*.
-        # winner stays None for a bare failure (horizon reached in
-        # 1-player, or -- 1-player only -- decking out with no opponent to
+        # progress. turn_won is set whenever the game ends for any reason
+        # (a life total hitting 0, a horizon cap, decking out); winner
+        # names WHICH player won and is only ever set in a 2-player game.
+        # winner stays None for a bare failure (horizon reached, or --
+        # in a 1-player unit-test state -- decking out with no opponent to
         # award the win to).
         self.turn_won = None
         self.winner = None
@@ -556,7 +556,7 @@ class GameState:
         point, enters_battlefield (a Permanent, for its ETB/slot logic).
 
         Today `destination` is always a graveyard list; hand/library/exile are
-        DEFERRED (still CardDef-based) -- see plans/object-identity-zone-model.md."""
+        DEFERRED (still CardDef-based)."""
         card_def = card.card_def if isinstance(card, CardInstance) else card
         inst = self.new_instance(card_def)
         destination.append(inst)

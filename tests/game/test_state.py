@@ -3,8 +3,7 @@ when logging is off, its envelope shape when on, and the whole mechanism
 exercised end to end through a real 2-player game (turn/stack/mana events).
 NOT a re-test of engine correctness -- every game/*.py module already tests
 its own instrumented behavior; this only confirms logging actually happens,
-in the right shape, in the right order, and costs nothing when off. Migrated
-from game/state.py's former `if __name__ == "__main__":` self-check block."""
+in the right shape, in the right order, and costs nothing when off."""
 
 import random
 
@@ -45,11 +44,10 @@ def test_real_game_event_log():
     # End to end through a REAL 2-player game (run_multiplayer_game -> every
     # instrumented mutation site across mana.py/turn.py/resolution/*.py/
     # game/effects/*.py) -- player 0 taps a Mountain, casts Lightning Bolt at
-    # player 1, and lets it resolve; player 1 only ever passes. This is
-    # exactly the scenario the removed earlier snapshot-based game logger got
-    # wrong: the stack push/resolve and the once-per-turn mana clear both
-    # happen as a side effect of "Pass," which that old logger silently
-    # dropped. Confirms this one doesn't.
+    # player 1, and lets it resolve; player 1 only ever passes. Confirms that
+    # state changes happening as an automatic side effect of "Pass" (the
+    # stack push/resolve, the phase-boundary mana-pool clear) are still
+    # captured -- not just changes triggered by an explicit model decision.
     bolt_def = registry.CARD_DEFS["Lightning Bolt"]
 
     # Lightning Bolt's production "cast" resolve is a precast "any target"
@@ -108,7 +106,7 @@ def test_real_game_event_log():
     assert "turn_start" in kinds and "phase_change" in kinds
     assert "zone_move" in kinds  # land entering the battlefield, and the Bolt hitting the stack then leaving it
     assert "mana_tap" in kinds and "mana_spend" in kinds
-    assert "pass" in kinds  # the exact event class the old snapshot-based logger silently dropped
+    assert "pass" in kinds  # Pass itself is a real, loggable event, not silently skipped
     assert "life_change" in kinds  # the Bolt's own damage to the opponent's life_total
     # Every draw -- both opening hands AND every in-game draw -- is recorded as
     # one library->hand zone_move (reason="draw") naming the cards, via the

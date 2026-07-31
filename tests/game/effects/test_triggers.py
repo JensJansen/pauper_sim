@@ -1,6 +1,4 @@
-"""Migrated from game/effects/triggers.py's __main__ ponytail self-check.
-
-The Madness "decision" branch is exercised together with
+"""The Madness "decision" branch is exercised together with
 madness_and_plot.execute_madness_cast in
 tests/game/effects/test_integration_check.py instead, since that chain
 needs both modules working together."""
@@ -58,10 +56,10 @@ def test_draw_counter_and_automatic_return():
 
 
 def test_two_simultaneous_targeting_etbs():
-    # 2 SIMULTANEOUS TARGETING ETBs (F8 generalization): both go through ONE
-    # begin_order_triggers ordering choice -- no assert-len<=1 guard anymore --
-    # each PLACED via its own etb_trigger hook (not a plain resolve). Placement
-    # order is the active player's choice; LIFO means placed-LAST resolves-FIRST.
+    # 2 simultaneous targeting ETBs: both go through ONE begin_order_triggers
+    # ordering choice, each PLACED via its own etb_trigger hook (not a plain
+    # resolve). Placement order is the active player's choice; LIFO means
+    # placed-LAST resolves-FIRST.
     etb_calls = []
 
     def _fake_targeting_etb(tag):
@@ -114,8 +112,8 @@ def test_two_simultaneous_targeting_etbs():
 
 
 def test_cross_owner_ltb_trigger_apnap_ordering():
-    # Cross-owner LTB trigger (the actual bug this session found): a
-    # NON-active player's creature dying via state-based action (combat,
+    # Cross-owner LTB trigger: a NON-active player's creature dying via
+    # state-based action (combat,
     # removal -- check_state_based_actions scans BOTH battlefields every
     # round) must queue into THAT player's own trigger_queue, not the
     # active player's proxy -- and promote_triggers_to_stack must place each
@@ -166,8 +164,8 @@ def test_cross_owner_ltb_trigger_apnap_ordering():
 
 
 def test_opponent_owned_order_triggers_offers_only_their_own_names():
-    # The actual crash scenario: the OPPONENT has 2+ simultaneous triggers of
-    # their OWN -- order_triggers must be answered by THAT player (active_idx
+    # The OPPONENT has 2+ simultaneous triggers of their OWN -- order_triggers
+    # must be answered by THAT player (active_idx
     # set to them), offering ONLY their own card names, never the active
     # player's -- this is what keeps order_triggers a safe by-name resolution
     # (drl_env._actions._CHOOSE_NAME_PENDING_KINDS's own guaranteed invariant:

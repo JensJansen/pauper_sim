@@ -1,4 +1,4 @@
-"""Migrated from src/rl/features.py's __main__ self-check."""
+"""Tests for rl.features: CardVocab indexing/persistence and build_token_set tokenization."""
 import os
 import shutil
 import tempfile
@@ -76,9 +76,7 @@ def test_static_card_features_land_no_crash():
 def test_static_card_features_token_resolves_via_vocab():
     _decklist_a, _decklist_b, vocab = _base_vocab()
     # Blood (a token, NOT in game.CARD_DEFS) -- must resolve via the vocab's
-    # own merged card_def_by_name, not crash with a KeyError (confirmed the
-    # hard way: this is exactly what broke the first version of this module
-    # the moment a real mono_red_madness game actually created one).
+    # own merged card_def_by_name, not crash with a KeyError.
     feat_blood = cached_static_card_features("Blood", vocab)
     assert len(feat_blood) == STATIC_FEATURE_DIM
     type_start = len(game.POOL_COLORS) + 1
@@ -194,9 +192,9 @@ def test_build_token_set_both_seats_all_zones_and_targeting():
         targeted_mine_slot = -(len(ZONES) + 1) - 2
         committed_blocker_slot = -(len(ZONES) + 1) - 3
         # committed_as_blocker must be set on Guttersnipe regardless of
-        # my_seat -- this is exactly the bug the owner_idx fix corrects:
-        # without it, blocked_by lookups silently used the wrong seat's
-        # dict once my_seat_idx=1.
+        # my_seat: without reading the permanent's own true owner_idx (not
+        # my_seat_idx), blocked_by lookups would silently use the wrong
+        # seat's dict once my_seat_idx=1.
         assert guttersnipe_row[committed_blocker_slot] == 1.0, (
             f"my_seat={my_seat}: Guttersnipe should show committed_as_blocker=1.0, got "
             f"{guttersnipe_row[committed_blocker_slot]}"

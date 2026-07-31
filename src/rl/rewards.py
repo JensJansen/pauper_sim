@@ -11,12 +11,11 @@ matching callable works.
 
 Only WIN/LOSS rewards live here (no dense shaping): a win is scaled by how
 efficiently it was reached; a loss/timeout is either a flat 0.0
-(action_count_win_reward) or a small floor scaled down by wasted cards
-(deploy_reward). The old single-player Tron-era heuristics (resource-quality
-tie-breakers) and the turn-decay fast_win_reward went away with the 1-player
-pipeline. Pretraining uses action_count_win_reward_200_floor02; league
-self-play uses deploy_reward_v2 (= deploy_reward with win_floor=1.0 -> flat win;
-the v1 efficiency scaling caused an action-space-minimization pathology).
+(action_count_win_reward) or 0.0 minus a small, front-loaded penalty for any
+hand-size cleanup discards (deploy_reward). Pretraining uses
+action_count_win_reward_200_floor02; league self-play uses deploy_reward_v2
+(= deploy_reward with win_floor=1.0 -> flat win; the v1 efficiency scaling
+caused an action-space-minimization pathology).
 """
 
 
@@ -44,11 +43,11 @@ def action_count_win_reward(plateau_actions=80, max_actions=200, min_reward=0.25
     def reward_fn(state, done, horizon):
         if not done or state.turn_won is None:
             return 0.0
-        # Self-contained loser gate: rl.train._reward_for used to zero the loser
-        # externally (drl_env._lost) before ever calling this. That gate is gone
-        # now (deploy_reward needs the loser to reach its own loss band), so this
-        # legacy reward must decide it itself -- a non-winning seat still scores 0.
-        # state.active_idx is the seat being scored (rl.train._reward_for flips it).
+        # Self-contained loser gate: a non-winning seat always scores 0, decided
+        # here rather than relying on the caller to zero it externally (deploy_reward
+        # needs the loser to reach its own loss band instead, so that gate can't live
+        # in the caller). state.active_idx is the seat being scored (rl.train._reward_for
+        # flips it).
         if state.winner != state.active_idx:
             return 0.0
         winner_actions = state.players[state.winner].actions_taken
@@ -57,8 +56,7 @@ def action_count_win_reward(plateau_actions=80, max_actions=200, min_reward=0.25
     return reward_fn
 
 
-def deploy_reward(plateau_actions=80, max_actions=200, win_floor=0.5, loss_default=0.25,
-                  discard_penalty=0.05):
+def deploy_reward(plateau_actions=80, max_actions=200, win_floor=0.5, discard_base=0.02):
     """Two-band terminal reward. Scored PER SEAT: rl.train._reward_for flips
     state.active_idx to the seat being scored (via drl_env._for_player) and no
     longer zeroes the loser first, so this callable decides win vs loss itself.
@@ -68,21 +66,30 @@ def deploy_reward(plateau_actions=80, max_actions=200, win_floor=0.5, loss_defau
     mulligan/keep/bottom picks are excluded so a winner that had to mulligan
     isn't docked for it): <= plateau_actions (80) gameplay actions -> 1.0 (a fast
     win), >= max_actions (200) -> win_floor (a long, grindy win); linear between.
-    Every win outscores every loss (win_floor > loss_default).
+    Every win outscores every loss (win_floor > 0 >= every loss score below).
 
     LOSS or no-winner timeout (state.winner != this seat, including None -- the
     only non-win 2-player outcome, a horizon cap; genuine draws can't happen,
-    win_check awards every life/deck-out end to a seat): loss_default (0.25)
-    DECREMENTED by discard_penalty (0.05) per turn this seat discarded to cleanup
-    (hoarded cards it never played), floored at 0, so a hoarder that never deploys
-    bottoms out at 0 while a deck that deployed its hand and lost keeps 0.25.
+    win_check awards every life/deck-out end to a seat): exactly 0.0 if this
+    seat was never forced to discard to cleanup (cleanup_discard_turns == 0),
+    else -(discard_base ** cleanup_discard_turns). discard_base (0.02) < 1, so
+    this SHRINKS toward 0 as more discard-turns pile up -- the first
+    discard-turn is the loudest signal (-0.02), a real deterrent against ANY
+    hoarding at all, and each further one matters less. Deliberately the
+    opposite growth direction from rl.mulligan's own convex MULLIGAN_COST
+    penalty (which gets WORSE per mulligan): front-loads the punishment onto
+    committing the infraction at all, not onto how much. Always within
+    (-discard_base, 0] for cleanup_discard_turns >= 0, so no explicit floor is
+    needed here -- unlike the mulligan side, this can never approach a runaway
+    negative.
 
-    The MULLIGAN decision is NOT scored here anymore: it's owned by the separate
-    per-deck mulligan model (rl.mulligan), which the main policy doesn't drive, so
+    The MULLIGAN decision is not scored here: it's owned by the separate per-deck
+    mulligan model (rl.mulligan), which the main policy doesn't drive, so
     penalizing the main policy for mulligans it can't control would be pure noise.
-    (The old terminal mulligan penalty also never propagated to the mulligan
-    decision through ~100 steps of discounting -- the whole reason that model
-    exists.) Terminal only (0.0 until done)."""
+    Scoring it through this terminal reward would also need ~100 steps of
+    discounting to reach the mulligan decision -- too diluted a signal -- which is
+    why mulligan gets its own dedicated model instead. Terminal only (0.0 until
+    done)."""
     span = max_actions - plateau_actions
     win_span = 1.0 - win_floor
     def reward_fn(state, done, horizon):
@@ -94,7 +101,8 @@ def deploy_reward(plateau_actions=80, max_actions=200, win_floor=0.5, loss_defau
             gameplay_actions = p.actions_taken - p.pregame_actions
             over = min(max(0, gameplay_actions - plateau_actions), span)
             return win_floor + win_span * (1.0 - over / span)
-        return max(0.0, loss_default - discard_penalty * p.cleanup_discard_turns)
+        n = p.cleanup_discard_turns
+        return -(discard_base ** n) if n > 0 else 0.0
     return reward_fn
 
 
@@ -104,19 +112,23 @@ def deploy_reward(plateau_actions=80, max_actions=200, win_floor=0.5, loss_defau
 # 1 - 0.2" spec -- this is the reward pretraining (run_pretrain.py) uses.
 action_count_win_reward_200_floor02 = action_count_win_reward(min_reward=0.2)
 
-# The reward league self-play used BEFORE deploy_reward_v2 replaced it below --
-# kept for reference/comparison, not wired into run_league.py. Win band
-# 0.5->1.0 by gameplay efficiency; loss band 0.25 minus 0.05 per
-# cleanup-discard turn, floored at 0.
+# Not wired into run_league.py; kept for reference/comparison against
+# deploy_reward_v2. Win band 0.5->1.0 by gameplay efficiency; loss band
+# shares whatever deploy_reward's own current default computes (see its
+# docstring) -- v1 and v2 only ever differ in win_floor, both sharing the
+# one factory.
 deploy_reward_v1 = deploy_reward()
 
 
-# The reward league self-play uses NOW (run_league.py): deploy_reward with
-# win_floor=1.0, which collapses the win band to a FLAT 1.0 (win_span = 0) -- no
-# efficiency scaling -- while keeping the identical loss band. v1's efficiency
-# scaling induced an action-space-minimization pathology (the policy generalized
-# "win in fewer actions -> more reward" into "shrink your own board"); flat win
-# removes that gradient. Float-first removed the tap/untap-abandon churn
-# structurally (no undo action exists), so the old dense abandon penalty is gone;
-# PPO entropy alone now bounds pointless actions without capping them.
+# League self-play's reward (run_league.py): deploy_reward with win_floor=1.0,
+# which collapses the win band to a flat 1.0 (win_span = 0) -- no efficiency
+# scaling -- while keeping the identical loss band. v1's efficiency scaling
+# induces an action-space-minimization pathology (the policy generalizes "win
+# in fewer actions -> more reward" into "shrink your own board"); flat win
+# removes that gradient. Float-first means no undo action exists, so there's
+# no tap/untap-abandon churn to structurally guard against; PPO entropy alone
+# bounds pointless actions without capping them. Loss band is exactly 0.0 with
+# no discards, else -(0.02 ** cleanup_discard_turns) -- see deploy_reward's
+# own docstring for why this front-loads the penalty onto the first hoarding
+# discard rather than scaling with how many.
 deploy_reward_v2 = deploy_reward(win_floor=1.0)

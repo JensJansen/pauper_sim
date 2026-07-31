@@ -18,9 +18,7 @@ def execute_madness_cast(state):
     "never touch a zone until on_complete fires" contract every begin_pay_cost
     caller keeps: float-first's begin_pay_cost is only opened once
     plan_payment/pool_can_pay has already confirmed the cost is affordable, so
-    there is no undo path to worry about. Removing the card early broke it,
-    back when payment could still be abandoned mid-flight: Cast-then-Abandon
-    made the card vanish from every zone instead of staying exiled."""
+    there is no undo path to worry about."""
     pending = state.pending_resolution
     card_def = pending["card_def"]
     outer_on_complete = pending["on_complete"]

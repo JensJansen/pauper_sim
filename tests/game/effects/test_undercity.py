@@ -1,4 +1,5 @@
-"""Migrated from game/effects/undercity.py's __main__ ponytail self-check."""
+"""Initiative-taking, dungeon room branching/effects, and the goad/hexproof
+"until your next turn" expiry the Undercity subsystem introduces."""
 from game import resolution
 from game.cards import CardDef, CardType, EffectId
 from game.effects.stack import resolve_top_of_stack

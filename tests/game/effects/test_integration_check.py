@@ -1,5 +1,4 @@
-"""Migrated from game/effects/integration_check.py, a ponytail self-check for
-scenarios that exercise multiple game.effects submodules together and don't
+"""Scenarios that exercise multiple game.effects submodules together and don't
 belong to any single one of them. Every other submodule's own single-module
 scenarios live in its own test_*.py file instead; this file is only for the
 handful that genuinely need two or more modules cooperating to mean

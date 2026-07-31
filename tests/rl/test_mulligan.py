@@ -1,13 +1,13 @@
-"""Migrated from src/rl/mulligan.py's __main__ self-check.
+"""Tests for rl.mulligan: the per-deck mulligan reward function and
+MulliganNet's REINFORCE training.
 
-Flakiness note (preserved, do not touch): the REINFORCE learning assertions
-in test_mulligan_net_shapes_and_reinforce_learning are, per the original
-self-check's own comment, "otherwise flaky (~1-in-several spurious failures
-on random init)" even with torch.manual_seed(0)/random.seed(0) already in
-place. That seeding is preserved EXACTLY as in the source file (same calls,
-same relative position before the net/optimizer/rng are built) -- if this
-test is still flaky after migration, that is a preexisting issue to report,
-not something to paper over with retries or loosened tolerances.
+Flakiness note (do not touch the seeding): the REINFORCE learning assertions
+in test_mulligan_net_shapes_and_reinforce_learning are otherwise flaky
+(~1-in-several spurious failures on random init) even with
+torch.manual_seed(0)/random.seed(0) in place. The seeding calls' position --
+before the net/optimizer/rng are built -- matters for that reproducibility;
+moving them is likely to reintroduce the flakiness, not something to paper
+over with retries or loosened tolerances.
 """
 import random
 

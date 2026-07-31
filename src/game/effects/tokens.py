@@ -58,6 +58,8 @@ def activate_blood_sac(state, permanent):
         "zone_move", permanent=(permanent.card_def.name, permanent.slot), from_zone="battlefield",
         to_zone="ceases_to_exist", reason="sacrifice",
     )
+    from .shared import fire_sacrifice_triggers
+    fire_sacrifice_triggers(state, state.active_idx, permanent.card_def)  # Gixian Infiltrator
     resolution.begin_discard(
         state, 1, optional=False,
         on_complete=lambda s, _cards: push_ability_to_stack(s, permanent.card_def, lambda st: st.draw(1)),
@@ -99,6 +101,8 @@ def activate_clue_sac(state, permanent):
         "zone_move", permanent=(permanent.card_def.name, permanent.slot), from_zone="battlefield",
         to_zone="ceases_to_exist", reason="sacrifice",
     )
+    from .shared import fire_sacrifice_triggers
+    fire_sacrifice_triggers(state, state.active_idx, permanent.card_def)  # Gixian Infiltrator
     push_ability_to_stack(state, permanent.card_def, lambda st: st.draw(1))
 
 
@@ -115,6 +119,8 @@ def activate_food_sac(state, permanent):
         "zone_move", permanent=(permanent.card_def.name, permanent.slot), from_zone="battlefield",
         to_zone="ceases_to_exist", reason="sacrifice",
     )
+    from .shared import fire_sacrifice_triggers
+    fire_sacrifice_triggers(state, state.active_idx, permanent.card_def)  # Gixian Infiltrator
     push_ability_to_stack(state, permanent.card_def, lambda st: gain_life(st, 3))
 
 
@@ -157,6 +163,8 @@ def activate_map_sac(state, permanent):
         "zone_move", permanent=(permanent.card_def.name, permanent.slot), from_zone="battlefield",
         to_zone="ceases_to_exist", reason="sacrifice",
     )
+    from .shared import fire_sacrifice_triggers
+    fire_sacrifice_triggers(state, state.active_idx, permanent.card_def)  # Gixian Infiltrator
 
     def _on_chosen(state, choice):
         if choice is None:

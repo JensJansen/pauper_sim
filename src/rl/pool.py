@@ -24,11 +24,11 @@ from rl.features import CardVocab
 # across the whole 11-deck league -- registered unconditionally regardless of
 # which deck creates which. A token def a given roster never spawns is harmless
 # (it just reserves a vocab index); a MISSING one is a hard KeyError the moment
-# a real game creates that token (confirmed the hard way with Blood/Robot), so
-# the complete set is the safe default, not a per-roster audit. INITIATIVE_
-# MARKER_CARD is the Undercity venture triggered ability's pseudo-card (it rides
-# the stack, and appears in order_triggers) -- same "must be vocab-known +
-# choosable" category as a token.
+# a real game creates that token, so the complete set is the safe default, not
+# a per-roster audit. INITIATIVE_MARKER_CARD is the Undercity venture
+# triggered ability's pseudo-card (it rides the stack, and appears in
+# order_triggers) -- same "must be vocab-known + choosable" category as a
+# token.
 TOKEN_DEFS = (
     game.BLOOD_TOKEN_CARD_DEF, game.ROBOT_TOKEN_CARD_DEF, game.WARRIOR_TOKEN_CARD_DEF,
     game.ELDRAZI_SPAWN_TOKEN_CARD_DEF, game.FOOD_TOKEN_CARD_DEF, game.CLUE_TOKEN_CARD_DEF,
@@ -71,13 +71,13 @@ def build_pool(manifest_path=DECK_MANIFEST, vocab_path=VOCAB_PATH, token_defs=TO
     decklists = {name: game.parse_decklist_file(path) for name, path in deck_files.items()}
     vocab = CardVocab(list(decklists.values()), token_card_defs=token_defs, vocab_path=vocab_path)
 
-    # No extra_choosable_names: the cross-deck OPPONENT-zone picks that needed
-    # it -- a graveyard card (Relic of Progenitus) or a revealed hand card
-    # (Mesmeric Fiend) -- are now reached by POINTING at that card's token
-    # (rl.action_bridge's choose_graveyard_card pointer path; the revealed hand
-    # is faithfully tokenized for the pick, see rl.features), not by a
-    # whole-league "Choose: X" fixed row per card name. So each deck's fixed
-    # table stays scoped to its own cards and no longer grows with the roster.
+    # No extra_choosable_names: cross-deck OPPONENT-zone picks -- a graveyard
+    # card (Relic of Progenitus) or a revealed hand card (Mesmeric Fiend) --
+    # are reached by POINTING at that card's token (rl.action_bridge's
+    # choose_graveyard_card pointer path; the revealed hand is faithfully
+    # tokenized for the pick, see rl.features), not by a whole-league
+    # "Choose: X" fixed row per card name. Each deck's fixed table stays
+    # scoped to its own cards and does not grow with the roster.
     union_kinds = None
     if union_pending:
         union_kinds = tuple(sorted(set().union(*(set(game.derive_pending_kinds(dl)) for dl in decklists.values()))))

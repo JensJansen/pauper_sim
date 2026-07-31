@@ -1,8 +1,9 @@
 """Every deck-agnostic pending-resolution handler (search_fetch,
 choose_permanent, scry/surveil, discard, sacrifice, combat-damage
-assignment, ...): each kind's begin_/options/execute_ trio. Split out of
-resolution.py unchanged; re-exported via game.resolution so
-`from ..resolution import X` in the catalogs keeps resolving."""
+assignment, ...): each kind's begin_/options/execute_ trio, reused across
+card implementations rather than duplicated per card. Re-exported via
+game.resolution so `from ..resolution import X` in the catalogs keeps
+resolving."""
 
 from .. import registry
 from ..cards import CardDef, CardType
@@ -46,16 +47,13 @@ def execute_search_fetch_decline(state):
 
 def begin_choose_permanent(state, predicate, on_complete):
     """The model picks ONE of its own battlefield permanents, addressed by
-    the exact (name, slot) it occupies
-    "Permanent identity" gap, closed here: same (name, slot) addressing
-    begin_choose_opponent_permanent already uses, not the old
-    fungible-by-name shortcut (two same-named permanents stop being
-    interchangeable the moment an Aura attaches to only one of them, or a
-    caller needs the EXACT physical permanent it chose to still be there
-    later -- see cast_aura's own targeting contract). on_complete(state,
-    (name, slot)_or_None) runs once decided. Same empty-options safety net
-    as begin_search_fetch -- fizzles immediately with None if nothing
-    matches."""
+    the exact (name, slot) it occupies, not by name alone: two same-named
+    permanents stop being interchangeable the moment an Aura attaches to
+    only one of them, or a caller needs the EXACT physical permanent it
+    chose to still be there later (see cast_aura's own targeting contract).
+    on_complete(state, (name, slot)_or_None) runs once decided. Same
+    empty-options safety net as begin_search_fetch -- fizzles immediately
+    with None if nothing matches."""
     begin_resolution(state, "choose_permanent", on_complete, predicate=predicate)
     if not choose_permanent_options(state):
         complete_resolution(state, None)
@@ -72,10 +70,10 @@ def execute_choose_permanent_option(state, name, slot):
 
 def begin_choose_graveyard_card(state, predicate, on_complete, graveyard=None, optional=False):
     """Pick ONE card from a graveyard, among those matching predicate --
-    Dread Return's reanimation target originally (game.catalog.black_cards),
-    promoted here once Relic of Progenitus' own repeatable exile ability
-    needed the identical primitive too (see this module's own docstring: a
-    deck-specific kind moves here the moment something ELSE reuses it).
+    used by Dread Return's reanimation target (game.catalog.black_cards) and
+    by Relic of Progenitus' own repeatable exile ability alike; living here
+    rather than in a deck-specific catalog file is what lets both share the
+    identical primitive.
 
     The pick is BY OBJECT IDENTITY: on_complete receives the exact chosen
     object (a CardInstance for a real graveyard -- so two same-named copies are
@@ -166,11 +164,9 @@ def begin_choose_cast_copy(state, name, on_complete, reserved_cost=None):
     would_strand_payment can protect it: mana abilities/filters stay legal
     "in ANY priority window" (605.1a/605.3b) DURING this choice, same as
     during an already-open pay_cost, so the agent could otherwise filter away
-    the exact colored pip this ability is guaranteed to need one step later --
-    confirmed live (monster_tron, turn 44: 2 Bramble Wurms in the graveyard,
-    activating the {2}{G} graveyard ability, filtered the floating {G} away
-    while still choosing WHICH copy -- pay_cost then opened already unpayable,
-    all-False mask). Only choose_cast_copy needs this: every other pointer
+    the exact colored pip this ability is guaranteed to need one step later,
+    leaving pay_cost to open already unpayable with an all-False mask. Only
+    choose_cast_copy needs this: every other pointer
     pending in this pool (choose_permanent, choose_any_target, ...) either
     can't precede a cost payment at all, or (choose_graveyard_card feeding
     Dread Return's own creature-sacrifice cost) pays with a non-mana resource
@@ -188,10 +184,10 @@ def choose_cast_copy_options(state):
     """The matching graveyard INSTANCES themselves (objects), not names -- the
     whole point is telling same-named copies apart. No dedup, no sort:
     rl.action_bridge masks/executes by object identity, and the observation
-    token for each instance carries that same object (plus, since this session's
-    stack-targeting work, a targeted_by_mine/targeted_by_theirs bit -- which is
-    what makes "cast the copy they're pointing at" a LEARNABLE choice rather
-    than an invisible coin flip)."""
+    token for each instance carries that same object (plus a
+    targeted_by_mine/targeted_by_theirs bit -- which is what makes "cast the
+    copy they're pointing at" a LEARNABLE choice rather than an invisible
+    coin flip)."""
     pending = state.pending_resolution
     return [c for c in state.graveyard if c.name == pending["name"]]
 
@@ -386,13 +382,11 @@ def begin_choose_opponent_permanent(state, predicate, on_complete):
     """Like begin_choose_permanent, but targets the OPPONENT's battlefield
     (state.opponent -- only meaningful in a 2-player game) instead of the
     active player's own -- the general cross-player targeting primitive
-   , first used by blocking. Addressed by (name,
-    slot), not name alone: unlike begin_choose_permanent's own
-    fungible-by-name simplification, two same-named OPPOSING permanents
-    are exactly the case "Permanent identity"
-    section flags -- an Aura-enchanted attacker and a plain one of the
-    same name are not an arbitrary pick for a blocker to choose between.
-    on_complete(state, (name, slot)_or_None) runs once decided. Same
+    that blocking uses. Addressed by (name, slot), same as
+    begin_choose_permanent: two same-named OPPOSING permanents are not an
+    arbitrary pick either -- an Aura-enchanted attacker and a plain one of
+    the same name are not interchangeable for a blocker choosing between
+    them. on_complete(state, (name, slot)_or_None) runs once decided. Same
     empty-options safety net as begin_choose_permanent/begin_search_fetch
     -- fizzles immediately with None if nothing matches.
 
@@ -546,6 +540,43 @@ def execute_assign_combat_damage_to_player(state):
 
 def execute_choose_opponent_permanent_option(state, name, slot):
     complete_resolution(state, (name, slot))
+
+
+def refizzle_if_now_targetless(state):
+    """Re-validates a pending resolution whose legal options depend on LIVE
+    battlefield state via a predicate -- choose_permanent, choose_opponent_
+    permanent, and choose_any_target's creature half (only when not optional
+    and not allow_players, its own only all-False-capable configuration; see
+    begin_choose_any_target's own docstring) -- the three kinds
+    state_based_actions (a creature dying) can invalidate AFTER their own
+    one-time open-time empty-options check already passed. Every other
+    choose_*/search_fetch kind here reads the library/graveyard/hand/stack
+    instead, none of which check_state_based_actions ever mutates, so they
+    can't develop this same gap once past their own open-time check.
+
+    Mirrors exactly the empty-options -> fizzle-with-None completion each of
+    these three already performs at open time (608.2c: an effect with no
+    legal target does nothing) -- same outcome, just re-checked on every
+    subsequent decision point too, not only the first. Call this right alongside
+    check_state_based_actions (the only thing that can invalidate these
+    predicates mid-resolution) -- see game.turn._run_priority_round_gen.
+    Returns True if it fizzled something (the pending resolution is now
+    gone), else False."""
+    pending = state.pending_resolution
+    if pending is None:
+        return False
+    kind = pending["kind"]
+    if kind == "choose_permanent" and not choose_permanent_options(state):
+        complete_resolution(state, None)
+        return True
+    if kind == "choose_opponent_permanent" and not choose_opponent_permanent_options(state):
+        complete_resolution(state, None)
+        return True
+    if (kind == "choose_any_target" and not pending["optional"] and not pending["allow_players"]
+            and not choose_any_target_options(state)):
+        complete_resolution(state, None)
+        return True
+    return False
 
 
 def explore(state, creature):
@@ -865,12 +896,10 @@ def begin_choose_stack_target(state, predicate, on_complete):
     spell entries (entries are the stack's own {"card_def","is_spell",...}
     dicts). POINTER-addressed (rl.action_bridge), not by name: the spell
     being countered is very often the OPPONENT's, so no per-deck "Choose: X"
-    row could ever represent it (confirmed the hard way -- an all-False mask
-    in real cross-deck league play, mono_blue_terror asked to name a spell
-    dmir_terror cast). Options are the matching stack ENTRIES themselves, by
-    object identity, so two simultaneous same-named spells stay independently
-    addressable too -- the old by-name version could only ever reach the
-    topmost of duplicate-named entries. Fizzles immediately (on_complete
+    row could ever represent it. Options are the matching stack ENTRIES
+    themselves, by object identity, so two simultaneous same-named spells
+    stay independently addressable too, not just the topmost of them.
+    Fizzles immediately (on_complete
     (None)) if nothing matches -- though a counter spell's own extra_legal
     already requires a legal target to be cast at all."""
     begin_resolution(state, "choose_stack_target", on_complete, predicate=predicate)
@@ -953,9 +982,7 @@ def begin_scry_surveil(state, kind, n, on_complete):
     # _keep_dispose_legal refuses (remaining is falsy), i.e. ZERO legal
     # actions -> softlock. Same immediate-complete safety net begin_choose_
     # permanent/begin_search_fetch already apply for their own empty-options
-    # case; scry/surveil was the one begin_* missing it. Surfaced by a
-    # monster_tron game (a deck that both scries/surveils AND decks itself
-    # out in long games) via the token action mask going all-False.
+    # case.
     if not revealed:
         _finish_scry_surveil(state)
 
@@ -1046,8 +1073,7 @@ def put_on_top_options(state):
     # in the hand list, so this must subtract reservations exactly like
     # discard_options does -- without it, Brainstorm could move a still-on-the-
     # stack spell onto the library, and that spell's later resolve would fail
-    # to find its card in hand (confirmed via a Gurmag-Angler-mid-delve-cast +
-    # Brainstorm + Mental Note line in cross-deck self-play).
+    # to find its card in hand.
     return _available_hand_names(state)
 
 
@@ -1150,8 +1176,8 @@ def _available_hand_names(state):
     ability like Blood's sac-for-a-card, which -- unlike a cast -- is
     never blocked by a non-empty stack) would let it be discarded twice
     over: once here, once more when its own stack entry finally tries to
-    remove it. Same fix as drl_env._hand_count_available, just for
-    hand-count-based discard legality instead of cast legality. Shared by
+    remove it. Same exclusion drl_env._hand_count_available applies, just
+    for hand-count-based discard legality instead of cast legality. Shared by
     discard_options and discard_or_sacrifice_discard_options below."""
     stacked_counts = {}
     for entry in state.stack:
@@ -1250,6 +1276,8 @@ def execute_discard_or_sacrifice_option(state, mode, name):
             "zone_move", permanent=(permanent.card_def.name, permanent.slot), from_zone="battlefield",
             to_zone="graveyard", reason="sacrifice",
         )
+        from ..effects.shared import fire_sacrifice_triggers
+        fire_sacrifice_triggers(state, state.active_idx, permanent.card_def)  # Gixian Infiltrator
     complete_resolution(state, True)
 
 
@@ -1261,8 +1289,7 @@ def begin_mulligan(state, on_complete):
     """Pregame: this player already has an opening 7-card hand (dealt by
     state.new_multiplayer_game_state's own eager draw(7)) --
     decide keep or mulligan (London Mulligan). Driven by
-    game.turn.run_mulligan_phase/_run_mulligan_gen, once per player, before
-    turn 1 ever starts.
+    game.turn._run_mulligan_gen, once per player, before turn 1 ever starts.
 
     No hand-contents event of its own: the opening hand and every redraw are
     already logged as library->hand "draw" zone_moves by GameState.draw (the
@@ -1385,11 +1412,11 @@ def begin_order_triggers(state, entries, on_complete):
     Looting's discard-2 hitting two Madness cards in the same discard, two
     Sneaky Snackers both crossing their own draw-count trigger on the same
     draw, or two targeting ETBs entering simultaneously) -- real Magic lets
-    that player choose the PLACEMENT order (603.3b: APNAP among different
-    players, but this engine only ever queues triggers for the active
-    player -- see game.effects.triggers.promote_triggers_to_stack's own
-    docstring for why that's sufficient given the current card pool), not a
-    fixed queue order.
+    that player choose the PLACEMENT order (603.3b), not a fixed queue
+    order. Only ever a single player's own triggers here -- APNAP ordering
+    BETWEEN players is handled one level up, by
+    game.effects.triggers.promote_triggers_to_stack's own group placement,
+    before this is ever opened for either player's group.
 
     entries: list of {"card_def", "resolve"} dicts (plain triggers, already
     stack-ready) or {"card_def", "permanent", "targeting": True} dicts
@@ -1452,14 +1479,11 @@ def execute_order_triggers_option(state, name):
 def begin_sacrifice(state, predicate, n, on_complete):
     """Choose and sacrifice n of your own battlefield permanents matching
     predicate, one at a time -- same by-name fungibility every other
-    resolution here uses. Generalizes what was originally Dread Return's
-    own Flashback-cost-only "sacrifice_creatures" resolution
-    (game.catalog.black_cards) into a predicate-based primitive reusable by land-
-    sacrifice costs too (Fireblast's alt-cost, Lava Dart's Flashback,
-    Highway Robbery's discard-or-sac choice
-    5); Dread Return's own creature-sacrifice is just
-    `begin_sacrifice(state, lambda p: p.card_type ==
-    CardType.CREATURE, 3, on_complete)` now, no separate function needed.
+    resolution here uses. A predicate-based primitive covering both
+    creature-sacrifice costs (Dread Return's own Flashback:
+    `begin_sacrifice(state, lambda p: p.card_type == CardType.CREATURE, 3,
+    on_complete)`) and land-sacrifice costs (Fireblast's alt-cost, Lava
+    Dart's Flashback, Highway Robbery's discard-or-sac choice).
 
     Caller's own legality check guarantees n eligible permanents exist
     before this is ever offered (same "guaranteed payable, not a maybe"

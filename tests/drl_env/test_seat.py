@@ -1,6 +1,5 @@
-"""Tests for drl_env._seat: _lost, still used directly by rl.train's own
-reward attribution. Migrated from drl_env/_selfcheck.py's former
-`_run_self_checks()` (run via `python -m drl_env`)."""
+"""Tests for drl_env._seat: _lost, used directly by rl.train's own reward
+attribution."""
 
 from drl_env._seat import _lost
 

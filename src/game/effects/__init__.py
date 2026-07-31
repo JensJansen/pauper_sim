@@ -10,5 +10,5 @@ game/catalog/.
 
 Nothing is re-exported here -- callers import directly from the owning
 submodule (e.g. `from .effects.combat import combat_damage_step`), same as
-game/__init__.py does. Formerly one 1573-line game/effects_common.py.
+game/__init__.py does.
 """

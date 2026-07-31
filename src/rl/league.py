@@ -1,26 +1,26 @@
-"""Opponent pool for league-style training (in place of the old pairwise
-Stage 1/Stage 2 curriculum) -- per confirmed design: historical checkpoint
-snapshots per deck (not latest-only, so a deck can't quietly drift away
-from skills it needed against an opponent's earlier self).
+"""Opponent pool for league-style training: historical checkpoint snapshots
+per deck (not latest-only, so a deck can't quietly drift away from skills it
+needed against an opponent's earlier self).
 
 Sampling is two-level: pick a deck uniformly from the whole roster
 (including the training deck itself, for mirror play), THEN decide live vs.
 checkpoint for that deck via `checkpoint_rate` (a live/checkpoint coin flip
 with a caller-set probability, default 0.0 -- always live), and if a
 checkpoint is drawn, pick uniformly among that deck's currently-held
-snapshots. This replaced an earlier "uniform among {live} union {every
-snapshot}" scheme: that scheme let the live-net probability silently shrink
-as the snapshot window filled (1/(N+1), so 80% checkpoint odds once a deck
-had 4 snapshots) -- nobody chose that ratio, it just fell out of window
-size. checkpoint_rate makes the live/checkpoint split an explicit, stable
-number instead of a side effect of how many snapshots happen to exist.
-Owner directive (2026-07-30): early training should see NO checkpoint
-opponents at all (checkpoint_rate=0.0, the default) -- an early snapshot is
-barely-trained and teaches little as an opponent, so paying collection cost
-against one is close to wasted relative to a live opponent that's ALSO
-improving. Reintroducing checkpoint diversity later is an explicit,
-deliberate choice (a nonzero rate), not an automatic side effect of the pool
-filling up."""
+snapshots. checkpoint_rate makes the live/checkpoint split an explicit,
+stable number, deliberately independent of how many snapshots a deck happens
+to have banked -- deriving that ratio from snapshot-window occupancy instead
+(e.g. uniformly among {live} union {every snapshot}) would let the live-net
+probability silently shrink as the window filled (1/(N+1), so 80% checkpoint
+odds once a deck had 4 snapshots), a side effect of window size rather than a
+deliberate choice.
+
+Early training uses NO checkpoint opponents at all (checkpoint_rate=0.0, the
+default): an early snapshot is barely-trained and teaches little as an
+opponent, so paying collection cost against one is close to wasted relative
+to a live opponent that's also improving. Reintroducing checkpoint diversity
+later is an explicit, deliberate choice (a nonzero rate), not an automatic
+side effect of the pool filling up."""
 
 import os
 
@@ -61,9 +61,9 @@ class LeaguePool:
         era-matched pregame policy rather than borrowing whatever the current
         mulligan net happens to be. Saves trunk_hidden alongside the state_dict
         (derived from the net's own trunk_layers, not assumed) -- load has no
-        other way to know what shape to reconstruct. mulligan_net=None writes an
-        old-style deck-only snapshot; load_snapshot_agent then falls back to
-        AlwaysKeep for it (keeps pre-refactor snapshot files loadable)."""
+        other way to know what shape to reconstruct. mulligan_net=None writes a
+        deck-only snapshot with no mulligan state; load_snapshot_agent then
+        falls back to AlwaysKeep for any snapshot missing one."""
         deck_dir = os.path.join(self.root_dir, deck_name)
         os.makedirs(deck_dir, exist_ok=True)
         next_id = (self.snapshots[deck_name][-1][0] + 1) if self.snapshots[deck_name] else 0
@@ -88,16 +88,13 @@ class LeaguePool:
         mirror, not a frozen copy of it).
 
         checkpoint_rate: the live/checkpoint split for whichever deck gets
-        picked, decided independently of how many snapshots that deck
-        happens to have banked (see this module's own docstring for why --
-        the old "uniform over {live} union {snapshots}" scheme let this
-        ratio drift with window occupancy instead of being a deliberate
-        choice). 0.0 (default): always live, structurally -- the rng.random()
-        draw and comparison never happen, so this is exact, not "very
-        unlikely," even before any snapshots exist. A deck with an EMPTY
-        snapshot list always resolves to live regardless of checkpoint_rate
-        (nothing to draw yet), same fallback the old code's [None]-first
-        candidate list gave for free."""
+        picked, decided independently of how many snapshots that deck happens
+        to have banked (see this module's own docstring for why). 0.0
+        (default): always live, structurally -- the rng.random() draw and
+        comparison never happen, so this is exact, not "very unlikely," even
+        before any snapshots exist. A deck with an EMPTY snapshot list always
+        resolves to live regardless of checkpoint_rate (nothing to draw
+        yet)."""
         opponent_deck_name = rng.choice(self.deck_names)
         snaps = self.snapshots[opponent_deck_name]
         if snaps and rng.random() < checkpoint_rate:
@@ -108,10 +105,11 @@ class LeaguePool:
         """Builds (or returns a cached) frozen SeatAgent for a historical
         snapshot -- the DeckNetwork PLUS its era-matched pregame decider (a
         frozen MulliganNet if the snapshot carries one, else AlwaysKeep for a
-        pre-refactor deck-only snapshot). Never trained itself, only ever a
-        rollout opponent (collect_rollout's own inference-mode forward covers
-        inference; requires_grad=False here is defensive, matching the frozen
-        shared stack's convention). Cached by path so repeat samples reuse it."""
+        deck-only snapshot with no mulligan state). Never trained itself, only
+        ever a rollout opponent (collect_rollout's own inference-mode forward
+        covers inference; requires_grad=False here is defensive, matching the
+        frozen shared stack's convention). Cached by path so repeat samples
+        reuse it."""
         if snapshot_path in self._net_cache:
             return self._net_cache[snapshot_path]
         _vocab, fixed_table, _pending_kinds = deck_ctx
@@ -130,7 +128,7 @@ class LeaguePool:
             for p in mull.parameters():
                 p.requires_grad = False
         else:
-            mull = AlwaysKeep()  # pre-refactor deck-only snapshot -> neutral pregame
+            mull = AlwaysKeep()  # no mulligan state saved -> neutral pregame
 
         agent = SeatAgent(net, mull, deck_ctx)
         self._net_cache[snapshot_path] = agent

@@ -1,4 +1,4 @@
-"""Migrated from src/rl/arch.py's __main__ self-check."""
+"""Tests for rl.arch: token padding, the SetTransformer encoder, and FiLM conditioning."""
 import torch
 import pytest
 

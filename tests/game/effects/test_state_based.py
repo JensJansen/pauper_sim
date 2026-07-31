@@ -1,13 +1,13 @@
-"""Migrated from game/effects/state_based.py's __main__ ponytail self-check.
-
-Aura-orphaning and token-death are the two scenarios specific to THIS module
+"""Aura-orphaning and token-death are the two scenarios specific to THIS module
 (check_state_based_actions/_destroy_creature), as opposed to the combat+SBA
 handoff exercised together with combat.py in
 tests/game/effects/test_integration_check.py."""
-from game import registry
+from game import registry, resolution
 from game.cards import CardDef, CardType, EffectId
+from game.effects.stack import resolve_top_of_stack
 from game.effects.state_based import check_state_based_actions, cleanup_step, destroy_permanent, sacrifice_to_graveyard
 from game.effects.tokens import WARRIOR_TOKEN_CARD_DEF
+from game.effects.triggers import promote_triggers_to_stack
 from game.state import GameState, Permanent, PlayerState
 
 
@@ -131,7 +131,9 @@ def test_cleanup_clears_temp_modifiers_and_deathtouch_marker():
 
 def test_sacrifice_to_graveyard_fires_dies_and_on_sacrifice_triggers():
     # sacrifice_to_graveyard: fires a dies (ltb) trigger AND on_sacrifice
-    # triggers on the sacrificer's other battlefield permanents.
+    # triggers on the sacrificer's other battlefield permanents -- both real
+    # triggered abilities, queued and placed on the stack at the next
+    # priority window, not applied immediately.
     _filler_backup3 = registry.EFFECT_REGISTRY[EffectId.FILLER]
     dies_fired = []
     sac_seen = []
@@ -151,6 +153,17 @@ def test_sacrifice_to_graveyard_fires_dies_and_on_sacrifice_triggers():
         assert gy_victim is not None  # real card -> graveyard
         assert gy_victim is not victim  # 400.7: a FRESH instance, not the battlefield Permanent re-added
         assert [e for e in state.trigger_queue if e["type"] == "ltb"]  # its dies-trigger queued
+        assert [e for e in state.trigger_queue if e["type"] == "on_sacrifice"]  # Watcher's trigger queued too
+        assert sac_seen == []  # not applied yet -- still just queued
+        promote_triggers_to_stack(state)
+        # Both queued triggers belong to the same controller -- 603.3b lets
+        # them choose the placement order (resolution.begin_order_triggers)
+        # rather than placing both automatically.
+        while state.pending_resolution is not None and state.pending_resolution["kind"] == "order_triggers":
+            resolution.execute_order_triggers_option(state, resolution.order_triggers_options(state)[0])
+        while state.stack:
+            resolve_top_of_stack(state)
+        assert dies_fired == ["Victim"]
         assert sac_seen == ["Victim"]  # Watcher's on_sacrifice saw the sacrifice ("another permanent")
     finally:
         registry.EFFECT_REGISTRY[EffectId.FILLER] = _filler_backup3

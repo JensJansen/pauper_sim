@@ -7,15 +7,18 @@ is {U}{B} -- never actually cast in either deck that plays it (no "cast"
 spec at all: it's discarded, then returned by its own on_draw_count
 trigger), kept here only as accurate catalog metadata.
 
-Slippery Bogle's real cost is the hybrid {G/U} -- multicolor for color
-identity purposes (a hybrid symbol counts as both colors), same reasoning
-that puts it here rather than green_cards.py despite boggles.txt never
-touching blue. cast_cost below is modeled as plain {G}: boggles runs no
-blue mana sources at all, so the hybrid's blue half is unreachable
-regardless of how it's represented, and this engine has no general
-"pay with either of these colors" cost representation to build for a
-single unreachable branch on one card -- a deliberate simplification, not
-a guess (real cost verified via Scryfall)."""
+AUTHORIZED SIMPLIFICATION (owner, 2026-07-31): Slippery Bogle's real cost is
+the hybrid {G/U} -- multicolor for color identity purposes (a hybrid symbol
+counts as both colors), same reasoning that puts it here rather than
+green_cards.py despite boggles.txt never touching blue. cast_cost below is
+modeled as plain {G}: boggles runs no blue mana sources at all, so the
+hybrid's blue half is unreachable regardless of how it's represented, and
+this engine has no general "pay with either of these colors" cost
+representation to build for a single unreachable branch on one card. The
+same authorized deviation covers Abandon Attachments' {1}{U/R}->{1}{U}
+(blue_cards.py) and Burning-Tree Emissary's {R/G}{R/G}->{R}{R} (red_cards.py)
+-- each card's own alternate color is likewise unreachable in the one deck
+that plays it (real costs verified via Scryfall)."""
 
 from .. import resolution
 from ..cards import CardDef, CardType, EffectId
@@ -39,7 +42,7 @@ MULTICOLOR_CARD_CATALOG = {
     # two colors, and is BOTH a land and an artifact (extra["artifact"]) --
     # so it counts for affinity/metalcraft and is a legal artifact-sacrifice.
     # Indestructible (extra["indestructible"]) matters against "destroy target
-    # land" (Cleansing Wildfire) -- honored once that lands in G3. ---
+    # land" effects (Cleansing Wildfire) -- honored by state_based.destroy_permanent. ---
     "Drossforge Bridge": CardDef(
         "Drossforge Bridge", CardType.LAND, None, EffectId.DROSSFORGE_BRIDGE, artifact=True, indestructible=True,
     ),
@@ -102,8 +105,8 @@ def _writhing_chrysalis_on_sacrifice(state, permanent, sacrificed_card_def):
 
 
 def cast_terminate(state, card_def):
-    """{B}{R}: Destroy target creature. It can't be regenerated (a no-op --
-    regeneration isn't modeled)."""
+    """{B}{R}: Destroy target creature. It can't be regenerated -- a no-op,
+    since no card in this engine ever grants regeneration."""
     cast_targeting_creature(state, card_def, lambda st, perm: destroy_permanent(st, perm))
 
 
@@ -162,8 +165,9 @@ MULTICOLOR_EFFECT_REGISTRY = {
         "etb_trigger": lambda state, permanent: deal_damage_to_opponent(state, 1),
     },
     # --- the four indestructible Bridge artifact lands: enter tapped, tap
-    # for one of two colors. Indestructibility is data-only for now
-    # (extra["indestructible"]) -- honored by "destroy target land" in G3. ---
+    # for one of two colors. Indestructibility (extra["indestructible"]) is
+    # honored by state_based.destroy_permanent against "destroy target land"
+    # effects (Cleansing Wildfire). ---
     EffectId.DROSSFORGE_BRIDGE: {
         "mana": ("flexible", {"B", "R"}),
         "enters_tapped": True,
