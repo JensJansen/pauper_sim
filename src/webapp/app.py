@@ -1,9 +1,17 @@
-"""Training-ops web UI: start/stop/monitor run_league.py and run_pretrain.py
-sessions from a browser, with training_configs/*.json treated as optional
-form-prefill preconfigurations (loaded into fields client-side, editable
-after -- see static/index.html). Serves that static page plus a small
-JSON + Server-Sent-Events API. Local single-user tool: no auth, binds to
-localhost only. See README's "Training-ops UI" section.
+"""Local web UI for this repo's training + game-review tooling:
+
+- Training ops: start/stop/monitor run_league.py and run_pretrain.py
+  sessions from a browser, with training_configs/*.json treated as optional
+  form-prefill preconfigurations (loaded into fields client-side, editable
+  after -- see static/index.html).
+- Replay viewer (/replay, static/replay.html): pick a --log event-log JSON
+  file from disk and step through a logged game's board state. The backend
+  parses the raw log directly (replay_engine.py) -- no intermediate replay
+  file format.
+
+Serves those two static pages plus a small JSON + Server-Sent-Events API.
+Local single-user tool: no auth, binds to localhost only. See README's
+"Training-ops UI" section.
 
 Run: python app.py   (from this directory, or `python src/webapp/app.py`
 from anywhere -- paths are anchored to this file, not to cwd).
@@ -14,11 +22,12 @@ from pathlib import Path
 
 from flask import Flask, Response, jsonify, request, send_from_directory
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))  # sibling module `runs`
+sys.path.insert(0, str(Path(__file__).resolve().parent))  # sibling modules `runs`, `replay_engine`
 from runs import (  # noqa: E402
     LEAGUE_GLOBAL, LEAGUE_MODES, PRETRAIN_GLOBAL, PRETRAIN_SPEC,
     RunManager, argspec_from_parser, _league_parser,
 )
+from replay_engine import list_games, reduce_game  # noqa: E402
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 TRAINING_CONFIGS_DIR = REPO_ROOT / "training_configs"
@@ -91,6 +100,38 @@ def run_log(run_id):
             yield f"data: {json.dumps(line)}\n\n"
         yield "event: done\ndata: {}\n\n"
     return Response(stream(), mimetype="text/event-stream")
+
+
+@app.get("/replay")
+def replay_page():
+    return send_from_directory(app.static_folder, "replay.html")
+
+
+@app.post("/api/replay/games")
+def replay_games():
+    """Body: {"content": <raw log JSON text, read client-side from a user-picked
+    file>}. Returns the game index for that file (label + event count per
+    game) without reducing any board state -- cheap even for a multi-
+    thousand-game round-robin --eval log."""
+    body = request.get_json(force=True)
+    try:
+        doc = json.loads(body["content"])
+    except (KeyError, TypeError, json.JSONDecodeError) as exc:
+        return jsonify({"error": f"couldn't parse log file: {exc}"}), 400
+    return jsonify(list_games(doc))
+
+
+@app.post("/api/replay/game")
+def replay_game():
+    """Body: {"content": <same raw log JSON text>, "game_index": N}. Returns
+    one board-state snapshot per event in that game."""
+    body = request.get_json(force=True)
+    try:
+        doc = json.loads(body["content"])
+        result = reduce_game(doc, int(body["game_index"]))
+    except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
+        return jsonify({"error": str(exc)}), 400
+    return jsonify(result)
 
 
 if __name__ == "__main__":

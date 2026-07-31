@@ -6,9 +6,11 @@
     margin: 0; font: 14px/1.4 -apple-system, Segoe UI, sans-serif;
     background: #14161a; color: #d8dbe0;
   }
-  header { padding: 14px 20px; border-bottom: 1px solid #2a2d33; }
+  header { padding: 14px 20px; border-bottom: 1px solid #2a2d33; display: flex; align-items: baseline; flex-wrap: wrap; }
   header h1 { margin: 0; font-size: 18px; }
-  header p { margin: 2px 0 0; color: #888; font-size: 12px; }
+  header p { margin: 2px 0 0 12px; color: #888; font-size: 12px; }
+  header a { margin-left: auto; color: #6a9dff; text-decoration: none; font-size: 12px; }
+  header a:hover { text-decoration: underline; }
   main { display: grid; grid-template-columns: 400px 1fr; gap: 16px; padding: 16px 20px; align-items: start; }
   section { background: #1b1e24; border: 1px solid #2a2d33; border-radius: 8px; padding: 14px; }
   h2 { margin: 0 0 10px; font-size: 13px; text-transform: uppercase; letter-spacing: .04em; color: #9aa0aa; }
@@ -66,6 +68,7 @@
 <header>
   <h1>Training Ops</h1>
   <p>Local control panel for run_league.py / run_pretrain.py — start, stop, watch logs.</p>
+  <a href="/replay">Game replay viewer →</a>
 </header>
 
 <main>
