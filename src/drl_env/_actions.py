@@ -1417,12 +1417,12 @@ def _flashback_legal(name, ability_legal, speed, cost=None):
     cast derived, not a separate default.
 
     cost (optional): a MANA cost dict for a flashback whose flashback cost
-    includes mana (Deep Analysis' {1}{U}). When present, its affordability
-    is checked here (plan_payment) exactly like a normal cast; the free/
-    sacrifice-only flashbacks (Faithless Looting, Lava Dart, Dread Return)
-    leave it None and pay entirely inside their own resolve. Any NON-mana
-    additional cost (Deep Analysis' "Pay 3 life") is gated by ability_legal
-    instead (it can't be expressed as a mana dict)."""
+    includes mana (Deep Analysis' {1}{U}, Faithless Looting's {2}{R}). When
+    present, its affordability is checked here (plan_payment) exactly like a
+    normal cast; the truly free/sacrifice-only flashbacks (Lava Dart, Dread
+    Return) leave it None and pay entirely inside their own resolve. Any
+    NON-mana additional cost (Deep Analysis' "Pay 3 life") is gated by
+    ability_legal instead (it can't be expressed as a mana dict)."""
     def legal(state):
         if state.pending_resolution is not None:
             return False

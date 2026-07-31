@@ -5,6 +5,7 @@ below guards."""
 from game import registry, resolution
 from game.cards import CardDef, CardType, EffectId
 from game.catalog.multicolor_cards import cast_agony_warp, cast_terminate, cast_writhing_chrysalis
+from game.effects.combat import can_block
 from game.effects.shared import card_colors
 from game.effects.stack import resolve_top_of_stack
 from game.effects.stats import permanent_power, permanent_toughness
@@ -93,3 +94,12 @@ def test_writhing_chrysalis_devoid_eldrazi_spawn_and_sacrifice_counter():
     promote_triggers_to_stack(state)
     resolve_top_of_stack(state)
     assert wr.counters.get("+1/+1") == 1  # "whenever you sacrifice another Eldrazi"
+
+
+def test_sneaky_snacker_has_flying():
+    """Real Sneaky Snacker (MH3) is a 2/1 flier -- only blockable by flying
+    or reach, not a vanilla ground creature like Gurmag Angler."""
+    state = _two()
+    snacker = Permanent(registry.CARD_DEFS["Sneaky Snacker"])
+    ground = Permanent(CardDef("Ground Blocker", CardType.CREATURE, None, EffectId.FILLER, power=5, toughness=5))
+    assert not can_block(state, ground, snacker)

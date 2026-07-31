@@ -284,13 +284,19 @@ wired only through `--matchup` mode.)
   `action_count_win_reward_200_floor02` — loss/draw → `0.0`, win → `1.0` down
   to a `0.2` floor scaled by the *winning seat's* action count (so a policy
   can't pad a turn with free actions to inflate its reward). **League** play
-  uses `deploy_reward_v2`: a flat `1.0` on any win (no efficiency scaling — the
-  earlier `deploy_reward_v1`'s efficiency band induced an action-space-
-  minimization pathology where policies learned to shrink their own board to
-  "win in fewer actions"), and the same `0.25` floor decremented per turn the
-  seat discarded to cleanup (punishing hoarding) on a loss. The **mulligan
-  model** trains on its own reward (`rl/mulligan.py`): win payout minus a convex
-  (quadratic) per-mulligan penalty.
+  uses `deploy_reward_v2`: a flat `1.0` on any win minus `q` (no efficiency
+  scaling — the earlier `deploy_reward_v1`'s efficiency band induced an
+  action-space-minimization pathology where policies learned to shrink their
+  own board to "win in fewer actions"), and exactly `-q` on a loss. `q` is a
+  single "sloppiness" penalty shared by both bands: a noisy-or of two
+  saturating (Hill-function) curves over `PlayerState.mana_burnt_total`
+  (mana tapped and left to dissipate at a phase boundary, rule 500.4) and
+  `.cleanup_discard_turns` (cards hoarded past hand size) — near-zero for a
+  couple of stray points, severe by ~10 cumulative, asymptoting toward but
+  never reaching `1.0`, so every win still strictly outscores every loss no
+  matter how sloppy either was. The **mulligan model** trains on its own
+  reward (`rl/mulligan.py`): win payout minus a convex (quadratic)
+  per-mulligan penalty.
 - **Win condition**: the engine's real one — an opponent's life total hitting
   0, or a player decking out. There is no separate termination heuristic.
 

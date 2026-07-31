@@ -478,10 +478,12 @@ def cast_faithless_looting(state, card_def):
 
 
 def flashback_faithless_looting(state, inst):
-    """No alternate cost of its own (unlike Dread Return/Lava Dart's
-    sacrifice) -- so, same as Land Grant's free alt_cast, the effect is
-    already "fully paid for" the instant Flashback is chosen and pushes
-    onto the stack immediately, not gated behind any further resolution.
+    """Real Flashback cost is {2}{R} (unlike Dread Return/Lava Dart's free
+    sacrifice-only Flashback) -- the mana is already paid by the generic
+    flashback cost path (drl_env._actions._flashback_execute) before this
+    resolve ever runs, so by the time we get here it's "fully paid for" and
+    pushes onto the stack immediately, not gated behind any further
+    resolution.
 
     inst: the exact graveyard CardInstance being flashed back -- see
     black_cards.flashback_dread_return."""
@@ -793,6 +795,7 @@ RED_EFFECT_REGISTRY = {
     EffectId.FAITHLESS_LOOTING: {
         "cast": {"resolve": lambda state, card_def: cast_faithless_looting(state, card_def)},
         "flashback": {
+            "cost": {"generic": 2, "R": 1},  # real Flashback cost -- paid by the generic mana-flashback path
             "legal": lambda state: True,
             "resolve": lambda state, card_def: flashback_faithless_looting(state, card_def),
         },

@@ -296,10 +296,18 @@ class PlayerState:
 
         # Number of TURNS this player discarded to hand size at its own cleanup
         # (game.effects.state_based.cleanup_step) -- a per-turn count, not per
-        # card. A proxy for hoarding drawn cards it never deployed; read by the
-        # loss band of rl.rewards.deploy_reward. Only the hand-size cleanup
-        # discard bumps this, never any other discard effect.
+        # card. A proxy for hoarding drawn cards it never deployed; read by
+        # rl.rewards.deploy_reward. Only the hand-size cleanup discard bumps
+        # this, never any other discard effect.
         self.cleanup_discard_turns = 0
+
+        # Total mana LOST to rule 500.4's automatic pool-empty (game.turn.
+        # _empty_mana_pools) over the whole game -- summed across every
+        # non-empty clear, all colors combined (a {"R": 2} clear adds 2, not
+        # 1). A proxy for overtapping/mis-sequencing mana it never spent;
+        # read by rl.rewards.deploy_reward. Never reset once the game is
+        # underway.
+        self.mana_burnt_total = 0
 
     def draw(self, n=1):
         """Real Magic: attempting to draw from an empty library is an

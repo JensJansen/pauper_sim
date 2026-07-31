@@ -9,7 +9,7 @@ import game
 from drl_env import _actions
 from drl_env._actions import *
 from game.cards import CardDef, CardType, EffectId
-from game.state import GameState, Permanent, PlayerState
+from game.state import CardInstance, GameState, Permanent, PlayerState
 
 # tests/drl_env/test_action_table.py -> tests/drl_env -> tests -> repo root,
 # same depth data/ sits at.
@@ -174,6 +174,37 @@ def test_on_cast_trigger_fires_only_after_cost_paid():
         game.CARD_DEFS.update(_card_defs_backup)
         game.EFFECT_REGISTRY[EffectId.FILLER] = _filler_backup
         game.EFFECT_REGISTRY[EffectId.GENEROUS_ENT] = _generous_ent_backup
+
+
+def test_faithless_looting_flashback_requires_mana():
+    """Regression: real Flashback cost is {2}{R} -- FAITHLESS_LOOTING's
+    registry entry used to omit "cost" entirely, so _flashback_legal skipped
+    plan_payment and the action showed legal with 0 floating mana (live
+    game: flashed back for free, no cost ever paid)."""
+    decklist = [("Faithless Looting", 1), ("Mountain", 3)]
+    actions = build_action_table(decklist, game.EFFECT_REGISTRY)
+    _fb_name, fb_legal, fb_execute = next(
+        (nm, lg, ex) for nm, lg, ex in actions if nm == "Flashback Faithless Looting"
+    )
+
+    state = GameState(on_the_play=True)
+    state.phase = game.turn.Phase.MAIN1
+    fl = CardInstance(game.CARD_DEFS["Faithless Looting"])
+    state.graveyard = [fl]
+    state.library = [CardDef(f"F{i}", CardType.LAND, None, EffectId.MOUNTAIN) for i in range(4)]
+    assert not fb_legal(state)  # 0 floating mana -- must NOT be legal
+
+    mountains = [Permanent(game.CARD_DEFS["Mountain"]) for _ in range(3)]
+    state.battlefield = mountains
+    for m in mountains:
+        game.activate_mana_source(state, m)  # float 3 R BEFORE flashing back (float-first)
+    assert fb_legal(state)
+    fb_execute(state)
+    assert state.pending_resolution["kind"] == "pay_cost"
+    while state.pending_resolution is not None:
+        game.execute_pool_spend(state, game.pool_spend_options(state)[0])
+    assert state.mana_pool == {}  # the full {2}{R} = 3 pips actually spent, not skipped
+    assert fl not in state.graveyard and len(state.stack) == 1
 
 
 def test_tokens_blood_sacrifice():

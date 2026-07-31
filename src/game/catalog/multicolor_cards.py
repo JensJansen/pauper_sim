@@ -197,6 +197,7 @@ MULTICOLOR_EFFECT_REGISTRY = {
     # then returned by its own on_draw_count trigger. No "cast" spec at
     # all -- matches Generous Ent's own "never hard-cast" precedent.
     EffectId.SNEAKY_SNACKER: {
+        "keywords": {"flying"},
         "on_draw_count": {"count": 3},
         # order_triggers: reachable the
         # instant 2+ copies both cross their own draw-count trigger on

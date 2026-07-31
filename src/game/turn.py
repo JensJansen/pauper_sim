@@ -101,11 +101,14 @@ def _empty_mana_pools(state):
     faithful cost (the mana is gone, the source stays tapped) rather than an
     undo. Replaces the old once-per-turn clear (untap_step) -- and, since it
     now owns every mana clear, logs each non-empty emptying (keyed by player
-    index) so the event log stays a faithful record of when mana was lost."""
+    index) so the event log stays a faithful record of when mana was lost, and
+    tallies each player's own PlayerState.mana_burnt_total (rl.rewards reads
+    it) by the total pips lost, not just whether anything was."""
     emptied = {}
     for idx, player in enumerate(state.players):
         if player.mana_pool:
             emptied[idx] = dict(player.mana_pool)
+            player.mana_burnt_total += sum(player.mana_pool.values())
             player.mana_pool.clear()
     if emptied:
         state.log_event("mana_emptied", pools=emptied)

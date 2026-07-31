@@ -379,3 +379,8 @@ def test_rule_500_4_mana_pool_clears_at_phase_boundaries_except_combat():
     assert by_phase[Phase.COMBAT_DAMAGE][0] == {"R": 1}  # still there crossing DECLARE_BLOCKERS -> COMBAT_DAMAGE too
     assert by_phase[Phase.MAIN2] == ({}, {})  # cleared again once combat's shared window ends
     assert floated_at == {"main1", "declare_attackers"}  # both floats actually happened, not skipped
+    # mana_burnt_total tallies pips lost, not clear-events: player 0 lost the
+    # MAIN1 "R":1 AND the DECLARE_ATTACKERS "R":1 (two separate clears) -> 2;
+    # player 1 lost only its MAIN1 "W":1 -> 1. rl.rewards.deploy_reward reads this.
+    assert state.players[0].mana_burnt_total == 2
+    assert state.players[1].mana_burnt_total == 1
