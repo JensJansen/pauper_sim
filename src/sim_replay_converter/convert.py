@@ -872,6 +872,15 @@ class EventStreamReplayBuilder(BaseReplayBuilder):
         if entry is None:
             return
         cont = self._new_container()
+        # Cockatrice's card rotation ("turns sideways") is driven by AttrTapped
+        # alone -- AttrAttacking only toggles the attacking highlight, no rotation
+        # (see player_event_handler.cpp's AttrTapped/AttrAttacking cases). The
+        # event already carries whether this attack actually tapped the creature
+        # (false for vigilance), so without this an attacker never visibly turned
+        # sideways at all.
+        if e.get("tapped") and not entry["tapped"]:
+            self._set_attr(cont, p, Z_TABLE, entry["id"], pb_attr.AttrTapped, "1")
+            entry["tapped"] = True
         self._set_attr(cont, p, Z_TABLE, entry["id"], pb_attr.AttrAttacking, "1")
         self.live_attacker_ids.append((p.idx, entry["id"]))
         self._create_arrow(cont, p, entry["id"], self.other(p))
@@ -1439,26 +1448,51 @@ def build_replay_for_game(game, meta):
 PAIRING_LINE_RE = re.compile(r"^\s*(\S+) vs (\S+): (\d+) games$")
 
 
-def _pairing_labels_from_log(json_path, expected_total):
-    """run_league.py's --eval round-robin path (no --decks/--matchup override)
-    records the overall resolved deck roster in meta.decks, but no per-game
-    pairing label -- meta.matchup stays None for a round-robin, since each
-    game_index can be a different pairing (see run_league.py's _run_eval
-    docstring). Recover a label per game_index from the sibling .log file's
-    "A vs B: N games" lines instead -- printed in the exact pairing order
-    games were appended in, so slicing by count reconstructs it exactly.
-    Returns a list of length expected_total, or None if no sibling .log
-    exists or its game count doesn't match (stale/foreign .log)."""
-    log_path = json_path.with_suffix(".log")
-    if not log_path.exists():
-        return None
+def _labels_from_log_text(text, expected_total):
     labels = []
-    for line in log_path.read_text(encoding="utf-8").splitlines():
+    for line in text.splitlines():
         m = PAIRING_LINE_RE.match(line)
         if m:
             a, b, n = m.group(1), m.group(2), int(m.group(3))
             labels.extend([f"{a}_vs_{b}"] * n)
     return labels if len(labels) == expected_total else None
+
+
+def _pairing_labels_from_log(json_path, expected_total):
+    """run_league.py's --eval round-robin path (no --decks/--matchup override)
+    records the overall resolved deck roster in meta.decks, but no per-game
+    pairing label -- meta.matchup stays None for a round-robin, since each
+    game_index can be a different pairing (see run_league.py's _run_eval
+    docstring). Recover a label per game_index from the run's own stdout log
+    instead: its "A vs B: N games" lines are printed in the exact pairing
+    order games were appended in, so slicing by count reconstructs it exactly.
+
+    That stdout log isn't reliably the JSON's same-stem sibling -- confirmed
+    live: a subleague run wrote logs/subleague_..._3010games.json alongside
+    logs/eval_..._3010games.log, an UNRELATED basename (the two are just two
+    separately-named outputs of the same invocation) -- so a same-stem-only
+    lookup silently found nothing and every game fell back to "sim_vs_sim".
+    Try the same-stem guess first (fast, no directory scan), then fall back
+    to every other .log next to the JSON, matched by content: the log
+    run_league.py's own _write_event_log prints ("event log written to
+    <path>") names the JSON file it just wrote, so whichever .log actually
+    mentions this JSON's filename is unambiguously the right one. Returns a
+    list of length expected_total, or None if no usable .log is found."""
+    same_stem = json_path.with_suffix(".log")
+    if same_stem.exists():
+        labels = _labels_from_log_text(same_stem.read_text(encoding="utf-8"), expected_total)
+        if labels is not None:
+            return labels
+    for log_path in sorted(json_path.parent.glob("*.log")):
+        if log_path == same_stem:
+            continue
+        text = log_path.read_text(encoding="utf-8")
+        if json_path.name not in text:
+            continue
+        labels = _labels_from_log_text(text, expected_total)
+        if labels is not None:
+            return labels
+    return None
 
 
 def _resolve_config_name(meta, pairing_labels, game_index):

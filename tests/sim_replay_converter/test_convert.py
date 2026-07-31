@@ -231,6 +231,27 @@ def test_flashback_does_not_steal_a_second_hand_copy():
     )
 
 
+def test_pairing_labels_survive_mismatched_log_basename(tmp_path):
+    """Confirmed live: a real subleague run wrote
+    subleague_..._3010games.json alongside eval_..._3010games.log -- an
+    UNRELATED basename, not the same-stem sibling _pairing_labels_from_log
+    used to assume. Every game in that batch silently fell back to
+    "sim_vs_sim" as a result. The lookup must also find a same-directory
+    .log with a different name, by matching on content (the "event log
+    written to <path>" line names the JSON file it belongs to)."""
+    json_path = tmp_path / "subleague_run.json"
+    log_path = tmp_path / "eval_run.log"  # deliberately NOT subleague_run.log
+    log_path.write_text(
+        "Eval: 1 pairing(s) x 2 games (sampled, seed=None) over decks=['a', 'b']\n"
+        "  a vs b: 2 games\n"
+        "eval done: 2 games in 1.0s\n"
+        f"event log written to ../logs/{json_path.name} (2 games, 10 total events, 1.0 KB)\n",
+        encoding="utf-8",
+    )
+    labels = C._pairing_labels_from_log(json_path, expected_total=2)
+    assert labels == ["a_vs_b", "a_vs_b"]
+
+
 def test_converter_matches_engine_log_hand_counts():
     """Cross-checks every real logs/*.json (if any are present) against the
     engine's own accounting, on top of the fabricated-event checks above.

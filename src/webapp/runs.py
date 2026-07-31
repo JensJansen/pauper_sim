@@ -1,0 +1,451 @@
+"""Subprocess-backed run management for the training-ops web UI (app.py).
+
+A "run" is a plain OS subprocess: run_league.py or run_pretrain.py invoked
+with explicit CLI flags built from the submitted form values -- NEVER a
+--run-config/--league-config PATH. That's what makes a loaded
+training_configs/*.json preconfiguration purely a form-prefill convenience
+(see app.py's /api/configs) rather than something the running process reads
+again: once "Start" is clicked, the values on screen are the whole story.
+
+Runs are tracked in-memory (self._procs) for the life of the server process
+-- polling a live subprocess.Popen is the only reliable way to know it's
+still running / read its exit code, there's no portable PID-liveness check
+that doesn't need extra dependencies. A JSON registry on disk
+(logs/webapp_runs/registry.json) survives a server restart for history and
+log access, but a run started before a restart can no longer be stopped
+through the UI -- it just keeps running to completion untouched.
+
+League mode field grouping (LEAGUE_GLOBAL / LEAGUE_MODES) is hand-authored
+domain knowledge about which flags matter for which of run_league.py's three
+real run modes (see its own module docstring's Usage section + main()'s
+--eval / --matchup branches) -- argparse has no way to introspect that, only
+flag names/types/help. test_runs.py cross-checks it against the real parser
+so a future flag addition can't silently go ungrouped.
+
+Auto-sizing escalation: when a League-mode submission leaves --n-iterations
+blank and gives --total-games, a single run_league.py invocation only ever
+plays ONE batch of its own internal doubling ladder (run_league._next_batch_games)
+-- exactly the "start tiny, verify, double" behavior the `/train` skill drives
+by hand across many separate invocations. _escalating_loop automates that same
+loop: after each batch, check it was actually healthy (see _batch_healthy's own
+docstring for why exit code alone is NOT reliable here), then re-invoke the
+identical command again (run_league resumes from its own progress.json/session.txt)
+until this league's cumulative games/deck reaches the target, a batch comes back
+unhealthy, or the user hits Stop.
+"""
+import json
+import os
+import re
+import subprocess
+import sys
+import threading
+import time
+import uuid
+from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parent.parent.parent
+SRC_DIR = REPO_ROOT / "src"
+CHECKPOINTS_DIR = REPO_ROOT / "checkpoints"
+LOG_DIR = REPO_ROOT / "logs" / "webapp_runs"
+REGISTRY_PATH = LOG_DIR / "registry.json"
+
+SCRIPTS = {"league": SRC_DIR / "run_league.py", "pretrain": SRC_DIR / "run_pretrain.py"}
+
+# run_pretrain.py takes two positional args + a flag (no argparse), so it
+# gets a small hand-written spec instead of introspection.
+PRETRAIN_SPEC = [
+    {"dest": "n_iterations", "flags": [], "type": "int", "nargs": None, "default": 1,
+     "metavar": None, "help": "Sessions to run this invocation (positional arg 1)."},
+    {"dest": "games_per_iteration", "flags": [], "type": "int", "nargs": None, "default": 2,
+     "metavar": None, "help": "Games per deck per session (positional arg 2)."},
+    {"dest": "freeze", "flags": ["--freeze"], "type": "store_true", "nargs": None, "default": False,
+     "help": "After this session, freeze the shared stack to shared_stack_frozen.pt. Run once, when satisfied."},
+]
+PRETRAIN_GLOBAL = [f["dest"] for f in PRETRAIN_SPEC]
+
+# run_league.py's own --run-config/--league-config: never exposed, since runs
+# are always started with fully-resolved explicit flags (see module docstring).
+_SKIP_DESTS = {"help", "run_config", "league_config"}
+
+# Applies identically no matter which of the three modes below is active.
+LEAGUE_GLOBAL = ["league_name", "seed", "log"]
+
+# One entry per real run_league.py mode (see its module docstring's Usage
+# section and main()'s --eval / --matchup branches). A dest may appear in
+# more than one mode -- duplicated deliberately rather than forced into one
+# shared "misc" bucket, so each mode only ever shows what IT reads.
+#
+# games_per_iteration, the PPO batch-size ramp (batch_size_start/cap/steps),
+# and max_batch_size used to be fields here too -- removed 2026-07-31 along
+# with their CLI flags (see run_league.py's own comments at each removal
+# site): games_per_iteration is now always derived from n_workers, the PPO
+# ramp is hardcoded (nobody had ever overridden it), and max_batch_size's
+# safety role is now covered by this webapp's own auto-escalation loop
+# health-checking between every batch.
+LEAGUE_MODES = [
+    {
+        "key": "league", "label": "League training",
+        "help": "The continuous loop: every deck in --roster trains against opponents "
+                "resampled from its history. Leave n-iterations blank to auto-size batches "
+                "toward total-games (see below); set it to force one exact debug-sized run instead.",
+        "dests": ["roster", "decks", "total_games", "n_iterations",
+                  "n_workers", "snapshot_every", "checkpoint_opponent_rate",
+                  "train_deck_only", "train_mulligan_only"],
+    },
+    {
+        "key": "matchup_train", "label": "Matchup training",
+        "help": "Fixed A-vs-B pairing, no opponent sampling -- still trains and checkpoints "
+                "both decks, for exactly --games total games in one run (no auto-sizing).",
+        "dests": ["matchup", "games", "train_deck_only", "train_mulligan_only"],
+    },
+    {
+        "key": "eval", "label": "Eval (no training)",
+        "help": "Play games with the CURRENT live agents, no updates, no checkpointing. "
+                "Round-robin over the decks below, or a specific pairing.",
+        "implies": {"eval": True},
+        "dests": ["decks", "matchup", "games", "greedy"],
+    },
+]
+
+
+def argspec_from_parser(parser):
+    """Introspect an argparse.ArgumentParser into a JSON-able field spec, so
+    the web form always matches the script's real CLI -- one source of
+    truth (build_arg_parser's own flags/types/help), no hand-maintained
+    duplicate field list to drift out of sync as flags are added."""
+    spec = []
+    for action in parser._actions:  # argparse has no public introspection API
+        if action.dest in _SKIP_DESTS:
+            continue
+        if action.nargs == 0:  # store_true
+            kind = "store_true"
+        elif action.type is int:
+            kind = "int"
+        elif action.type is float:
+            kind = "float"
+        else:
+            kind = "text"
+        spec.append({
+            "dest": action.dest,
+            "flags": list(action.option_strings),
+            "type": kind,
+            "nargs": action.nargs if isinstance(action.nargs, int) and action.nargs > 0 else None,
+            "default": action.default,
+            "metavar": action.metavar,
+            "help": action.help,
+        })
+    return spec
+
+
+def _league_parser():
+    sys.path.insert(0, str(SRC_DIR))  # run_league imports rl.* / game by bare name, needs src/ on sys.path
+    import run_league  # heavy import (torch + rl.*) -- paid once per process, only needed here
+    return run_league.build_arg_parser()
+
+
+def build_argv(script, values):
+    """values: {dest: value} from the submitted form (already JSON-decoded).
+    A missing/empty/None value means "flag omitted" -- the script's own
+    hardcoded default applies, exactly as if left off the CLI by hand."""
+    if script == "pretrain":
+        n_iter = values.get("n_iterations")
+        gpi = values.get("games_per_iteration")
+        argv = [str(n_iter) if n_iter not in (None, "") else "1",
+                str(gpi) if gpi not in (None, "") else "2"]
+        if values.get("freeze"):
+            argv.append("--freeze")
+        return argv
+
+    assert script == "league", f"unknown script {script!r}"
+    argv = []
+    for field in argspec_from_parser(_league_parser()):
+        val = values.get(field["dest"])
+        if val is None or val == "" or val == []:
+            continue
+        flag = field["flags"][0]
+        if field["type"] == "store_true":
+            if val:
+                argv.append(flag)
+        elif field["nargs"] == 2:
+            a, b = val
+            argv += [flag, str(a), str(b)]
+        else:
+            argv += [flag, str(val)]
+    return argv
+
+
+def is_auto_sizing_league_run(values):
+    """True iff this submission takes run_league.py's auto-sizing path
+    (main()'s else-branch: no --n-iterations debug override, --total-games
+    given) rather than a forced one-off size -- the only case where a
+    single invocation plays just ONE batch of a doubling ladder instead of
+    everything requested in one shot."""
+    return bool(not values.get("matchup") and not values.get("eval")
+                and not values.get("n_iterations")
+                and values.get("total_games"))
+
+
+def _league_dir_for(values):
+    league_name = values.get("league_name")
+    return CHECKPOINTS_DIR / league_name if league_name else CHECKPOINTS_DIR / "league"
+
+
+def _read_cumulative_games(league_dir):
+    path = league_dir / "progress.json"
+    if not path.exists():
+        return 0
+    return json.loads(path.read_text()).get("cumulative_games_per_deck", 0)
+
+
+def _batch_healthy(log_tail):
+    """Mirrors the `/train` skill's own health check, NOT the subprocess exit
+    code: on Windows, a parallel run (--n-workers > 1) reliably exits 1 from
+    ProcessPoolExecutor teardown even when the session fully completed and
+    checkpointed cleanly -- ONLY the log content is trustworthy. Healthy iff
+    a "session N done" summary line is present and no Traceback was printed."""
+    if "Traceback" in log_tail:
+        return False
+    return re.search(r"session \d+ done", log_tail) is not None
+
+
+# Neither run_league.py nor run_pretrain.py logs PER-ITERATION timing today
+# (the "iter N [deck]: games=... policy_loss=..." lines carry no elapsed
+# time) -- only a summary line at the end of each "batch" (one script
+# invocation's own internal session, or one --eval pass). "Batch" is
+# therefore the finest timing granularity actually available without
+# changing the training scripts' own print statements.
+_SESSION_DONE_RE = re.compile(r"session \d+ done in ([\d.]+)s \(([\d.]+)s/game(?: across (\d+) games)?\)")
+_EVAL_DONE_RE = re.compile(r"eval done: (\d+) games in ([\d.]+)s")
+
+
+def parse_last_batch_timing(log_text):
+    """Timing for the most recently completed batch found in a run's log --
+    whichever of the two summary-line formats above appears LAST in the
+    text (an escalating session's log has one per batch; matches run_league's
+    own "session N done" format for both League and Matchup training, or
+    "eval done" for Eval mode). None if no batch has finished yet."""
+    candidates = []
+    for m in _SESSION_DONE_RE.finditer(log_text):
+        total_s, s_per_game, games = float(m.group(1)), float(m.group(2)), m.group(3)
+        candidates.append((m.start(), {
+            "total_seconds": total_s, "avg_seconds_per_game": s_per_game,
+            "games": int(games) if games else None,
+        }))
+    for m in _EVAL_DONE_RE.finditer(log_text):
+        games, total_s = int(m.group(1)), float(m.group(2))
+        candidates.append((m.start(), {
+            "total_seconds": total_s, "avg_seconds_per_game": (total_s / games) if games else None,
+            "games": games,
+        }))
+    if not candidates:
+        return None
+    return max(candidates, key=lambda c: c[0])[1]  # latest-in-file wins
+
+
+class RunManager:
+    def __init__(self):
+        LOG_DIR.mkdir(parents=True, exist_ok=True)
+        self._procs = {}  # run_id -> Popen of the CURRENTLY active batch (only runs THIS process started)
+        self._cancel_events = {}  # run_id -> threading.Event, escalating sessions only
+        self._registry = json.loads(REGISTRY_PATH.read_text()) if REGISTRY_PATH.exists() else {}
+
+    def _save_registry(self):
+        # ponytail: no lock -- single local user, worst case is a rare stale
+        # read of the registry file, never corrupted training state (the
+        # actual checkpoints/progress.json are only ever written by the
+        # subprocess itself). Add a lock if multi-user access ever matters.
+        REGISTRY_PATH.write_text(json.dumps(self._registry, indent=2))
+
+    def start(self, script, values):
+        assert script in SCRIPTS, f"unknown script {script!r}"
+        if script == "league" and is_auto_sizing_league_run(values):
+            return self._start_escalating(values)
+        return self._start_single(script, values)
+
+    def _start_single(self, script, values):
+        argv = build_argv(script, values)
+        run_id = uuid.uuid4().hex[:12]
+        log_path = LOG_DIR / f"{run_id}.log"
+        cmd = [sys.executable, "-u", str(SCRIPTS[script])] + argv
+        log_path.write_text(f"$ {' '.join(cmd)}\n\n")
+        logfile = open(log_path, "a")
+        # New process group on Windows so stop() can taskkill the WHOLE tree --
+        # run_league.py --n-workers>1 spawns a ProcessPoolExecutor; terminating
+        # only the parent would orphan its worker processes.
+        creationflags = subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0
+        proc = subprocess.Popen(cmd, cwd=SRC_DIR, stdout=logfile, stderr=subprocess.STDOUT,
+                                 creationflags=creationflags)
+        self._procs[run_id] = proc
+        self._registry[run_id] = {
+            "id": run_id, "script": script, "mode": "single", "argv": argv, "pid": proc.pid,
+            "started": time.time(), "ended": None, "status": "running",
+            "exit_code": None, "log_path": str(log_path),
+        }
+        self._save_registry()
+        return run_id
+
+    def _start_escalating(self, values):
+        argv = build_argv("league", values)
+        run_id = uuid.uuid4().hex[:12]
+        log_path = LOG_DIR / f"{run_id}.log"
+        log_path.write_text("")
+        league_dir = _league_dir_for(values)
+        entry = {
+            "id": run_id, "script": "league", "mode": "auto_escalate", "argv": argv, "pid": None,
+            "started": time.time(), "ended": None, "status": "running",
+            "exit_code": None, "log_path": str(log_path),
+            "batches_run": 0, "total_games": int(values["total_games"]),
+            "cumulative_games_per_deck": _read_cumulative_games(league_dir),
+        }
+        self._registry[run_id] = entry
+        self._save_registry()
+        cancel_event = threading.Event()
+        self._cancel_events[run_id] = cancel_event
+        thread = threading.Thread(target=self._escalating_loop, args=(run_id, argv, league_dir, cancel_event), daemon=True)
+        thread.start()
+        return run_id
+
+    def _escalating_loop(self, run_id, argv, league_dir, cancel_event):
+        entry = self._registry[run_id]
+        log_path = Path(entry["log_path"])
+        cmd = [sys.executable, "-u", str(SCRIPTS["league"])] + argv
+        creationflags = subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0
+        batch = 0
+        while not cancel_event.is_set():
+            # Check BEFORE spawning: if a previous session already reached the
+            # target, stop here rather than spawning a batch -- run_league.py
+            # itself would print "nothing to run" and exit with no "session N
+            # done" line, which _batch_healthy would (wrongly) read as a failure.
+            cumulative = _read_cumulative_games(league_dir)
+            entry["cumulative_games_per_deck"] = cumulative
+            if cumulative >= entry["total_games"]:
+                entry.update(status="finished", ended=time.time(), exit_code=0)
+                self._save_registry()
+                return
+            batch += 1
+            with open(log_path, "a") as f:
+                f.write(f"\n=== batch {batch} ===\n$ {' '.join(cmd)}\n\n")
+            batch_start_offset = log_path.stat().st_size
+            logfile = open(log_path, "a")
+            proc = subprocess.Popen(cmd, cwd=SRC_DIR, stdout=logfile, stderr=subprocess.STDOUT,
+                                     creationflags=creationflags)
+            self._procs[run_id] = proc
+            entry["pid"] = proc.pid
+            entry["batches_run"] = batch
+            self._save_registry()
+            exit_code = proc.wait()
+            logfile.close()
+
+            if cancel_event.is_set():
+                entry.update(status="stopped", ended=time.time(), exit_code=exit_code)
+                self._save_registry()
+                return
+
+            with open(log_path, "r") as f:
+                f.seek(batch_start_offset)
+                batch_log = f.read()
+            if not _batch_healthy(batch_log):
+                entry.update(status="failed", ended=time.time(), exit_code=exit_code)
+                self._save_registry()
+                return
+
+            entry["cumulative_games_per_deck"] = _read_cumulative_games(league_dir)
+            self._save_registry()
+            # Healthy batch done -- loop back to the top, which re-checks
+            # cumulative-vs-target before deciding whether to spawn another.
+            # run_league.py resumes on its own from progress.json/session.txt.
+
+        # Reached only if cancel_event was set exactly between two batches (the
+        # `while` condition itself went false) -- every early return above
+        # already records its own terminal status, this is just the fallback
+        # for that one race window.
+        entry.update(status="stopped", ended=time.time())
+        self._save_registry()
+
+    def stop(self, run_id):
+        event = self._cancel_events.get(run_id)
+        if event is not None:
+            event.set()  # escalating session: stop launching further batches
+        proc = self._procs.get(run_id)
+        if proc is None:
+            # This server process never held a live handle for this run -- almost
+            # always because it was restarted after the run started (see the
+            # README's "Known limitation"). Nothing we can do to actually kill it.
+            return event is not None
+        if proc.poll() is None:  # still actually running -- go kill it
+            if os.name == "nt":
+                subprocess.run(["taskkill", "/PID", str(proc.pid), "/T", "/F"], capture_output=True)
+            else:
+                proc.terminate()
+            try:
+                proc.wait(timeout=3)
+            except subprocess.TimeoutExpired:
+                pass  # checked via poll() below regardless of whether wait() caught the exit
+            if proc.poll() is None:
+                return False  # taskkill/terminate did NOT actually kill it -- don't claim success
+            if event is None:  # single-batch run: WE killed it, so it's genuinely "stopped"
+                entry = self._registry[run_id]
+                entry.update(status="stopped", ended=time.time())
+                self._save_registry()
+        elif event is None:
+            # It had already finished on its own by the time we checked -- resolve
+            # its REAL status (finished/failed) via _refresh's exit-code logic
+            # rather than mislabeling a natural finish as a manual "stopped".
+            self._refresh(run_id)
+        return True
+
+    def _refresh(self, run_id):
+        entry = self._registry.get(run_id)
+        if entry is None or entry.get("mode") == "auto_escalate":
+            return entry  # escalating sessions keep their own status current (see _escalating_loop)
+        proc = self._procs.get(run_id)
+        if entry["status"] == "running" and proc is not None:
+            code = proc.poll()
+            if code is not None:
+                entry["status"] = "finished" if code == 0 else "failed"
+                entry["exit_code"] = code
+                entry["ended"] = time.time()
+                self._save_registry()
+        return entry
+
+    def _with_timing(self, entry):
+        """A COPY of entry with a "timing" field computed fresh from its log
+        file -- never persisted to the registry (it's derived, cheap enough
+        to recompute per request for a local single-user tool's log sizes,
+        and staying derived-only means it can never go stale on disk)."""
+        if entry is None:
+            return None
+        enriched = dict(entry)
+        try:
+            log_text = Path(entry["log_path"]).read_text(errors="replace")
+        except OSError:
+            log_text = ""
+        enriched["timing"] = parse_last_batch_timing(log_text)
+        return enriched
+
+    def get(self, run_id):
+        return self._with_timing(self._refresh(run_id))
+
+    def list_runs(self):
+        for run_id in list(self._registry):
+            self._refresh(run_id)
+        entries = sorted(self._registry.values(), key=lambda r: r["started"], reverse=True)
+        return [self._with_timing(e) for e in entries]
+
+    def tail_log(self, run_id):
+        """Yield new lines from a run's log file as they're written, until the
+        run is no longer active and no further content is available. Works
+        unchanged for an escalating session's log -- it's one file appended
+        to across every batch, so the stream just runs straight through."""
+        entry = self._registry.get(run_id)
+        if entry is None:
+            return
+        with open(entry["log_path"], "r") as f:
+            while True:
+                line = f.readline()
+                if line:
+                    yield line
+                    continue
+                if self._refresh(run_id)["status"] != "running":
+                    return
+                time.sleep(0.5)

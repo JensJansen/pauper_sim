@@ -34,11 +34,11 @@ both the sequential and parallel worker paths (event dicts are picklable).
 Usage:
   python run_league.py --run-config PATH --league-config PATH
       Normal training: run-mechanics defaults (training_configs/run_default.json) + one league's identity
-      (training_configs/league_*.json: league_name, roster, optional train_decks, total_games, max_batch_size).
+      (training_configs/league_*.json: league_name, roster, optional train_decks, total_games).
       No game count given -- it's computed automatically from the league's own progress.json (doubles each
-      batch, 1/2/4/8/..., capped at max_batch_size, stopping once total_games is reached). Either config's
+      batch, 1/2/4/8/..., stopping once total_games is reached). Either config's
       individual values, or --league-name/--roster/--n-workers/etc. directly, still override for one call.
-  python run_league.py --n-iterations N [--games-per-iteration N] [--snapshot-every N] [--n-workers N]
+  python run_league.py --n-iterations N [--snapshot-every N] [--n-workers N]
       Debug / one-off: force an exact iteration count, bypassing auto-sizing (and its progress.json bookkeeping)
       entirely. Config files still apply for anything not explicitly overridden.
   python run_league.py --matchup DECK_A DECK_B [--games N] [--log PATH]
@@ -142,22 +142,31 @@ def _save_progress(league_dir, last_batch_size, cumulative_games_per_deck):
         json.dump({"last_batch_size": last_batch_size, "cumulative_games_per_deck": cumulative_games_per_deck}, f)
 
 
-def _next_batch_games(league_dir, max_batch_size, total_games):
+def _next_batch_games(league_dir, total_games):
     """The next auto-sized batch's games-per-deck: doubles from the last real
-    batch this league actually ran (1 if none yet), capped at max_batch_size
-    once reached (then held there every batch after), and never overshooting
+    batch this league actually ran (1 if none yet), never overshooting
     total_games on the final batch. Returns None once total_games is already
-    met -- the caller's signal to run nothing at all."""
+    met -- the caller's signal to run nothing at all.
+
+    No separate cap here (there used to be a max_batch_size argument): the
+    doubling ladder's own safety property -- never jump straight from a
+    small, verified-healthy batch to a huge one -- is now enforced by
+    whatever repeatedly re-invokes this script and health-checks between
+    calls (the `/train` skill, or the webapp's auto-escalation loop),
+    exactly the same mechanism that already has to exist for the ladder to
+    mean anything. A second, hand-picked ceiling on top of that was
+    redundant -- every prior value (1024, 2048, 4000) was picked ad hoc per
+    league file with no principled basis, never actually exercised by real
+    training at scale."""
     progress = _load_progress(league_dir)
     remaining = total_games - progress["cumulative_games_per_deck"]
     if remaining <= 0:
         return None
     next_size = progress["last_batch_size"] * 2 if progress["last_batch_size"] > 0 else 1
-    return min(next_size, max_batch_size, remaining)
+    return min(next_size, remaining)
 
 
 def _run_session(n_iterations, games_per_iteration, snapshot_every, executor, n_workers,
-                  batch_size_start=32, batch_size_cap=2048, batch_size_steps=6,
                   fresh_stack=False, league_dir=None, seed=None,
                   train_deck=True, train_mulligan=True, train_decks=None,
                   matchup=None, game_logs=None, checkpoint_rate=0.0, roster=None):
@@ -256,15 +265,19 @@ def _run_session(n_iterations, games_per_iteration, snapshot_every, executor, n_
     if train_set != set(deck_names):
         mode.append(f"train_decks={train_decks}")
     print(f"League session {session}: n_iterations={n_iterations} games_per_iteration={games_per_iteration} "
-          f"snapshot_every={snapshot_every} checkpoint_rate={checkpoint_rate} decks={deck_names} n_workers={n_workers} "
-          f"batch_size={batch_size_start}->{batch_size_cap} ({batch_size_steps} steps)"
+          f"snapshot_every={snapshot_every} checkpoint_rate={checkpoint_rate} decks={deck_names} n_workers={n_workers}"
           f"{' [' + ', '.join(mode) + ']' if mode else ''}")
     t0 = time.time()
     total_games = 0
     collect_time_total = 0.0
     update_time_total = 0.0
     for iteration in range(n_iterations):
-        batch_size = batch_size_for_iteration(iteration, n_iterations, batch_size_start, batch_size_cap, batch_size_steps)
+        # PPO minibatch ramp (32 -> 2048 over 6 steps): batch_size_for_iteration's
+        # own hardcoded defaults -- see its docstring (Smith et al. 2017 "grow
+        # batch size instead of decaying LR"). Used to be 3 separate CLI-tunable
+        # knobs; the codebase's own comment on them admitted nobody had ever
+        # actually overridden them in practice, so they're fixed here instead.
+        batch_size = batch_size_for_iteration(iteration, n_iterations)
         mull_by_deck_iter = {name: [] for name in train_decks}  # mulligan transitions accumulated across this iteration
         # Snapshot the mulligan nets for the workers now (ALL decks -- a frozen
         # opponent still needs its mulligan net to play). Updated once after the
@@ -470,9 +483,8 @@ def build_arg_parser():
                          help="Force this exact number of iterations, bypassing auto-sizing entirely (debugging / "
                               "one-off runs only -- never written to progress.json, never fed back into the "
                               "doubling sequence). Omit this for normal training: the size is computed from "
-                              "--league-config's total_games/max_batch_size and how far that league has already "
+                              "--league-config's total_games and how far that league has already "
                               "gotten (checkpoints/<league_name>/progress.json).")
-    parser.add_argument("--games-per-iteration", type=int, default=None, help="Default 2 (run config).")
     parser.add_argument("--snapshot-every", type=int, default=None,
                          help="Snapshot cadence in ITERATIONS. Prefer --run-config's snapshot_every_games (a fixed "
                               "games-count, independent of games_per_iteration) -- this raw flag is a lower-level "
@@ -501,14 +513,6 @@ def build_arg_parser():
     parser.add_argument("--log", type=str, default=None, metavar="PATH",
                          help="Write the game engine's own event log for every game this session to PATH as JSON "
                               "(sequential collection only).")
-    parser.add_argument("--batch-size-start", type=int, default=None,
-                         help="ppo_update batch_size at the first iteration. Default 32 (run config) -- this PPO "
-                              "minibatch ramp is unrelated to games-per-invocation sizing; it's expected to stay "
-                              "fixed across every league, not vary per-experiment.")
-    parser.add_argument("--batch-size-cap", type=int, default=None, help="ppo_update batch_size ceiling. Default 2048 (run config).")
-    parser.add_argument("--batch-size-steps", type=int, default=None,
-                         help="Doublings from --batch-size-start to --batch-size-cap, spread evenly across the "
-                              "session. Default 6 (run config).")
     parser.add_argument("--checkpoint-opponent-rate", type=float, default=None,
                          help="Probability that a sampled opponent is a frozen historical snapshot rather than that "
                               "deck's current live net, independent of how many snapshots exist (rl.league.LeaguePool."
@@ -530,17 +534,13 @@ def build_arg_parser():
     parser.add_argument("--total-games", type=int, default=None,
                          help="Games/deck this league trains to in total -- drives auto-sizing and the stop "
                               "condition. Default: --league-config's own total_games.")
-    parser.add_argument("--max-batch-size", type=int, default=None,
-                         help="Auto-sizing ceiling: batches double (1, 2, 4, 8, ...) each session until reaching "
-                              "this, then hold here every session after. Default: --league-config's own max_batch_size.")
     parser.add_argument("--run-config", type=str, default=None, metavar="PATH",
-                         help="JSON of run-mechanics defaults shared across leagues (n_workers, games_per_iteration, "
-                              "snapshot_every_games, the PPO batch-size ramp, checkpoint_opponent_rate) -- see "
-                              "training_configs/run_default.json. Any individual value can still be overridden by "
-                              "passing its own flag explicitly for one invocation.")
+                         help="JSON of run-mechanics defaults shared across leagues (n_workers, snapshot_every_games, "
+                              "checkpoint_opponent_rate) -- see training_configs/run_default.json. Any individual "
+                              "value can still be overridden by passing its own flag explicitly for one invocation.")
     parser.add_argument("--league-config", type=str, default=None, metavar="PATH",
-                         help="JSON describing one league (league_name, roster, optional train_decks, total_games, "
-                              "max_batch_size) -- see training_configs/league_*.json. Drives automatic batch sizing "
+                         help="JSON describing one league (league_name, roster, optional train_decks, total_games) "
+                              "-- see training_configs/league_*.json. Drives automatic batch sizing "
                               "whenever --n-iterations is not given.")
     return parser
 
@@ -581,17 +581,59 @@ def main():
 
     # Run mechanics: explicit flag > --run-config > hardcoded default -- the
     # SAME three-tier resolution as deck identity above, just against
-    # run_cfg instead of league_cfg. batch_size_start/cap/steps are the one
-    # set of values nobody has ever needed to override this way in practice
-    # (PPO's own minibatch ramp, unrelated to games-per-invocation sizing --
-    # see their own --help text), but get the identical treatment for
-    # consistency rather than being special-cased out of it.
-    games_per_iteration = args.games_per_iteration if args.games_per_iteration is not None else run_cfg.get("games_per_iteration", 2)
+    # run_cfg instead of league_cfg.
     n_workers = args.n_workers if args.n_workers is not None else run_cfg.get("n_workers", 6)
-    batch_size_start = args.batch_size_start if args.batch_size_start is not None else run_cfg.get("batch_size_start", 32)
-    batch_size_cap = args.batch_size_cap if args.batch_size_cap is not None else run_cfg.get("batch_size_cap", 2048)
-    batch_size_steps = args.batch_size_steps if args.batch_size_steps is not None else run_cfg.get("batch_size_steps", 6)
     checkpoint_rate = args.checkpoint_opponent_rate if args.checkpoint_opponent_rate is not None else run_cfg.get("checkpoint_opponent_rate", 0.0)
+
+    # Sizing: --matchup counts by --games (per deck round, its own scheme,
+    # unaffected by any of this); an explicit --n-iterations forces an exact
+    # size and is a pure debug escape hatch (see its own --help text -- never
+    # written to progress.json, never fed back into the doubling sequence);
+    # otherwise this league's own total_games + how far it's already gotten
+    # (progress.json) determine the next batch automatically.
+    # Logging is threaded through BOTH the sequential and MP league paths
+    # (event dicts are picklable), so --log does not force sequential collection.
+    auto_sizing = False
+    if matchup is not None:
+        # Matchup mode never parallelizes across workers (always sequential,
+        # see `sequential` below) -- a flat floor of 10 is all this has ever
+        # needed; used to be a CLI-configurable value, but the clamp already
+        # forced it to 10 for anyone who didn't explicitly push it higher.
+        games_per_iteration = min(10, args.games)
+        n_iterations = max(1, args.games // games_per_iteration)
+    else:
+        # One game per worker: collect_rollout_league_parallel splits n_games
+        # across n_workers via plain `n_games // n_workers` -- fewer games than
+        # workers silently starves the rest (they get zero games and are never
+        # even submitted). Used to be an independent, CLI-tunable value
+        # (default 2) that could silently conflict with --n-workers; benchmarked
+        # (src/benchmarking/training_run.py) against 1x/2x/3x n_workers on this
+        # machine and 1x was both the simplest (never under-provisions) and the
+        # fastest measured (2x/3x add PPO-update-side cost -- a bigger buffer to
+        # update on -- without adding real collection parallelism once every
+        # worker already has work).
+        games_per_iteration = max(1, n_workers)
+        if args.n_iterations is not None:
+            n_iterations = args.n_iterations
+        else:
+            total_games = args.total_games if args.total_games is not None else league_cfg.get("total_games")
+            assert league_dir is not None, (
+                "no --n-iterations given and no league to auto-size from -- pass --league-config (or at least "
+                "--league-name together with --total-games), or force an exact size with "
+                "--n-iterations for a one-off debug run"
+            )
+            assert total_games is not None, (
+                f"auto-sizing needs total_games -- got {total_games!r} (from --league-config, or --total-games directly)"
+            )
+            next_batch_games = _next_batch_games(league_dir, total_games)
+            if next_batch_games is None:
+                progress = _load_progress(league_dir)
+                print(f"{league_name!r} already at {progress['cumulative_games_per_deck']}/{total_games} "
+                      f"games/deck -- nothing to run")
+                return
+            n_iterations = max(1, next_batch_games // games_per_iteration)
+            auto_sizing = True
+
     # snapshot_every_games (a fixed games-count) is the preferred run-config
     # path; the raw --snapshot-every flag (iterations) is a lower-level
     # override for either it or the config -- converted using games_per_
@@ -603,44 +645,7 @@ def main():
     else:
         snapshot_every = 20
 
-    # Sizing: --matchup counts by --games (per deck round, its own scheme,
-    # unaffected by any of this); an explicit --n-iterations forces an exact
-    # size and is a pure debug escape hatch (see its own --help text -- never
-    # written to progress.json, never fed back into the doubling sequence);
-    # otherwise this league's own total_games/max_batch_size + how far it's
-    # already gotten (progress.json) determine the next batch automatically.
-    # Logging is threaded through BOTH the sequential and MP league paths
-    # (event dicts are picklable), so --log does not force sequential collection.
-    auto_sizing = False
-    if matchup is not None:
-        games_per_iteration = min(max(games_per_iteration, 10), args.games)
-        n_iterations = max(1, args.games // games_per_iteration)
-    elif args.n_iterations is not None:
-        n_iterations = args.n_iterations
-    else:
-        total_games = args.total_games if args.total_games is not None else league_cfg.get("total_games")
-        max_batch_size = args.max_batch_size if args.max_batch_size is not None else league_cfg.get("max_batch_size")
-        assert league_dir is not None, (
-            "no --n-iterations given and no league to auto-size from -- pass --league-config (or at least "
-            "--league-name together with --total-games/--max-batch-size), or force an exact size with "
-            "--n-iterations for a one-off debug run"
-        )
-        assert total_games is not None and max_batch_size is not None, (
-            f"auto-sizing needs both total_games and max_batch_size -- got total_games={total_games!r} "
-            f"max_batch_size={max_batch_size!r} (from --league-config, or --total-games/--max-batch-size directly)"
-        )
-        next_batch_games = _next_batch_games(league_dir, max_batch_size, total_games)
-        if next_batch_games is None:
-            progress = _load_progress(league_dir)
-            print(f"{league_name!r} already at {progress['cumulative_games_per_deck']}/{total_games} "
-                  f"games/deck -- nothing to run")
-            return
-        n_iterations = max(1, next_batch_games // games_per_iteration)
-        auto_sizing = True
-
-    schedule_kwargs = dict(batch_size_start=batch_size_start,
-                            batch_size_cap=batch_size_cap, batch_size_steps=batch_size_steps,
-                            seed=args.seed,
+    schedule_kwargs = dict(seed=args.seed,
                             train_deck=train_deck, train_mulligan=train_mulligan, train_decks=train_decks,
                             matchup=matchup, game_logs=game_logs, checkpoint_rate=checkpoint_rate,
                             league_dir=league_dir, roster=roster)

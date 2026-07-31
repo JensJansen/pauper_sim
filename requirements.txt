@@ -5,3 +5,4 @@
 torch==2.11.0+cu128
 numpy
 pytest
+flask  # training-ops web UI (src/webapp/) -- see README

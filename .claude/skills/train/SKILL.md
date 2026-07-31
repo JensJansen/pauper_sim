@@ -102,24 +102,21 @@ For each batch:
    - **pretrain**: `python -u run_pretrain.py <n_iter> <gpi>`, choosing `n_iter`, `gpi`
      so `n_iter * gpi ≈ batch`. Shakeout / small: `n_iter = 1`, `gpi = batch`. Large:
      `n_iter = 4`, `gpi = max(1, round(batch / 4))` (spreads updates).
-   - **league**: `python -u run_league.py --n-iterations <n_iter> --games-per-iteration
-     <gpi> --snapshot-every <snap> --n-workers <W>` with `gpi = 2` while `W = 1`, `gpi =
-     12` once `W = 6` (tracks the Compute ramp switch below exactly -- at `n_workers=6`,
-     `gpi=2` only ever hands work to 2 of the 6 workers, `n_games // n_workers` chunking,
-     measurably SLOWER than sequential; `gpi=12` lets all 6 get real work, ~1.7x faster --
-     see `todo/performance_investigation.md`. Keeping `gpi=2` during the `W=1` shakeout
-     preserves the tiny-batch escalation granularity below, since parallelism isn't in
-     play yet anyway). While `W = 1`: `n_iter = max(1, round(batch / gpi))` as usual (gpi=2
-     divides the 1/2/4/8/16 shakeout ladder evenly, no drift). Once `W = 6` (gpi=12):
-     stop tracking `batch` as a raw doubling sequence and just double `n_iter` itself each
-     step (1, 2, 4, 8, 16, ... -- picking up from whatever `n_iter` the batch that crossed
-     the `W=1`->`W=6` seam used, not restarting at 1) -- `batch / gpi` rounds (e.g.
-     batch=32 -> n_iter=round(32/12)=3 -> 36 actual games, a step that's neither exactly
-     nominal nor an exact 2x of the previous session), so past the seam `n_iter` IS the
-     ladder, not a derived value. `snap = max(1, 200 // gpi)`
+   - **league**: `python -u run_league.py --n-iterations <n_iter> --snapshot-every <snap>
+     --n-workers <W>`. `games_per_iteration` is no longer a flag (removed 2026-07-31) --
+     run_league.py's `main()` always derives it as `gpi = max(1, W)`, one game per worker,
+     which is what avoids the `n_games // n_workers` worker-starvation footgun a too-small
+     gpi used to risk (see run_league.py's own comment on the benchmark that grounded this
+     value). While `W = 1`: gpi=1, so `n_iter = batch` exactly -- no rounding, the cleanest
+     possible mapping (divides the 1/2/4/8/16 shakeout ladder evenly by construction).
+     Once `W = 6`: gpi=6, and `batch / gpi` no longer divides the doubling ladder evenly --
+     same as before, stop tracking `batch` as a raw doubling sequence at that point and
+     just double `n_iter` itself each step (1, 2, 4, 8, 16, ... -- picking up from whatever
+     `n_iter` the batch that crossed the `W=1`->`W=6` seam used, not restarting at 1); past
+     the seam `n_iter` IS the ladder, not a derived value. `snap = max(1, 200 // gpi)`
      — a FIXED ~200 games/deck between snapshots, independent of batch size, so early
      small batches don't flood the opponent pool with near-random, barely-trained
-     early copies.
+     early copies (gpi=1 -> snap=200; gpi=6 -> snap=33).
      `--checkpoint-opponent-rate` defaults to 0.0 (no checkpoint opponents at all, every
      game real-model-vs-real-model) — leave it unset unless the owner explicitly asks to
      reintroduce checkpoint-opponent diversity; don't pass a nonzero rate on your own
