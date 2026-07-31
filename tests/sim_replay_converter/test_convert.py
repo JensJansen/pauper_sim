@@ -1,5 +1,4 @@
-#!/usr/bin/env python3
-"""Regression check for the event-stream replay converter.
+"""Regression tests for the event-stream replay converter.
 
 Guards the two draw-handling bugs fixed 2026-07-27:
   1. draws were double-counted (a phantom phase-inferred draw on top of the real
@@ -7,12 +6,13 @@ Guards the two draw-handling bugs fixed 2026-07-27:
   2. every mulligan redraw piled permanently into hand (put-backs were dropped)
      -> "drew 56 immediately", inflated deck size.
 
-For every logs/*.json it rebuilds the replay and asserts the cards the
-converter puts into each hand exactly equal what the engine log accounts for:
-the net kept opening hand (draws minus mulligan put-backs, before turn 1) plus
-every in-game entry into hand.
+test_converter_matches_engine_log_hand_counts rebuilds the replay for every
+logs/*.json (if any are present) and asserts the cards the converter puts into
+each hand exactly equal what the engine log accounts for: the net kept opening
+hand (draws minus mulligan put-backs, before turn 1) plus every in-game entry
+into hand.
 
-Also guards three engine-format changes fixed 2026-07-30 (surveil/scry's
+The other tests guard three engine-format changes fixed 2026-07-30 (surveil/scry's
 "disposed" zone_move shape, "mana_emptied" replacing the old untap_step mana
 clear, and the new plural "graveyards_exiled"), and one converter-only bug
 fixed the same day (an attacker's AttrAttacking flag was set on
@@ -20,18 +20,26 @@ attack_declared but never cleared, so it stayed visually flagged as attacking
 for the rest of the game), with small self-contained fabricated-event checks
 that don't depend on any log file being present.
 
-No framework -- just asserts. Run: python test_convert.py
+Migrated from sim_replay_converter/test_convert.py's former assert-based
+check_*()/main() self-check (no pytest, run via `python test_convert.py`).
 """
 from __future__ import annotations
 
 import glob
 import json
-import sys
 from collections import Counter
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-import convert as C  # noqa: E402
+import pytest
+
+# convert.py's own module-level bootstrap_pb2() (relative to ITS OWN __file__,
+# in src/sim_replay_converter/) generates/caches the Cockatrice protobuf
+# bindings and inserts that cache dir onto sys.path as a side effect -- so the
+# bare pb2 imports below resolve correctly regardless of where this test file
+# lives, no sys.path hack of our own needed (sim_replay_converter/ has no
+# __init__.py, but src/ being on pythonpath via pyproject.toml makes it an
+# importable implicit namespace package).
+from sim_replay_converter import convert as C
 import card_attributes_pb2 as pb_attr  # noqa: E402
 import event_draw_cards_pb2 as pb_draw  # noqa: E402
 import event_move_card_pb2 as pb_move  # noqa: E402
@@ -81,7 +89,7 @@ def _envelope(kind, active_idx=0, turn_player_idx=0, turn=1, phase="main1", **fi
             "turn_player_idx": turn_player_idx, **fields}
 
 
-def check_surveil_disposed_to_graveyard():
+def test_surveil_disposed_to_graveyard():
     """A surveil zone_move carries no "card"/"cards"/"permanent" field at all --
     just "disposed"/"disposed_to"/"kept_to_library_top" -- so it never reached
     the general card/cards/permanent dispatch and silently vanished. A
@@ -107,7 +115,7 @@ def check_surveil_disposed_to_graveyard():
     assert len(replay.event_list) == 1, "a library_bottom disposal should stay a no-op"
 
 
-def check_mana_emptied_zeroes_pool():
+def test_mana_emptied_zeroes_pool():
     """mana_emptied replaced the old untap_step "mana_cleared" field (removed from
     the engine entirely -- see game/turn.py's _empty_mana_pools). Without a
     handler, a tapped source's mana counter stayed visibly nonzero forever."""
@@ -121,7 +129,7 @@ def check_mana_emptied_zeroes_pool():
     assert rb.players[0].mana_pool.get("R", 0) == 0, "mana_emptied must zero the tracked pool"
 
 
-def check_graveyards_exiled_clears_both_players():
+def test_graveyards_exiled_clears_both_players():
     """Relic of Progenitus's "exile all graveyards" logs a bare graveyards_exiled
     (plural) with no player/card fields, distinct from the singular,
     always-targeted graveyard_exiled -- both graveyards must empty into exile."""
@@ -138,7 +146,7 @@ def check_graveyards_exiled_clears_both_players():
     assert any(c["name"] == "Card B" for c in rb.players[1].exile)
 
 
-def check_attack_flag_clears_after_combat():
+def test_attack_flag_clears_after_combat():
     """AttrAttacking was set "1" on attack_declared but never reset -- a creature
     that ever attacked stayed visually flagged as attacking for the rest of the
     game (confirmed live: three Silhana Ledgewalkers looked "stuck" in a boggles
@@ -162,7 +170,7 @@ def check_attack_flag_clears_after_combat():
     assert flag_values == ["1", "0"], f"expected the attacking flag to set then clear, got {flag_values}"
 
 
-def check_same_phase_flashback_reuses_resolved_card():
+def test_same_phase_flashback_reuses_resolved_card():
     """A card recast (Flashback) in the SAME phase it just resolved in -- the
     engine logs stack->None "resolve" (no explicit destination; see
     game.effects.stack.resolve_top_of_stack) followed later by a phase
@@ -196,7 +204,7 @@ def check_same_phase_flashback_reuses_resolved_card():
     )
 
 
-def check_flashback_does_not_steal_a_second_hand_copy():
+def test_flashback_does_not_steal_a_second_hand_copy():
     """The real bug behind the mono_red_madness_vs_monster_tron report: with
     TWO physical Lava Darts -- one hard-cast+resolved, one still genuinely
     sitting untouched in hand -- _resolve_incoming_hand_like used to check
@@ -230,19 +238,13 @@ def check_flashback_does_not_steal_a_second_hand_copy():
     )
 
 
-def main():
-    check_surveil_disposed_to_graveyard()
-    check_mana_emptied_zeroes_pool()
-    check_graveyards_exiled_clears_both_players()
-    check_attack_flag_clears_after_combat()
-    check_same_phase_flashback_reuses_resolved_card()
-    check_flashback_does_not_steal_a_second_hand_copy()
-    print("OK: surveil/scry disposal, mana_emptied, graveyards_exiled, attack-flag, and flashback self-checks passed")
-
+def test_converter_matches_engine_log_hand_counts():
+    """Cross-checks every real logs/*.json (if any are present) against the
+    engine's own accounting, on top of the fabricated-event checks above.
+    Skips cleanly if no logs exist yet (rerun matches to regenerate)."""
     logs = sorted(glob.glob(str(Path(__file__).resolve().parents[2] / "logs" / "*.json")))
     if not logs:
-        print("SKIP: no logs/*.json present (rerun matches to regenerate, then re-run this check)")
-        return
+        pytest.skip("no logs/*.json present (rerun matches to regenerate, then re-run this check)")
     checked = 0
     for log in logs:
         d = json.load(open(log, encoding="utf-8"))
@@ -254,8 +256,3 @@ def main():
             exp = engine_expected(g["events"])
             assert got == exp, f"{Path(log).name} game {g['game_index']}: into-hand {got} != engine-accounted {exp}"
             checked += 1
-    print(f"OK: converter hand-draw counts match the engine log for {checked} games")
-
-
-if __name__ == "__main__":
-    main()

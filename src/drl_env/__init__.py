@@ -13,4 +13,3 @@ contract) are injected separately by that loop, never here.
 
 from ._actions import *
 from ._seat import _for_player, _lost
-from ._selfcheck import _run_self_checks

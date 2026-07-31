@@ -50,23 +50,3 @@ def plot_to_exile(state, card_def):
     (game.catalog.red_cards) has a "plot" registry spec."""
     state.hand.remove(card_def)
     state.exile.append((card_def, state.turn_number))
-
-
-if __name__ == "__main__":
-    # ponytail self-check: run via `python -m game.effects.madness_and_plot`
-    # from src/. plot_to_exile directly (execute_madness_cast is exercised
-    # together with triggers.py/stack.py's own machinery -- the full
-    # discard -> exile + queue -> drain -> decision -> pay -> resolve chain
-    # -- in effects/integration_check.py, since it's genuinely a
-    # multi-module scenario, not just this one function).
-    from ..cards import CardDef, CardType, EffectId
-    from ..state import GameState
-
-    state = GameState(on_the_play=True)
-    plot_card = CardDef("Fake Plot Spell", CardType.SORCERY, {"generic": 1}, EffectId.FILLER)
-    state.hand = [plot_card]
-    plot_to_exile(state, plot_card)
-    assert state.hand == []
-    assert state.exile == [(plot_card, state.turn_number)]
-
-    print("madness_and_plot.py plot_to_exile self-check: OK")

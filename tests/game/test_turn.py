@@ -1,33 +1,29 @@
-"""Assert-based self-checks for game.turn -- run via `python -m game.turn`
-(which delegates here) or `python -m game.turn_selfcheck` directly, from
-src/. Kept in their own module so turn.py stays free of test code, mirroring
-drl_env's own _actions.py / _selfcheck.py split."""
+"""Tests for game.turn: the 2-player engine end to end -- turn alternation,
+on_the_play/turns_taken, life_total loss, deck-out-as-instant-loss, a real
+game played through actual cards (not a synthetic no-op deck), the
+_declare_blockers_gen flip-drive-restore shape, the turn-owner vs
+priority-holder split in speed_legal, and rule 500.4's per-phase-boundary
+mana clear. Migrated from game/turn_selfcheck.py's `_run_self_checks()`
+body (game/turn.py's own former `__main__` block only ever delegated to
+that dedicated self-check module, which existed purely to hold these
+checks -- both are now retired in favor of this file)."""
 
-from .turn import (
+import random
+
+from game import mana, registry, resolution
+from game.cards import CardDef, CardType, EffectId
+from game.effects.casting import play_land_from_hand
+from game.effects.stack import push_to_stack
+from game.effects.win_check import deal_damage_to_opponent
+from game.state import GameState, Permanent, PlayerState
+from game.turn import (
     Phase, Speed, _declare_blockers_gen, new_multiplayer_game_state,
     run_multiplayer_game, run_turn, speed_legal,
 )
 
 
-def _run_self_checks():
-    # ponytail self-check: no pytest in this project, mirrors the
-    # assert-based demo convention -- run via `python -m game.turn` from
-    # src/ (turn.py's own __main__ delegates here). Exercises the 2-player
-    # engine
-    # end to end: turn alternation, on_the_play/turns_taken, life_total
-    # loss, deck-out-as-instant-loss, and a real game played through actual
-    # cards (not a synthetic no-op deck) -- Mountain + Lightning Bolt is
-    # the smallest real combination that can deal opponent damage.
-    import random
-
-    from . import mana, registry, resolution
-    from .cards import CardDef, CardType, EffectId
-    from .effects.casting import play_land_from_hand
-    from .effects.stack import push_to_stack
-    from .effects.win_check import deal_damage_to_opponent
-    from .state import GameState, PlayerState
-
-    # -- construction: opening hands, on_the_play, starting life ----------
+def test_two_player_construction():
+    # construction: opening hands, on_the_play, starting life
     state = new_multiplayer_game_state(
         decklists=[[("Mountain", 20)], [("Mountain", 20)]],
         starting_player_idx=0,
@@ -38,9 +34,9 @@ def _run_self_checks():
     assert state.players[0].on_the_play and not state.players[1].on_the_play
     assert len(state.players[0].hand) == 7 and len(state.players[1].hand) == 7
     assert state.players[0].life_total == 20 and state.players[1].life_total == 20
-    print("turn.py 2-player construction self-check: OK")
 
-    # -- turn alternation + on_the_play (pass-only policy) ----------------
+
+def test_turn_alternation_and_on_the_play():
     def _pass_except_discard(state):
         # Always Pass -- pure alternation, no card actions -- EXCEPT
         # cleanup_step's own hand-size discard is mandatory in real Magic
@@ -77,9 +73,10 @@ def _run_self_checks():
     assert len(state.players[0].hand) == 7
     assert len(state.players[1].hand) == 7
     assert state.turn_won is None and state.winner is None  # horizon reached, no win condition ever fired
-    print("turn.py turn-alternation self-check: OK")
 
-    # -- life_total loss (direct deal_damage_to_opponent call) ------------
+
+def test_life_total_loss_direct_damage():
+    # life_total loss (direct deal_damage_to_opponent call)
     state = GameState(
         on_the_play=True,
         players=[PlayerState(on_the_play=True), PlayerState(on_the_play=False)],
@@ -91,9 +88,10 @@ def _run_self_checks():
     deal_damage_to_opponent(state, 5)
     assert state.players[1].life_total == 0
     assert state.turn_won == state.turn_number and state.winner == 0  # opponent's life hit 0 -- active player (0) wins
-    print("turn.py life-total-loss self-check: OK")
 
-    # -- deck-out is an instant loss for the drawing player, in 2p --------
+
+def test_deck_out_is_instant_loss_for_drawing_player():
+    # deck-out is an instant loss for the drawing player, in 2p.
     # on_the_play=False for the drawing player specifically so draw_step's
     # skip-first-draw rule never applies here -- keeps this check about
     # deck-out alone, not entangled with the on_the_play interaction
@@ -109,15 +107,16 @@ def _run_self_checks():
     run_turn(state, lambda state: None, combat_enabled=False)  # UNTAP has no auto-effect; DRAW's draw_step raises DeckedOut immediately
     assert state.players[0].decked_out
     assert state.turn_won == state.turn_number and state.winner == 1  # the OTHER player wins outright
-    print("turn.py deck-out self-check: OK")
 
-    # -- a real 2-player game, played through actual cards -----------------
-    # Player 0: Mountain + Lightning Bolt (real red_cards.py cards) racing
-    # to burn player 1's life_total to 0. Player 1: Mountain only, never
-    # acts (always passes) -- a pure punching bag, proving damage actually
-    # lands on a REAL opponent PlayerState through the normal cast/mana-
-    # payment path (game.mana.begin_pay_cost + push_to_stack), not a
-    # direct deal_damage_to_opponent call like the unit check above.
+
+def test_real_two_player_game_through_actual_cards():
+    # A real 2-player game, played through actual cards. Player 0: Mountain
+    # + Lightning Bolt (real red_cards.py cards) racing to burn player 1's
+    # life_total to 0. Player 1: Mountain only, never acts (always passes)
+    # -- a pure punching bag, proving damage actually lands on a REAL
+    # opponent PlayerState through the normal cast/mana-payment path
+    # (game.mana.begin_pay_cost + push_to_stack), not a direct
+    # deal_damage_to_opponent call like the unit check above.
     bolt_def = registry.CARD_DEFS["Lightning Bolt"]
 
     # This priority/stack game test uses Lightning Bolt purely as a burn
@@ -196,11 +195,10 @@ def _run_self_checks():
     assert state.winner == 0
     assert state.players[1].life_total <= 0  # burned out (10 Bolts * 3 available; only ~7 needed for lethal)
     assert state.turn_won is not None and state.turn_won < 60  # ended on life_total, not the safety cap
-    print(f"turn.py real 2-player game self-check: OK (player 1 dead on turn {state.turn_won}, "
-          f"life_total={state.players[1].life_total})")
 
-    # -- _declare_blockers_gen: the defender's own consult, active_idx flip
-    # --.
+
+def test_declare_blockers_gen_flips_active_idx_to_defender_and_restores():
+    # _declare_blockers_gen: the defender's own consult, active_idx flip.
     # handlers.py's own self-check already covers begin_declare_blockers/
     # declare_blocker_assignment directly; this one is specifically about
     # the flip-drive-restore shape unique to this generator, driven the
@@ -208,8 +206,6 @@ def _run_self_checks():
     # re-opens begin_declare_blockers after each assignment -- now via the
     # generator's own yield protocol (like every other decision point in
     # this file) instead of a directly-invoked callback.
-    from .state import Permanent
-
     bear = Permanent(CardDef("Bear", CardType.CREATURE, None, None))
     grizzly = Permanent(CardDef("Grizzly Bears", CardType.CREATURE, None, None))
     state = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
@@ -245,6 +241,8 @@ def _run_self_checks():
     assert state.players[0].blocked_by == {bear: [grizzly]}
     assert state.pending_resolution is None
 
+
+def test_declare_blockers_gen_noop_with_fewer_than_two_players():
     # No-op guard: fewer than 2 players -- never starts a resolution at
     # all, let alone leaves one stuck open (no next(gen) call ever
     # reaches a yield -- StopIteration on the very first one).
@@ -256,8 +254,8 @@ def _run_self_checks():
         pass
     assert state_1p.pending_resolution is None
 
-    print("turn.py _declare_blockers_gen self-check: OK")
 
+def test_speed_legal_turn_owner_vs_priority_holder():
     # Turn-owner / priority-holder split:
     # speed_legal's Speed.SORCERY (and the new Speed.YOUR_TURN) branches
     # must refuse the non-turn player even when state.phase/state.stack
@@ -280,8 +278,8 @@ def _run_self_checks():
     assert not speed_legal(state, Speed.YOUR_TURN)
     assert speed_legal(state, Speed.INSTANT)  # unaffected -- instant speed never cares whose turn it is
 
-    print("turn.py turn-owner speed_legal self-check: OK")
 
+def test_rule_500_4_mana_pool_clears_at_phase_boundaries_except_combat():
     # Rule 500.4: unused mana empties at every step/phase boundary for BOTH
     # players (not just whoever floated it), EXCEPT across combat's own
     # three sub-phases -- an authored simplification (see _COMBAT_PHASES'
@@ -327,9 +325,3 @@ def _run_self_checks():
     assert by_phase[Phase.COMBAT_DAMAGE][0] == {"R": 1}  # still there crossing DECLARE_BLOCKERS -> COMBAT_DAMAGE too
     assert by_phase[Phase.MAIN2] == ({}, {})  # cleared again once combat's shared window ends
     assert floated_at == {"main1", "declare_attackers"}  # both floats actually happened, not skipped
-
-    print("turn.py rule-500.4 mana-pool phase-boundary clear self-check: OK")
-
-
-if __name__ == "__main__":
-    _run_self_checks()

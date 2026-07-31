@@ -91,31 +91,3 @@ def build_pool(manifest_path=DECK_MANIFEST, vocab_path=VOCAB_PATH, token_defs=TO
         fixed_tables[name] = fixed_table
         deck_ctxs[name] = (vocab, fixed_table, pending_kinds)
     return decklists, vocab, deck_ctxs, fixed_tables
-
-
-if __name__ == "__main__":
-    # ponytail self-check: run via `python -m rl.pool` from src/.
-    decklists, vocab, deck_ctxs, fixed_tables = build_pool()
-    # Roster-agnostic (reads whatever data/league_decks.json currently lists)
-    # -- must include at least the two madness decks that are always present.
-    assert {"mono_red_madness", "rakdos_madness"} <= set(decklists), "the two madness decks must always be in the roster"
-    assert all(ctx[0] is vocab for ctx in deck_ctxs.values()), "every deck must share the SAME vocab instance"
-    assert all(len(t) > 0 for t in fixed_tables.values()), "every deck must build a non-empty fixed action table"
-
-    # Roster is data-driven: a manifest naming just ONE deck must still work
-    # standalone, and must NOT reassign that deck's existing (persisted)
-    # vocab indices.
-    import os
-    import tempfile
-
-    tmp_manifest = os.path.join(tempfile.mkdtemp(), "one_deck.json")
-    with open(tmp_manifest, "w") as f:
-        json.dump({"mono_red_madness": "mono_red_madness.txt"}, f)
-    decklists1, vocab1, _ctxs1, _tables1 = build_pool(manifest_path=tmp_manifest, vocab_path=VOCAB_PATH)
-    assert set(decklists1) == {"mono_red_madness"}
-    for name, idx in vocab.name_to_index.items():
-        if name in vocab1.name_to_index:
-            assert vocab1.name_to_index[name] == idx, f"single-deck roster reassigned {name!r}'s persisted index"
-
-    print(f"rl.pool self-check: OK (vocab_size={vocab.size}, "
-          f"fixed_table_sizes={[len(t) for t in fixed_tables.values()]})")

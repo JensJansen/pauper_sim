@@ -1,0 +1,9 @@
+[tool.pytest.ini_options]
+# src/ modules use package-relative imports (e.g. `from . import registry`),
+# so tests need src/ on sys.path the same way run_league.py and the
+# benchmarking scripts do -- pythonpath does that without a conftest.py.
+pythonpath = ["src"]
+testpaths = ["tests"]
+markers = [
+    "slow: exercises the real game engine + torch (RL self-checks) -- not run by the pre-commit hook",
+]

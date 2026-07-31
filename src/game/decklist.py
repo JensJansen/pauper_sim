@@ -52,21 +52,3 @@ def parse_decklist_file(path):
     # mojibakes the UTF-8 bytes into a name that misses CARD_DEFS.
     with open(path, encoding="utf-8") as f:
         return parse_decklist_text(f.read())
-
-
-if __name__ == "__main__":
-    # ponytail self-check: no pytest in this project, mirrors the
-    # assert-based demo convention -- run via `python -m game.decklist`
-    # from src/.
-    assert parse_decklist_text("4 Forest\n2 Swamp\n") == [("Forest", 4), ("Swamp", 2)]
-    # A header line, blank lines, and a second line for an already-seen
-    # name are all handled without special-casing.
-    assert parse_decklist_text("Deck\n4 Forest\n\n3 Forest\n") == [("Forest", 4), ("Forest", 3)]
-
-    try:
-        parse_decklist_text("4 Not A Real Card\n2 Swamp\n")
-        assert False, "expected ValueError"
-    except ValueError as e:
-        assert "Not A Real Card" in str(e)
-
-    print("decklist.py self-check: OK")

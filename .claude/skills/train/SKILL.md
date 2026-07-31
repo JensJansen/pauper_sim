@@ -103,9 +103,21 @@ For each batch:
      so `n_iter * gpi ≈ batch`. Shakeout / small: `n_iter = 1`, `gpi = batch`. Large:
      `n_iter = 4`, `gpi = max(1, round(batch / 4))` (spreads updates).
    - **league**: `python -u run_league.py --n-iterations <n_iter> --games-per-iteration
-     <gpi> --snapshot-every <snap> --n-workers <W>` with `gpi = 2`,
-     `n_iter = max(1, round(batch / 2))`, `snap = max(1, 200 // gpi)` — a FIXED ~200
-     games/deck between snapshots, independent of batch size. (NOT `n_iter // 4`, the old
+     <gpi> --snapshot-every <snap> --n-workers <W>` with `gpi = 2` while `W = 1`, `gpi =
+     12` once `W = 6` (tracks the Compute ramp switch below exactly -- at `n_workers=6`,
+     `gpi=2` only ever hands work to 2 of the 6 workers, `n_games // n_workers` chunking,
+     measurably SLOWER than sequential; `gpi=12` lets all 6 get real work, ~1.7x faster --
+     see `todo/performance_investigation.md`. Keeping `gpi=2` during the `W=1` shakeout
+     preserves the tiny-batch escalation granularity below, since parallelism isn't in
+     play yet anyway). While `W = 1`: `n_iter = max(1, round(batch / gpi))` as usual (gpi=2
+     divides the 1/2/4/8/16 shakeout ladder evenly, no drift). Once `W = 6` (gpi=12):
+     stop tracking `batch` as a raw doubling sequence and just double `n_iter` itself each
+     step (1, 2, 4, 8, 16, ... -- picking up from whatever `n_iter` the batch that crossed
+     the `W=1`->`W=6` seam used, not restarting at 1) -- `batch / gpi` rounds (e.g.
+     batch=32 -> n_iter=round(32/12)=3 -> 36 actual games, a step that's neither exactly
+     nominal nor an exact 2x of the previous session), so past the seam `n_iter` IS the
+     ladder, not a derived value. `snap = max(1, 200 // gpi)`
+     — a FIXED ~200 games/deck between snapshots, independent of batch size. (NOT `n_iter // 4`, the old
      formula: that scaled snapshot frequency with batch size, so early small batches
      snapshotted every 2-16 games — flooding the opponent pool with near-random,
      barely-trained early copies before anything worth preserving existed.)

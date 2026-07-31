@@ -186,36 +186,3 @@ def any_creature_on_battlefield(state):
     Rancor/Ancestral Mask/Armadillo Cloak/Cartouche of Solidarity/Ethereal
     Armor's own extra_legal all reduce to exactly this."""
     return any(p.card_type == CardType.CREATURE for p in state.battlefield)
-
-
-if __name__ == "__main__":
-    # ponytail self-check: run via `python -m game.effects.shared` from src/.
-    from ..cards import CardDef, CardType, EffectId
-    from ..state import GameState
-
-    state = GameState(on_the_play=True)
-    state.library = [CardDef("Forest", CardType.LAND, None, EffectId.FOREST), CardDef("Mountain", CardType.LAND, None, EffectId.MOUNTAIN)]
-    assert not any_creature_on_battlefield(state)
-
-    find_to_hand(state, "Forest")
-    assert [c.name for c in state.hand] == ["Forest"]
-    assert [c.name for c in state.library] == ["Mountain"]
-
-    find_to_hand(state, None)  # declined search still shuffles, finds nothing
-    assert [c.name for c in state.hand] == ["Forest"]
-
-    forest = state.hand[0]
-    state.hand = [forest]
-    discard_from_hand_to_graveyard(state, forest)
-    # library->hand->graveyard: the graveyard holds a FRESH instance (move_card),
-    # a distinct object from the hand CardDef, not the CardDef itself.
-    assert state.hand == [] and [c.name for c in state.graveyard] == ["Forest"]
-    assert state.graveyard[0] is not forest, "graveyard entry must be a new instance, not the discarded CardDef"
-
-    try:
-        discard_from_hand_to_graveyard(state, forest)
-        raise AssertionError("expected RuntimeError for a card no longer in hand")
-    except RuntimeError:
-        pass
-
-    print("shared.py self-check: OK")

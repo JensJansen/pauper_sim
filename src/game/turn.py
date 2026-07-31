@@ -752,10 +752,3 @@ def run_multiplayer_game(decklists, rng, starting_player_idx, choose_action,
         pass
     return state
 
-
-if __name__ == "__main__":
-    # Self-check body lives in game.turn_selfcheck (mirrors drl_env's own
-    # _actions.py / _selfcheck.py split) so this file stays free of test
-    # code -- `python -m game.turn` still runs the exact same checks.
-    from . import turn_selfcheck
-    turn_selfcheck._run_self_checks()

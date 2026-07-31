@@ -78,8 +78,7 @@ src/
     effects/                 Generic effect plumbing (each card catalog calls in):
                              casting, combat, stack + triggers, state_based (SBAs +
                              cleanup), stats (Aura/keyword/P/T), tokens, win_check,
-                             madness_and_plot, undercity (initiative), shared, and
-                             integration_check (cross-module engine self-check).
+                             madness_and_plot, undercity (initiative), shared.
     resolution/              Multi-step decisions the MODEL makes one action at a time
                              (mulligan, scry/surveil, search/fetch, discard, targeting,
                              trigger ordering, ...): _core (begin/complete state machine)
@@ -88,7 +87,6 @@ src/
   drl_env/                 Action-table / legal-mask machinery (a package, not a gym Env):
     _actions.py              build_action_table + per-action legal/execute predicates.
     _seat.py                 Per-seat helpers (_for_player, _lost).
-    _selfcheck.py            Assert-based checks (run via `python -m drl_env`).
 
   rl/                      The token/attention DRL system:
     features.py              CardVocab (stable card->index) + static per-token feature
@@ -320,10 +318,10 @@ run, generates protobuf bindings from the vendored Cockatrice `.proto` files
 One JSON file can hold many games — a `--matchup` run logs one deck pair, an
 `--eval` run logs a whole round-robin (every pairing, with mirrors) in one
 file — and each game's output filename/description is labeled with its own
-deck pairing, not just the file's. Run `python test_convert.py` from this
-directory to self-check the converter against `../../logs/*.json` (and a few
-fabricated-event checks that always run) after an engine change to the event
-log shape.
+deck pairing, not just the file's. `pytest tests/sim_replay_converter` checks
+the converter against `logs/*.json` (skipped if none present) plus a few
+fabricated-event checks that always run — rerun it after an engine change to
+the event log shape.
 
 ---
 
@@ -341,41 +339,31 @@ protobuf codegen).
 
 ---
 
-## Tests / self-checks
+## Tests
 
-There's no test framework — each module carries an `assert`-based self-check
-you run directly **from `src/`**. The important ones:
+A real `pytest` suite lives under `tests/`, mirroring `src/`'s layout (e.g.
+`src/game/mana.py` -> `tests/game/test_mana.py`). `pyproject.toml` sets
+`pythonpath = ["src"]` and `testpaths = ["tests"]`, so tests import modules the
+same way production code does and `pytest` just works from the repo root —
+no `cd src` needed.
 
 ```
-cd src
-
-# Engine
-python -m game.effects.integration_check   # cross-module engine integration checks
-python -m game.state                        # zones + real-game event log
-python -m game.turn                         # 2-player turn loop, alternation, deck-out
-python -m game.mana                         # mana production / payment / filter mana
-python -m game.resolution.handlers          # pending-resolution kinds
-python -m game.catalog.red_cards            # per-color card checks (…blue_cards, green_cards, …)
-
-# Action table
-python -m drl_env                           # action-table / legal-mask checks
-
-# DRL
-python -m rl.features                        # tokenization + vocab persistence
-python -m rl.arch                            # Set Transformer + FiLM
-python -m rl.deck                            # DeckNetwork + pointer masking
-python -m rl.mulligan                        # mulligan model + REINFORCE learning
-python -m rl.agent                           # per-seat decision dispatch
-python -m rl.action_bridge                   # action bridge on a real 2p game
-python -m rl.pool                            # shared vocab / roster wiring
-python -m rl.league                          # league sampling / eviction
-python -m rl.train                           # rollout + PPO smoke test
-python -m rl.rewards                         # reward functions
+pip install -r requirements.txt   # pytest included
+pytest                             # whole suite (engine + catalog + effects +
+                                    # resolution + drl_env + sim_replay_converter + rl)
+pytest -m "not slow"               # fast tier only: game engine/catalog/effects,
+                                    # deterministic, no torch, sub-second
+pytest -m slow                     # rl/ tier only: imports torch, plays real
+                                    # mini-games, runs PPO/REINFORCE updates,
+                                    # seconds per test
 ```
+
+319 tests as of this migration (2026-07-30), all passing together in ~30s.
+No pre-commit hook wired up yet — running the suite is still manual.
 
 `benchmarking/training_run.py` measures the real league loop under different
 collection configs (`seq`, `mp<N>`, plus a `--batched` toggle) over a fresh
-untrained stack.
+untrained stack — a benchmark, not a test.
 
 ---
 

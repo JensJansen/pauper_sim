@@ -17,7 +17,7 @@ Configs:
   mp<N>      N worker processes (collect_rollout_league_parallel)
 
     python src/benchmarking/training_run.py [--iterations N] [--games-per-iter N] \
-        [--configs seq,mp6] [--seed 0] [--snapshot-every N]
+        [--configs seq,mp6] [--seed 0] [--snapshot-every N] [--roster A,B,...]
 """
 
 import argparse
@@ -38,11 +38,11 @@ def _parse_config(name):
     raise SystemExit(f"unknown config {name!r} (want seq | mp<N>)")
 
 
-def _run_config(name, iters, gpi, snapshot_every, seed):
+def _run_config(name, iters, gpi, snapshot_every, seed, roster):
     workers = _parse_config(name)
     import tempfile
     league_dir = tempfile.mkdtemp(prefix=f"bench_train_{name}_")
-    kwargs = dict(fresh_stack=True, league_dir=league_dir, seed=seed)
+    kwargs = dict(fresh_stack=True, league_dir=league_dir, seed=seed, roster=roster)
     t0 = time.perf_counter()
     try:
         if workers and workers > 1:
@@ -62,15 +62,20 @@ def main():
     ap.add_argument("--configs", type=str, default="seq,mp6")
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--snapshot-every", type=int, default=20, help="Real league default; won't fire in a short bench.")
+    ap.add_argument("--roster", type=str, default=None, metavar="A,B,...",
+                     help="Restrict the benchmark to this comma-separated sub-roster (a true isolated sub-league, "
+                          "same as run_league.py's --roster) instead of the full deck pool.")
     args = ap.parse_args()
 
+    roster = args.roster.split(",") if args.roster else None
     print(f"true-training-loop benchmark: fresh (untrained) identical-config stack, seed={args.seed}, "
-          f"iterations={args.iterations} games/iter={args.games_per_iter}")
+          f"iterations={args.iterations} games/iter={args.games_per_iter}"
+          f"{' roster=' + str(roster) if roster else ''}")
     results = {}
     for name in args.configs.split(","):
         print(f"\n########## config: {name} ##########", flush=True)
         results[name] = _run_config(name, args.iterations, args.games_per_iter, args.snapshot_every,
-                                    args.seed)
+                                    args.seed, roster)
 
     print("\n===== SUMMARY (total wall-clock per config, whole training session) =====")
     base = results.get("seq")

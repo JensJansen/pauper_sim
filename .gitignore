@@ -12,6 +12,14 @@ __pycache__/
 graphify-out/
 _pb2_cache/
 
+# Per-deck league checkpoint churn -- historical snapshots and session/progress
+# bookkeeping change every training iteration. live.pt/mulligan.pt (a deck's current
+# trained state) are deliberately NOT listed here -- they're committed manually and
+# occasionally instead (never via a blanket `git add -A`).
+checkpoints/*/*/snapshot_*.pt
+checkpoints/*/session.txt
+checkpoints/*/progress.json
+
 # Local planning notes -- never committed.
 planning/
 replays/
