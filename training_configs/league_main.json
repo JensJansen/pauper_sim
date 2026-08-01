@@ -2,5 +2,8 @@
   "_note": "The original full-roster league (checkpoints/league/). max_batch_size removed 2026-07-31 -- the doubling ladder's own safety property (never jump from a small verified batch to a huge one) is now enforced by whatever repeatedly re-invokes run_league.py and health-checks between calls (the /train skill, or the webapp's auto-escalation), not a separate hand-picked ceiling.",
   "league_name": "league",
   "roster": ["mono_red_madness", "rakdos_madness", "spy_combo", "boggles", "monster_tron", "dmir_terror", "elves", "grixis_affinity", "jund_wildfire", "mono_blue_terror", "mono_red_rally"],
-  "total_games": 3000
+  "total_games": 3000,
+  "snapshot_every_games": 200,
+  "n_workers": 6,
+  "checkpoint_opponent_rate": 0.0
 }

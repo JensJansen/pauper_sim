@@ -339,8 +339,8 @@ the event log shape.
 
 A local Flask web app for starting, stopping, configuring, and watching
 training runs from a browser instead of hand-building `run_league.py`/
-`run_pretrain.py` invocations. No game visualization yet (see
-`todo/game_visualization.md` for that, separately-scoped, later phase).
+`run_pretrain.py` invocations, plus a game replay viewer (below) for
+stepping through a logged game's board state.
 
 ```
 cd src/webapp
@@ -450,6 +450,46 @@ see `rl/league.py`'s own design writeup), `--games`/`--seed` (direct user
 choices for matchup/eval), `--n-iterations` (a documented debug escape
 hatch). `--snapshot-every`/`snapshot_every_games` (~200 games between
 snapshots) has a real but looser rationale and was left alone.
+
+### Game replay viewer (`/replay`)
+
+Step through a logged game's board state one event at a time. MVP scope per
+`todo/game_visualization.md`: retroactive viewing of an already-completed
+`--log` file only (no live game viewing, no decision-weight overlay yet).
+
+- **The webapp parses the raw event-log JSON directly** — no intermediate
+  replay format, no Cockatrice/`.cor` involved. `replay_engine.py`'s
+  `GameReducer` folds the event stream (the same `state.log_event` records
+  `sim_replay_converter/convert.py` reads) into one board-state snapshot per
+  event: life totals, mana pools, hand/battlefield/graveyard/exile contents,
+  and the stack. It ports the event-kind interpretation rules
+  `convert.py`'s `EventStreamReplayBuilder` already proved out against real
+  games (name-based zone identity tracking, DFC face reverts, aura-orphan
+  handling, same-phase-recast identity, mulligan netting) as separate,
+  simpler code — plain dicts instead of Cockatrice protobuf events, and one
+  real difference: the stack is tracked as a single shared ordered list
+  (top = last, matching `GameState.stack`) rather than `convert.py`'s
+  per-player split, which is a Cockatrice protocol artifact, not a rules one.
+- **File selection is a native browser file picker.** Pick any `--log` JSON
+  file from disk (`logs/*.json`); the browser reads it and posts the content
+  to the backend, which returns that file's game list (one file can hold an
+  entire round-robin `--eval` run) before reducing any board state, then
+  reduces just the selected game.
+- **Both hands are always fully visible**, and the stack is always visible —
+  this is post-hoc review of a finished game, not live play, so there's no
+  hidden-information concern.
+- **Card art is hotlinked from Scryfall's image endpoint** per card name (no
+  local caching, nothing committed to the repo, no asset pipeline) — the
+  browser handles image caching on its own.
+- Event kinds with no board-visible effect (`pass`, `priority_flip`,
+  `resolution_begin`/`complete`, `pump`/`explore`/`animated` — the log entry
+  doesn't carry enough to render unambiguously, etc.) still advance the
+  scrubber with a plain label so the timeline never silently skips a step,
+  matching `convert.py`'s own documented scope.
+- Deferred, not in MVP scope: the decision-point overlay (top-5 action
+  weights per real decision) and live re-inference against an arbitrary
+  checkpoint — both need new engine-side logging/plumbing, tracked in
+  `todo/game_visualization.md`.
 
 ---
 
