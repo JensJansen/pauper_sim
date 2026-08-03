@@ -1,7 +1,0 @@
-syntax = "proto2";
-import "game_commands.proto";
-message Command_LeaveGame {
-    extend GameCommand {
-        optional Command_LeaveGame ext = 1001;
-    }
-}

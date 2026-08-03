@@ -18,6 +18,8 @@ from game import resolution
 from game.cards import CardDef, CardType, EffectId
 from game.catalog.black_cards import (
     _nonblack,
+    blood_fountain_return,
+    cast_alms_of_the_vein,
     cast_cast_down,
     cast_dread_return,
     cast_fanatical_offering,
@@ -25,6 +27,7 @@ from game.catalog.black_cards import (
     cast_snuff_out_alt,
     cast_toxin_analysis,
     cast_unexpected_fangs,
+    cast_vampires_kiss,
     refurbished_familiar_etb,
     snuff_out_alt_legal,
 )
@@ -123,8 +126,9 @@ def test_bojuka_bog_etb_exiles_target_players_graveyard():
 # --- Mesmeric Fiend: ETB exiles a nonland from target opponent's hand
 # (tracked, linked to this Fiend); its leaves-the-battlefield trigger -- the
 # engine's first -- returns that card when the Fiend leaves, whether it DIES
-# (state-based) or is SACRIFICED (resolution.execute_sacrifice_option), the
-# two ways a creature leaves in this pool. ---
+# (state-based) or is SACRIFICED (resolution.begin_sacrifice, via
+# state_based.sacrifice_to_graveyard), the two ways a creature leaves in
+# this pool. ---
 
 _MESMERIC_FIEND_DEF = CardDef(
     "Mesmeric Fiend", CardType.CREATURE, {"generic": 1, "B": 1}, EffectId.MESMERIC_FIEND, power=1, toughness=1,
@@ -169,7 +173,8 @@ def test_mesmeric_fiend_sacrificed_returns_exiled_card_to_owner():
     """(b) the Fiend is SACRIFICED (e.g. to Dread Return's Flashback) -> same LTB."""
     state, fiend, a_spell = _enter_fiend_and_exile()
     resolution.begin_sacrifice(state, lambda p: p.card_def.name == "Mesmeric Fiend", 1, on_complete=lambda s, ok: None)
-    resolution.execute_sacrifice_option(state, "Mesmeric Fiend")
+    assert state.pending_resolution["kind"] == "choose_permanent"
+    resolution.execute_choose_permanent_option(state, "Mesmeric Fiend", fiend.slot)
     assert fiend not in state.players[0].battlefield
     assert [e["type"] for e in state.trigger_queue] == ["ltb"]
     promote_triggers_to_stack(state)
@@ -178,12 +183,105 @@ def test_mesmeric_fiend_sacrificed_returns_exiled_card_to_owner():
 
 
 def test_mesmeric_fiend_solo_no_opponent_etb_is_noop():
-    """(c) 1-player (no opponent to target): ETB does nothing, no exile."""
+    """(c) 1-player (no opponent to target): ETB does nothing, no exile.
+    Target-at-promotion (etb_targets: True) means the opponent is captured
+    -- or, here, found not to exist -- AT PROMOTION, so with no legal
+    target the ability never even reaches the stack (nothing for
+    resolve_top_of_stack to pop), unlike a plain non-targeting ETB."""
     solo = GameState(on_the_play=True)
     solo_fiend = enters_battlefield(solo, _MESMERIC_FIEND_DEF, from_zone="hand")
     promote_triggers_to_stack(solo)
-    resolve_top_of_stack(solo)
-    assert solo.pending_resolution is None and "mesmeric_exiled" not in solo_fiend.flags
+    assert solo.stack == [] and solo.pending_resolution is None and "mesmeric_exiled" not in solo_fiend.flags
+
+
+def test_balustrade_spy_etb_mills_target_players_library():
+    """Balustrade Spy: real "target player" (begin_choose_target_player),
+    same shape as Bojuka Bog's own ETB -- targeting the OPPONENT mills
+    THEIR library, never the caster's own, until a land turns up
+    (inclusive)."""
+    state = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
+    state.players[0].library = [CardDef("Own1", CardType.CREATURE, None, EffectId.FILLER)]
+    state.players[1].library = [
+        CardDef("Their1", CardType.CREATURE, None, EffectId.FILLER),
+        CardDef("Their2", CardType.LAND, None, EffectId.SWAMP, basic=True),
+        CardDef("Their3", CardType.CREATURE, None, EffectId.FILLER),
+    ]
+    spy = CardDef("Balustrade Spy", CardType.CREATURE, {"generic": 3, "B": 1}, EffectId.BALUSTRADE_SPY, power=2, toughness=2)
+    enters_battlefield(state, spy, from_zone="hand")
+    assert [e["type"] for e in state.trigger_queue] == ["etb"]
+    promote_triggers_to_stack(state)  # target-at-promotion opens the target-player choice
+    assert state.pending_resolution["kind"] == "choose_target_player"
+    resolution.execute_choose_target_player_option(state, 1)  # target the opponent
+    resolve_top_of_stack(state)
+    assert [c.name for c in state.players[1].library] == ["Their3"]  # milled through the land, inclusive
+    assert [c.name for c in state.players[1].graveyard] == ["Their1", "Their2"]
+    assert [c.name for c in state.players[0].library] == ["Own1"]  # own library untouched
+
+
+def test_blood_fountain_returns_up_to_two_targets_with_partial_fizzle():
+    """Blood Fountain: {3}{B}, {T}, Sacrifice: return up to two TARGET
+    creature cards from your graveyard to hand -- both targets locked at
+    ACTIVATION (before the ability goes on the stack), and 608.2c partial
+    fizzle: if one target leaves the graveyard in response, the other
+    still comes back."""
+    state = GameState(on_the_play=True)
+    fountain = Permanent(CardDef(
+        "Blood Fountain", CardType.ARTIFACT, {"B": 1}, EffectId.BLOOD_FOUNTAIN, sac_ability_cost={"generic": 3, "B": 1},
+    ))
+    bear = state.new_instance(CardDef("Bear", CardType.CREATURE, {"G": 1}, EffectId.FILLER, power=1, toughness=1))
+    wolf = state.new_instance(CardDef("Wolf", CardType.CREATURE, {"G": 1}, EffectId.FILLER, power=2, toughness=2))
+    state.battlefield = [fountain]
+    state.graveyard = [bear, wolf]
+    blood_fountain_return(state, fountain)
+    assert state.battlefield == []  # sacrificed -- a cost, paid immediately on activation
+    assert state.pending_resolution["kind"] == "choose_graveyard_card"
+    resolution.execute_choose_graveyard_card_option(state, bear)
+    resolution.execute_choose_graveyard_card_option(state, wolf)
+    assert state.pending_resolution is None and len(state.stack) == 1  # both targets locked, ability on the stack
+    state.graveyard.remove(bear)  # bear reanimated/exiled in response -- an illegal target by resolution
+    resolve_top_of_stack(state)
+    assert [c.name for c in state.hand] == ["Wolf"]  # only the surviving target returns (bear silently skipped)
+
+
+def test_alms_of_the_vein_target_opponent_loses_life_caster_gains():
+    """Alms of the Vein: target opponent loses 3, caster gains 3 -- BOTH
+    halves of the real text. Target (the opponent) is locked at CAST
+    (precast_choice), and the spell can't be cast at all without one
+    (extra_legal, since "target opponent" needs a legal target to exist)."""
+    state = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
+    state.players[0].life_total = 20
+    state.players[1].life_total = 20
+    state.hand = [registry.CARD_DEFS["Alms of the Vein"]]
+    assert registry.EFFECT_REGISTRY[EffectId.ALMS_OF_THE_VEIN]["cast"]["extra_legal"](state)
+    cast_alms_of_the_vein(state, registry.CARD_DEFS["Alms of the Vein"])
+    resolve_top_of_stack(state)
+    assert state.players[0].life_total == 23  # caster gained 3
+    assert state.players[1].life_total == 17  # opponent lost 3
+
+
+def test_alms_of_the_vein_uncastable_with_no_opponent():
+    """No opponent -> the mandatory "target opponent" has no legal target,
+    so the spell can't be cast at all (601.2c)."""
+    state = GameState(on_the_play=True)
+    assert not registry.EFFECT_REGISTRY[EffectId.ALMS_OF_THE_VEIN]["cast"]["extra_legal"](state)
+
+
+def test_vampires_kiss_targets_any_player_and_grants_life():
+    """Vampire's Kiss: real "target player" -- ANY player, unlike Alms of
+    the Vein's opponent-restricted version. Targeting the opponent drains
+    them; the caster still gains 2 life and two Blood tokens either way
+    (the gain-life half was previously dropped entirely)."""
+    state = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
+    state.players[0].life_total = 20
+    state.players[1].life_total = 20
+    state.hand = [registry.CARD_DEFS["Vampire's Kiss"]]
+    cast_vampires_kiss(state, registry.CARD_DEFS["Vampire's Kiss"])
+    assert state.pending_resolution["kind"] == "choose_target_player"
+    resolution.execute_choose_target_player_option(state, 1)  # target the opponent
+    resolve_top_of_stack(state)
+    assert state.players[0].life_total == 22  # +2 gained
+    assert state.players[1].life_total == 18  # -2 lost
+    assert sum(1 for p in state.battlefield if p.card_def.name == "Blood") == 2
 
 
 # --- G3 removal & tricks (mono-black) ---
@@ -312,7 +410,7 @@ def test_gurmag_angler_delve_exiles_graveyard_cards_to_pay_generic():
     dl = [("Gurmag Angler", 4), ("Swamp", 8)]
     byname = {
         a[0]: (a[1], a[2])
-        for a in drl_env.build_action_table(dl, registry.EFFECT_REGISTRY, pending_kinds=registry.derive_pending_kinds(dl))
+        for a in drl_env.build_action_table(dl, registry.EFFECT_REGISTRY)
     }
     state = GameState(on_the_play=True)
     state.phase = Phase.MAIN1

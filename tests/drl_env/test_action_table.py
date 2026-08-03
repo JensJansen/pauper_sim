@@ -264,7 +264,16 @@ def test_cross_player_targeting():
     my_actions = build_action_table(boggles_decklist, game.EFFECT_REGISTRY, opponent_decklist=boggles_decklist)
     bogle_slot_actions = [nm for nm, _l, _e in my_actions if nm.startswith("Choose opponent's: Slippery Bogle")]
     assert bogle_slot_actions == [f"Choose opponent's: Slippery Bogle (slot {k})" for k in range(1, 5)]  # boggles.txt: 4 copies
-    assert not any(nm.startswith("Choose opponent's: Forest") for nm, _l, _e in my_actions)  # a land, never a targetable creature
+    # Registered for every opponent choosable name, not just creatures -- same
+    # "pre-register broadly, mask precisely" pattern as "Choose target: X"
+    # (own side) above. A creature-only filter here used to omit non-creature
+    # names (e.g. this Forest), which silently broke the instant a predicate
+    # legitimately wanted a non-creature opponent permanent (Masked Vandal's
+    # ETB targets an opponent artifact/enchantment) -- an all-False mask
+    # crash, since begin_choose_opponent_permanent found a real option but no
+    # action row existed to select it.
+    forest_slot_actions = [nm for nm, _l, _e in my_actions if nm.startswith("Choose opponent's: Forest")]
+    assert forest_slot_actions == [f"Choose opponent's: Forest (slot {k})" for k in range(1, 13)]  # boggles.txt: 12 Forests
 
     target_slot_2 = _action_index(my_actions, "Choose opponent's: Slippery Bogle (slot 2)")
     target_slot_1 = _action_index(my_actions, "Choose opponent's: Slippery Bogle (slot 1)")
@@ -527,8 +536,7 @@ def test_mana_ability_options_cache_no_stale_leak():
     # cached answer, proving the cache doesn't leak across separate
     # legal_action_mask calls.
     perf_decklist = [("Mountain", 10), ("Lightning Bolt", 5)]
-    perf_pending = game.derive_pending_kinds(perf_decklist)
-    perf_actions = build_action_table(perf_decklist, game.EFFECT_REGISTRY, pending_kinds=perf_pending)
+    perf_actions = build_action_table(perf_decklist, game.EFFECT_REGISTRY)
     perf_tap_mountain = _action_index(perf_actions, "Tap Mountain")
     perf_state = GameState(on_the_play=True, players=[PlayerState(True)])
     perf_mtn = Permanent(game.CARD_DEFS["Mountain"])
@@ -622,13 +630,66 @@ def test_mana_filter_atomic_pool_conversion():
     assert not legal_ub(state)  # Barrels' own once-per-turn gate now closed
 
 
+def test_mana_row_generation_derives_from_registry_kind():
+    # Row count per mana source is now DERIVED from the registry's own "mana"
+    # spec kind (build_action_table), not a blanket no-color-plus-6-colors for
+    # every source name -- a row a source can never make legal is a dead
+    # output neuron. Three shapes in one deck: a non-land FIXED source
+    # (Llanowar Elves) needs only its own no-color row; a LAND fixed source
+    # (Mountain) still needs every color Abundant Growth's registry entry
+    # could ever grant it (game.EFFECT_REGISTRY is the FULL registry, not
+    # just this decklist -- an opponent's Abundant Growth can enchant this
+    # deck's own Mountain); a non-land FLEXIBLE source (Bonder's Ornament)
+    # needs only its own real colors, and -- unlike a fixed source -- no
+    # no-color row at all.
+    decklist = [("Llanowar Elves", 4), ("Mountain", 4), ("Bonder's Ornament", 2)]
+    actions = build_action_table(decklist, game.EFFECT_REGISTRY)
+    labels = [name for name, _l, _e in actions]
+
+    # Llanowar Elves: fixed G, non-land, no grant ever reaches a creature --
+    # exactly one row.
+    assert labels.count("Tap Llanowar Elves") == 1
+    assert not any(l.startswith("Tap Llanowar Elves for") for l in labels)
+
+    # Mountain: fixed R, but a LAND -- keeps a row for every color
+    # game.EFFECT_REGISTRY declares grantable (Abundant Growth's own entry),
+    # even though this decklist has no Abundant Growth of its own.
+    assert labels.count("Tap Mountain") == 1
+    for color in game.COLORS:
+        assert f"Tap Mountain for {color}" in labels
+    assert "Tap Mountain for C" not in labels  # colorless is never a color CHOICE
+
+    # Bonder's Ornament: flexible over all 5 colors, non-land -- one row per
+    # real color, and NO no-color row (its native ability never offers one).
+    assert "Tap Bonder's Ornament" not in labels
+    for color in game.COLORS:
+        assert f"Tap Bonder's Ornament for {color}" in labels
+    assert "Tap Bonder's Ornament for C" not in labels
+
+
+def test_impulse_actions_gated_on_own_decklist():
+    # Impulse is never cross-player (state.impulse is always the ACTIVE
+    # player's own zone) -- unlike pay_unless. build_action_table has no
+    # pending_kinds parameter at all (an opponent's card can never pose an
+    # impulse decision to a deck without one), so a decklist with no impulse
+    # card gets zero "Play from exile" rows, purely from its own contents.
+    decklist = [("Mountain", 4), ("Lightning Bolt", 4)]
+    actions = build_action_table(decklist, game.EFFECT_REGISTRY)
+    assert not any(name.startswith("Play from exile") for name, _l, _e in actions)
+
+    # A decklist that DOES have an impulse card gets them.
+    impulse_decklist = [("Reckless Impulse", 4), ("Mountain", 4)]
+    impulse_actions = build_action_table(impulse_decklist, game.EFFECT_REGISTRY)
+    assert any(name == "Play from exile: Mountain" for name, _l, _e in impulse_actions)
+
+
 def test_mana_ability_legal_mid_pay_unless():
     # A mana ability must stay legal during ANY pending resolution (605.1a/
     # 605.3b: a mana ability may be activated even mid-resolution of something
     # else, INCLUDING while paying a cost). Covers a Ward/Spell-Pierce-style
     # pay_unless: the payer floats mana IN RESPONSE (not pre-floated), then pays.
     pu_decklist = [("Mountain", 4)]
-    pu_actions = build_action_table(pu_decklist, game.EFFECT_REGISTRY, pending_kinds={"pay_unless"})
+    pu_actions = build_action_table(pu_decklist, game.EFFECT_REGISTRY)
     pu_tap_idx = _action_index(pu_actions, "Tap Mountain")
     pu_pay_idx = _action_index(pu_actions, "Pay (unless)")
     pu_state = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
@@ -656,7 +717,7 @@ def test_mana_ability_legal_mid_any_pending_resolution():
     # mid-resolution of an ENTIRELY UNRELATED pending kind too (discard), and
     # activating it must not disturb that unrelated resolution at all.
     mid_decklist = [("Mountain", 4), ("Lightning Bolt", 2)]
-    mid_actions = build_action_table(mid_decklist, game.EFFECT_REGISTRY, pending_kinds=game.derive_pending_kinds(mid_decklist))
+    mid_actions = build_action_table(mid_decklist, game.EFFECT_REGISTRY)
     mid_tap_idx = _action_index(mid_actions, "Tap Mountain")
     mid_state = GameState(on_the_play=True)
     mid_mtn = Permanent(game.CARD_DEFS["Mountain"])

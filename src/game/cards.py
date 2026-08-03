@@ -165,7 +165,7 @@ class EffectId(Enum):
     RECKLESS_LACKEY = auto()  # {R} 1/2 first strike, haste; {2}{R},Sac: draw + Treasure
     GOBLIN_TOMB_RAIDER = auto()  # {R} 1/2; while you control an artifact, +1/+0 & haste
     MURMURING_MYSTIC = auto()  # {3}{U} 1/5; on cast I/S -> 1/1 flying Bird Illusion
-    BURNING_TREE_EMISSARY = auto()  # {R/G}{R/G} (->{R}{R}) 2/2; ETB add {R}{G}
+    BURNING_TREE_EMISSARY = auto()  # {R/G}{R/G} (->{R}{R}) 2/2; ETB add {R}{G} (->{R}{R})
 
     # --- G7 cost reduction & threats ---
     MYR_ENFORCER = auto()  # {7} 4/4 artifact creature; Affinity for artifacts

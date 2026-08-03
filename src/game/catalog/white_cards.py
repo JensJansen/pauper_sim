@@ -9,7 +9,7 @@ game.CARD_DEFS/EFFECT_REGISTRY by game/registry.py."""
 
 from ..cards import CardDef, CardType, EffectId
 from ..effects.casting import cast_aura
-from ..effects.shared import any_creature_on_battlefield
+from ..effects.shared import any_creature_on_battlefield, any_creature_on_either_battlefield
 from ..effects.stats import enchantment_count
 from ..effects.tokens import WARRIOR_TOKEN_CARD_DEF, create_token
 
@@ -30,8 +30,13 @@ def cartouche_of_solidarity_attach(state, aura):
 
 
 def cast_cartouche_of_solidarity(state, card_def):
+    """"Enchant creature YOU CONTROL" -- unlike Rancor/Ancestral Mask/
+    Ethereal Armor/Armadillo Cloak's plain "Enchant creature" (any side),
+    this one is restricted to the caster's own battlefield (verified via
+    Scryfall, not guessed); `p in state.battlefield` narrows cast_aura's
+    default either-side predicate to that."""
     cast_aura(
-        state, card_def, lambda p: p.card_type == CardType.CREATURE,
+        state, card_def, lambda p: p.card_type == CardType.CREATURE and p in state.battlefield,
         on_attached=cartouche_of_solidarity_attach,
     )
 
@@ -49,10 +54,10 @@ WHITE_EFFECT_REGISTRY = {
         # toughness_bonus below -- full-stats pass) and has first strike.
         "cast": {
             "resolve": lambda state, card_def: cast_cartouche_of_solidarity(state, card_def),
-            "extra_legal": lambda state: any_creature_on_battlefield(state),
+            "extra_legal": lambda state: any_creature_on_battlefield(state),  # "you control" only -- caster's own zone
             "precast_choice": True,  # real MTG "enchant target creature" -- must be chosen before the stack, see drl_env._precast_choice_execute
         },
-        "pending_kinds": {"choose_any_target"},  # Aura: cast_aura targets any creature (either side), hexproof-aware
+        "pending_kinds": {"choose_any_target"},  # Aura: cast_aura targets a creature YOU CONTROL only, hexproof moot (never an opponent's)
         "pt_bonus": lambda state, aura: 1,
         "toughness_bonus": lambda state, aura: 1,
         "keywords": {"first_strike"},
@@ -63,7 +68,7 @@ WHITE_EFFECT_REGISTRY = {
         # verified via Scryfall, not guessed) -- and has first strike.
         "cast": {
             "resolve": lambda state, card_def: cast_ethereal_armor(state, card_def),
-            "extra_legal": lambda state: any_creature_on_battlefield(state),
+            "extra_legal": lambda state: any_creature_on_either_battlefield(state),
             "precast_choice": True,  # real MTG "enchant target creature" -- must be chosen before the stack, see drl_env._precast_choice_execute
         },
         "pending_kinds": {"choose_any_target"},  # Aura: cast_aura targets any creature (either side), hexproof-aware

@@ -63,12 +63,33 @@ def test_discard_from_hand_to_graveyard_raises_when_not_in_hand():
         discard_from_hand_to_graveyard(state, forest)
 
 
+def test_discard_from_hand_to_graveyard_logs_zone_move():
+    # Regression: a genuine hand-cost discard (Islandcycling/Cycling/
+    # Forestcycle -- none of which touch the stack) used to leave the
+    # engine's own state.hand correctly reduced but emit no zone_move event
+    # at all, so the replay/event log kept showing the card as still in
+    # hand forever. Only this branch (not the resolving-spell one, already
+    # logged at cast) needs the event.
+    state = _make_state()
+    state.event_log = []
+    find_to_hand(state, "Forest")
+    forest = state.hand[0]
+    state.hand = [forest]
+    discard_from_hand_to_graveyard(state, forest)
+    moves = [e for e in state.event_log if e["kind"] == "zone_move"]
+    assert moves[-1]["card"] == "Forest"
+    assert moves[-1]["from_zone"] == "hand"
+    assert moves[-1]["to_zone"] == "graveyard"
+    assert moves[-1]["reason"] == "discard"
+
+
 # Every one of these independently removes a sacrificed permanent from the
-# battlefield instead of routing through state_based.sacrifice_to_graveyard/
-# handlers.execute_sacrifice_option -- each one used to skip
-# fire_sacrifice_triggers entirely (Gixian Infiltrator silently never saw
-# these sacrifices). Regression coverage: every site now queues an
-# "on_sacrifice" entry, no exceptions.
+# battlefield instead of routing through state_based.sacrifice_to_graveyard
+# (the one canonical "leave the battlefield by sacrifice" path every
+# resolution.begin_sacrifice/discard_or_sacrifice pick also goes through) --
+# each one used to skip fire_sacrifice_triggers entirely (Gixian Infiltrator
+# silently never saw these sacrifices). Regression coverage: every site now
+# queues an "on_sacrifice" entry, no exceptions.
 _SACRIFICE_SITES = (
     ("activate_twisted_landscape_fetch", activate_twisted_landscape_fetch),
     ("activate_expedition_map", activate_expedition_map),

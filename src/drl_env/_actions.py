@@ -37,19 +37,24 @@ import game
 #   E. Pass
 #   F. Choose: <name>               -- shared across every pending-resolution
 #      kind that picks a plain card name (search_fetch, ancient_stirrings,
-#      sacrifice, discard, and scry/surveil's ordering phase), dispatched by
+#      discard, and scry/surveil's ordering phase), dispatched by
 #      pending_resolution["kind"]. Paying a cost never appears here -- once a
 #      cost is announced, the only legal actions are "Spend <color> from
 #      pool" (below), spending mana already floated via a Tap action.
+#      NOT sacrifice (see category K) -- a battlefield permanent is never
+#      just a name, unlike a hand/library/graveyard card.
 #   H. Keep / Dispose (scry/surveil)
 #   I. Decline (Ancient Stirrings)
 #   K. Choose target: <name> (slot k) -- exact-(name, slot)-addressed, the
 #      "choose_permanent" resolution's own actions (Aura enchant-targets,
-#      Crop Rotation's sacrifice cost, land bounce) -- NOT category F:
+#      Crop Rotation's sacrifice cost, land bounce, and now every generic
+#      sacrifice cost -- begin_sacrifice/Highway Robbery's own sacrifice
+#      trigger, both chained through this same primitive) -- NOT category F:
 #      two same-named permanents stop being interchangeable the instant an
-#      Aura attaches to only one of them, and cast_aura's cast-time-target/
-#      resolve-time-fizzle contract depends on knowing exactly which
-#      physical permanent was chosen.
+#      Aura attaches to only one of them (or one has a counter, is tapped,
+#      ...), and cast_aura's cast-time-target/resolve-time-fizzle contract
+#      (same as knowing exactly which physical permanent was sacrificed)
+#      depends on knowing exactly which physical permanent was chosen.
 #
 # spy_combo deck additions: B also covers Winding Way's modal cast (2
 # actions, one per mode), Land Grant's free alt-cost, Dread Return's
@@ -550,14 +555,22 @@ def _tuck_position_legal(state):
 _tuck_position_legal._pending_gate = frozenset({"tuck_position"})
 
 
-def _activate_legal(name, cost_key, speed):
+def _activate_legal(name, cost_key, speed, extra_legal=None):
+    """extra_legal (optional): an additional state-only predicate beyond
+    "an untapped copy exists and its cost_key cost is payable" -- for an
+    ability whose OWN targets/effect impose a further precondition beyond
+    cost (Barrels of Blasting Jelly's "{5}, T, Sacrifice: 5 damage to
+    TARGET creature" can't be activated with zero legal creature targets on
+    board, 602.2b/601.2c), same role "extra_legal" plays on a "cast" spec."""
     def legal(state):
         if state.pending_resolution is not None:
             return False
         if not game.turn.speed_legal(state, speed):
             return False
         p = next((p for p in state.battlefield if p.card_def.name == name and not p.tapped), None)
-        return p is not None and game.plan_payment(state, p.card_def.extra[cost_key]) is not None
+        if p is None or game.plan_payment(state, p.card_def.extra[cost_key]) is None:
+            return False
+        return extra_legal is None or extra_legal(state)
     legal._pending_gate = _GATE_NO_PENDING
     return legal
 
@@ -673,7 +686,7 @@ def _pass_execute(state):
 # doesn't cover -- so a future violation cannot ship unnoticed the way this
 # one did.
 _CHOOSE_NAME_PENDING_KINDS = frozenset({
-    "search_fetch", "throne_reveal", "sacrifice", "discard",
+    "search_fetch", "throne_reveal", "discard",
     "discard_or_sacrifice", "ancient_stirrings", "malevolent_rumble", "scry", "surveil",
     "select_to_hand", "order_triggers", "put_on_top", "ponder",
 })
@@ -703,24 +716,24 @@ def _choose_name_options(state):
         return game.search_fetch_options(state)
     if kind == "throne_reveal":  # Undercity Throne: pick a creature card from the revealed top 10
         return game.throne_reveal_options(state)
-    # choose_graveyard_card and choose_stack_target are deliberately absent:
-    # both are POINTER targets (rl.action_bridge), not by-name fixed actions
-    # -- the chosen card/stack-entry (a graveyard card, a hand the effect
-    # reveals like Mesmeric Fiend, or a spell on the stack to counter) is
-    # picked by pointing at its token, so an opponent's cards are reachable
-    # without a whole-league "Choose: X" fixed row per card name.
-    if kind == "sacrifice":
-        return game.sacrifice_options(state)
+    # choose_graveyard_card, choose_stack_target, and choose_permanent
+    # (which now also covers every generic sacrifice) are deliberately
+    # absent: all are POINTER targets (rl.action_bridge), not by-name fixed
+    # actions -- the chosen card/stack-entry/permanent is picked by pointing
+    # at its token, so an opponent's cards are reachable (and a battlefield
+    # permanent is addressed exactly, not by a fungible name) without a
+    # whole-league "Choose: X" fixed row per card name.
     if kind == "discard":
         return game.discard_options(state)
     if kind == "discard_or_sacrifice":
         # Only the DISCARD half reuses this generic "Choose: X" dispatch
-        # (bare hand-card names, same as plain "discard") -- the
-        # sacrifice half gets its own distinctly-labeled actions instead
-        # (build_action_table's own "Sacrifice (cost): X" loop) precisely
-        # to avoid ambiguity if a hand card and a battlefield land ever
-        # share a name (e.g. a Mountain in hand while Mountains are also
-        # in play) -- two different action strings, never one bare name
+        # (bare hand-card names, same as plain "discard") -- the sacrifice
+        # half is a single trigger action that opens its own nested
+        # choose_permanent pointer choice instead (see
+        # _discard_or_sacrifice_trigger_sacrifice_legal's own docstring),
+        # precisely to avoid ambiguity if a hand card and a battlefield land
+        # ever share a name (e.g. a Mountain in hand while Mountains are
+        # also in play) -- two different action shapes, never one bare name
         # that could mean either.
         return game.discard_or_sacrifice_discard_options(state)
     if kind == "ancient_stirrings":
@@ -754,12 +767,10 @@ def _choose_name_execute(name):
             game.execute_search_fetch_option(state, name)
         elif kind == "throne_reveal":
             game.execute_throne_reveal_option(state, name)
-        elif kind == "sacrifice":
-            game.execute_sacrifice_option(state, name)
         elif kind == "discard":
             game.execute_discard_option(state, name)
         elif kind == "discard_or_sacrifice":
-            game.execute_discard_or_sacrifice_option(state, "discard", name)
+            game.execute_discard_or_sacrifice_discard(state, name)
         elif kind == "ancient_stirrings":
             game.execute_ancient_stirrings_option(state, name)
         elif kind == "malevolent_rumble":
@@ -1278,26 +1289,30 @@ def _target_any_decline_execute(state):
     game.execute_choose_any_target_decline(state)
 
 
-def _discard_or_sacrifice_sacrifice_legal(name):
+def _discard_or_sacrifice_trigger_sacrifice_legal(state):
     """The SACRIFICE half of Highway Robbery's own "discard a card or
-    sacrifice a land" -- a distinctly-labeled action (build_action_table's
-    own "Sacrifice (cost): {name}"), not a reuse of the generic
-    "Choose: X" dispatch _choose_name_options/_choose_name_execute give
-    the DISCARD half: two different action strings, so a hand card and a
-    battlefield land sharing a name (e.g. a Mountain in hand while
-    Mountains are also in play) can never be ambiguous about which one a
-    single button means."""
-    def legal(state):
-        pending = state.pending_resolution
-        return pending is not None and pending["kind"] == "discard_or_sacrifice" and name in game.discard_or_sacrifice_sacrifice_options(state)
-    legal._pending_gate = frozenset({"discard_or_sacrifice"})
-    return legal
+    sacrifice a land" -- ONE trigger action (not one per land name):
+    picking it opens a nested choose_permanent sub-decision for WHICH exact
+    land pays the cost (game.execute_discard_or_sacrifice_trigger_
+    sacrifice), giving the model the same real per-instance choice
+    begin_sacrifice's own predicate-driven picks get (see that function's
+    own docstring for why first-same-name-match isn't good enough --
+    battlefield permanents aren't fungible the way hand/library cards are),
+    instead of a name per eligible land the way the DISCARD half's "Choose:
+    X" rows work. Legal only while discard_or_sacrifice is pending and at
+    least one eligible permanent exists."""
+    pending = state.pending_resolution
+    return (
+        pending is not None and pending["kind"] == "discard_or_sacrifice"
+        and game.discard_or_sacrifice_can_sacrifice(state)
+    )
 
 
-def _discard_or_sacrifice_sacrifice_execute(name):
-    def execute(state):
-        game.execute_discard_or_sacrifice_option(state, "sacrifice", name)
-    return execute
+_discard_or_sacrifice_trigger_sacrifice_legal._pending_gate = frozenset({"discard_or_sacrifice"})
+
+
+def _discard_or_sacrifice_trigger_sacrifice_execute(state):
+    game.execute_discard_or_sacrifice_trigger_sacrifice(state)
 
 
 def _decline_discard_or_sacrifice_legal(state):
@@ -1737,7 +1752,7 @@ def _omen_cast_execute(creature_card_def, cost, resolve):
     return execute
 
 
-def build_action_table(decklist, registry, token_card_defs=(), pending_kinds=(),
+def build_action_table(decklist, registry, token_card_defs=(),
                         opponent_decklist=None, opponent_token_card_defs=(), extra_choosable_names=()):
     """opponent_decklist/opponent_token_card_defs: the OTHER side's own
     decklist/tokens -- None/() for every 1-player deck (there's no real
@@ -1767,13 +1782,25 @@ def build_action_table(decklist, registry, token_card_defs=(), pending_kinds=(),
     once it's on the battlefield). Defaults to () so every existing call
     site (Tron, spy_combo -- neither creates tokens) is unaffected.
 
-    pending_kinds: this deck's own extra pending-resolution kinds beyond
-    the universal baseline (pay_cost) -- see game.registry.
-    derive_pending_kinds -- gates which of the fixed kind-specific actions
-    below (Keep/Dispose scry-surveil, Decline Ancient Stirrings, etc.)
-    actually get added, so a deck's action table never grows because of a
-    pending kind only some other deck can reach."""
+    No `pending_kinds` parameter: whether a resolution kind can ever cross
+    players is a fixed fact about the ENGINE (which cards target an
+    opponent, which don't), not something a caller should have to compute
+    and thread through -- see own_pending_kinds just below and the
+    "UNIVERSAL DECISION ROWS" block further down for the two-way split this
+    function makes on its own."""
     distinct_names = sorted({name for name, *_rest in decklist})
+    # THIS decklist's own derived kinds. Used below for every kind confirmed
+    # to be self-only (impulse, discard_or_sacrifice, may_transform,
+    # may_cast, madness_decision, ancient_stirrings, malevolent_rumble,
+    # select_to_hand, choose_mana_color -- each has exactly one call site in
+    # the whole codebase, and it's always the deciding player's own card),
+    # so those rows don't inflate a deck's table for a card it doesn't run.
+    # The confirmed-cross-player kinds (pay_unless, tuck_position, may_copy,
+    # choose_any_target, choose_room, choose_target_player, scry/
+    # search_fetch's Decline, discard/graveyard-decline) don't consult this
+    # at all -- they're unconditional in the "UNIVERSAL DECISION ROWS" block
+    # further down, since an OPPONENT's card can pose those questions too.
+    own_pending_kinds = game.derive_pending_kinds(decklist)
     land_names = sorted({
         name for name in distinct_names if game.CARD_DEFS[name].card_type == game.CardType.LAND
     })
@@ -1815,28 +1842,56 @@ def build_action_table(decklist, registry, token_card_defs=(), pending_kinds=(),
     # pool in ANY priority window, even mid-resolution of anything else
     # (605.1a/605.3b -- a mana ability never uses the stack and doesn't
     # require priority; see _mana_ability_legal's own docstring for why no
-    # pending-resolution gate is needed at all). Breadth (one no-color row +
-    # one per pool color per source name), masked at runtime by
-    # game.mana_ability_options -- a fixed source only ever makes its
-    # no-color row legal; a flexible/granted source its color rows. Excludes
-    # mana_extra_choose sources (Saruli Caretaker) -- those get their own
-    # atomic enumeration below instead.
-    mana_source_names = sorted(
-        {name for name in distinct_names
-         if "mana" in registry.get(game.CARD_DEFS[name].effect_id, {})
-         and "mana_extra_choose" not in registry.get(game.CARD_DEFS[name].effect_id, {})}
-        | {cd.name for cd in token_card_defs
-           if "mana" in registry.get(cd.effect_id, {})
-           and "mana_extra_choose" not in registry.get(cd.effect_id, {})}
-    )
-    for name in mana_source_names:
-        actions.append((f"Tap {name}", _mana_ability_legal(name, None), _mana_ability_execute(name, None)))
-        for color in game.POOL_COLORS:
-            actions.append((
-                f"Tap {name} for {color}",
-                _mana_ability_legal(name, color),
-                _mana_ability_execute(name, color),
-            ))
+    # pending-resolution gate is needed at all). Row count is DERIVED per
+    # source rather than a blanket "no-color + all 6 pool colors" for every
+    # name: the registry's own "mana" spec kind already says, statically,
+    # which colors that source's NATIVE ability could ever offer --
+    # game.mana_ability_options only ever emits (name, None) for a fixed/
+    # fixed_multi/tron/count/count_all source and (name, color) for color in
+    # its own spec[1] for a flexible one -- so a row neither of those can
+    # ever produce is a permanently-dead output neuron. "Tap X for C" is
+    # never one of the rows generated below: colorless is only ever produced
+    # via the no-color row (a fixed/tron/count source's own single output),
+    # never a color CHOICE, for any source or grant this engine has.
+    #
+    # LANDS are the one case a per-source static lookup alone would miss:
+    # Abundant Growth's cast_aura targets "any land, either side"
+    # (choose_any_target) and grants a color via game.mana._granted_mana_
+    # colors ON TOP OF the land's own native ability -- a runtime fact no
+    # single card's "mana" spec captures. Any land in ANY league deck can
+    # end up enchanted (this deck's own, or an opponent's, since Abundant
+    # Growth can target either side), so every land-type source keeps a row
+    # for every color the FULL registry ever declares grantable
+    # ("grants_mana_colors", e.g. Abundant Growth's own entry), unioned with
+    # its own native colors -- this is the one kind-of-decision in this
+    # function that DOES need to look past just this decklist's own cards.
+    grantable_mana_colors = set().union(*(spec.get("grants_mana_colors", set()) for spec in registry.values()))
+    mana_source_effect_id = {}
+    for name in distinct_names:
+        effect_id = game.CARD_DEFS[name].effect_id
+        spec = registry.get(effect_id, {})
+        if "mana" in spec and "mana_extra_choose" not in spec:
+            mana_source_effect_id[name] = effect_id
+    for cd in token_card_defs:
+        spec = registry.get(cd.effect_id, {})
+        if "mana" in spec and "mana_extra_choose" not in spec:
+            mana_source_effect_id[cd.name] = cd.effect_id
+    for name in sorted(mana_source_effect_id):
+        kind, *rest = registry[mana_source_effect_id[name]]["mana"]
+        if kind != "flexible":
+            # flexible is the ONLY kind whose native ability never offers
+            # (name, None) -- see mana_ability_options's own kind grouping.
+            actions.append((f"Tap {name}", _mana_ability_legal(name, None), _mana_ability_execute(name, None)))
+        colors = set(rest[0]) if kind == "flexible" else set()
+        if card_type_by_name.get(name) == game.CardType.LAND:
+            colors |= grantable_mana_colors
+        for color in game.COLORS:
+            if color in colors:
+                actions.append((
+                    f"Tap {name} for {color}",
+                    _mana_ability_legal(name, color),
+                    _mana_ability_execute(name, color),
+                ))
 
     # Saruli Caretaker-shaped mana abilities: an extra cost that taps ANOTHER
     # untapped creature (mana_extra_choose) -- a COST CHOICE (602.5g), not a
@@ -2042,7 +2097,7 @@ def build_action_table(decklist, registry, token_card_defs=(), pending_kinds=(),
             if "cost_key" in spec:
                 actions.append((
                     f"Activate {name} ({ability_name})",
-                    _activate_legal(name, spec["cost_key"], speed),
+                    _activate_legal(name, spec["cost_key"], speed, spec.get("extra_legal")),
                     _activate_execute(name, spec["cost_key"], spec["resolve"]),
                 ))
             else:
@@ -2077,7 +2132,18 @@ def build_action_table(decklist, registry, token_card_defs=(), pending_kinds=(),
     # card's own cast/cast_modes spec (paying its NORMAL cost -- impulse, unlike
     # Plot, is not free; x_cast_modes cards, none in the impulse decks, aren't
     # offered from impulse).
-    if "impulse" in pending_kinds:
+    #
+    # Gated on THIS decklist's own derived kinds -- unlike pay_unless/
+    # tuck_position (genuinely posed by an OPPONENT's card, unconditional in
+    # the "UNIVERSAL DECISION ROWS" block further down), impulse is never
+    # cross-player: state.impulse is always the ACTIVE player's own zone
+    # (game/state.py's _active_player_property) and every impulse source
+    # only ever exiles from its own controller's library (shared.
+    # impulse_exile's own docstring). A deck without an impulse card of its
+    # own never has "impulse" in own_pending_kinds, so it never carries a
+    # "Play from exile: X" row per own land/castable card for nothing --
+    # permanently illegal, since no card of theirs ever opens the zone.
+    if "impulse" in own_pending_kinds:
         for name in distinct_names:
             card_def = game.CARD_DEFS[name]
             if card_def.card_type == game.CardType.LAND:
@@ -2220,26 +2286,26 @@ def build_action_table(decklist, registry, token_card_defs=(), pending_kinds=(),
     ))
 
     # "Choose opponent's: X (slot k)" -- the general cross-player
-    # targeting primitive, one per (opponent
-    # creature name, slot), built from the OPPONENT's own decklist/tokens
-    # instead of this side's own -- blocking's first consumer. Same
-    # quantity-or-TOKEN_LIMIT bound as the attack registration above, just
-    # applied to the other side's card pool. None/() (the default for
+    # targeting primitive, one per (opponent name, slot), built from the
+    # OPPONENT's own decklist/tokens instead of this side's own. Registered
+    # for every opponent choosable name, not just creatures -- same
+    # "pre-register broadly, mask precisely" pattern as "Choose target: X"
+    # above: blocking's predicate only ever matches attackers (creatures),
+    # but Masked Vandal's ETB (green_cards.py) targets an opponent artifact
+    # or enchantment, so a creature-only filter here left that a legal
+    # target with no matching action row -- an all-False mask crash the
+    # instant an opponent controlled a targetable artifact/enchantment.
+    # Same quantity-or-TOKEN_LIMIT bound as the attack registration above,
+    # just applied to the other side's card pool. None/() (the default for
     # every 1-player deck) registers nothing at all -- there's no real
     # opponent battlefield to ever reference in that mode.
     if opponent_decklist is not None:
         opponent_distinct_names = sorted({name for name, *_rest in opponent_decklist})
-        opponent_card_type_by_name = {name: game.CARD_DEFS[name].card_type for name in opponent_distinct_names}
-        opponent_card_type_by_name.update({cd.name: cd.card_type for cd in opponent_token_card_defs})
         opponent_qty_by_name = {name: qty for name, qty, *_rest in opponent_decklist}
         opponent_choosable_names = sorted(
             set(opponent_distinct_names) | {cd.name for cd in opponent_token_card_defs}
         )
-        opponent_targetable_names = sorted(
-            name for name in opponent_choosable_names
-            if opponent_card_type_by_name[name] == game.CardType.CREATURE
-        )
-        for name in opponent_targetable_names:
+        for name in opponent_choosable_names:
             max_slot = opponent_qty_by_name.get(name, game.TOKEN_LIMIT)
             for slot in range(1, max_slot + 1):
                 actions.append((
@@ -2259,20 +2325,27 @@ def build_action_table(decklist, registry, token_card_defs=(), pending_kinds=(),
             _pool_spend_execute(color),
         ))
 
-    # ---- UNIVERSAL DECISION ROWS (deliberately NOT gated on pending_kinds) ----
+    # ---- UNIVERSAL DECISION ROWS (deliberately NOT gated on any pending kind) ----
     # Every fixed row below answers a QUESTION the engine can pose, and each is a
     # small constant set of buttons (never a per-card-name loop). They are added
     # to EVERY deck's table unconditionally, because a decision is not always
     # answered by the player whose deck produced it -- an opponent's card can pose
     # a question that YOU must answer:
-    #   pay_unless      Spell Pierce/Ward/Nihil Spellbomb/Chain Lightning -- the
-    #                   PAYER is the spell's controller, i.e. the opponent.
-    #   tuck_position   Deem Inferior -- the tucked permanent's OWNER chooses.
-    #   may_copy        Chain Lightning -- the affected player may copy.
-    #   choose_any_target  a Chain Lightning COPIER may choose a new target.
-    #   search_fetch    Cleansing Wildfire -- the destroyed land's CONTROLLER
-    #                   searches their own library.
-    #   scry/surveil, discard-decline, choose_graveyard_card-decline  same shape.
+    #   pay_unless          Spell Pierce/Ward/Nihil Spellbomb/Chain Lightning --
+    #                       the PAYER is the spell's controller, i.e. the opponent.
+    #   tuck_position       Deem Inferior -- the tucked permanent's OWNER chooses.
+    #   may_copy            Chain Lightning -- the affected player may copy.
+    #   choose_any_target   a Chain Lightning COPIER may choose a new target.
+    #   choose_target_player/scry/search_fetch  Undercity's own Trap/Lost Well/
+    #                       Secret Entrance rooms -- initiative can be STOLEN
+    #                       (combat damage), so a deck with none of these kinds
+    #                       among its own cards can still be the one venturing
+    #                       and facing them; search_fetch's Decline is ALSO
+    #                       independently reachable via Cleansing Wildfire (the
+    #                       DESTROYED land's controller searches their own
+    #                       library, not the caster).
+    #   discard-decline, choose_graveyard_card-decline  same shape (Refurbished
+    #                       Familiar / Relic of Progenitus target the opponent).
     # `derive_pending_kinds` reads a deck's OWN cards, so gating these on it left
     # the answering seat with no row for the question and an all-False action mask
     # -- a hard crash (real: monster_tron/mono_blue_terror league play; an
@@ -2280,32 +2353,54 @@ def build_action_table(decklist, registry, token_card_defs=(), pending_kinds=(),
     # flagged choose_graveyard_card/discard/surveil as latent). Rather than
     # maintain a hand-audited list of "which kinds may cross" -- which silently
     # rots the next time a card hands a choice to the opponent -- every constant
-    # decision-button set is now always present and runtime-gated illegal, exactly
-    # the "present-but-permanently-illegal" footing "Decline (graveyard)" and
-    # "Decline (search)" already documented for themselves.
+    # decision-button set whose kind COULD ever cross players is always present
+    # and runtime-gated illegal, exactly the "present-but-permanently-illegal"
+    # footing "Decline (graveyard)" and "Decline (search)" already documented
+    # for themselves.
     #
-    # Still gated below (and safe to be): the two PER-CARD-NAME expansions,
-    # `impulse` and `discard_or_sacrifice`'s land rows. Those enumerate a deck's
-    # own card names, so a cross-player instance is served by that player's own
-    # table anyway, and making them unconditional would bloat every table by a
-    # deck's worth of rows for nothing.
+    # Gated below on own_pending_kinds instead (confirmed, not assumed, self-
+    # only -- each has exactly one call site and it's always the deciding
+    # player's own card): may_transform (Delver of Secrets' own upkeep --
+    # mono_blue_terror only), may_cast (Cascade -- monster_tron only),
+    # choose_mana_color (Chromatic Star -- grixis_affinity only),
+    # ancient_stirrings/malevolent_rumble/select_to_hand (each one specific
+    # card's own search/rummage), madness_decision (madness always triggers
+    # off YOUR OWN discarded card, whoever forced the discard), and
+    # discard_or_sacrifice (Highway Robbery's sacrifice trigger is the
+    # CASTER's own optional cost, never posed to an opponent -- also true of
+    # `impulse` just above, for the identical reason). Making any of these
+    # universal would have repeated the exact bloat impulse's own history
+    # already illustrates: real rows for a card the deck never runs.
     actions.append(("Keep (scry/surveil)", _keep_dispose_legal, _keep_execute))
     actions.append(("Dispose (scry/surveil)", _keep_dispose_legal, _dispose_execute))
-    actions.append(("Decline (Ancient Stirrings)", _decline_legal, _decline_execute))
-    actions.append(("Decline (Malevolent Rumble)", _decline_malevolent_rumble_legal, _decline_malevolent_rumble_execute))
+    # Self-only (Ancient Stirrings/Malevolent Rumble are each one specific
+    # card's own search/rummage) -- see this block's own header comment.
+    if "ancient_stirrings" in own_pending_kinds:
+        actions.append(("Decline (Ancient Stirrings)", _decline_legal, _decline_execute))
+    if "malevolent_rumble" in own_pending_kinds:
+        actions.append(("Decline (Malevolent Rumble)", _decline_malevolent_rumble_legal, _decline_malevolent_rumble_execute))
     actions.append(("Shuffle (Ponder)", _ponder_shuffle_legal, _ponder_shuffle_execute))
     actions.append(("Pay (unless)", _pay_unless_pay_legal, _pay_unless_pay_execute))
     actions.append(("Don't pay (unless)", _pay_unless_decline_legal, _pay_unless_decline_execute))
     actions.append(("Tuck: 2nd from top", _tuck_position_legal, lambda state: game.execute_tuck_position(state, "top2")))
     actions.append(("Tuck: bottom", _tuck_position_legal, lambda state: game.execute_tuck_position(state, "bottom")))
-    actions.append(("Transform", _may_transform_legal, lambda state: game.execute_may_transform(state, True)))
-    actions.append(("Don't transform", _may_transform_legal, lambda state: game.execute_may_transform(state, False)))
+    # Self-only (Delver of Secrets' own upkeep trigger -- only its own
+    # controller ever faces this) -- see this block's own header comment.
+    if "may_transform" in own_pending_kinds:
+        actions.append(("Transform", _may_transform_legal, lambda state: game.execute_may_transform(state, True)))
+        actions.append(("Don't transform", _may_transform_legal, lambda state: game.execute_may_transform(state, False)))
     actions.append(("Copy spell", _may_copy_legal, lambda state: game.execute_may_copy(state, True)))
     actions.append(("Don't copy spell", _may_copy_legal, lambda state: game.execute_may_copy(state, False)))
-    actions.append(("Cast (may)", _may_cast_legal, lambda state: game.execute_may_cast(state, True)))
-    actions.append(("Decline (may)", _may_cast_legal, lambda state: game.execute_may_cast(state, False)))
-    actions.append(("Keep (select to hand)", _select_to_hand_keep_legal, _select_to_hand_keep_execute))
-    actions.append(("Bottom (select to hand)", _select_to_hand_bottom_legal, _select_to_hand_bottom_execute))
+    # Self-only (Cascade's may-cast of the hit is always the CASCADING
+    # player's own choice) -- see this block's own header comment.
+    if "may_cast" in own_pending_kinds:
+        actions.append(("Cast (may)", _may_cast_legal, lambda state: game.execute_may_cast(state, True)))
+        actions.append(("Decline (may)", _may_cast_legal, lambda state: game.execute_may_cast(state, False)))
+    # Self-only (Lead the Stampede's own reveal-and-pick) -- see this block's
+    # own header comment.
+    if "select_to_hand" in own_pending_kinds:
+        actions.append(("Keep (select to hand)", _select_to_hand_keep_legal, _select_to_hand_keep_execute))
+        actions.append(("Bottom (select to hand)", _select_to_hand_bottom_legal, _select_to_hand_bottom_execute))
     actions.append(("Decline (search)", _decline_search_legal, _decline_search_execute))
     # Only ever legal for an OPTIONAL choose_graveyard_card (Masked Vandal's "you
     # may exile a creature from your graveyard"); the legal_fn itself gates on
@@ -2343,26 +2438,33 @@ def build_action_table(decklist, registry, token_card_defs=(), pending_kinds=(),
     # (the "Choose: X" hand-name rows are their own, so those self-serve) -- but
     # the decline row is a constant button, so it is universal per the block above.
     actions.append(("Decline (discard)", _decline_discard_legal, _decline_discard_execute))
-    if "discard_or_sacrifice" in pending_kinds:
-        # The DISCARD half reuses the generic "Choose: X" action built
-        # above (bare hand-card names); only the SACRIFICE half needs its
-        # own distinctly-labeled actions here (see
-        # _discard_or_sacrifice_sacrifice_legal's own docstring for why).
-        for name in land_names:
-            actions.append((
-                f"Sacrifice (cost): {name}",
-                _discard_or_sacrifice_sacrifice_legal(name),
-                _discard_or_sacrifice_sacrifice_execute(name),
-            ))
-    # Constant decline button -> universal (see the block above); only the
-    # per-land-name sacrifice rows just above stay deck-gated.
-    actions.append((
-        "Decline (discard or sacrifice)",
-        _decline_discard_or_sacrifice_legal,
-        _decline_discard_or_sacrifice_execute,
-    ))
-    actions.append(("Cast (madness)", _madness_cast_legal, _madness_cast_execute))
-    actions.append(("Decline (madness)", _madness_decline_legal, _madness_decline_execute))
+    if "discard_or_sacrifice" in own_pending_kinds:
+        # Self-only: Highway Robbery's "discard a card or sacrifice a land"
+        # is the CASTER's own optional cost, never posed to an opponent --
+        # see this block's own header comment. The DISCARD half reuses the
+        # generic "Choose: X" action built above (bare hand-card names); the
+        # SACRIFICE half is a single trigger action that opens its own
+        # nested choose_permanent pointer choice for WHICH exact permanent
+        # to sacrifice -- see _discard_or_sacrifice_trigger_sacrifice_legal's
+        # own docstring for why this isn't a per-land-name loop anymore.
+        actions.append((
+            "Sacrifice a permanent (discard or sacrifice)",
+            _discard_or_sacrifice_trigger_sacrifice_legal,
+            _discard_or_sacrifice_trigger_sacrifice_execute,
+        ))
+        # Same self-only gate as the trigger action just above -- a decline
+        # button for a resolution kind that can never open has nothing to
+        # decline.
+        actions.append((
+            "Decline (discard or sacrifice)",
+            _decline_discard_or_sacrifice_legal,
+            _decline_discard_or_sacrifice_execute,
+        ))
+    # Self-only (madness always triggers off YOUR OWN discarded card,
+    # whoever forced the discard) -- see this block's own header comment.
+    if "madness_decision" in own_pending_kinds:
+        actions.append(("Cast (madness)", _madness_cast_legal, _madness_cast_execute))
+        actions.append(("Decline (madness)", _madness_decline_legal, _madness_decline_execute))
     # "Target: yourself" is always legal the instant this pending kind is reached
     # (a real Magic legality fact -- "target player" never excludes its own
     # caster), even alone in a 1-player game; "Target: opponent" only becomes
@@ -2378,15 +2480,18 @@ def build_action_table(decklist, registry, token_card_defs=(), pending_kinds=(),
     actions.append(("Target any: yourself", _target_any_self_legal, _target_any_self_execute))
     actions.append(("Target any: opponent", _target_any_opponent_legal, _target_any_opponent_execute))
     actions.append(("Choose no target", _target_any_decline_legal, _target_any_decline_execute))  # "up to one" decline
-    # Undercity venture (which next room -- a <=2-way branch) and Chromatic Star's
-    # "add one mana of any color": tiny CONSTANT sets (ROOM_NAMES / COLORS), not
-    # per-deck-card loops, so they are universal on the same footing. Initiative
-    # can pass between players, so a deck with no Undercity card of its own can
-    # still be the one venturing.
+    # Undercity venture (which next room -- a <=2-way branch): a tiny CONSTANT
+    # set (ROOM_NAMES), not a per-deck-card loop, so it's universal -- initiative
+    # can pass between players (combat damage), so a deck with no Undercity card
+    # of its own can still be the one venturing.
     for room in game.ROOM_NAMES:
         actions.append((f"Enter room: {room}", _choose_room_legal(room), _choose_room_execute(room)))
-    for color in game.COLORS:
-        actions.append((f"Add mana: {color}", _choose_mana_color_legal(color), _choose_mana_color_execute(color)))
+    # Chromatic Star's "add one mana of any color": self-only (the activating
+    # player's own choice, single call site) -- see this block's own header
+    # comment. Gated, unlike the room set above.
+    if "choose_mana_color" in own_pending_kinds:
+        for color in game.COLORS:
+            actions.append((f"Add mana: {color}", _choose_mana_color_legal(color), _choose_mana_color_execute(color)))
 
     # choose_cast_mode/choose_cast_x/choose_delve_amount: shared, per-deck-
     # conditional button sets for the generic mode/X/delve-amount sub-
@@ -2973,8 +3078,8 @@ __all__ = [
     '_target_any_opponent_execute',
     '_target_any_decline_legal',
     '_target_any_decline_execute',
-    '_discard_or_sacrifice_sacrifice_legal',
-    '_discard_or_sacrifice_sacrifice_execute',
+    '_discard_or_sacrifice_trigger_sacrifice_legal',
+    '_discard_or_sacrifice_trigger_sacrifice_execute',
     '_decline_discard_or_sacrifice_legal',
     '_decline_discard_or_sacrifice_execute',
     '_madness_cast_legal',

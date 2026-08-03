@@ -23,7 +23,7 @@ import torch
 
 import drl_env
 import game
-from rl.action_bridge import any_pointer_legal, execute_pointer_choice, pointer_legal_mask
+from rl.action_bridge import any_pointer_legal, execute_pointer_choice, pointer_kind, pointer_legal_mask
 from rl.arch import pad_token_batch
 from rl.features import _stack_target_map, build_token_set
 from rl import mulligan as mulligan_mod
@@ -156,7 +156,7 @@ def _build_decision(state, seat, deck_ctx, horizon):
     identities is read straight off the token set (each token is (vocab_idx,
     feature_row, identity)); the pointer mask -- and its buffer-stored width --
     are the RAW token count, exactly what ppo_update re-pads per minibatch."""
-    vocab, fixed_table, _pending_kinds = deck_ctx
+    vocab, fixed_table = deck_ctx
     tokens = build_token_set(state, seat, vocab)
     scalar = _scalar_features(state, seat, horizon)
     identities = [identity for _idx, _row, identity in tokens]
@@ -185,6 +185,63 @@ def _padded_full_mask(full_mask_np, n_fixed, n_padded_tokens, device):
     return out
 
 
+def _resolve_pointer_identity(state, obj):
+    """A pointer candidate's identity object (see rl.features.build_token_set's
+    own docstring for the possible shapes) -> {name, slot, controller} for
+    decision-weight logging. Only a live battlefield Permanent has a `slot`;
+    a graveyard CardInstance, a stack-entry dict, and a bare revealed-hand
+    CardDef (the deferred Mesmeric-Fiend path) don't, and none of them carry
+    their owner on the object itself -- controller is resolved by membership
+    search. That search is necessary, not just careful: Rooftop Percher's ETB
+    pools BOTH players' graveyards into one pending
+    (`combined = [c for pl in state.players for c in pl.graveyard]`,
+    game/catalog/colorless_cards.py), so a single choose_graveyard_card
+    decision can genuinely offer candidates from either side -- there's no
+    shortcut like "check which player's list the pending references"."""
+    if obj is None:
+        return None
+    if isinstance(obj, dict):  # a real stack entry (game/effects/stack.py's push_to_stack)
+        card_def = obj.get("card_def")
+        return {"name": card_def.name if card_def else None, "slot": None, "controller": obj.get("controller")}
+    if isinstance(obj, game.Permanent):
+        for i, p in enumerate(state.players):
+            if obj in p.battlefield:
+                return {"name": obj.name, "slot": obj.slot, "controller": i}
+        return {"name": obj.name, "slot": obj.slot, "controller": None}
+    for i, p in enumerate(state.players):
+        if obj in p.graveyard or obj in p.hand:
+            return {"name": obj.name, "slot": None, "controller": i}
+    return {"name": getattr(obj, "name", None), "slot": None, "controller": None}
+
+
+def _log_decision_weights(state, dec, dist, value, action_idx, full_mask_t):
+    """Opt-in instrumentation (state.event_log is not None -- --log eval/
+    matchup runs only, see game/state.py's log_event docstring): the top-5
+    candidate actions by the network's own post-mask probability, the one
+    actually taken, and the critic's value estimate -- all already computed
+    in the SAME forward pass _seat_step just ran, so this adds no inference
+    call and no randomness. See todo/game_visualization.md's "Decision-point
+    overlay" section for the full design."""
+    if state.event_log is None:
+        return
+    probs = dist.probs[0]
+    legal_idx = full_mask_t[0].nonzero(as_tuple=True)[0]
+    top = torch.topk(probs[legal_idx], min(5, legal_idx.numel()))
+    candidates = []
+    for idx, prob in zip(legal_idx[top.indices].tolist(), top.values.tolist()):
+        if idx < dec.n_fixed:
+            candidates.append({"index": idx, "probability": prob, "fixed_label": dec.fixed_table[idx][0], "pointer_identity": None})
+        else:
+            token_idx = idx - dec.n_fixed
+            identity = dec.identities[token_idx] if token_idx < len(dec.identities) else None
+            candidates.append({"index": idx, "probability": prob, "fixed_label": None,
+                                "pointer_identity": _resolve_pointer_identity(state, identity)})
+    state.log_event(
+        "decision_weights", network="main", chosen_index=action_idx, value_estimate=float(value.item()),
+        candidates=candidates, pointer_kind=pointer_kind(state),
+    )
+
+
 def _seat_step(state, seat, deck_ctx, net, horizon, device, greedy=False):
     """One seat's main-policy decision, batch-of-1 (the sequential collector).
     Builds the decision (mask first -- see _build_decision), takes the sole legal
@@ -192,7 +249,9 @@ def _seat_step(state, seat, deck_ctx, net, horizon, device, greedy=False):
     + per-deck net, masks, and samples (or argmaxes, when greedy). Returns
     (executor, buffer_entry, is_pass); buffer_entry is None for a forced move
     (record nothing). greedy=True is for eval (deterministic argmax); training
-    always samples."""
+    always samples. Forced decisions never call _log_decision_weights -- no
+    forward pass ran, so there's nothing to log (and nothing informative
+    about a decision with one legal option anyway)."""
     dec = _build_decision(state, seat, deck_ctx, horizon)
     if dec.sole_action is not None:
         return (_executor_for(state, dec.sole_action, dec.fixed_table, dec.identities), None,
@@ -209,8 +268,9 @@ def _seat_step(state, seat, deck_ctx, net, horizon, device, greedy=False):
         dist = torch.distributions.Categorical(logits=masked_logits)
         action = masked_logits.argmax(dim=-1) if greedy else dist.sample()
         logp = dist.log_prob(action)
+        action_idx = int(action.item())
+        _log_decision_weights(state, dec, dist, value, action_idx, full_mask)
 
-    action_idx = int(action.item())
     buffer_entry = (dec.tokens, dec.scalar, dec.full_mask, action_idx, float(logp.item()), float(value.item()))
     return (_executor_for(state, action_idx, dec.fixed_table, dec.identities), buffer_entry,
             _is_pass(action_idx, dec.fixed_table))
@@ -251,7 +311,7 @@ class AlwaysKeep:
 
 class SeatAgent:
     """One seat's decision-maker: main policy (DeckNetwork) + pregame decider
-    (MulliganNet or AlwaysKeep) + deck_ctx (vocab, fixed_table, pending_kinds)."""
+    (MulliganNet or AlwaysKeep) + deck_ctx (vocab, fixed_table)."""
 
     def __init__(self, main, mulligan, deck_ctx):
         self.main = main            # DeckNetwork (None only in decide()'s pregame-only unit tests)

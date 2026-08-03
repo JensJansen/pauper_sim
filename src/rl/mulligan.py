@@ -99,6 +99,38 @@ def _scalars(state, seat):
     return [min(state.mulligans_taken, HAND) / HAND, 1.0 if state.players[seat].on_the_play else 0.0]
 
 
+def _log_keep_or_mulligan(state, logits, value, action):
+    """Opt-in instrumentation (state.event_log is not None, same gate as
+    rl.agent's decision_weights logging) for the keep-vs-mulligan choice.
+    Only 2 actions ever exist, so no top-K truncation needed. Skipped
+    entirely by the caller when the choice was forced (mull_legal is
+    False -- past the mulligan cap, "keep" is the only legal option) --
+    nothing informative to log about a decision with one real option."""
+    if state.event_log is None:
+        return
+    probs = torch.softmax(logits, dim=-1)[0].tolist()
+    labels = ["Keep", "Mulligan"]
+    candidates = [{"index": i, "probability": probs[i], "fixed_label": labels[i], "pointer_identity": None}
+                  for i in range(2)]
+    state.log_event("decision_weights", network="mulligan_keep", chosen_index=action,
+                     value_estimate=float(value.item()), candidates=candidates, pointer_kind=None)
+
+
+def _log_bottom_pick(state, scores, value, chosen, cands):
+    """Same instrumentation for a bottom-card pick -- one candidate per
+    unique card name in hand (cands, from game.bottom_options), top-5 by
+    probability. Caller skips this entirely when len(cands) <= 1 (forced,
+    nothing to log)."""
+    if state.event_log is None:
+        return
+    probs = torch.softmax(scores, dim=-1)[0]
+    top = torch.topk(probs, min(5, len(cands)))
+    candidates = [{"index": i, "probability": p, "fixed_label": cands[i], "pointer_identity": None}
+                  for i, p in zip(top.indices.tolist(), top.values.tolist())]
+    state.log_event("decision_weights", network="mulligan_bottom", chosen_index=chosen,
+                     value_estimate=float(value.item()), candidates=candidates, pointer_kind=None)
+
+
 def decide(net, vocab, state, seat, record, greedy=False):
     """Make the pending mulligan-phase decision with `net`, append a plain-data
     transition via record(entry), and return the zero-arg executor that applies
@@ -113,12 +145,14 @@ def decide(net, vocab, state, seat, record, greedy=False):
     sc = torch.tensor([scalars], dtype=torch.float32)
     with torch.inference_mode():
         if pend["kind"] == "mulligan_decision":
-            logits, _v = net.decision(hi, sc)
+            logits, value = net.decision(hi, sc)
             mull_legal = state.mulligans_taken < HAND
             if not mull_legal:
                 logits = logits.clone()
                 logits[0, 1] = -1e8  # past the cap only "keep" is legal
             action = int(logits.argmax(-1).item()) if greedy else int(torch.distributions.Categorical(logits=logits).sample().item())
+            if mull_legal:
+                _log_keep_or_mulligan(state, logits, value, action)
             record(["decision", hand_idx, scalars, mull_legal, action, None])
             if action == 0:
                 return lambda: game.execute_mulligan_keep(state)
@@ -129,9 +163,11 @@ def decide(net, vocab, state, seat, record, greedy=False):
         cand_idx = [vocab.index(n) for n in cands]
         ci = torch.tensor([cand_idx], dtype=torch.long)
         cm = torch.ones((1, len(cand_idx)), dtype=torch.bool)
-        scores, _v = net.bottom(hi, sc, ci, cm)
+        scores, value = net.bottom(hi, sc, ci, cm)
         k = int(scores.argmax(-1).item()) if greedy else int(torch.distributions.Categorical(logits=scores).sample().item())
         name = cands[k]
+        if len(cands) > 1:
+            _log_bottom_pick(state, scores, value, k, cands)
         record(["bottom", hand_idx, scalars, cand_idx, k, None])
         return lambda: game.execute_bottom_option(state, name)
 

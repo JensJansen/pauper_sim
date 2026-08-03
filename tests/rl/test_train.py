@@ -49,12 +49,10 @@ def _base_fixture():
     token_defs = (game.BLOOD_TOKEN_CARD_DEF, game.ROBOT_TOKEN_CARD_DEF)
     vocab = CardVocab([decklist_a, decklist_b], token_card_defs=token_defs)
 
-    pending_kinds_a = game.derive_pending_kinds(decklist_a)
-    pending_kinds_b = game.derive_pending_kinds(decklist_b)
-    fixed_table_a = build_fixed_action_table(decklist_a, token_card_defs=token_defs, pending_kinds=pending_kinds_a)
-    fixed_table_b = build_fixed_action_table(decklist_b, token_card_defs=token_defs, pending_kinds=pending_kinds_b)
-    deck_ctx_a = (vocab, fixed_table_a, pending_kinds_a)
-    deck_ctx_b = (vocab, fixed_table_b, pending_kinds_b)
+    fixed_table_a = build_fixed_action_table(decklist_a, token_card_defs=token_defs)
+    fixed_table_b = build_fixed_action_table(decklist_b, token_card_defs=token_defs)
+    deck_ctx_a = (vocab, fixed_table_a)
+    deck_ctx_b = (vocab, fixed_table_b)
 
     shared = SetTransformer(vocab.size, d_model=16, n_heads=2, n_layers=1, dim_feedforward=32)
     net_a = DeckNetwork(shared, film_condition_dim=16, non_targeting_n_actions=len(fixed_table_a), trunk_hidden=(24, 24))

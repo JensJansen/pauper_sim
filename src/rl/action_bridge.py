@@ -44,7 +44,7 @@ _ID_MATCHED_KINDS = {
 }
 
 
-def build_fixed_action_table(decklist, token_card_defs=(), pending_kinds=(), extra_choosable_names=()):
+def build_fixed_action_table(decklist, token_card_defs=(), extra_choosable_names=()):
     """Every non-targeting action for this decklist (Play land, Cast,
     Activate, Forestcycle, Pass, "Choose: X" resolution picks, "Choose: X
     as color", Keep/Dispose, Decline, Abandon payment, mulligan actions,
@@ -57,7 +57,7 @@ def build_fixed_action_table(decklist, token_card_defs=(), pending_kinds=(), ext
     real opponent's decklist here would build entries this function then
     immediately throws away."""
     full_table = drl_env.build_action_table(
-        decklist, game.EFFECT_REGISTRY, token_card_defs=token_card_defs, pending_kinds=pending_kinds,
+        decklist, game.EFFECT_REGISTRY, token_card_defs=token_card_defs,
         opponent_decklist=None, extra_choosable_names=extra_choosable_names,
     )
     return [
@@ -205,6 +205,29 @@ def any_pointer_legal(state):
         "declare_blockers", "choose_permanent", "choose_opponent_permanent", "assign_combat_damage",
         "choose_any_target", "choose_graveyard_card", "choose_cast_copy", "choose_stack_target",
     )
+
+
+def pointer_kind(state):
+    """Which ONE pointer targeting category applies right now, if any -- same
+    two-tier dispatch as pointer_legal_mask (mana_subdecision checked first,
+    exactly as that function's own docstring explains), just returning its
+    name instead of a legality mask. For decision-weight logging only
+    (rl.agent/rl.mulligan); execution and legality never need this, only the
+    display label a replay viewer attaches to a pointer candidate."""
+    mana_sub = state.mana_subdecision
+    if mana_sub is not None:
+        return "mana_subdecision" if mana_sub["stage"] == "choose_target" else None
+    pending = state.pending_resolution
+    if pending is None:
+        if state.phase is game.turn.Phase.DECLARE_ATTACKERS and state.active_idx == state.turn_player_idx:
+            return "declare_attackers"
+        return None
+    if pending["kind"] in (
+        "declare_blockers", "choose_permanent", "choose_opponent_permanent", "assign_combat_damage",
+        "choose_any_target",
+    ) or pending["kind"] in _ID_MATCHED_KINDS:
+        return pending["kind"]
+    return None
 
 
 def execute_pointer_choice(state, chosen):

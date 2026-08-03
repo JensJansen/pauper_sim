@@ -1,8 +1,0 @@
-syntax = "proto2";
-import "response.proto";
-
-message Response_AdjustMod {
-    extend Response {
-        optional Response_AdjustMod ext = 1011;
-    }
-}

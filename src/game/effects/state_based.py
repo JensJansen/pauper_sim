@@ -69,13 +69,12 @@ def _queue_leave_triggers(state, permanent, owner_idx):
 
     Called from the two -- and, in this card pool, only -- ways a creature
     (the sole card type with an LTB trigger here) leaves: death (below) and
-    being sacrificed (resolution.execute_sacrifice_option inlines the identical
-    three lines, since it can't import this module without a cycle -- that
-    call site sacrifices only the ACTIVE player's own permanents, so its
-    state.trigger_queue proxy write is already correctly self-scoped and
-    doesn't need this same owner_idx threading). No other removal path in
-    this pool takes a creature off the battlefield (bounce is lands-only;
-    every sacrifice/exile ability sacrifices its own non-creature source), so
+    being sacrificed (sacrifice_to_graveyard, further down this same module
+    -- every sacrifice path, including resolution.begin_sacrifice/Highway
+    Robbery's own discard-or-sacrifice, routes through it rather than each
+    inlining its own copy of this owner-threading logic). No other removal
+    path in this pool takes a creature off the battlefield (bounce is
+    lands-only; every exile ability exiles its own non-creature source), so
     this is complete, not a simplification -- thread it through a new
     removal site if a future card ever makes one reachable."""
     spec = registry.EFFECT_REGISTRY.get(permanent.card_def.effect_id, {})

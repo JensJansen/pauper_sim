@@ -118,7 +118,7 @@ def test_sample_opponent_checkpoint_rate_half_tracks_requested_fraction(tmp_path
 def test_load_snapshot_agent_loads_and_caches(tmp_path):
     pool, shared, _fake_net, _fake_mull = _registered_pool(tmp_path)
     # load_snapshot_agent must load a frozen SeatAgent (deck + mulligan) and be cached.
-    deck_ctx = (None, [("Pass", None, None)] * 4, ())
+    deck_ctx = (None, [("Pass", None, None)] * 4)
     _sid, path = pool.snapshots["deck_a"][0]
     loaded = pool.load_snapshot_agent(path, shared, deck_ctx)
     loaded_again = pool.load_snapshot_agent(path, shared, deck_ctx)
@@ -134,7 +134,7 @@ def test_load_snapshot_agent_legacy_deck_only_falls_back_to_always_keep(tmp_path
     import torch
 
     pool, shared, fake_net, _fake_mull = _registered_pool(tmp_path)
-    deck_ctx = (None, [("Pass", None, None)] * 4, ())
+    deck_ctx = (None, [("Pass", None, None)] * 4)
     # A deck-only snapshot (no mulligan state) must still load, falling back to AlwaysKeep.
     legacy_path = os.path.join(str(tmp_path), "deck_b", "snapshot_0.pt")
     os.makedirs(os.path.dirname(legacy_path), exist_ok=True)
@@ -148,7 +148,7 @@ def test_load_snapshot_agent_legacy_deck_only_falls_back_to_always_keep(tmp_path
 @pytest.mark.slow
 def test_register_snapshot_eviction_invalidates_load_cache(tmp_path):
     pool, shared, fake_net, fake_mull = _registered_pool(tmp_path)
-    deck_ctx = (None, [("Pass", None, None)] * 4, ())
+    deck_ctx = (None, [("Pass", None, None)] * 4)
     _sid, path = pool.snapshots["deck_a"][0]
     pool.load_snapshot_agent(path, shared, deck_ctx)  # populate the cache
     assert path in pool._net_cache

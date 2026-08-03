@@ -14,7 +14,7 @@ from ..effects.casting import (
     target_still_legal,
 )
 from ..effects.shared import (
-    any_creature_on_battlefield, card_subtypes, discard_from_hand_to_graveyard, find_and_remove_by_name, find_to_hand,
+    any_creature_on_either_battlefield, card_subtypes, discard_from_hand_to_graveyard, find_and_remove_by_name, find_to_hand,
 )
 from ..effects.stack import push_ability_to_stack, push_to_stack
 from ..effects.state_based import check_state_based_actions
@@ -257,12 +257,13 @@ def cast_nyxborn_hydra_creature(x):
 
 
 def cast_nyxborn_hydra_bestow(x):
-    """Bestow: {G}{G}{X}, enchant target creature you control -- the SAME
-    physical card, cast as an Aura instead of a creature (cast_aura, the
-    same infra every boggles Aura already uses; real MTG "enchant target
-    creature" -- must be chosen before the stack, same "precast_choice"
-    treatment Rancor/Ancestral Mask/Ethereal Armor already get, see
-    drl_env._x_precast_choice_execute).
+    """Bestow: {G}{G}{X}, enchant target creature -- ANY creature, either
+    side (real Scryfall text has no "you control" restriction here, unlike
+    Cartouche of Solidarity) -- the SAME physical card, cast as an Aura
+    instead of a creature (cast_aura, the same infra every boggles Aura
+    already uses; real MTG "enchant target creature" -- must be chosen
+    before the stack, same "precast_choice" treatment Rancor/Ancestral
+    Mask/Ethereal Armor already get, see drl_env._x_precast_choice_execute).
 
     on_attached sets type_override=ENCHANTMENT (so every "is this currently
     a creature" check -- combat eligibility, state-based death, Saruli
@@ -339,43 +340,55 @@ def quirion_ranger_untap_legal(state, permanent):
 
 
 def quirion_ranger_untap_resolve(state, permanent):
-    """"Return a Forest you control to hand: Untap target creature." Faithful
-    now: the Forest bounce is the COST (paid immediately on activation), and
-    the untap is a real activated ability that goes ON THE STACK -- its
-    target (any creature on either battlefield, hexproof-aware) is locked
-    here at activation, then the creature is untapped when the ability
-    resolves off the stack, or the ability fizzles if that exact creature
-    has left the battlefield by then (608.2b) or is illegal."""
+    """"Return a Forest you control to hand: Untap target creature." Real
+    MTG: naming WHICH permanent pays a cost like "return a Forest you
+    control" is the PLAYER'S own choice among every eligible one (602.5g),
+    not an arbitrary pick -- Forests stop being fungible the instant one of
+    them carries something worth keeping (e.g. Utopia Sprawl, this same
+    file) -- same real-choice shape as Crop Rotation's own land-sacrifice
+    cost (cast_crop_rotation) and casting.bounce_land_etb's "return a land
+    you control." Once the chosen Forest is bounced (the cost, paid
+    immediately via resolution.begin_choose_permanent), the untap is a real
+    activated ability that goes ON THE STACK -- its target (any creature on
+    either battlefield, hexproof-aware) is locked at activation, then the
+    creature is untapped when the ability resolves off the stack, or the
+    ability fizzles if that exact creature has left the battlefield by
+    then (608.2b) or is illegal."""
     permanent.flags["used_this_turn"] = True
-    forest = next(p for p in state.battlefield if p.card_def.name == "Forest")
-    state.battlefield.remove(forest)
-    state.hand.append(forest.card_def)
-    state.log_event(
-        "zone_move", permanent=(forest.card_def.name, forest.slot), from_zone="battlefield", to_zone="hand",
-        reason="quirion_ranger_bounce",
-    )
 
-    def _on_target(state, target_descriptor):
-        captured = capture_any_target(state, target_descriptor)
+    def _on_forest_chosen(state, choice):
+        name, slot = choice
+        forest = next(p for p in state.battlefield if p.card_def.name == name and p.slot == slot)
+        state.battlefield.remove(forest)
+        state.hand.append(forest.card_def)
+        state.log_event(
+            "zone_move", permanent=(forest.card_def.name, forest.slot), from_zone="battlefield", to_zone="hand",
+            reason="quirion_ranger_bounce",
+        )
 
-        def _resolve(state, card_def):
-            if captured is None or not target_still_legal(state, captured):
-                where = (captured[1].card_def.name, captured[1].slot) if captured is not None else None
-                _log_target_fizzle(state, card_def, where)
-                return
-            target = captured[1]
-            target.tapped = False
-            state.log_event("untap", permanent=(target.card_def.name, target.slot), reason="quirion_ranger")
+        def _on_target(state, target_descriptor):
+            captured = capture_any_target(state, target_descriptor)
 
-        push_to_stack(state, permanent.card_def, _resolve, reserves_hand_card=False, is_spell=False,  # activated ability -- not a spell
-                      targets=() if captured is None else (captured,))
+            def _resolve(state, card_def):
+                if captured is None or not target_still_legal(state, captured):
+                    where = (captured[1].card_def.name, captured[1].slot) if captured is not None else None
+                    _log_target_fizzle(state, card_def, where)
+                    return
+                target = captured[1]
+                target.tapped = False
+                state.log_event("untap", permanent=(target.card_def.name, target.slot), reason="quirion_ranger")
 
-    resolution.begin_choose_any_target(
-        state,
-        lambda p: p.card_type == CardType.CREATURE and can_be_targeted(state, p, state.active_idx),
-        _on_target,
-        allow_players=False,
-    )
+            push_to_stack(state, permanent.card_def, _resolve, reserves_hand_card=False, is_spell=False,  # activated ability -- not a spell
+                          targets=() if captured is None else (captured,))
+
+        resolution.begin_choose_any_target(
+            state,
+            lambda p: p.card_type == CardType.CREATURE and can_be_targeted(state, p, state.active_idx),
+            _on_target,
+            allow_players=False,
+        )
+
+    resolution.begin_choose_permanent(state, lambda p: p.card_def.name == "Forest", _on_forest_chosen)
 
 
 def _cast_winding_way(state, card_def, chosen_type):
@@ -1003,7 +1016,7 @@ GREEN_EFFECT_REGISTRY = {
             "creature": {"cost": {"G": 1}, "max_x": NYXBORN_HYDRA_MAX_X, "resolve": cast_nyxborn_hydra_creature},
             "bestow": {
                 "cost": {"G": 2}, "max_x": NYXBORN_HYDRA_MAX_X, "precast_choice": True,
-                "extra_legal": lambda state: any_creature_on_battlefield(state),
+                "extra_legal": lambda state: any_creature_on_either_battlefield(state),
                 "resolve": cast_nyxborn_hydra_bestow,
             },
         },
@@ -1027,9 +1040,10 @@ GREEN_EFFECT_REGISTRY = {
                 "resolve": lambda state, permanent: quirion_ranger_untap_resolve(state, permanent),
             },
         },
-        # untap target creature is now a real ability on the stack, any creature
+        # Which Forest pays the cost is a real player choice (choose_permanent);
+        # untap target creature is a real ability on the stack, any creature
         # either side (quirion_ranger_untap_resolve) -- hence choose_any_target.
-        "pending_kinds": {"choose_any_target"},
+        "pending_kinds": {"choose_permanent", "choose_any_target"},
     },
     EffectId.RAM_THROUGH: {
         "cast": {
@@ -1120,7 +1134,7 @@ GREEN_EFFECT_REGISTRY = {
         # symmetric +X/+X) -- see permanent_toughness's own docstring.
         "cast": {
             "resolve": lambda state, card_def: cast_rancor(state, card_def),
-            "extra_legal": lambda state: any_creature_on_battlefield(state),
+            "extra_legal": lambda state: any_creature_on_either_battlefield(state),
             "precast_choice": True,  # real MTG "enchant target creature" -- must be chosen before the stack, see drl_env._precast_choice_execute
         },
         "pending_kinds": {"choose_any_target"},  # Aura: cast_aura now targets any creature (either side), hexproof-aware
@@ -1134,7 +1148,7 @@ GREEN_EFFECT_REGISTRY = {
         # verified via Scryfall).
         "cast": {
             "resolve": lambda state, card_def: cast_ancestral_mask(state, card_def),
-            "extra_legal": lambda state: any_creature_on_battlefield(state),
+            "extra_legal": lambda state: any_creature_on_either_battlefield(state),
             "precast_choice": True,  # real MTG "enchant target creature" -- must be chosen before the stack, see drl_env._precast_choice_execute
         },
         "pending_kinds": {"choose_any_target"},  # Aura: cast_aura now targets any creature (either side), hexproof-aware
@@ -1182,10 +1196,13 @@ GREEN_EFFECT_REGISTRY = {
         },
         "pending_kinds": {"choose_any_target"},  # Aura: cast_aura targets any land (either side), hexproof/shroud aware
         # Static fact for drl_env.build_action_table's own action-table
-        # pre-registration (which land x color "Choose" actions need to
-        # exist at all, before any game state does) -- kept in sync by
-        # hand with abundant_growth_attach's runtime aura.flags value.
-        "grants_mana_colors": {"G", "W"},
+        # pre-registration (which "Tap <land> for <color>" rows need to
+        # exist at all, before any game state does, for EVERY land in EVERY
+        # deck -- cast_aura's own target predicate is "any land, either
+        # side", so any opponent's land is reachable too) -- kept in sync by
+        # hand with abundant_growth_attach's runtime aura.flags value (all
+        # five colors, matching real Abundant Growth's "any color").
+        "grants_mana_colors": set(COLORS),
     },
     EffectId.MALEVOLENT_RUMBLE: {
         "cast": {"resolve": lambda state, card_def: cast_malevolent_rumble(state, card_def)},

@@ -156,16 +156,21 @@ def _trigger_resolve(entry):
     raise ValueError(f"unknown trigger queue entry: {entry}")
 
 
-def _etb_targets(entry):
-    """A queued ETB triggered ability that CHOOSES TARGETS. Its targets are
-    picked when the ability goes on the stack (603.3d), so its hook runs at
-    PROMOTION -- opening target selection and pushing its own single effect
-    entry, which fizzles per-target at resolution (608.2b/c) -- rather than at
-    resolution like a non-targeting ETB. Every "enters and targets" effect
-    works this way (Rooftop Percher, Pinnacle Kill-Ship)."""
-    if entry["type"] != "etb":
+def _promotion_targets(entry):
+    """A queued ETB or LTB triggered ability that CHOOSES TARGETS. Its
+    targets are picked when the ability goes on the stack (603.3d), so its
+    hook runs at PROMOTION -- opening target selection and pushing its own
+    single effect entry, which fizzles per-target at resolution (608.2b/c)
+    -- rather than at resolution like a non-targeting trigger. Every
+    "enters/leaves and targets" effect works this way (Rooftop Percher,
+    Pinnacle Kill-Ship, Sewer-veillance Cam's ETB *and* LTB "tap or untap
+    target creature" halves). Gated by a registry "etb_targets"/
+    "ltb_targets" flag, one per trigger kind (a card could in principle
+    target on one half and not the other)."""
+    if entry["type"] not in ("etb", "ltb"):
         return False
-    return registry.EFFECT_REGISTRY.get(entry["card_def"].effect_id, {}).get("etb_targets", False)
+    key = "etb_targets" if entry["type"] == "etb" else "ltb_targets"
+    return registry.EFFECT_REGISTRY.get(entry["card_def"].effect_id, {}).get(key, False)
 
 
 def promote_triggers_to_stack(state):
@@ -211,24 +216,25 @@ def promote_triggers_to_stack(state):
     Both queues empty (by far the common case): no-op, safe to call
     unconditionally at the start of every priority round.
 
-    A TARGETING ETB (_etb_targets) is placed like any other queued trigger,
-    just via a different placement action: instead of pushing a plain
-    resolve, its OWN etb_trigger hook runs AT PLACEMENT -- opening target
-    selection and pushing its own effect entry (targets locked now, fizzle
-    per-target at resolution, 608.2b/c). When 2+ triggers (targeting and/or
-    plain, any mix) are queued together for the SAME owner, ALL of them go
-    through ONE begin_order_triggers ordering choice (603.3b covers every
-    simultaneous trigger of one player's, not just the non-targeting ones)
-    -- see resolution.execute_order_triggers_option's own targeting branch
-    for how a targeting entry gets placed."""
+    A TARGETING ETB/LTB (_promotion_targets) is placed like any other queued
+    trigger, just via a different placement action: instead of pushing a
+    plain resolve, its OWN etb_trigger/ltb_trigger hook runs AT PLACEMENT --
+    opening target selection and pushing its own effect entry (targets
+    locked now, fizzle per-target at resolution, 608.2b/c). When 2+ triggers
+    (targeting and/or plain, any mix) are queued together for the SAME
+    owner, ALL of them go through ONE begin_order_triggers ordering choice
+    (603.3b covers every simultaneous trigger of one player's, not just the
+    non-targeting ones) -- see resolution.execute_order_triggers_option's
+    own targeting branch for how a targeting entry gets placed."""
     original_active_idx = state.active_idx
     player_indices = [original_active_idx]
     if len(state.players) > 1:
         player_indices.append(1 - original_active_idx)
 
     def _entry_for(e):
-        if _etb_targets(e):
-            return {"card_def": e["card_def"], "permanent": e["permanent"], "targeting": True}
+        if _promotion_targets(e):
+            hook = "etb_trigger" if e["type"] == "etb" else "ltb_trigger"
+            return {"card_def": e["card_def"], "permanent": e["permanent"], "targeting": True, "hook": hook}
         return {"card_def": e["card_def"], "resolve": _trigger_resolve(e)}
 
     groups = []
@@ -265,7 +271,7 @@ def _place_trigger_groups(state, groups, original_active_idx):
         # handlers duplicate their own leaves-battlefield three-liner.
         entry = entries[0]
         if entry.get("targeting"):
-            registry.EFFECT_REGISTRY[entry["card_def"].effect_id]["etb_trigger"](state, entry["permanent"])
+            registry.EFFECT_REGISTRY[entry["card_def"].effect_id][entry["hook"]](state, entry["permanent"])
         else:
             push_to_stack(state, entry["card_def"], entry["resolve"], reserves_hand_card=False, is_spell=False)  # a triggered ability, not a spell
         _place_trigger_groups(state, rest, original_active_idx)

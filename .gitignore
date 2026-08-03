@@ -2,15 +2,12 @@
 models/
 logs/
 reports/
-# Cockatrice replay files written by sim_replay_converter/convert.py
-*.cor
 
 # Python
 __pycache__/
 *.pyc
 
 graphify-out/
-_pb2_cache/
 
 # Per-deck league checkpoint churn -- historical snapshots and session/progress
 # bookkeeping change every training iteration. live.pt/mulligan.pt (a deck's current

@@ -5,6 +5,7 @@ below guards."""
 from game import registry, resolution
 from game.cards import CardDef, CardType, EffectId
 from game.catalog.multicolor_cards import cast_agony_warp, cast_terminate, cast_writhing_chrysalis
+from game.effects.casting import enters_battlefield
 from game.effects.combat import can_block
 from game.effects.shared import card_colors
 from game.effects.stack import resolve_top_of_stack
@@ -94,6 +95,34 @@ def test_writhing_chrysalis_devoid_eldrazi_spawn_and_sacrifice_counter():
     promote_triggers_to_stack(state)
     resolve_top_of_stack(state)
     assert wr.counters.get("+1/+1") == 1  # "whenever you sacrifice another Eldrazi"
+
+
+def test_jagged_barrens_etb_deals_damage_to_target_opponent():
+    """Jagged Barrens: real "target opponent" (restricted, NOT "any target"
+    like the red burn spells) -- captured at ETB promotion (etb_targets:
+    True); the only ever-legal candidate in this 2-player engine, so no
+    interactive choice is needed, but the effect is still properly deferred
+    onto the stack rather than applied inline at promotion."""
+    state = _two()
+    state.active_idx = 0
+    state.players[1].life_total = 20
+    barrens = CardDef("Jagged Barrens", CardType.LAND, None, EffectId.JAGGED_BARRENS)
+    enters_battlefield(state, barrens, from_zone="hand")
+    assert [e["type"] for e in state.trigger_queue] == ["etb"]
+    promote_triggers_to_stack(state)
+    assert len(state.stack) == 1  # target captured at promotion, effect now waits on the stack
+    resolve_top_of_stack(state)
+    assert state.players[1].life_total == 19
+
+
+def test_jagged_barrens_etb_solo_no_opponent_is_noop():
+    """No opponent (1-player) -> nothing to target, so the ETB does
+    nothing -- matches Mesmeric Fiend's own 1-player guard."""
+    solo = GameState(on_the_play=True)
+    barrens = CardDef("Jagged Barrens", CardType.LAND, None, EffectId.JAGGED_BARRENS)
+    enters_battlefield(solo, barrens, from_zone="hand")
+    promote_triggers_to_stack(solo)
+    assert solo.stack == [] and solo.pending_resolution is None
 
 
 def test_sneaky_snacker_has_flying():

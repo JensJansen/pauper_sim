@@ -17,10 +17,12 @@ from game.catalog.green_cards import (
     cast_nyxborn_hydra_creature,
     cast_pulse_of_murasa,
     cast_ram_through,
+    cast_rancor,
     cast_roost_seek,
     cast_sagu_wildling_creature,
     execute_malevolent_rumble_option,
     malevolent_rumble_options,
+    quirion_ranger_untap_resolve,
     timberwatch_elf_activate,
     wellwisher_activate,
 )
@@ -36,8 +38,9 @@ from game.mana import (
     tap_summoning_locked,
 )
 from game.resolution import (
-    choose_graveyard_card_options, execute_choose_any_target_creature, execute_choose_graveyard_card_decline,
-    execute_choose_graveyard_card_option, execute_choose_opponent_permanent_option, execute_search_fetch_option,
+    choose_any_target_creature_options, choose_graveyard_card_options, execute_choose_any_target_creature,
+    execute_choose_graveyard_card_decline, execute_choose_graveyard_card_option,
+    execute_choose_opponent_permanent_option, execute_choose_permanent_option, execute_search_fetch_option,
 )
 from game.state import CardInstance, GameState, Permanent, PlayerState
 from game.turn import Phase, untap_step
@@ -484,8 +487,7 @@ def test_nyxborn_hydra_via_action_table_mode_then_x():
     actually reaches the exact resolve closures the direct-call tests above
     already verified in isolation."""
     hydra_dl = [("Nyxborn Hydra", 4), ("Forest", 8)]
-    hydra_byname = {a[0]: (a[1], a[2]) for a in drl_env.build_action_table(
-        hydra_dl, registry.EFFECT_REGISTRY, pending_kinds=registry.derive_pending_kinds(hydra_dl))}
+    hydra_byname = {a[0]: (a[1], a[2]) for a in drl_env.build_action_table(hydra_dl, registry.EFFECT_REGISTRY)}
     hx_state = GameState(on_the_play=True)
     hx_state.phase = Phase.MAIN1
     hx_state.turn_player_idx = 0
@@ -523,8 +525,7 @@ def test_winding_way_via_action_table():
     override) -> pay {1}{G} -> hits the stack normally (no precast_choice)
     -> resolving reveals top 4, matches creatures to hand."""
     ww_dl = [("Winding Way", 4), ("Forest", 8)]
-    ww_byname = {a[0]: (a[1], a[2]) for a in drl_env.build_action_table(
-        ww_dl, registry.EFFECT_REGISTRY, pending_kinds=registry.derive_pending_kinds(ww_dl))}
+    ww_byname = {a[0]: (a[1], a[2]) for a in drl_env.build_action_table(ww_dl, registry.EFFECT_REGISTRY)}
     ww_state = GameState(on_the_play=True)
     ww_state.phase = Phase.MAIN1
     ww_state.turn_player_idx = 0
@@ -567,8 +568,7 @@ def test_utopia_sprawl_via_action_table():
     once that resolve() hand-off is reached is enough to prove the new
     mode-choice/cost/precast_choice wiring is correct."""
     us_dl = [("Utopia Sprawl", 4), ("Forest", 8)]
-    us_byname = {a[0]: (a[1], a[2]) for a in drl_env.build_action_table(
-        us_dl, registry.EFFECT_REGISTRY, pending_kinds=registry.derive_pending_kinds(us_dl))}
+    us_byname = {a[0]: (a[1], a[2]) for a in drl_env.build_action_table(us_dl, registry.EFFECT_REGISTRY)}
     us_state = GameState(on_the_play=True)
     us_state.phase = Phase.MAIN1
     us_state.turn_player_idx = 0
@@ -710,6 +710,50 @@ def test_timberwatch_elf_pump():
     execute_choose_any_target_creature(state, 0, "Beater", 1)
     resolve_top_of_stack(state)
     assert permanent_power(state, target) == 4 and permanent_toughness(state, target) == 4  # +2/+2
+
+
+def test_rancor_castable_when_only_the_opponent_controls_a_creature():
+    """Rancor's real text is plain "Enchant creature" -- either side, no
+    "you control" restriction (unlike Cartouche of Solidarity) -- so it
+    must still be legal to cast with zero creatures of the caster's own,
+    as long as the OPPONENT controls one. any_creature_on_battlefield
+    (caster-only) would wrongly report this as uncastable;
+    any_creature_on_either_battlefield is the correct gate."""
+    state = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
+    theirs = Permanent(CardDef("Theirs", CardType.CREATURE, None, EffectId.FILLER, power=2, toughness=2))
+    theirs.slot = 1
+    state.players[1].battlefield = [theirs]
+    state.players[0].hand = [registry.CARD_DEFS["Rancor"]]
+    assert registry.EFFECT_REGISTRY[EffectId.RANCOR]["cast"]["extra_legal"](state)
+    cast_rancor(state, registry.CARD_DEFS["Rancor"])
+    assert (1, "Theirs", 1) in choose_any_target_creature_options(state)
+
+
+def test_quirion_ranger_untap_lets_player_choose_which_forest():
+    """"Return a Forest you control to hand: Untap target creature." WHICH
+    Forest pays the cost is a real player choice (602.5g), not an
+    arbitrary auto-pick -- two Forests stop being fungible the instant one
+    of them is worth keeping (e.g. it's enchanted by Utopia Sprawl)."""
+    state = GameState(on_the_play=True)
+    ranger = Permanent(registry.CARD_DEFS["Quirion Ranger"])
+    ranger.slot = 1
+    keep = Permanent(CardDef("Forest", CardType.LAND, None, EffectId.FOREST, basic=True, subtypes=("Forest",)))
+    keep.slot = 1
+    bounce = Permanent(CardDef("Forest", CardType.LAND, None, EffectId.FOREST, basic=True, subtypes=("Forest",)))
+    bounce.slot = 2
+    target = Permanent(CardDef("Beater", CardType.CREATURE, None, EffectId.FILLER, power=2, toughness=2))
+    target.slot = 1
+    target.tapped = True
+    state.battlefield = [ranger, keep, bounce, target]
+    quirion_ranger_untap_resolve(state, ranger)
+    assert state.pending_resolution["kind"] == "choose_permanent"
+    execute_choose_permanent_option(state, "Forest", 2)  # explicitly bounce slot 2, keep slot 1
+    assert bounce not in state.battlefield and keep in state.battlefield
+    assert [c.name for c in state.hand] == ["Forest"]
+    assert state.pending_resolution["kind"] == "choose_any_target"
+    execute_choose_any_target_creature(state, 0, "Beater", 1)
+    resolve_top_of_stack(state)
+    assert not target.tapped
 
 
 def test_avenging_hunter_etb_initiative_venture():

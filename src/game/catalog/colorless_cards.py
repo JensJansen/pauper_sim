@@ -73,7 +73,10 @@ any of the 5 colors), never a nested cost payment."""
 
 from .. import registry
 from ..cards import CardDef, CardType, EffectId
-from ..effects.casting import _log_target_fizzle, capture_any_target, cast_permanent_from_hand, enters_battlefield, target_still_legal
+from ..effects.casting import (
+    _log_target_fizzle, capture_any_target, cast_permanent_from_hand, enters_battlefield, has_creature_target,
+    target_still_legal,
+)
 from ..effects.stack import push_ability_to_stack, push_to_stack
 from ..effects.shared import (
     affinity_reduction, discard_from_hand_to_graveyard, find_and_remove_by_name, find_to_hand, fire_sacrifice_triggers,
@@ -111,6 +114,7 @@ COLORLESS_CARD_CATALOG = {
     ),
     "Barrels of Blasting Jelly": CardDef(
         "Barrels of Blasting Jelly", CardType.ARTIFACT, {"generic": 1}, EffectId.BARRELS_OF_BLASTING_JELLY,
+        blast_ability_cost={"generic": 5},
     ),
     "Relic of Progenitus": CardDef(
         "Relic of Progenitus", CardType.ARTIFACT, {"generic": 1}, EffectId.RELIC_OF_PROGENITUS,
@@ -218,7 +222,7 @@ def lembas_dies(state, permanent):
     into their library." A 400.7 linked ability -- it must reference the EXACT
     card that died, not just any same-named graveyard card. The death that
     queued this trigger stashed the fresh graveyard instance on `permanent`'s
-    own flags (state_based._destroy_creature / execute_sacrifice_option); it's
+    own flags (state_based._destroy_creature / sacrifice_to_graveyard); it's
     in the owner's graveyard now (this trigger resolves for that owner ->
     state.graveyard is theirs) unless something else already moved it (e.g. a
     Dread Return reanimated it first) -- in which case there's nothing to do."""
@@ -705,6 +709,43 @@ def cast_boulderbranch_prototype(state, card_def):
     enters_battlefield(state, card_def)
 
 
+def activate_barrels_of_blasting_jelly_burn(state, permanent):
+    """{5}, {T}, Sacrifice this artifact: it deals 5 damage to target
+    creature. The {5} mana + {T}-of-self are paid by the generic cost_key
+    wiring before this ever runs (drl_env._activate_execute); the
+    sacrifice is a COST, paid now, same shape as Expedition Map/Candy
+    Trail's own {T}, Sacrifice abilities in this same file. The target
+    creature is chosen right after -- before the ability goes on the
+    stack, matching every other targeted ability here -- and the 5 damage
+    waits on the stack for it, fizzling per 608.2b if that creature is
+    gone by resolution. A MANDATORY "target creature" (not "any target"),
+    so the registry's own extra_legal gates activation on a legal creature
+    target actually existing (601.2c/602.2b)."""
+    sacrifice_to_graveyard(state, permanent)
+    idx = state.active_idx
+
+    def _on_target(state, target):
+        captured = capture_any_target(state, target)
+
+        def _resolve(state, card_def):
+            if captured is None or not target_still_legal(state, captured):
+                where = (captured[1].card_def.name, captured[1].slot) if captured is not None else None
+                _log_target_fizzle(state, card_def, where)
+                return
+            captured[1].damage_marked += 5
+            check_state_based_actions(state)
+
+        push_to_stack(
+            state, permanent.card_def, _resolve, reserves_hand_card=False, is_spell=False,
+            targets=() if captured is None else (captured,),
+        )
+
+    begin_choose_any_target(
+        state, lambda p: p.card_type == CardType.CREATURE and can_be_targeted(state, p, idx),
+        _on_target, allow_players=False,
+    )
+
+
 COLORLESS_EFFECT_REGISTRY = {
     EffectId.TRON_LAND: {
         "mana": ("tron",),
@@ -785,6 +826,14 @@ COLORLESS_EFFECT_REGISTRY = {
     EffectId.BARRELS_OF_BLASTING_JELLY: {
         "cast": {"resolve": lambda state, card_def: cast_permanent_from_hand(state, card_def)},
         "filter_mana": {"colors": set(COLORS)},
+        "activated_abilities": {
+            "blast": {
+                "cost_key": "blast_ability_cost",
+                "extra_legal": lambda state: has_creature_target(state),
+                "resolve": lambda state, permanent: activate_barrels_of_blasting_jelly_burn(state, permanent),
+            },
+        },
+        "pending_kinds": {"choose_any_target"},
     },
     EffectId.RELIC_OF_PROGENITUS: {
         "cast": {"resolve": lambda state, card_def: cast_permanent_from_hand(state, card_def)},
@@ -846,7 +895,9 @@ COLORLESS_EFFECT_REGISTRY = {
     },
     EffectId.MAELSTROM_COLOSSUS: {
         "cast": {"resolve": lambda state, card_def: cast_maelstrom_colossus(state, card_def)},
-        "pending_kinds": {"may_cast"},  # Cascade's may-cast of the hit (the hit's own kinds come via union_pending)
+        "pending_kinds": {"may_cast"},  # Cascade's may-cast of the hit -- self-only (the CASCADING player's own
+        # choice); the HIT's own pending_kinds need no separate declaration here either, since the hit is always
+        # one of THIS SAME decklist's own cards, already covered by derive_pending_kinds scanning it directly.
     },
     EffectId.PINNACLE_KILL_SHIP: {
         "cast": {"resolve": lambda state, card_def: cast_permanent_from_hand(state, card_def)},

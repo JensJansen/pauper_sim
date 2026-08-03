@@ -3,30 +3,57 @@ game/state.py) directly into a sequence of board-state snapshots for the
 replay viewer -- no intermediate file format, no protobuf, the webapp reads
 the raw JSON log itself.
 
-Ports the event-kind interpretation rules already proven out in
-sim_replay_converter/convert.py's EventStreamReplayBuilder (name-based zone
-identity tracking via pop-by-name, DFC face reverts, aura-orphan handling,
-countered-spell routing, same-phase-recast/pending-resolution handling,
-mulligan netting -- each one fixing a real bug found against real logged
-games, e.g. the Lava Dart flashback identity bug). Kept as separate code
-rather than sharing a module with convert.py: that pipeline is tested
-against the Cockatrice wire protocol and refactoring it wasn't in scope
-here. One deliberate difference from it: the stack is tracked as ONE shared
-ordered list (top = last), matching the real GameState.stack, rather than
-convert.py's per-player split (a Cockatrice-protocol artifact, not a rules
-one) -- true LIFO order across both players is exactly the kind of fidelity
-win over Cockatrice this viewer exists for.
+Event-kind interpretation (name-based zone identity tracking via pop-by-name,
+DFC face reverts, aura-orphan handling, countered-spell routing, same-phase-
+recast/pending-resolution handling -- each one fixing a real bug found
+against real logged games, e.g. the Lava Dart flashback identity bug). The
+stack is tracked as ONE shared ordered list (top = last), matching the real
+GameState.stack -- true LIFO order across both players is exactly the kind
+of fidelity this viewer exists for. The pregame mulligan sequence is NOT
+netted into one summary step -- see "pregame steps" below.
 
-Event kinds with no board-visible effect (pass, priority_flip,
-resolution_begin/complete, combat_damage/fight_damage -- superseded by
-life_change, which fires for the same damage with the total already
-computed, trigger_fired, pump/explore/animated -- the log entry doesn't
-carry enough to render unambiguously, see convert.py's process_events
-comment, undercity/initiative/goad/ward status, ...) still produce a step
-(so the scrubber timeline never silently skips an event) but don't mutate
-board state, matching convert.py's own documented scope.
+**Pregame steps (owner directive, 2026-08-02): every mulligan-round draw,
+reject, and bottom-card pick is its own step**, not collapsed into one
+"opening hands" summary. Each is a genuine, separate decision (its own
+mulligan-model forward pass -- see rl/mulligan.py's decide()), which is
+exactly the kind of thing this viewer exists to make visible, not hide --
+the opposite reasoning from "pass" below, which IS collapsed because it
+carries no decision of its own. library_draws (see DEFAULT_DECK_SIZE)
+increments on every draw and gives the count back on every mulligan
+take/bottom put-back, so it still nets to the right remaining count across
+an arbitrary number of mulligan rounds.
+
+Event kinds with no board-visible effect (priority_flip, resolution_begin/
+complete, combat_damage/fight_damage -- superseded by life_change, which
+fires for the same damage with the total already computed, trigger_fired,
+pump/explore/animated -- the log entry doesn't carry enough to render
+unambiguously, undercity/initiative/goad/ward status, ...) still produce a
+step (so the scrubber timeline never silently skips an event) but don't
+mutate board state.
+
+"pass" is the one exception, owner-authorized (2026-08-02): a priority pass
+carries no information the viewer doesn't already show via whatever happens
+next -- the stack's top item resolving (its own zone_move step) or the
+phase advancing (its own phase_change step) -- so it's dropped rather than
+given a step, cutting a large fraction of a typical game's step count that
+was pure priority-passing noise.
+
+Phases with nothing but passes in them (both players decline to act, so the
+phase does nothing but end) are collapsed too, same day's authorization: a
+phase_change is buffered rather than appended immediately, since whether
+it's worth showing isn't known until either a real event during that phase
+flushes it, or the next phase_change/turn_start discards it unflushed --
+an empty phase, skipped straight through to whatever comes next. See
+GameReducer._emit.
 """
-from collections import Counter
+# The event-stream format never states a deck's true size. Approximate
+# "cards remaining": assume a real 60-card constructed deck, decrement once
+# per card actually drawn (including
+# every mulligan re-draw) and give the credit back on a mulligan/bottom
+# put-back, so a multi-mulligan pregame still nets to the right count.
+# Owner-authorized simplification (2026-08-02): non-draw library depletion
+# (search, mill, impulse exile, scry-to-graveyard) is not counted.
+DEFAULT_DECK_SIZE = 60
 
 
 def pop_by_name(pool, name):
@@ -42,6 +69,26 @@ def _norm_zone(z):
     return "exile" if z and z.startswith("exile") else z
 
 
+def _format_candidate_label(c):
+    """A decision_weights candidate's display string. rl/agent.py and
+    rl/mulligan.py deliberately log structured facts (fixed_label a plain
+    string already; pointer_identity a {name, slot, controller} fact),
+    never a baked string, so the formatting work happens here -- once, in
+    the viewer -- same "log facts, format them in replay_engine.py" pattern
+    every other event kind in this file already follows."""
+    if c.get("fixed_label") is not None:
+        return c["fixed_label"]
+    pid = c.get("pointer_identity")
+    if not pid:
+        return "?"
+    parts = [pid.get("name") or "?"]
+    if pid.get("slot") is not None:
+        parts.append(f"(slot {pid['slot']})")
+    if pid.get("controller") is not None:
+        parts.append(f"(P{pid['controller']})")
+    return " ".join(parts)
+
+
 class _Player:
     def __init__(self, idx):
         self.idx = idx
@@ -52,11 +99,13 @@ class _Player:
         self.exile = []              # [{"name": str}]
         self.battlefield = {}        # (name, slot) -> entry dict
         self.pending_resolution = []  # [{"name": str}] resolved off stack, fate not yet decided
+        self.library_draws = 0       # cards drawn so far this game, see DEFAULT_DECK_SIZE
 
     def snapshot(self):
         battlefield = sorted(self.battlefield.items(), key=lambda kv: kv[0][1])
         return {
             "life": self.life,
+            "library_remaining": max(0, DEFAULT_DECK_SIZE - self.library_draws),
             "mana_pool": dict(self.mana_pool),
             "hand": [c["name"] for c in self.hand],
             "graveyard": [c["name"] for c in self.graveyard],
@@ -67,6 +116,7 @@ class _Player:
                     "power": entry.get("power"), "toughness": entry.get("toughness"),
                     "is_token": entry.get("is_token", False), "card_type": entry.get("card_type"),
                     "attacking": entry.get("attacking", False), "blocking": entry.get("blocking"),
+                    "enchanting": entry.get("enchanting"),
                 }
                 for (_, slot), entry in battlefield
             ],
@@ -78,49 +128,34 @@ class GameReducer:
         self.players = [_Player(0), _Player(1)]
         self.stack = []  # [{"name": str, "controller": int}], top = last
         self.steps = []
-
-        first_turn = next((i for i, e in enumerate(events) if e["kind"] == "turn_start"), len(events))
-        self._net_opening_hands(events[:first_turn], events[first_turn] if first_turn < len(events) else {})
-        self.main_events = events[first_turn:]
+        self._pending_phase_step = None  # buffered phase_change step, see _emit
+        # Owner directive (2026-08-02): show every individual mulligan-round
+        # draw, reject, and bottom-card pick as its own step -- these are
+        # real per-decision moments (each is its own mulligan-model forward
+        # pass, see rl/mulligan.py), not bookkeeping to collapse away like
+        # "pass". Deliberately NOT netted into one "opening hands" summary
+        # (a past design here) -- that hid exactly the keep-vs-mulligan and
+        # which-cards-to-bottom decisions this viewer exists to surface.
+        self.main_events = events
 
     def other(self, p):
         return self.players[1 - p.idx]
 
     # ------------------------------------------------------------------
-    def _net_opening_hands(self, pregame_events, first_event):
-        """Every mulligan attempt is logged as a fresh full-hand draw, with the
-        cards not kept logged as mulligan_take/mulligan_bottom put-backs. Net
-        these into the single kept opening hand rather than replaying every
-        round (an agent that mulligans to zero would otherwise dump ~100 churn
-        steps at t=0) -- mirrors convert.py's EventStreamReplayBuilder.__init__.
-        """
-        opening = {0: Counter(), 1: Counter()}
-        draws = {0: 0, 1: 0}
-        for e in pregame_events:
-            if e["kind"] != "zone_move":
-                continue
-            names = e.get("cards") or ([e["card"]] if e.get("card") else [])
-            reason = e.get("reason")
-            idx = e["active_idx"]
-            if reason == "draw":
-                opening[idx] += Counter(names)
-                draws[idx] += 1
-            elif reason in ("mulligan_take", "mulligan_bottom"):
-                opening[idx] -= Counter(names)
 
-        for p in self.players:
-            p.hand = [{"name": n} for n in opening[p.idx].elements()]
-
-        mulligans = {idx: max(0, draws[idx] - 1) for idx in (0, 1)}
-        if any(mulligans.values()):
-            desc = f"Opening hands drawn (P0 mulliganed {mulligans[0]}x, P1 mulliganed {mulligans[1]}x)"
-        else:
-            desc = "Opening hands drawn"
-        self._emit(first_event, "opening_hands", desc)
-
-    def _emit(self, e, kind, description):
-        self.steps.append({
-            "index": len(self.steps),
+    def _emit(self, e, kind, description, extra=None):
+        """A phase_change is buffered, not appended, since we don't yet know
+        whether its phase will contain a real action: the next real event
+        flushes it (the phase gets shown after all), while the next
+        phase_change/turn_start with nothing having flushed it discards it
+        instead -- an empty, priority-passing-only phase, skipped for
+        brevity per the owner's request. turn_start is never itself
+        buffered (always shown) but also discards a still-pending phase --
+        the previous phase ending with nothing in it is exactly the empty
+        case this is meant to collapse. extra: kind-specific fields merged
+        onto the step (only decision_weights uses this -- candidates/
+        chosen_index/value_estimate/network/pointer_kind)."""
+        step = {
             "kind": kind,
             "turn": e.get("turn"),
             "phase": e.get("phase"),
@@ -129,7 +164,20 @@ class GameReducer:
             "description": description,
             "players": [p.snapshot() for p in self.players],
             "stack": [dict(c) for c in self.stack],
-        })
+        }
+        if extra:
+            step.update(extra)
+        if kind == "phase_change":
+            self._pending_phase_step = step
+            return
+        if kind != "turn_start" and self._pending_phase_step is not None:
+            self._append_step(self._pending_phase_step)
+        self._pending_phase_step = None
+        self._append_step(step)
+
+    def _append_step(self, step):
+        step["index"] = len(self.steps)
+        self.steps.append(step)
 
     def run(self):
         for e in self.main_events:
@@ -179,6 +227,10 @@ class GameReducer:
             self._clear_combat_flags()
         self._flush_pending_resolutions()
         self._emit(e, "phase_change", f"— {(e.get('phase') or '').replace('_', ' ').title()} —")
+
+    def _handle_pass(self, e):
+        """No step: whatever a pass leads to (a stack item resolving, a phase
+        advancing) already gets its own step. See module docstring."""
 
     # ------------------------------------------------------------------ mana
     def _handle_mana_tap(self, e):
@@ -236,7 +288,13 @@ class GameReducer:
         aura_p = self.players[e["active_idx"]]
         aura = aura_p.battlefield.get(tuple(e["aura"]))
         if aura is not None:
-            aura["enchanting"] = list(e["target"])
+            target_p, target_key = self._find_perm(e["target"])
+            if target_key is not None:
+                # Resolved to the target's controller here (not just name/slot,
+                # which can collide across the two players' battlefields) so the
+                # viewer can nest the aura under the right permanent even when
+                # it enchants an opponent's (e.g. Pacifism-style).
+                aura["enchanting"] = {"controller_idx": target_p.idx, "name": target_key[0], "slot": target_key[1]}
         self._emit(e, "aura_attached", f"P{aura_p.idx} attaches {e['aura'][0]} to {e['target'][0]}")
 
     def _handle_aura_orphaned(self, e):
@@ -371,6 +429,26 @@ class GameReducer:
         p = self.players[e["active_idx"]]
         self._emit(e, "reveal", f"P{p.idx} reveals {e.get('card') or '?'} off the top of their library")
 
+    def _handle_decision_weights(self, e):
+        """Non-board-mutating (like the unhandled-kind fallback): carries the
+        agent's top-5 candidate actions through to the step dict for the
+        viewer's decision panel, formatting each candidate's label here (see
+        _format_candidate_label). See todo/game_visualization.md's
+        "Decision-point overlay" section."""
+        candidates = [
+            {"index": c.get("index"), "probability": c.get("probability"), "label": _format_candidate_label(c)}
+            for c in (e.get("candidates") or [])
+        ]
+        network = e.get("network")
+        desc = f"Decision weights ({network}): {len(candidates)} candidate(s)"
+        self._emit(e, "decision_weights", desc, extra={
+            "network": network,
+            "chosen_index": e.get("chosen_index"),
+            "value_estimate": e.get("value_estimate"),
+            "candidates": candidates,
+            "pointer_kind": e.get("pointer_kind"),
+        })
+
     # ------------------------------------------------------------------ zone_move (the big dispatcher)
     def _handle_zone_move(self, e):
         if "disposed" in e:
@@ -390,8 +468,7 @@ class GameReducer:
 
     def _mutate_disposed(self, e):
         """Scry/surveil. disposed_to='library_bottom' has no visible zone change
-        (deck order isn't tracked, matching convert.py); only the graveyard
-        case is a real move."""
+        (deck order isn't tracked); only the graveyard case is a real move."""
         disposed_to = e.get("disposed_to")
         names = e.get("disposed") or []
         p = self.players[e["active_idx"]]
@@ -408,8 +485,7 @@ class GameReducer:
 
     def _resolve_incoming_permanent(self, p, name, from_zone):
         """Remove `name` from wherever it's plausibly entering the battlefield
-        from, and report whether this is a token (no prior identity anywhere).
-        Mirrors convert.py's _resolve_incoming_permanent."""
+        from, and report whether this is a token (no prior identity anywhere)."""
         for i, c in enumerate(p.pending_resolution):
             if c["name"] == name:
                 p.pending_resolution.pop(i)
@@ -455,11 +531,11 @@ class GameReducer:
         """Best-effort remove `name` from wherever the log says it came from,
         so a card's origin zone stops showing it as still present. Falls
         through silently if untracked (straight from the hidden library --
-        nothing to remove). Mirrors convert.py's pop-by-name identity
-        tracking, including the same candidate-pool search order for a
+        nothing to remove). The candidate-pool search order for a
         from_zone=None cast (Flashback/Escape/Madness/Plot/Adventure/an
         eagerly-discarded alt cost/a copy -- the log doesn't distinguish
-        these further) that fixed the real Lava Dart double-copy bug there."""
+        these further) is what avoids the Lava Dart double-copy bug this
+        class of lookup is prone to."""
         if from_zone == "hand":
             pop_by_name(p.hand, name)
         elif from_zone == "stack":
@@ -500,10 +576,19 @@ class GameReducer:
         if dst_pool is not None:
             dst_pool.append({"name": name})
         # library / library_bottom: not tracked as a distinct pool here.
+        reason = e.get("reason")
+        if reason == "draw":
+            p.library_draws += 1
+        elif reason in ("mulligan_take", "mulligan_bottom"):
+            # A mulligan reject/bottom returns a drawn card to the library --
+            # give the count back so a multi-mulligan pregame still nets to
+            # the real kept-hand size, not an inflated one.
+            p.library_draws = max(0, p.library_draws - 1)
 
     _HANDLERS = {
         "turn_start": _handle_turn_start,
         "phase_change": _handle_phase_change,
+        "pass": _handle_pass,
         "zone_move": _handle_zone_move,
         "mana_tap": _handle_mana_tap,
         "mana_spend": _handle_mana_spend,
@@ -528,13 +613,23 @@ class GameReducer:
         "tuck": _handle_tuck,
         "transform": _handle_transform,
         "reveal": _handle_reveal,
+        "decision_weights": _handle_decision_weights,
     }
 
 
 def list_games(doc):
     """Lightweight per-game index for the file-picker step: label + event
     count, no board-state reduction (cheap even for a multi-thousand-game
-    round-robin --eval log)."""
+    round-robin --eval log).
+
+    Prefers each game's own deck_a/deck_b (run_league.py's _write_event_log,
+    2026-08 on) to label it directly as "A vs B" -- a round-robin log holds
+    many different pairings in one file, so a single file-level label can't
+    describe every game. A per-pairing occurrence counter disambiguates
+    repeat games of the same pairing (a double round-robin plays each one
+    twice) as "(game 1)"/"(game 2)" instead of two identical, unindexable
+    labels. Falls back to the old file-level meta (matchup/deck_a, else a
+    bare "game N") for logs written before per-game pairing existed."""
     meta = doc.get("meta") or {}
     matchup = meta.get("matchup")
     if meta.get("config_name"):
@@ -547,10 +642,16 @@ def list_games(doc):
         base_label = None
 
     games = []
+    pairing_occurrence = {}
     for i, g in enumerate(doc.get("games") or []):
         idx = g.get("game_index", i)
         n = len(g.get("events") or [])
-        label = f'{base_label or "game"} — game {idx} ({n} events)'
+        deck_a, deck_b = g.get("deck_a"), g.get("deck_b")
+        if deck_a and deck_b:
+            pairing_occurrence[(deck_a, deck_b)] = pairing_occurrence.get((deck_a, deck_b), 0) + 1
+            label = f'{deck_a} vs {deck_b} (game {pairing_occurrence[(deck_a, deck_b)]}, {n} events)'
+        else:
+            label = f'{base_label or "game"} — game {idx} ({n} events)'
         games.append({"game_index": idx, "label": label, "num_events": n})
     return {"meta": meta, "games": games}
 

@@ -225,11 +225,15 @@ def escape_sleep_of_the_dead(state, inst):
 
 def sewer_cam_tap_or_untap(state, source_card_def):
     """Sewer-veillance Cam ETB/LTB: "you may tap or untap target creature."
-    Optional target (either side, hexproof/shroud-aware); on resolution it
-    TOGGLES the target's tapped state -- observationally identical to the
-    real tap-or-untap choice, since the no-op direction (tapping a tapped or
-    untapping an untapped creature) is never the meaningful pick. The effect
-    waits on the stack (a triggered ability), fizzling if the target's gone."""
+    Target-at-promotion (etb_targets/ltb_targets: True on both halves): this
+    whole function runs AT PROMOTION, as the triggered ability goes on the
+    stack (603.3d) -- opening the optional target choice (either side,
+    hexproof/shroud-aware) right then, not once the ability actually
+    resolves, so an opponent gets a priority window against a known target.
+    on resolution it TOGGLES the target's tapped state -- observationally
+    identical to the real tap-or-untap choice, since the no-op direction
+    (tapping a tapped or untapping an untapped creature) is never the
+    meaningful pick -- fizzling if the target's gone by then (608.2b)."""
     idx = state.active_idx
 
     def _on_target(state, descriptor):
@@ -331,18 +335,19 @@ def cast_mental_note(state, card_def):
 
 
 def cast_thought_scour(state, card_def):
-    """{U}: Target player mills two cards. Draw a card (you). The target
-    player is chosen when this resolves rather than at cast: a player target
-    can never become an illegal target (players don't leave the game here),
-    so there is NO observable difference vs locking it at cast -- the same
-    "no observable difference in this solitaire sim" treatment
-    begin_choose_graveyard_card / Relic of Progenitus' targeted ability
-    already use. Whoever is milled, the caster (active player) draws."""
-    discard_from_hand_to_graveyard(state, card_def)
-
+    """{U}: Target player mills two cards. Draw a card (you). Real "target
+    player" -- a genuine begin_choose_target_player choice, locked at CAST
+    (precast_choice), not resolution: real Magic (601.2c) chooses targets
+    as the spell is announced, before it ever waits on the stack. "Target
+    player" is always legal (at minimum yourself), so this never fizzles.
+    Whoever is milled, the caster (active player) draws."""
     def _on_player(state, idx):
-        mill(state, 2, idx)
-        state.draw(1)  # the caster draws -- active_idx is the controller throughout (no flip)
+        def _resolve(state, card_def):
+            discard_from_hand_to_graveyard(state, card_def)
+            mill(state, 2, idx)
+            state.draw(1)  # the caster draws -- active_idx is the controller throughout (no flip)
+
+        push_to_stack(state, card_def, _resolve)
 
     begin_choose_target_player(state, _on_player)
 
@@ -392,24 +397,30 @@ def _target_player_draws(state, idx, n):
     state.active_idx = saved
 
 
-def _deep_analysis_effect(state, card_def):
-    """Target player draws two cards. The target player is chosen at
-    resolution rather than locked at cast -- a player can never become an
-    illegal target here (players don't leave), so there's no observable
-    difference, same treatment as Thought Scour / begin_choose_graveyard_
-    card. Whoever is chosen draws two (cross-player via _target_player_draws)."""
+def _deep_analysis_choose_and_push(state, card_def, to_graveyard, reserves_hand_card, exiles_on_resolve=False):
+    """Choose the target player as Deep Analysis is put on the stack -- real
+    "target player" (601.2c: targets are chosen as a spell is cast, before
+    it ever waits on the stack), always legal (at minimum yourself), so this
+    never fizzles. Shared by the hard cast and Flashback below;
+    `to_graveyard`/`reserves_hand_card` say how the card itself reaches the
+    graveyard on resolution (hard cast: hand -> graveyard; Flashback:
+    already out of the graveyard, exiled after -- Dread Return's own
+    convention). Whoever is chosen draws two (cross-player via
+    _target_player_draws)."""
     def _on_player(state, idx):
-        _target_player_draws(state, idx, 2)
+        def _resolve(state, card_def):
+            to_graveyard(state, card_def)
+            _target_player_draws(state, idx, 2)
+
+        push_to_stack(state, card_def, _resolve, reserves_hand_card=reserves_hand_card, exiles_on_resolve=exiles_on_resolve)
 
     begin_choose_target_player(state, _on_player)
 
 
 def cast_deep_analysis(state, card_def):
-    """{3}{U}: Target player draws two cards. (Normal cast -- already on the
-    stack via the generic cast path, so the effect runs inline at
-    resolution.)"""
-    discard_from_hand_to_graveyard(state, card_def)
-    _deep_analysis_effect(state, card_def)
+    """{3}{U}: Target player draws two cards. Locked at CAST
+    (precast_choice), not resolution."""
+    _deep_analysis_choose_and_push(state, card_def, discard_from_hand_to_graveyard, reserves_hand_card=True)
 
 
 def flashback_deep_analysis(state, inst):
@@ -417,9 +428,10 @@ def flashback_deep_analysis(state, inst):
     generic mana-flashback path (drl_env._flashback_execute's begin_pay_cost);
     pay the 3-life additional cost now, remove this card from the graveyard
     (it leaves the moment Flashback is chosen; exiled afterward -- untracked,
-    Dread Return's precedent), then push the same target-player-draws-two
-    effect onto the stack. Life >= 3 is enforced by the flashback's own
-    legal predicate.
+    Dread Return's precedent), then choose the target player and push the
+    same target-player-draws-two effect onto the stack -- Flashback casts
+    the spell too, so its target is locked here, at that moment, same as the
+    hard cast. Life >= 3 is enforced by the flashback's own legal predicate.
 
     inst: the exact graveyard CardInstance being flashed back -- see
     flashback_dread_return. Matched and removed by object identity, not a
@@ -427,7 +439,7 @@ def flashback_deep_analysis(state, inst):
     must stay distinct."""
     state.graveyard.remove(inst)
     lose_life(state, 3, reason="deep_analysis_flashback")
-    push_to_stack(state, inst, _deep_analysis_effect, reserves_hand_card=False, exiles_on_resolve=True)
+    _deep_analysis_choose_and_push(state, inst, lambda s, cd: None, reserves_hand_card=False, exiles_on_resolve=True)
 
 
 def delver_upkeep(state, permanent):
@@ -458,7 +470,10 @@ BLUE_EFFECT_REGISTRY = {
         "pending_kinds": {"ponder"},
     },
     EffectId.DEEP_ANALYSIS: {
-        "cast": {"resolve": lambda state, card_def: cast_deep_analysis(state, card_def)},
+        "cast": {
+            "resolve": lambda state, card_def: cast_deep_analysis(state, card_def),
+            "precast_choice": True,  # target player locked at cast
+        },
         "flashback": {
             "cost": {"generic": 1, "U": 1},  # the {1}{U} mana half -- paid by the generic mana-flashback path
             "legal": lambda state: state.life_total >= 3,  # can pay the "Pay 3 life" additional cost
@@ -553,7 +568,9 @@ BLUE_EFFECT_REGISTRY = {
             "speed": Speed.INSTANT,  # Flash
         },
         "etb_trigger": lambda state, permanent: sewer_cam_tap_or_untap(state, permanent.card_def),
+        "etb_targets": True,  # target creature chosen at promotion (603.3d), not resolution
         "ltb_trigger": lambda state, permanent: sewer_cam_tap_or_untap(state, permanent.card_def),
+        "ltb_targets": True,  # same target-at-promotion timing for the leaves-the-battlefield half
         "activated_abilities": {
             "draw": {"cost_key": "sac_ability_cost", "resolve": lambda state, permanent: sewer_cam_sac(state, permanent)},
         },
@@ -584,7 +601,10 @@ BLUE_EFFECT_REGISTRY = {
         "cast": {"resolve": lambda state, card_def: cast_mental_note(state, card_def)},
     },
     EffectId.THOUGHT_SCOUR: {
-        "cast": {"resolve": lambda state, card_def: cast_thought_scour(state, card_def)},
+        "cast": {
+            "resolve": lambda state, card_def: cast_thought_scour(state, card_def),
+            "precast_choice": True,  # target player locked at cast
+        },
         "pending_kinds": {"choose_target_player"},
     },
     EffectId.LORIEN_REVEALED: {

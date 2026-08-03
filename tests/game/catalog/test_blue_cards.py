@@ -28,7 +28,7 @@ from game.catalog.blue_cards import (
 )
 from game.effects.casting import cast_permanent_from_hand, cast_targeting_creature
 from game.effects.stack import on_cast_trigger, push_to_stack, resolve_top_of_stack
-from game.effects.state_based import check_state_based_actions, destroy_permanent
+from game.effects.state_based import check_state_based_actions, destroy_permanent, sacrifice_to_graveyard
 from game.effects.stats import creature_keywords, has_keyword, permanent_power, permanent_toughness
 from game.effects.triggers import promote_triggers_to_stack
 from game.mana import execute_pool_spend, pool_spend_options
@@ -141,7 +141,8 @@ def test_thought_scour_target_opponent():
     ]
     cast_thought_scour(state, state.players[0].hand[0])
     assert state.pending_resolution["kind"] == "choose_target_player"
-    execute_choose_target_player_option(state, 1)  # target the opponent
+    execute_choose_target_player_option(state, 1)  # target the opponent -- locked at cast, effect now on the stack
+    resolve_top_of_stack(state)
     assert [c.name for c in state.players[1].graveyard] == ["Opp1", "Opp2"]  # THEIR top 2 milled
     assert [c.name for c in state.players[0].hand] == ["MyCard"]  # the caster drew, not the opponent
     assert state.active_idx == 0  # no stray active_idx flip
@@ -241,7 +242,8 @@ def test_deep_analysis_cast():
     state.library = [_card(f"D{i}") for i in range(4)]
     cast_deep_analysis(state, state.hand[0])
     assert state.pending_resolution["kind"] == "choose_target_player"
-    execute_choose_target_player_option(state, 0)
+    execute_choose_target_player_option(state, 0)  # locked at cast, effect now on the stack
+    resolve_top_of_stack(state)
     assert len(state.hand) == 2
 
 
@@ -261,11 +263,14 @@ def test_deep_analysis_flashback():
     state.library = [_card(f"F{i}") for i in range(4)]
     state.players[0].life_total = 10
     flashback_deep_analysis(state, da)  # mana already paid upstream in real play
-    assert state.graveyard == [] and state.life_total == 7 and len(state.stack) == 1
-    assert state.stack[0]["card_def"] is da, "the stack entry must carry the exact graveyard instance"
-    resolve_top_of_stack(state)
+    # Flashback casts the spell too, so its target is chosen right here --
+    # before it ever reaches the stack (601.2c) -- same as the hard cast.
+    assert state.graveyard == [] and state.life_total == 7 and state.stack == []
     assert state.pending_resolution["kind"] == "choose_target_player"
-    execute_choose_target_player_option(state, 0)
+    execute_choose_target_player_option(state, 0)  # locked; the effect now goes on the stack
+    assert len(state.stack) == 1 and state.stack[0]["card_def"] is da, \
+        "the stack entry must carry the exact graveyard instance"
+    resolve_top_of_stack(state)
     assert len(state.hand) == 2
 
 
@@ -451,6 +456,48 @@ def test_sewer_veillance_cam_toggle_and_sac_draw_two():
         execute_choose_any_target_decline(state)  # decline the LTB toggle
         _drive(state)
     assert len(state.players[0].hand) == 2  # drew 2
+
+
+def test_sewer_veillance_cam_etb_target_chosen_at_promotion_not_resolution():
+    """The ETB's "you may tap or untap target creature" must be chosen AS
+    THE TRIGGERED ABILITY GOES ON THE STACK (603.3d, etb_targets: True),
+    not once it resolves -- promote_triggers_to_stack alone (no
+    resolve_top_of_stack yet) must already open the target choice, with
+    nothing yet on the stack."""
+    state = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
+    state.active_idx = 0
+    opp = Permanent(CardDef("Opp", CardType.CREATURE, None, EffectId.FILLER, power=2, toughness=2))
+    opp.slot = 1
+    state.players[1].battlefield = [opp]
+    state.players[0].hand = [registry.CARD_DEFS["Sewer-veillance Cam"]]
+    cast_permanent_from_hand(state, registry.CARD_DEFS["Sewer-veillance Cam"])
+    promote_triggers_to_stack(state)
+    assert state.stack == []  # not yet on the stack -- the hook ran directly at promotion
+    assert state.pending_resolution["kind"] == "choose_any_target"
+    execute_choose_any_target_creature(state, 1, "Opp", 1)
+    assert len(state.stack) == 1  # target locked; the effect now waits on the stack
+    resolve_top_of_stack(state)
+    assert opp.tapped
+
+
+def test_sewer_veillance_cam_ltb_target_chosen_at_promotion():
+    """Same target-at-promotion timing for the LEAVES-the-battlefield half
+    (ltb_targets: True) -- previously this had no promotion mechanism at
+    all (triggers._promotion_targets used to hardcode entry["type"] !=
+    "etb" -> always False for a leaving trigger), a structural gap beyond a
+    missing flag on this one card."""
+    state = GameState(on_the_play=True)
+    cam = Permanent(registry.CARD_DEFS["Sewer-veillance Cam"])
+    bear = Permanent(CardDef("Bear", CardType.CREATURE, None, EffectId.FILLER, power=1, toughness=1))
+    bear.slot = 1
+    state.battlefield = [cam, bear]
+    sacrifice_to_graveyard(state, cam)
+    promote_triggers_to_stack(state)
+    assert state.stack == []
+    assert state.pending_resolution["kind"] == "choose_any_target"
+    execute_choose_any_target_creature(state, 0, "Bear", 1)
+    resolve_top_of_stack(state)
+    assert bear.tapped
 
 
 def test_tolarian_terror_cost_reduction_caster_graveyard_only():

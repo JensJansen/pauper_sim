@@ -96,7 +96,7 @@ def test_highway_robbery_discard_path_triggers_madness():
     state.library = [CardDef(f"Filler {i}", CardType.LAND, None, EffectId.MOUNTAIN) for i in range(2)]
     cast_highway_robbery(state, hr)
     assert state.pending_resolution["kind"] == "discard_or_sacrifice"
-    resolution.execute_discard_or_sacrifice_option(state, "discard", "Fiery Temper")
+    resolution.execute_discard_or_sacrifice_discard(state, "Fiery Temper")
     assert len(state.hand) == 2  # drew 2
     assert state.exile and state.exile[0][0].name == "Fiery Temper"  # exiled, not graveyarded -- Madness
     assert state.trigger_queue and state.trigger_queue[0]["kind"] == "madness"
@@ -104,9 +104,12 @@ def test_highway_robbery_discard_path_triggers_madness():
 
 def test_highway_robbery_sacrifice_land_path():
     """Sacrifice-a-land path -- the alternative cost to discarding a card.
-    Also regression coverage: execute_discard_or_sacrifice_option's own
-    sacrifice branch now fires fire_sacrifice_triggers too (Gixian
-    Infiltrator used to never see a sacrifice paid this way)."""
+    Picking "sacrifice" opens a real choose_permanent sub-decision for
+    WHICH land pays it (not an arbitrary first-same-name match -- see
+    execute_discard_or_sacrifice_trigger_sacrifice's own docstring).
+    Also regression coverage: the sacrifice path fires
+    fire_sacrifice_triggers too (Gixian Infiltrator used to never see a
+    sacrifice paid this way)."""
     state2 = GameState(on_the_play=True)
     hr2 = CardDef("Highway Robbery", CardType.SORCERY, {"generic": 1, "R": 1}, EffectId.HIGHWAY_ROBBERY)
     mountain = Permanent(CardDef("Mountain", CardType.LAND, None, EffectId.MOUNTAIN))
@@ -116,7 +119,9 @@ def test_highway_robbery_sacrifice_land_path():
     state2.battlefield = [mountain, gix]
     state2.library = [CardDef(f"Filler {i}", CardType.LAND, None, EffectId.MOUNTAIN) for i in range(2)]
     cast_highway_robbery(state2, hr2)
-    resolution.execute_discard_or_sacrifice_option(state2, "sacrifice", "Mountain")
+    resolution.execute_discard_or_sacrifice_trigger_sacrifice(state2)
+    assert state2.pending_resolution["kind"] == "choose_permanent"
+    resolution.execute_choose_permanent_option(state2, "Mountain", mountain.slot)
     assert state2.battlefield == [gix]
     assert sorted(c.name for c in state2.graveyard) == ["Highway Robbery", "Mountain"]
     assert len(state2.hand) == 2
@@ -383,8 +388,7 @@ def test_goblin_bushwhacker_via_action_table_cost_override_mode():
     _modal_execute/_modal_legal (Winding Way/Utopia Sprawl's own modes never
     override cost; this card's kicked mode does)."""
     bw_dl = [("Goblin Bushwhacker", 4), ("Mountain", 8)]
-    bw_byname = {a[0]: (a[1], a[2]) for a in drl_env.build_action_table(
-        bw_dl, registry.EFFECT_REGISTRY, pending_kinds=registry.derive_pending_kinds(bw_dl))}
+    bw_byname = {a[0]: (a[1], a[2]) for a in drl_env.build_action_table(bw_dl, registry.EFFECT_REGISTRY)}
     bw_state = GameState(on_the_play=True)
     bw_state.phase = Phase.MAIN1
     bw_state.turn_player_idx = 0
@@ -467,8 +471,8 @@ def test_goblin_tomb_raider_conditional_static():
     assert permanent_power(state, gtr) == 2 and has_keyword(state, gtr, "haste")
 
 
-def test_burning_tree_emissary_etb_adds_rg():
-    """Burning-Tree Emissary: ETB adds {R}{G} to the pool."""
+def test_burning_tree_emissary_etb_adds_rr():
+    """Burning-Tree Emissary: ETB adds {R}{R} to the pool (authorized simplification)."""
     state = GameState(on_the_play=True)
     bte = registry.CARD_DEFS["Burning-Tree Emissary"]
     state.hand = [bte]
@@ -476,7 +480,7 @@ def test_burning_tree_emissary_etb_adds_rg():
     promote_triggers_to_stack(state)
     while state.stack:
         resolve_top_of_stack(state)
-    assert state.mana_pool.get("R") == 1 and state.mana_pool.get("G") == 1
+    assert state.mana_pool.get("R") == 2
 
 
 def _drive_stack(state):
@@ -501,7 +505,8 @@ def test_krark_clan_shaman_sac_artifact_sweeps_nonflyers():
     flyer.slot = 1
     state.players[1].battlefield = [ground, flyer]
     krark_clan_shaman_activate(state, krark)
-    resolution.execute_sacrifice_option(state, "Great Furnace")
+    assert state.pending_resolution["kind"] == "choose_permanent"
+    resolution.execute_choose_permanent_option(state, "Great Furnace", art.slot)
     _drive_stack(state)
     assert ground.damage_marked == 1 and flyer.damage_marked == 0  # ground hit, flyer spared
     assert krark not in state.players[0].battlefield  # 1/1 took 1 -> dead

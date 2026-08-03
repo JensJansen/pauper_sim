@@ -12,6 +12,7 @@ from game.catalog.colorless_cards import (
     BOULDERBRANCH_GOLEM_PROTOTYPE_CARD_DEF,
     _pinnacle_kill_ship_station_legal,
     _pinnacle_kill_ship_station_resolve,
+    activate_barrels_of_blasting_jelly_burn,
     activate_candy_trail_sac,
     activate_relic_of_progenitus_draw,
     activate_relic_of_progenitus_exile,
@@ -71,6 +72,38 @@ def test_ash_barrens_basic_landcycling():
     assert [c.name for c in state.hand] == ["Plains"]
     assert sorted(c.name for c in state.graveyard) == ["Ash Barrens"]  # discarded itself, not the fetched land
     assert sorted(c.name for c in state.library) == ["Ash Barrens", "Forest"]  # shuffled; the unchosen basic stays
+
+
+def test_barrels_of_blasting_jelly_blast_deals_5_to_target_creature():
+    """{5}, {T}, Sacrifice this artifact: it deals 5 damage to target
+    creature -- the ability's own real text was previously missing
+    entirely (only the {1}: add mana filter ability existed). Sacrifice is
+    a COST, paid immediately on activation; the 5 damage waits on the
+    stack for its locked target, fizzling per 608.2b if that creature is
+    gone by resolution."""
+    state = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
+    barrels = Permanent(registry.CARD_DEFS["Barrels of Blasting Jelly"])
+    victim = Permanent(CardDef("Victim", CardType.CREATURE, None, EffectId.FILLER, power=1, toughness=6))
+    victim.slot = 1
+    state.players[0].battlefield = [barrels]
+    state.players[1].battlefield = [victim]
+    activate_barrels_of_blasting_jelly_burn(state, barrels)
+    assert barrels not in state.players[0].battlefield  # sacrificed -- a cost, paid immediately
+    assert state.pending_resolution["kind"] == "choose_any_target"
+    resolution.execute_choose_any_target_creature(state, 1, "Victim", 1)
+    resolve_top_of_stack(state)
+    assert victim.damage_marked == 5
+
+
+def test_barrels_of_blasting_jelly_blast_needs_a_legal_creature_target():
+    """A MANDATORY "target creature": the ability can't be activated at
+    all with zero legal creature targets on board (601.2c/602.2b), even
+    though the {5} mana would otherwise be payable."""
+    state = GameState(on_the_play=True)
+    barrels = Permanent(registry.CARD_DEFS["Barrels of Blasting Jelly"])
+    state.battlefield = [barrels]
+    extra_legal = registry.EFFECT_REGISTRY[EffectId.BARRELS_OF_BLASTING_JELLY]["activated_abilities"]["blast"]["extra_legal"]
+    assert not extra_legal(state)
 
 
 def test_candy_trail_sac_gain_life_and_draw():

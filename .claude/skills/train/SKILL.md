@@ -149,20 +149,47 @@ For each batch:
    - **Hang check**: if a run runs far longer than the per-game rate implies (≈10–15 s/
      game CPU) with no new log lines, treat it as a stall — inspect, and if truly hung,
      kill it and investigate before retrying.
-4. **Healthy** → double `batch` (per the formula) and continue until
+4. **League phase only — log a double round-robin snapshot.** Once the batch
+   is confirmed healthy (step 3) and `per_deck_cumulative` is updated, pause
+   before escalating and run (foreground — it's fast relative to a training
+   batch, and the loop is already sequential):
+   `python -u run_league.py --eval --games 2 --league-config <same config
+   used for this batch> --log ../logs/<league_name>_double_round_robin_
+   <per_deck_cumulative>games.json`
+   Every deck plays every deck, including mirrors, twice
+   (`combinations_with_replacement` — a "double round robin"), using the
+   CURRENT live checkpoints; `--eval` never trains or checkpoints, so this
+   has no effect on the escalation ladder itself. The filename embeds the
+   league's cumulative games/deck at that point, so successive snapshots
+   never collide and stay ordered by training progress. Health-check the
+   same way as a training batch (no Traceback/Exception/ALL-FALSE in its
+   output) — a failure here is treated exactly like a training-batch
+   failure (step 6 below): it's exercising the same engine and the same
+   live checkpoints, so it's just as real a bug. Skip this step for the
+   pretrain phase — pretrain has no cross-deck round-robin concept (mirror-
+   only self-play into one shared stack, nothing to pair decks against).
+   Note the log path so it can be reported at the end (§6). Each game in the
+   written log is self-labeled (`deck_a`/`deck_b` fields, not just a bare
+   `game_index`) — open it in the webapp's `/replay` file picker to watch
+   any specific pairing directly (e.g. `python src/webapp/app.py`, `/replay`).
+5. **Healthy** → double `batch` (per the formula) and continue until
    `per_deck_cumulative >= TARGET`.
-5. **Errored / crashed / hung** → do NOT escalate. Read the traceback, find the ROOT
+6. **Errored / crashed / hung** → do NOT escalate. Read the traceback, find the ROOT
    cause in the code (fix once where all callers route through, not the symptom),
    apply the fix, re-run the game-engine self-checks if the fix touched engine code,
    then re-run the SAME batch size and grep the new log specifically for that failure
-   mode. Only resume doubling once that size is clean.
+   mode. Only resume doubling once that size is clean. This applies equally to a
+   failure in step 4's round-robin snapshot.
 
 ## 6. Report
 
 When the phase(s) reach their target (or you stop on a blocking error), summarize:
 mode, N_DECKS, per-deck games trained per phase, number of sessions/batches, any errors
-found + fixed, `per_deck_cumulative` vs target, and where the checkpoints live
-(`checkpoints/shared_stack_frozen.pt`, `checkpoints/league/<deck>/live.pt`). Never
+found + fixed, `per_deck_cumulative` vs target, where the checkpoints live
+(`checkpoints/shared_stack_frozen.pt`, `checkpoints/league/<deck>/live.pt`), and (league
+phase) the list of double round-robin snapshot logs written by §5 step 4
+(`logs/<league_name>_double_round_robin_<per_deck_cumulative>games.json`) so the owner
+can jump straight to a specific checkpoint's games in the replay viewer. Never
 claim a run succeeded without having seen its "done" line and exit 0 in the log.
 
 ## Notes

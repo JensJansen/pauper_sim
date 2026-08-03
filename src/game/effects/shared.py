@@ -14,8 +14,10 @@ def fire_sacrifice_triggers(state, sacrificer_idx, sacrificed_card_def):
     """Queue every "whenever you sacrifice [another permanent / another
     Eldrazi]" trigger (Gixian Infiltrator, Writhing Chrysalis) on the
     SACRIFICING player's own battlefield, for a permanent that was just
-    sacrificed. Called from every sacrifice path (sacrifice_to_graveyard,
-    execute_sacrifice_option, the token sac abilities). A real triggered
+    sacrificed. Called from every sacrifice path (sacrifice_to_graveyard --
+    itself the one path resolution.begin_sacrifice/Highway Robbery's own
+    discard-or-sacrifice both route through -- and the token sac
+    abilities). A real triggered
     ability: queued onto the sacrificer's own trigger_queue (written directly,
     not through the state.trigger_queue active-player proxy, in case the
     sacrificer isn't the active player -- same reasoning state_based.
@@ -161,7 +163,14 @@ def discard_from_hand_to_graveyard(state, card_def):
       "normally-resolved spell -> graveyard" step at the start of nearly every
       cast_* resolve.
     - Any OTHER card: a genuine discard-FROM-hand (a cost, a discard effect),
-      which must be physically in hand and is moved from there to the graveyard.
+      which must be physically in hand and is moved from there to the
+      graveyard -- logged here (from_zone="hand"), unlike the resolving-spell
+      case above (that departure was already logged at cast/push_to_stack;
+      logging it again here would double it). This is the only path a
+      Cycling-family cost (Islandcycling/Cycling/Forestcycle -- none of
+      which ever touch the stack) takes out of hand, so without this log
+      call the replay/event log would silently lose the card: no zone_move
+      ever recorded its exit, and it would still read as "in hand" forever.
 
     Not for cards that instead exile or resolve from somewhere other than hand
     (Flashback/Plot/Madness's own resolve paths already skip this)."""
@@ -185,10 +194,28 @@ def discard_from_hand_to_graveyard(state, card_def):
         )
     state.hand.remove(card_def)
     state.move_card(card_def, state.graveyard)
+    state.log_event("zone_move", card=card_def.name, from_zone="hand", to_zone="graveyard", reason="discard")
 
 
 def any_creature_on_battlefield(state):
-    """Shared "is there a legal Aura/targeted-effect target at all" gate --
-    Rancor/Ancestral Mask/Armadillo Cloak/Cartouche of Solidarity/Ethereal
-    Armor's own extra_legal all reduce to exactly this."""
+    """Shared "is there a legal Aura target at all" gate for an "enchant
+    creature YOU CONTROL" restriction (real Magic 601.2c: a mandatory
+    target needs at least one legal choice to be castable) -- only
+    Cartouche of Solidarity's own extra_legal reduces to this (its real
+    text is "Enchant creature you control", unlike every other Aura in this
+    pool). Checks state.battlefield (the active/casting player's own zone
+    only) -- see any_creature_on_either_battlefield for the "any creature,
+    either side" version every unrestricted "Enchant creature" Aura needs."""
     return any(p.card_type == CardType.CREATURE for p in state.battlefield)
+
+
+def any_creature_on_either_battlefield(state):
+    """Shared "is there a legal Aura/targeted-effect target at all" gate for
+    an "enchant/target creature" effect that can target EITHER side --
+    Rancor/Ancestral Mask/Armadillo Cloak/Ethereal Armor/Nyxborn Hydra's
+    Bestow (all plain "Enchant creature", no "you control" restriction --
+    verified via Scryfall) all reduce to exactly this. Checking only the
+    caster's OWN battlefield (any_creature_on_battlefield) would wrongly
+    report "no legal target" whenever the caster controls no creatures but
+    the opponent does -- a real, if rarely useful, legal target."""
+    return any(p.card_type == CardType.CREATURE for player in state.players for p in player.battlefield)

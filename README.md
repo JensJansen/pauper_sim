@@ -4,8 +4,8 @@ A from-scratch **2-player Magic: The Gathering rules engine** for a curated
 subset of cards, plus a **token/attention deep-RL system** that trains a
 separate policy per deck by self-play and continuous league play against a
 pool of historical opponents. The engine, the card catalog, the neural
-architecture, the training loop, and a Cockatrice replay exporter all live in
-this repo with essentially no framework dependencies beyond PyTorch.
+architecture, and the training loop all live in this repo with essentially no
+framework dependencies beyond PyTorch.
 
 ---
 
@@ -19,7 +19,6 @@ this repo with essentially no framework dependencies beyond PyTorch.
 | **DRL system** | `src/rl/` | A shared Set-Transformer + FiLM perception stack, per-deck trunk/critic/pointer-network action heads, and a PPO self-play + league training loop. |
 | **Decks** | `data/*.txt` + `league_decks.json` | An 11-deck roster (see below). |
 | **Training drivers** | `src/run_pretrain.py`, `src/run_league.py` | Two-phase pipeline: pretrain & freeze the shared stack, then train every deck continuously in a league. |
-| **Replay export** | `src/sim_replay_converter/` | Converts engine game logs into Cockatrice `.cor` replay files so games can be watched in Cockatrice's viewer. |
 | **Training-ops UI** | `src/webapp/` | A local Flask web app to start/stop/configure training runs and watch their logs live in a browser, instead of hand-building CLI invocations. |
 
 **Roster** (`data/league_decks.json`): `mono_red_madness`, `rakdos_madness`,
@@ -110,8 +109,6 @@ src/
   benchmarking/            training_run.py (benchmarks the real league loop under
                            different collection configs) + _common.py (path/stdout
                            bootstrap it imports for its side effect).
-  sim_replay_converter/    JSON game log -> Cockatrice .cor replay (convert.py + a
-                           vendored copy of Cockatrice's .proto files under proto/).
   webapp/                  Local Flask training-ops UI: app.py (routes) + runs.py
                            (subprocess/registry logic) + static/index.html (the
                            whole frontend, no build step). See its own section below.
@@ -122,8 +119,8 @@ logs/                      Game event logs from --log runs (gitignored).
 ```
 
 **Run scripts from `src/`.** The driver/training scripts (`run_pretrain.py`,
-`run_league.py`, `benchmarking/*`, `sim_replay_converter/convert.py`) use
-relative paths like `../data` and `../checkpoints`, and the `rl.*` modules
+`run_league.py`, `benchmarking/*`) use relative paths like `../data` and
+`../checkpoints`, and the `rl.*` modules
 import each other and `game`/`drl_env` by name — both of which resolve when
 you run from `src/` (Python puts the script's directory on `sys.path`). The
 engine itself (`game/`) is a proper importable package.
@@ -310,31 +307,6 @@ wired only through `--matchup` mode.)
 
 ---
 
-## Watching games in Cockatrice
-
-`src/sim_replay_converter/convert.py` turns an engine JSON log (from a
-`--matchup --log` or `--eval --log` run) into Cockatrice `.cor` replays so a
-game can be watched in Cockatrice's built-in replay viewer:
-
-```
-cd src/sim_replay_converter
-python convert.py <sim.json> <output_dir> [--game INDEX]
-```
-
-It auto-detects two log shapes (snapshot-diff and event-stream) and, on first
-run, generates protobuf bindings from the vendored Cockatrice `.proto` files
-(`proto/`, overridable via `COCKATRICE_PROTO_DIR`). Requires `grpcio-tools`.
-
-One JSON file can hold many games — a `--matchup` run logs one deck pair, an
-`--eval` run logs a whole round-robin (every pairing, with mirrors) in one
-file — and each game's output filename/description is labeled with its own
-deck pairing, not just the file's. `pytest tests/sim_replay_converter` checks
-the converter against `logs/*.json` (skipped if none present) plus a few
-fabricated-event checks that always run — rerun it after an engine change to
-the event log shape.
-
----
-
 ## Training-ops UI (`src/webapp/`)
 
 A local Flask web app for starting, stopping, configuring, and watching
@@ -455,40 +427,109 @@ snapshots) has a real but looser rationale and was left alone.
 
 Step through a logged game's board state one event at a time. MVP scope per
 `todo/game_visualization.md`: retroactive viewing of an already-completed
-`--log` file only (no live game viewing, no decision-weight overlay yet).
+`--log` file only (no live game viewing).
 
 - **The webapp parses the raw event-log JSON directly** — no intermediate
-  replay format, no Cockatrice/`.cor` involved. `replay_engine.py`'s
-  `GameReducer` folds the event stream (the same `state.log_event` records
-  `sim_replay_converter/convert.py` reads) into one board-state snapshot per
-  event: life totals, mana pools, hand/battlefield/graveyard/exile contents,
-  and the stack. It ports the event-kind interpretation rules
-  `convert.py`'s `EventStreamReplayBuilder` already proved out against real
-  games (name-based zone identity tracking, DFC face reverts, aura-orphan
-  handling, same-phase-recast identity, mulligan netting) as separate,
-  simpler code — plain dicts instead of Cockatrice protobuf events, and one
-  real difference: the stack is tracked as a single shared ordered list
-  (top = last, matching `GameState.stack`) rather than `convert.py`'s
-  per-player split, which is a Cockatrice protocol artifact, not a rules one.
+  replay format involved. `replay_engine.py`'s `GameReducer` folds the event
+  stream (the same `state.log_event` records) into one board-state snapshot
+  per event: life totals, mana pools, hand/battlefield/graveyard/exile
+  contents, and the stack (name-based zone identity tracking, DFC face
+  reverts, aura-orphan handling, same-phase-recast identity). The stack is
+  tracked as a single shared ordered list (top = last, matching
+  `GameState.stack`); the pregame mulligan sequence is **not** netted into
+  one summary step — see below.
 - **File selection is a native browser file picker.** Pick any `--log` JSON
   file from disk (`logs/*.json`); the browser reads it and posts the content
   to the backend, which returns that file's game list (one file can hold an
   entire round-robin `--eval` run) before reducing any board state, then
-  reduces just the selected game.
+  reduces just the selected game. Each game in the list is labeled from its
+  own `deck_a`/`deck_b` fields (`run_league.py`'s `_write_event_log` stamps
+  every game with which pairing it actually was) as `"deck A vs deck B (game
+  N)"` — the `(game N)` disambiguates repeat games of the same pairing (a
+  double round-robin plays each one twice) — rather than an unlabeled
+  `"game 7"` a round-robin log's many different pairings can't otherwise be
+  told apart by. Logs written before this field existed still work, falling
+  back to the old file-level `game — game N` label.
 - **Both hands are always fully visible**, and the stack is always visible —
   this is post-hoc review of a finished game, not live play, so there's no
   hidden-information concern.
 - **Card art is hotlinked from Scryfall's image endpoint** per card name (no
   local caching, nothing committed to the repo, no asset pipeline) — the
-  browser handles image caching on its own.
-- Event kinds with no board-visible effect (`pass`, `priority_flip`,
+  browser handles image caching on its own. Hovering any card thumbnail pops
+  up a larger version for readability.
+- **Cockatrice-style board layout**: each player's zones stack vertically, with
+  a right-hand rail (library/graveyard/exile/mana pool) per player. Zone order
+  is mirrored around the middle so the two creature rows face off (top to
+  bottom: P0 hand, P0 lands, P0 other, P0 creatures, P1 creatures, P1 other, P1
+  lands, P1 hand) — hand is always the zone nearest that player's own outer
+  edge. Graveyard and exile collapse to a pile showing the most-recently-added
+  card's art (hover to see every card); library only ever shows a card count,
+  never identities, since it's a hidden zone. Tapped permanents render rotated
+  90°. Auras nest in a small stack peeking out beneath the permanent they
+  enchant (resolved to the target's actual controller, so a Pacifism-style
+  aura enchanting the opponent nests under their creature, not the caster's
+  side).
+- **The stack column (far left) is split in half, one per player**, each
+  roughly the height of that player's own row, Cockatrice-style — the
+  underlying model is still ONE shared LIFO stack (`GameReducer`'s own
+  `self.stack`, real rules fidelity per this file's module docstring); the
+  split is purely how the *viewer* groups entries by controller. Each entry
+  shows card art, not just a name.
+- **Far-right panel: the agent's top-5 candidate actions at the current
+  decision**, split in half exactly like the stack column (one half per
+  player) since a `decision_weights` step always has exactly one deciding
+  player (`step.active_player_idx`, from the event envelope's `active_idx`
+  -- `_seat_step`'s docstring guarantees `active_idx == the deciding seat`
+  for its whole duration). The deciding player's half shows the top-5
+  candidates by the network's post-mask probability, the chosen one
+  highlighted, with the value estimate below; the other half just shows "no
+  decision data." Opt-in instrumentation, off by
+  default: `rl/agent.py`'s `_seat_step` (main policy) and
+  `rl/mulligan.py`'s `decide()` (both mulligan branches) log a
+  `decision_weights` event only when `state.event_log is not None` (i.e.
+  `--log` eval/matchup runs, never blanket-on during ordinary self-play
+  collection) and only for a real (non-forced, >1-legal-option) decision —
+  reads values already computed in that decision's own forward pass, so no
+  extra inference call and no effect on sampling. `rl/action_bridge.py`'s
+  `pointer_kind(state)` names which targeting category (if any) governs a
+  pointer candidate, mirroring `pointer_legal_mask`'s own dispatch.
+  `replay_engine.py`'s handler formats each candidate (`fixed_label`
+  verbatim; `pointer_identity`'s `{name, slot, controller}` into
+  `"{name} (slot {slot}) (P{controller})"`, parts omitted when absent — a
+  graveyard card or stack entry has no `slot`) — the logging side never
+  bakes a string, matching every other event kind in this file.
+- **Every mulligan-round draw, reject, and bottom-card pick is its own step**
+  (owner directive), not netted into one "opening hands" summary the way
+  `convert.py`'s `EventStreamReplayBuilder` nets it — each is a genuinely
+  separate decision (its own `rl/mulligan.py` forward pass), exactly the
+  kind of moment this viewer exists to make visible, and each gets its own
+  top-5 panel from the decision-weights logging above.
+- **Library count is a simplified approximation** (owner-authorized): assume a
+  real 60-card constructed deck, decrement once per card actually drawn
+  (including every mulligan re-draw), and give the count back on a mulligan
+  take/bottom put-back, so a multi-mulligan pregame still nets to the right
+  remaining count. Non-draw depletion elsewhere (search, mill, impulse exile,
+  scry-to-graveyard, non-mulligan put-backs) isn't counted — fine for
+  "roughly how many cards are left," not a source of truth.
+- Event kinds with no board-visible effect (`priority_flip`,
   `resolution_begin`/`complete`, `pump`/`explore`/`animated` — the log entry
   doesn't carry enough to render unambiguously, etc.) still advance the
   scrubber with a plain label so the timeline never silently skips a step,
   matching `convert.py`'s own documented scope.
-- Deferred, not in MVP scope: the decision-point overlay (top-5 action
-  weights per real decision) and live re-inference against an arbitrary
-  checkpoint — both need new engine-side logging/plumbing, tracked in
+- **`pass` is dropped entirely, not just given a no-op step** (owner-authorized
+  simplification): a priority pass carries no information beyond what already
+  gets its own step — the stack's top item resolving or the phase advancing —
+  so showing it separately was pure noise, often a large fraction of a game's
+  total step count.
+- **A phase with nothing but passes in it is skipped straight through to
+  whatever phase actually has something happen** (same owner authorization):
+  `phase_change` is buffered rather than shown immediately, since whether it's
+  worth a step isn't known until either a real event during that phase
+  surfaces it, or the next `phase_change`/`turn_start` arrives with nothing
+  having happened — an empty phase, dropped rather than shown as a bare
+  "— Upkeep —" the player never actually did anything in.
+- Deferred, not in MVP scope: live re-inference against an arbitrary
+  checkpoint (the decision-point overlay above has shipped) — tracked in
   `todo/game_visualization.md`.
 
 ---
@@ -519,8 +560,7 @@ no `cd src` needed.
 ```
 pip install -r requirements.txt   # pytest included
 pytest                             # whole suite (engine + catalog + effects +
-                                    # resolution + drl_env + sim_replay_converter +
-                                    # rl + webapp)
+                                    # resolution + drl_env + rl + webapp)
 pytest -m "not slow"               # fast tier only: game engine/catalog/effects,
                                     # deterministic, no torch, sub-second
 pytest -m slow                     # rl/ tier only: imports torch, plays real

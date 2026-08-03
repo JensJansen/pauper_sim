@@ -15,9 +15,10 @@ import torch
 import pytest
 
 import game as _game
+from game.state import GameState, PlayerState
 from rl.arch import SetTransformer
 from rl.features import CardVocab
-from rl.mulligan import MULLIGAN_COST, MulliganNet, mulligan_reward, update
+from rl.mulligan import HAND, MULLIGAN_COST, MulliganNet, decide, mulligan_reward, update
 
 
 @pytest.mark.slow
@@ -90,3 +91,74 @@ def test_mulligan_net_shapes_and_reinforce_learning():
     train_toward(good_action=0)
     p_mull_when_bad = mull_prob()
     assert p_mull_when_bad < 0.25, f"should learn to keep when keeping wins, got {p_mull_when_bad:.2f}"
+
+
+def _net_and_vocab(decklist_path="../data/mono_blue_terror.txt"):
+    decklist = _game.parse_decklist_file(decklist_path)
+    vocab = CardVocab([decklist])
+    shared = SetTransformer(vocab.size, d_model=16, n_heads=2, n_layers=1, dim_feedforward=32)
+    return MulliganNet(shared, hidden=16), vocab, decklist
+
+
+@pytest.mark.slow
+def test_decide_logs_keep_or_mulligan_weights_when_legal():
+    net, vocab, decklist = _net_and_vocab()
+    names = sorted({n for n, *_ in decklist})
+    p0, p1 = PlayerState(on_the_play=True), PlayerState(on_the_play=False)
+    p0.hand = [_game.CARD_DEFS[n] for n in names[:7]]
+    state = GameState(on_the_play=True, players=[p0, p1], event_log=[])
+    state.active_idx = 0
+    state.pending_resolution = {"kind": "mulligan_decision"}
+
+    decide(net, vocab, state, seat=0, record=lambda *_: None, greedy=True)
+    assert len(state.event_log) == 1
+    ev = state.event_log[0]
+    assert ev["kind"] == "decision_weights" and ev["network"] == "mulligan_keep"
+    assert {c["fixed_label"] for c in ev["candidates"]} == {"Keep", "Mulligan"}
+    assert ev["chosen_index"] in (0, 1)
+
+
+@pytest.mark.slow
+def test_decide_skips_logging_a_mulligan_decision_forced_past_the_cap():
+    net, vocab, decklist = _net_and_vocab()
+    names = sorted({n for n, *_ in decklist})
+    p0, p1 = PlayerState(on_the_play=True), PlayerState(on_the_play=False)
+    p0.hand = [_game.CARD_DEFS[n] for n in names[:7]]
+    p0.mulligans_taken = HAND  # past the cap -- "keep" is the only legal option
+    state = GameState(on_the_play=True, players=[p0, p1], event_log=[])
+    state.active_idx = 0
+    state.pending_resolution = {"kind": "mulligan_decision"}
+
+    decide(net, vocab, state, seat=0, record=lambda *_: None, greedy=True)
+    assert state.event_log == [], "a forced (past-cap) mulligan decision must not log decision_weights"
+
+
+@pytest.mark.slow
+def test_decide_logs_bottom_weights_when_multiple_candidates():
+    net, vocab, decklist = _net_and_vocab()
+    names = sorted({n for n, *_ in decklist})
+    p0, p1 = PlayerState(on_the_play=True), PlayerState(on_the_play=False)
+    p0.hand = [_game.CARD_DEFS[n] for n in names[:3]]  # 3 unique names -- a real choice
+    state = GameState(on_the_play=True, players=[p0, p1], event_log=[])
+    state.active_idx = 0
+    state.pending_resolution = {"kind": "mulligan_bottom", "remaining": 1}
+
+    decide(net, vocab, state, seat=0, record=lambda *_: None, greedy=True)
+    assert len(state.event_log) == 1
+    ev = state.event_log[0]
+    assert ev["kind"] == "decision_weights" and ev["network"] == "mulligan_bottom"
+    assert {c["fixed_label"] for c in ev["candidates"]} <= set(names[:3])
+
+
+@pytest.mark.slow
+def test_decide_skips_logging_a_bottom_pick_forced_single_candidate():
+    net, vocab, decklist = _net_and_vocab()
+    only_name = decklist[0][0]
+    p0, p1 = PlayerState(on_the_play=True), PlayerState(on_the_play=False)
+    p0.hand = [_game.CARD_DEFS[only_name]] * 3  # every card shares one name -- nothing real to choose
+    state = GameState(on_the_play=True, players=[p0, p1], event_log=[])
+    state.active_idx = 0
+    state.pending_resolution = {"kind": "mulligan_bottom", "remaining": 1}
+
+    decide(net, vocab, state, seat=0, record=lambda *_: None, greedy=True)
+    assert state.event_log == [], "a forced (single-candidate) bottom pick must not log decision_weights"

@@ -34,20 +34,19 @@ from game.resolution.handlers import (
     execute_choose_graveyard_card_decline,
     execute_choose_graveyard_card_option,
     execute_choose_opponent_permanent_option,
+    execute_choose_permanent_option,
     execute_discard_decline,
     execute_discard_option,
     execute_madness_decline,
     execute_mulligan_keep,
     execute_mulligan_take,
     execute_order_triggers_option,
-    execute_sacrifice_option,
     execute_scry_surveil_option,
     explore,
     madness_decision_options,
     mulligan_decision_options,
     order_triggers_options,
     refizzle_if_now_targetless,
-    sacrifice_options,
 )
 from game.state import GameState, Permanent, PlayerState
 
@@ -214,36 +213,76 @@ def test_discard_madness_routes_to_exile_and_queues_decision():
 
 def test_sacrifice_creature_predicate():
     # begin_sacrifice: predicate-based, not hardcoded to creatures --
-    # exercise a creature predicate (Dread Return's own shape) against
-    # the primitive.
+    # exercise a creature predicate (Dread Return's own shape) against the
+    # primitive. Each pick is now a real choose_permanent sub-decision
+    # (exact name+slot), chained one at a time until n are sacrificed --
+    # never an arbitrary first-same-name match (see test below for why that
+    # distinction is load-bearing).
     state = GameState(on_the_play=True)
-    state.battlefield = [
-        _permanent("Bear", CardType.CREATURE),
-        _permanent("Wolf", CardType.CREATURE),
-        _permanent("Mountain", CardType.LAND),
-    ]
-    completed = []
-    begin_sacrifice(state, lambda p: p.card_def.card_type == CardType.CREATURE, 2, lambda s, ok: completed.append(ok))
-    assert sacrifice_options(state) == ["Bear", "Wolf"]  # the Mountain never qualifies
-    execute_sacrifice_option(state, "Bear")
-    assert completed == []
-    execute_sacrifice_option(state, "Wolf")
-    assert completed == [True]
-    assert sorted(p.card_def.name for p in state.battlefield) == ["Mountain"]
-    assert sorted(c.name for c in state.graveyard) == ["Bear", "Wolf"]
+    bear, wolf = _permanent("Bear", CardType.CREATURE), _permanent("Wolf", CardType.CREATURE)
+    state.battlefield = [bear, wolf, _permanent("Mountain", CardType.LAND)]
+    # sacrifice_to_graveyard (the real removal path this now goes through)
+    # treats an unregistered name as a TOKEN that ceases to exist (real
+    # Magic 111.7) rather than hitting the graveyard -- register these two
+    # fake names for real so this test's graveyard assertion below actually
+    # exercises the ordinary "real card" path, not the token one.
+    registry.CARD_DEFS["Bear"], registry.CARD_DEFS["Wolf"] = bear.card_def, wolf.card_def
+    try:
+        completed = []
+        begin_sacrifice(state, lambda p: p.card_def.card_type == CardType.CREATURE, 2, lambda s, ok: completed.append(ok))
+        assert state.pending_resolution["kind"] == "choose_permanent"
+        assert choose_permanent_options(state) == [("Bear", 1), ("Wolf", 1)]  # the Mountain never qualifies
+        execute_choose_permanent_option(state, "Bear", 1)
+        assert completed == []
+        assert state.pending_resolution["kind"] == "choose_permanent"  # re-opened for the 2nd pick
+        assert choose_permanent_options(state) == [("Wolf", 1)]
+        execute_choose_permanent_option(state, "Wolf", 1)
+        assert completed == [True]
+        assert sorted(p.card_def.name for p in state.battlefield) == ["Mountain"]
+        assert sorted(c.name for c in state.graveyard) == ["Bear", "Wolf"]
+    finally:
+        del registry.CARD_DEFS["Bear"]
+        del registry.CARD_DEFS["Wolf"]
 
 
 def test_sacrifice_land_predicate():
-    # ...and a land predicate (Fireblast/Lava Dart's shape, Highway
-    # Robbery's discard-or-sac choice) against the same primitive.
+    # ...and a land predicate (Fireblast's alt-cost, Lava Dart's Flashback)
+    # against the same primitive.
     state = GameState(on_the_play=True)
     state.battlefield = [_permanent("Mountain", CardType.LAND), _permanent("Bear", CardType.CREATURE)]
     completed = []
     begin_sacrifice(state, lambda p: p.card_def.name == "Mountain", 1, lambda s, ok: completed.append(ok))
-    assert sacrifice_options(state) == ["Mountain"]  # the Bear never qualifies, even though it's a permanent
-    execute_sacrifice_option(state, "Mountain")
+    assert choose_permanent_options(state) == [("Mountain", 1)]  # the Bear never qualifies, even though it's a permanent
+    execute_choose_permanent_option(state, "Mountain", 1)
     assert completed == [True]
     assert [p.card_def.name for p in state.battlefield] == ["Bear"]
+
+
+def test_sacrifice_lets_agent_choose_which_same_named_copy():
+    # The whole point of routing sacrifice through choose_permanent instead
+    # of a plain by-name pick: two same-named permanents are NOT
+    # interchangeable once one differs from the other (an attached Aura, a
+    # counter, ...) -- the agent must be able to choose exactly which one
+    # to sacrifice, not have the engine silently take "the first one found
+    # in battlefield order."
+    state = GameState(on_the_play=True)
+    tagged = _permanent("Bear", CardType.CREATURE)
+    tagged.slot = 1
+    tagged.flags["enchanted"] = True  # stand-in for "this copy carries something the other doesn't"
+    plain = _permanent("Bear", CardType.CREATURE)
+    plain.slot = 2
+    state.battlefield = [tagged, plain]  # the "first found" copy is the TAGGED one
+    registry.CARD_DEFS["Bear"] = tagged.card_def  # a real (non-token) name -- see the test above for why
+    try:
+        completed = []
+        begin_sacrifice(state, lambda p: p.card_def.card_type == CardType.CREATURE, 1, lambda s, ok: completed.append(ok))
+        assert choose_permanent_options(state) == [("Bear", 1), ("Bear", 2)]
+        execute_choose_permanent_option(state, "Bear", 2)  # deliberately choose the PLAIN copy
+        assert completed == [True]
+        assert [p.card_def.name for p in state.battlefield] == ["Bear"]
+        assert state.battlefield[0] is tagged and state.battlefield[0].flags.get("enchanted") is True
+    finally:
+        del registry.CARD_DEFS["Bear"]
 
 
 def test_choose_opponent_permanent_targets_specific_slot():

@@ -194,10 +194,10 @@ def _goblin_tomb_raider_controls_artifact(state, permanent):
 
 
 def burning_tree_emissary_etb(state):
-    """"When this creature enters, add {R}{G}." Free mana into the pool."""
-    state.mana_pool["R"] = state.mana_pool.get("R", 0) + 1
-    state.mana_pool["G"] = state.mana_pool.get("G", 0) + 1
-    state.log_event("mana_tap", permanent=("Burning-Tree Emissary", None), mode="etb", produced=["R", "G"])
+    """Real card adds {R}{G}. AUTHORIZED SIMPLIFICATION (owner, 2026-08-02):
+    adds {R}{R} instead -- mono_red_rally has no green source/sink for the G."""
+    state.mana_pool["R"] = state.mana_pool.get("R", 0) + 2
+    state.log_event("mana_tap", permanent=("Burning-Tree Emissary", None), mode="etb", produced=["R", "R"])
 
 
 def cast_reckless_impulse(state, card_def):

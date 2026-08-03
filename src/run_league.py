@@ -389,10 +389,13 @@ def _run_eval(eval_decks, games_per_pairing, greedy, seed, game_logs, matchup=No
     Pairing is a round-robin with mirrors (combinations_with_replacement) over
     eval_decks, or a single A-vs-B pairing when `matchup` is given. Sampled by
     default; greedy=True argmaxes. game_logs (a list) collects one engine
-    event_log per game. Returns the RESOLVED deck roster actually played
-    (eval_decks falls back to the full roster when called with None) -- the
-    caller logs this into the event log's meta so a log written without an
-    explicit --decks still records which decks it actually used."""
+    event_log per game. Returns (RESOLVED deck roster actually played, per-game
+    (deck_a, deck_b) pairing list aligned 1:1 with game_logs, or None when
+    game_logs is None) -- the roster falls back to the full roster when called
+    with None (the caller logs it into the event log's meta so a log written
+    without an explicit --decks still records which decks it actually used);
+    the pairing list is what lets _write_event_log stamp each game with which
+    matchup it actually was, rather than a bare, unlabeled game_index."""
     import itertools
     league_dir = league_dir or LEAGUE_DIR
     decklists, vocab, deck_ctxs, fixed_tables = build_pool()
@@ -423,6 +426,7 @@ def _run_eval(eval_decks, games_per_pairing, greedy, seed, game_logs, matchup=No
           f"({'greedy' if greedy else 'sampled'}, seed={seed}) over decks={eval_decks}")
     t0 = time.time()
     total = 0
+    game_pairings = [] if game_logs is not None else None
     for a, b in pairings:
         # record_as = [None, None] and reward_fns = [None, None]: pure play, no
         # buffers, no reward -- record=False ignores them entirely.
@@ -430,12 +434,17 @@ def _run_eval(eval_decks, games_per_pairing, greedy, seed, game_logs, matchup=No
             [SeatAgent(live_nets[a], mulligan_nets[a], deck_ctxs[a]),
              SeatAgent(live_nets[b], mulligan_nets[b], deck_ctxs[b])],
             [decklists[a], decklists[b]], [None, None], [None, None])
+        before = len(game_logs) if game_logs is not None else 0
         _bufs, _mull, played = collect_rollout(pairing, games_per_pairing, horizon, rng, device="cpu",
                                                record=False, greedy=greedy, game_logs=game_logs)
         total += played
+        if game_pairings is not None:
+            # len(game_logs) - before, not `played`: robust even if collect_rollout
+            # ever appends a different count than it reports played.
+            game_pairings.extend([(a, b)] * (len(game_logs) - before))
         print(f"  {a} vs {b}: {played} games", flush=True)
     print(f"eval done: {total} games in {time.time() - t0:.1f}s")
-    return eval_decks
+    return eval_decks, game_pairings
 
 
 def _json_default(obj):
@@ -457,12 +466,25 @@ def _json_default(obj):
     return repr(obj)
 
 
-def _write_event_log(log_path, game_logs, meta):
+def _write_event_log(log_path, game_logs, meta, game_pairings=None):
     """Write the engine event logs collected this session to PATH as one compact
     JSON doc (no indent -- pretty-printing bloats an event log substantially).
-    _json_default salvages any stray non-serializable field."""
+    _json_default salvages any stray non-serializable field. game_pairings (from
+    _run_eval, or a single repeated pairing for a --matchup training run), if
+    given, stamps each game's own deck_a/deck_b directly onto its record -- so a
+    round-robin log with many different pairings in one file is self-describing
+    (webapp/replay_engine.list_games reads it), rather than requiring every
+    consumer to reconstruct which pairing game N was from meta or the run's
+    own stdout print order."""
     os.makedirs(os.path.dirname(log_path) or ".", exist_ok=True)
-    doc = {"meta": meta, "games": [{"game_index": i, "events": ev} for i, ev in enumerate(game_logs)]}
+    games = []
+    for i, ev in enumerate(game_logs):
+        entry = {"game_index": i}
+        if game_pairings is not None:
+            entry["deck_a"], entry["deck_b"] = game_pairings[i]
+        entry["events"] = ev
+        games.append(entry)
+    doc = {"meta": meta, "games": games}
     with open(log_path, "w") as f:
         json.dump(doc, f, default=_json_default)
     size_kb = os.path.getsize(log_path) / 1024
@@ -569,14 +591,15 @@ def main():
     league_dir = f"{CHECKPOINT_DIR}/{league_name}" if league_name else None
 
     if args.eval:  # no training: round-robin (or single matchup) over current live agents
-        resolved_decks = _run_eval(train_decks, args.games, args.greedy, args.seed, game_logs, matchup=matchup,
-                                    league_dir=league_dir)
+        resolved_decks, game_pairings = _run_eval(train_decks, args.games, args.greedy, args.seed, game_logs,
+                                                    matchup=matchup, league_dir=league_dir)
         if args.log:
             # "decks" logs the RESOLVED roster _run_eval actually played, not the raw
             # --decks arg -- train_decks is None whenever --decks was omitted (the
             # common case), which is not the same as "no decks played."
             _write_event_log(args.log, game_logs, {"mode": "eval", "matchup": list(matchup) if matchup else None,
-                                                   "decks": resolved_decks, "greedy": args.greedy, "games_logged": len(game_logs)})
+                                                   "decks": resolved_decks, "greedy": args.greedy, "games_logged": len(game_logs)},
+                              game_pairings=game_pairings)
         return
 
     # Run mechanics: explicit flag > --run-config > hardcoded default -- the
@@ -671,7 +694,11 @@ def main():
     if args.log:
         meta = {"mode": "matchup" if matchup else "league", "matchup": list(matchup) if matchup else None,
                 "train_decks": train_decks, "games_logged": len(game_logs)}
-        _write_event_log(args.log, game_logs, meta)
+        # One fixed pairing for the whole run (--log is only ever wired through
+        # --matchup mode) -- same schema as _run_eval's per-game pairings, just
+        # constant, so every log this script can produce is consistently shaped.
+        game_pairings = [matchup] * len(game_logs) if matchup else None
+        _write_event_log(args.log, game_logs, meta, game_pairings=game_pairings)
 
 
 if __name__ == "__main__":

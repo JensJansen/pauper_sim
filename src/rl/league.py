@@ -112,7 +112,7 @@ class LeaguePool:
         reuse it."""
         if snapshot_path in self._net_cache:
             return self._net_cache[snapshot_path]
-        _vocab, fixed_table, _pending_kinds = deck_ctx
+        _vocab, fixed_table = deck_ctx
         saved = torch.load(snapshot_path, weights_only=True)
         net = DeckNetwork(shared_stack, film_condition_dim=shared_stack.d_model, non_targeting_n_actions=len(fixed_table),
                            trunk_hidden=saved["trunk_hidden"])

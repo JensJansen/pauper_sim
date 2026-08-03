@@ -22,21 +22,20 @@ def _mono_red_fixture():
     """The mono_red_madness decklist/fixed-table/vocab fixture most of these
     checks share -- Blood/Robot are the two tokens the deck creates mid-game."""
     decklist = game.parse_decklist_file("../data/mono_red_madness.txt")
-    pending_kinds = game.derive_pending_kinds(decklist)
     # mono_red_madness creates BOTH of these mid-game (Blood from madness
     # discards, Robot from Melded Moxite's own sacrifice ability) -- the deck
     # config's own "token_card_defs" only lists "Blood", missing "Robot", so
     # this fixture passes the complete, correct set explicitly rather than
     # relying on that config.
     token_defs = (game.BLOOD_TOKEN_CARD_DEF, game.ROBOT_TOKEN_CARD_DEF)
-    fixed_table = build_fixed_action_table(decklist, token_card_defs=token_defs, pending_kinds=pending_kinds)
+    fixed_table = build_fixed_action_table(decklist, token_card_defs=token_defs)
     vocab = CardVocab([decklist], token_card_defs=token_defs)
-    return decklist, pending_kinds, token_defs, fixed_table, vocab
+    return decklist, token_defs, fixed_table, vocab
 
 
 @pytest.mark.slow
 def test_build_fixed_action_table_basic():
-    decklist, pending_kinds, token_defs, fixed_table, _vocab = _mono_red_fixture()
+    _decklist, _token_defs, fixed_table, _vocab = _mono_red_fixture()
     fixed_names = [name for name, _l, _e in fixed_table]
     assert not any(name.startswith(_TARGETING_PREFIXES) for name in fixed_names), (
         "fixed table must contain zero targeting actions"
@@ -65,7 +64,7 @@ def test_build_fixed_action_table_basic():
     # moment a by-name resolution needs to reference the back face
     # (drl_env._actions.build_action_table).
     dfc_decklist = game.parse_decklist_file("../data/mono_blue_terror.txt")
-    dfc_table = build_fixed_action_table(dfc_decklist, pending_kinds=game.derive_pending_kinds(dfc_decklist))
+    dfc_table = build_fixed_action_table(dfc_decklist)
     dfc_names = [name for name, _l, _e in dfc_table]
     assert "Choose: Delver of Secrets" in dfc_names and "Choose: Insectile Aberration" in dfc_names, (
         "both DFC faces need their own 'Choose: X' row -- got: "
@@ -85,7 +84,7 @@ def test_pointer_legal_mask_real_game_attack_block_choose_opponent():
     # table's own "prefer Pass, else first legal" rule -- exercises
     # attacking, blocking, AND the cross-player "Choose opponent's" consult
     # nested inside blocking, across real turns.
-    decklist, _pending_kinds, _token_defs, fixed_table, vocab = _mono_red_fixture()
+    decklist, _token_defs, fixed_table, vocab = _mono_red_fixture()
     pass_action = next(i for i, (name, _l, _e) in enumerate(fixed_table) if name == "Pass")
     saw_attack, saw_block, saw_choose_opponent = [False], [False], [False]
 
@@ -167,7 +166,7 @@ def test_no_undo_blocking_regression():
     # (game.effects.combat.creature_block_eligible's own docstring), so the
     # "opponent" PlayerState here is the attacker's side even though the
     # deciding seat (0, active_idx's default) is the blocker's own.
-    _decklist, _pending_kinds, _token_defs, _fixed_table, vocab = _mono_red_fixture()
+    _decklist, _token_defs, _fixed_table, vocab = _mono_red_fixture()
     ub_me = PlayerState(on_the_play=True)
     ub_opp = PlayerState(on_the_play=False)
     bogle = Permanent(game.CARD_DEFS["Slippery Bogle"])
@@ -191,7 +190,7 @@ def test_saruli_mana_subdecision_pointer():
     # own mana_extra_choose predicate. drl_env's own self-check exercises
     # the rest of the flow (the fixed-table "Tap <name>"/"Produce <color>"
     # rows) directly; this is specifically the pointer half.
-    _decklist, _pending_kinds, _token_defs, _fixed_table, vocab = _mono_red_fixture()
+    _decklist, _token_defs, _fixed_table, vocab = _mono_red_fixture()
     sd_me = PlayerState(on_the_play=True)
     sd_opp = PlayerState(on_the_play=False)
     saruli_a = Permanent(game.CARD_DEFS["Saruli Caretaker"])
@@ -227,7 +226,7 @@ def test_saruli_mid_pay_unless():
     # (begin_choose_permanent/begin_choose_mana_color) would wrongly mask
     # them mid-ANY-resolution, which is why mana_subdecision is its own
     # separate field instead.
-    _decklist, _pending_kinds, _token_defs, _fixed_table, vocab = _mono_red_fixture()
+    _decklist, _token_defs, _fixed_table, vocab = _mono_red_fixture()
     pu_me = PlayerState(on_the_play=True)
     pu_opp = PlayerState(on_the_play=False)
     pu_saruli = Permanent(game.CARD_DEFS["Saruli Caretaker"])
@@ -240,7 +239,7 @@ def test_saruli_mid_pay_unless():
     assert pu_state.pending_resolution["kind"] == "pay_unless"
 
     pu_decklist = [("Saruli Caretaker", 2), ("Slippery Bogle", 2)]
-    pu_table = build_fixed_action_table(pu_decklist, pending_kinds=game.derive_pending_kinds(pu_decklist))
+    pu_table = build_fixed_action_table(pu_decklist)
     pu_tap_idx = next(i for i, (n, _l, _e) in enumerate(pu_table) if n == "Tap Saruli Caretaker")
     _, pu_tap_legal, pu_tap_execute = pu_table[pu_tap_idx]
     assert pu_tap_legal(pu_state), "Saruli's mana ability must stay legal mid-pay_unless -- the whole point of this redesign"
@@ -280,7 +279,7 @@ def test_choose_graveyard_card_pointer_opponent_graveyard():
     # OPPONENT's graveyard -- the cross-deck case that needs per-object, not
     # per-name, addressing -- and confirm the pointer offers exactly that card
     # and executes the pick.
-    _decklist, _pending_kinds, _token_defs, _fixed_table, vocab = _mono_red_fixture()
+    _decklist, _token_defs, _fixed_table, vocab = _mono_red_fixture()
     gy_me = PlayerState(on_the_play=True)
     gy_opp = PlayerState(on_the_play=False)
     gy_opp.graveyard = [CardInstance(game.CARD_DEFS["Lightning Bolt"])]  # graveyard holds CardInstances
@@ -304,7 +303,7 @@ def test_choose_graveyard_card_hand_reveal():
     # player's HAND, which the effect reveals. The whole revealed hand is
     # tokenized so the pointer can address it, but only predicate-legal (nonland)
     # cards are selectable -- no whole-league fixed "Choose: X" rows needed.
-    _decklist, _pending_kinds, _token_defs, _fixed_table, vocab = _mono_red_fixture()
+    _decklist, _token_defs, _fixed_table, vocab = _mono_red_fixture()
     hr_me = PlayerState(on_the_play=True)
     hr_opp = PlayerState(on_the_play=False)
     hr_opp.hand = [game.CARD_DEFS["Lightning Bolt"], game.CARD_DEFS["Mountain"]]
@@ -333,9 +332,7 @@ def test_stranded_payment_filter_regression():
     # action, no legal action at all (all-False mask).
     # drl_env._actions._filter_would_strand_payment forbids exactly that.
     tron_decklist = game.parse_decklist_file("../data/monster_tron.txt")
-    tron_table = drl_env.build_action_table(
-        tron_decklist, game.EFFECT_REGISTRY, pending_kinds=game.derive_pending_kinds(tron_decklist),
-    )
+    tron_table = drl_env.build_action_table(tron_decklist, game.EFFECT_REGISTRY)
     # "Filter Barrels of Blasting Jelly for U, paying G" -- the exact action from the crash.
     filt_idx = next(i for i, (n, _l, _e) in enumerate(tron_table)
                     if n == "Filter Barrels of Blasting Jelly for U, paying G")
@@ -368,7 +365,7 @@ def test_choose_cast_copy_own_graveyard_matching():
     # to any deck, which is what kept every existing checkpoint valid.
     for _deck_file in ("mono_red_madness.txt", "monster_tron.txt", "jund_wildfire.txt"):
         _dl = game.parse_decklist_file(f"../data/{_deck_file}")
-        _tbl = build_fixed_action_table(_dl, pending_kinds=game.derive_pending_kinds(_dl))
+        _tbl = build_fixed_action_table(_dl)
         assert not any("cast copy" in n.lower() or "cast_copy" in n.lower() for n, _l, _e in _tbl), (
             f"{_deck_file}: choose_cast_copy must add NO fixed action rows (it is pointer-only)"
         )
@@ -376,7 +373,7 @@ def test_choose_cast_copy_own_graveyard_matching():
     # Unit: only same-named instances in the CASTER's OWN graveyard are legal,
     # matched by object identity -- an unrelated card and the opponent's
     # same-named copy are both excluded.
-    _decklist, _pending_kinds, _token_defs, _fixed_table, vocab = _mono_red_fixture()
+    _decklist, _token_defs, _fixed_table, vocab = _mono_red_fixture()
     cc_me = PlayerState(on_the_play=True)
     cc_opp = PlayerState(on_the_play=False)
     dart_def = game.CARD_DEFS["Lava Dart"]
@@ -409,7 +406,7 @@ def test_choose_cast_copy_percher_response():
     # Casting the OTHER copy instead leaves the targeted one to be exiled. Both
     # are legal Magic; the point is that both must be REACHABLE, which is exactly
     # what picking the copy by identity buys.
-    _decklist, _pending_kinds, _token_defs, _fixed_table, vocab = _mono_red_fixture()
+    _decklist, _token_defs, _fixed_table, vocab = _mono_red_fixture()
     dart_def = game.CARD_DEFS["Lava Dart"]
     for aim_at_targeted in (True, False):
         sc_me = PlayerState(on_the_play=True)
@@ -482,9 +479,7 @@ def test_choose_cast_copy_stranded_payment_regression():
     bw_state = GameState(on_the_play=True, players=[bw_me, PlayerState(on_the_play=False)])
     bw_state.mana_pool.update({"C": 2, "G": 1})  # 2 C pays the generic, G pays the G -- plan_payment/pool_can_pay would say yes
     bw_decklist = game.parse_decklist_file("../data/monster_tron.txt")
-    bw_table = drl_env.build_action_table(
-        bw_decklist, game.EFFECT_REGISTRY, pending_kinds=game.derive_pending_kinds(bw_decklist),
-    )
+    bw_table = drl_env.build_action_table(bw_decklist, game.EFFECT_REGISTRY)
     bw_filt_idx = next(i for i, (n, _l, _e) in enumerate(bw_table)
                         if n == "Filter Barrels of Blasting Jelly for U, paying G")
     # Not yet activated: the filter is a free, ordinary pool->pool conversion.
@@ -515,22 +510,31 @@ def test_universal_cross_player_decision_rows():
     # spell's controller pays), Deem Inferior (tuck_position: the tucked
     # permanent's owner chooses), Chain Lightning (may_copy / a new target for the
     # copy), Cleansing Wildfire (search_fetch: the destroyed land's controller
-    # searches). derive_pending_kinds reads a deck's OWN cards, so gating these
+    # searches), Refurbished Familiar/Relic of Progenitus (discard/graveyard
+    # decline -- both target the opponent), Undercity venture (choose_room/
+    # choose_target_player/scry/search_fetch -- initiative can be STOLEN, so a
+    # deck with none of these among its own cards can still be the one
+    # venturing). derive_pending_kinds reads a deck's OWN cards, so gating these
     # rows on it would leave the ANSWERING seat with no row for the question
     # and an all-False mask. They are unconditional in every deck's table;
     # this asserts every deck has them.
+    #
+    # NOT here (deliberately): Transform/Cast(may)/Cast(madness)/Keep(select to
+    # hand)/Decline(discard or sacrifice)/Decline(Ancient Stirrings)/Decline
+    # (Malevolent Rumble)/Add mana -- each confirmed SELF-ONLY (single call
+    # site, always the deciding player's own card: Delver's own upkeep,
+    # Cascade's own may-cast, madness always triggers off your own discarded
+    # card, Lead the Stampede/Highway Robbery/Ancient Stirrings/Malevolent
+    # Rumble/Chromatic Star are each one specific card's own effect) -- see
+    # test_self_only_decision_rows_gated_per_deck below, and drl_env._actions.
+    # build_action_table's own "UNIVERSAL DECISION ROWS" header comment.
     universal_decision_rows = (
         "Pay (unless)", "Don't pay (unless)",
         "Tuck: 2nd from top", "Tuck: bottom",
         "Copy spell", "Don't copy spell",
-        "Transform", "Don't transform",
-        "Cast (may)", "Decline (may)",
-        "Cast (madness)", "Decline (madness)",
         "Keep (scry/surveil)", "Dispose (scry/surveil)",
-        "Keep (select to hand)", "Bottom (select to hand)",
         "Decline (search)", "Decline (graveyard)", "Decline (discard)",
-        "Decline (discard or sacrifice)", "Decline (Ancient Stirrings)",
-        "Decline (Malevolent Rumble)", "Shuffle (Ponder)",
+        "Shuffle (Ponder)",
         "Target: yourself", "Target: opponent",
         "Target any: yourself", "Target any: opponent", "Choose no target",
     )
@@ -538,13 +542,53 @@ def test_universal_cross_player_decision_rows():
         roster = json.load(_f)
     for deck_name, deck_file in roster.items():
         dl = game.parse_decklist_file(f"../data/{deck_file}")
-        names = {n for n, _l, _e in build_fixed_action_table(
-            dl, pending_kinds=game.derive_pending_kinds(dl))}
+        names = {n for n, _l, _e in build_fixed_action_table(dl)}
         missing = [r for r in universal_decision_rows if r not in names]
         assert not missing, (
             f"{deck_name}: missing universal decision row(s) {missing} -- an opponent's card can pose "
             "these questions, so every deck must be able to answer them"
         )
+
+
+@pytest.mark.slow
+def test_self_only_decision_rows_gated_per_deck():
+    # The flip side of the test above: these decision kinds were AUDITED and
+    # confirmed self-only (each has exactly one call site in the whole
+    # codebase, and it's always the deciding player's own card -- see
+    # build_action_table's own header comment for the per-kind evidence).
+    # Unlike the genuinely cross-player rows, making these universal would
+    # just repeat impulse's own history: real output rows for a card the
+    # deck never runs, permanently masked illegal. Derived generically from
+    # game.derive_pending_kinds rather than a hardcoded per-deck list, so
+    # this stays correct if the roster or its decklists ever change.
+    self_only_rows = {
+        "may_transform": ("Transform", "Don't transform"),
+        "may_cast": ("Cast (may)", "Decline (may)"),
+        "madness_decision": ("Cast (madness)", "Decline (madness)"),
+        "select_to_hand": ("Keep (select to hand)", "Bottom (select to hand)"),
+        "discard_or_sacrifice": ("Decline (discard or sacrifice)",),
+        "ancient_stirrings": ("Decline (Ancient Stirrings)",),
+        "malevolent_rumble": ("Decline (Malevolent Rumble)",),
+        "choose_mana_color": tuple(f"Add mana: {c}" for c in game.COLORS),
+    }
+    with open("../data/league_decks.json") as _f:
+        roster = json.load(_f)
+    for deck_name, deck_file in roster.items():
+        dl = game.parse_decklist_file(f"../data/{deck_file}")
+        own_kinds = game.derive_pending_kinds(dl)
+        names = {n for n, _l, _e in build_fixed_action_table(dl)}
+        for kind, rows in self_only_rows.items():
+            present = [r for r in rows if r in names]
+            if kind in own_kinds:
+                assert present == list(rows), (
+                    f"{deck_name}: owns a {kind!r} card but is missing row(s) "
+                    f"{[r for r in rows if r not in names]}"
+                )
+            else:
+                assert not present, (
+                    f"{deck_name}: doesn't own a {kind!r} card but still carries {present} -- "
+                    "should be gated on this deck's own derive_pending_kinds, not universal"
+                )
 
 
 @pytest.mark.slow
@@ -589,7 +633,7 @@ def test_order_triggers_unrepresentable_candidate_raises():
     # order_triggers/DFC and choose_stack_target/opponent can both take).
     # Forge one into an otherwise-ordinary pending kind to exercise it.
     guard_dl = game.parse_decklist_file("../data/mono_red_madness.txt")
-    guard_table = build_fixed_action_table(guard_dl, pending_kinds=game.derive_pending_kinds(guard_dl))
+    guard_table = build_fixed_action_table(guard_dl)
     guard_state = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
     guard_state.pending_resolution = {"kind": "order_triggers", "remaining": [
         {"card_def": game.CARD_DEFS["Sagu Wildling"], "resolve": None},  # a real card, NOT in mono_red_madness

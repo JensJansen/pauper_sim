@@ -1,18 +1,19 @@
 <title>Game Replay</title>
 <style>
-  :root { color-scheme: dark; }
+  :root { color-scheme: dark; --card-w: 67px; --card-h: 94px; }
   * { box-sizing: border-box; }
   body {
     margin: 0; font: 14px/1.4 -apple-system, Segoe UI, sans-serif;
     background: #14161a; color: #d8dbe0;
   }
-  header { padding: 14px 20px; border-bottom: 1px solid #2a2d33; display: flex; align-items: baseline; gap: 16px; }
+  header { position: relative; padding: 14px 20px; border-bottom: 1px solid #2a2d33; display: flex; align-items: baseline; gap: 16px; }
   header h1 { margin: 0; font-size: 18px; }
   header p { margin: 0; color: #888; font-size: 12px; }
-  header a { color: #6a9dff; text-decoration: none; margin-left: auto; font-size: 12px; }
+  header a { color: #6a9dff; text-decoration: none; font-size: 12px; }
   header a:hover { text-decoration: underline; }
-  main { padding: 16px 20px; }
-  section { background: #1b1e24; border: 1px solid #2a2d33; border-radius: 8px; padding: 14px; margin-bottom: 16px; }
+  #btn-menu { margin-left: auto; font-size: 16px; padding: 4px 10px; }
+  main { padding: 16px 20px 110px; }
+  section, .menu-panel { background: #1b1e24; border: 1px solid #2a2d33; border-radius: 8px; padding: 14px; margin-bottom: 16px; }
   h2 { margin: 0 0 10px; font-size: 13px; text-transform: uppercase; letter-spacing: .04em; color: #9aa0aa; }
   button {
     cursor: pointer; border: 1px solid #3a3f47; border-radius: 5px; background: #262a31;
@@ -22,24 +23,83 @@
   button:disabled { opacity: .4; cursor: default; }
   select { padding: 6px 8px; background: #0e1013; border: 1px solid #34383f; border-radius: 5px; color: #e8eaf0; font-size: 13px; }
   .hint { color: #666; font-size: 12px; }
+
+  .menu-panel { display: none; position: absolute; top: 100%; left: 20px; z-index: 60; width: 380px; box-shadow: 0 10px 30px #000a; }
+  .menu-panel.open { display: block; }
+  #file-row { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+
+  #scrub-panel {
+    position: fixed; left: 0; right: 0; bottom: 0; z-index: 50;
+    background: #1b1e24; border-top: 1px solid #2a2d33; padding: 10px 20px;
+  }
   #controls { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
   #scrubber { flex: 1; min-width: 200px; }
-  #step-desc { font-size: 15px; margin: 10px 0 2px; }
+  #step-desc { font-size: 15px; margin: 8px 0 2px; }
   #turn-phase { color: #8890a0; font-size: 12px; }
-  .board { display: grid; grid-template-columns: 1fr 220px 1fr; gap: 14px; align-items: start; }
+
+  /* Full-height stack on the left, spanning both players (align-items: stretch
+     makes it match players-col's combined height with no manual calc); split
+     into one half per player so each is ~the height of that player's own row. */
+  .board { display: flex; gap: 14px; align-items: stretch; }
+  .stack-col { flex: 0 0 190px; display: flex; flex-direction: column; gap: 14px; }
+  .stack-half {
+    flex: 1; min-height: 0; overflow-y: auto; background: #1b1e24; border: 1px solid #2a2d33;
+    border-radius: 8px; padding: 12px;
+  }
+  .stack-half h3 { margin: 0 0 8px; font-size: 13px; }
+  .players-col { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 14px; }
+
+  /* Far-right decision-weights panel, split the same way as the stack
+     column (see .stack-half above): one half per player. A decision_weights
+     step always has exactly one deciding player (state.active_idx at log
+     time, carried through as step.active_player_idx -- see rl/agent.py's
+     _seat_step docstring on why active_idx == the deciding seat), so
+     renderDecisionPanel() routes each step into that player's half and
+     clears the other. Shows the top-5 candidate actions by post-mask
+     probability, the chosen one highlighted, with the critic's value
+     estimate below. */
+  .decision-col { flex: 0 0 220px; display: flex; flex-direction: column; gap: 14px; }
+  .decision-half {
+    flex: 1; min-height: 0; overflow-y: auto; background: #1b1e24; border: 1px solid #2a2d33;
+    border-radius: 8px; padding: 12px;
+  }
+  .decision-half h3 { margin: 0 0 10px; font-size: 13px; }
+  .decision-bar-row { margin-bottom: 10px; }
+  .decision-bar-label { font-size: 12px; margin-bottom: 3px; display: flex; justify-content: space-between; gap: 6px; }
+  .decision-bar-track { background: #0e1013; border: 1px solid #34383f; border-radius: 4px; height: 8px; overflow: hidden; }
+  .decision-bar-fill { height: 100%; background: #6a9dff; }
+  .decision-bar-row.chosen .decision-bar-fill { background: #5fce7a; }
+  .decision-bar-row.chosen .decision-bar-label { color: #5fce7a; font-weight: 600; }
+  .decision-value { font-size: 11px; color: #8890a0; margin-top: 10px; }
+
   .player-col { background: #1b1e24; border: 1px solid #2a2d33; border-radius: 8px; padding: 12px; }
   .player-col h3 { margin: 0 0 8px; font-size: 13px; }
   .player-col h3 .life { color: #e08a8a; font-weight: 700; }
-  .mana-pool { margin-bottom: 8px; }
-  .mana-badge { display: inline-block; background: #262a31; border: 1px solid #3a3f47; border-radius: 4px; padding: 1px 6px; margin: 0 3px 3px 0; font-size: 11px; }
+  .player-body { display: flex; gap: 12px; }
+  .player-main { flex: 1; min-width: 0; }
+
+  /* Right-side rail (Cockatrice-style): library/graveyard/exile/mana. */
+  .player-side { flex: 0 0 96px; display: flex; flex-direction: column; gap: 10px; }
+  .side-block { text-align: center; }
+  .side-label { font-size: 10px; text-transform: uppercase; letter-spacing: .03em; color: #777; margin-bottom: 3px; }
+  .deck-badge { display: inline-block; background: #262a31; border: 1px solid #3a3f47; border-radius: 5px; padding: 5px 10px; font-size: 12px; color: #ccc; }
+  .mana-pool { display: flex; flex-wrap: wrap; justify-content: center; gap: 3px; }
+  .mana-badge { display: inline-block; background: #262a31; border: 1px solid #3a3f47; border-radius: 4px; padding: 1px 6px; font-size: 11px; }
+
   .zone-label { font-size: 11px; text-transform: uppercase; letter-spacing: .03em; color: #777; margin: 8px 0 4px; }
-  .zone-row { display: flex; flex-wrap: wrap; gap: 5px; min-height: 78px; }
+  .zone-row { display: flex; flex-wrap: wrap; gap: 5px; min-height: var(--card-h); }
+
+  /* thumb-wrap reserves the on-screen footprint (swaps W/H when tapped) so a
+     rotated card never overlaps its neighbors in the flex row; the preview
+     lives here too (not inside .card-thumb) so it never rotates. */
+  .thumb-wrap { position: relative; width: var(--card-w); height: var(--card-h); flex-shrink: 0; }
+  .thumb-wrap.tapped { width: var(--card-h); height: var(--card-w); display: flex; align-items: center; justify-content: center; }
   .card-thumb {
-    width: 56px; height: 78px; border-radius: 5px; overflow: hidden; position: relative;
-    background: #0e1013; border: 1px solid #34383f; flex-shrink: 0;
+    width: var(--card-w); height: var(--card-h); border-radius: 5px; position: relative;
+    background: #0e1013; border: 1px solid #34383f;
   }
-  .card-thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
-  .card-thumb.tapped { opacity: .55; border-color: #e0c280; }
+  .thumb-wrap.tapped .card-thumb { transform: rotate(90deg); }
+  .card-thumb img.thumb { width: 100%; height: 100%; object-fit: cover; display: block; border-radius: 4px; }
   .card-thumb.attacking { border-color: #e08080; box-shadow: 0 0 0 1px #e08080; }
   .card-thumb.blocking { border-color: #6a9dff; box-shadow: 0 0 0 1px #6a9dff; }
   .card-fallback {
@@ -54,81 +114,139 @@
     position: absolute; left: 1px; top: 1px; background: #3a6df0; color: #fff;
     font-size: 8px; padding: 0 3px; border-radius: 3px;
   }
-  .stack-col { background: #1b1e24; border: 1px solid #2a2d33; border-radius: 8px; padding: 12px; min-height: 200px; }
-  .stack-col h3 { margin: 0 0 8px; font-size: 13px; }
-  .stack-entry { background: #262a31; border: 1px solid #3a3f47; border-radius: 5px; padding: 4px 7px; margin-bottom: 4px; font-size: 12px; }
-  details summary { cursor: pointer; color: #aab; font-size: 12px; }
-  #file-row { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+  /* Bigger card view on hover -- a sibling of .card-thumb (not a child), so it
+     stays upright even when the card is tapped. position:fixed + JS-computed
+     left/top (see showFloating) keeps it clamped inside the viewport instead
+     of spilling off the top/left/right edges near the board's borders. */
+  .preview {
+    display: none; position: fixed; left: 0; top: 0; width: 220px; border-radius: 8px;
+    box-shadow: 0 10px 30px #000c; z-index: 200; pointer-events: none;
+  }
+
+  /* Attached permanents (auras) stack peeking out from under their host. */
+  .attach-group { display: flex; flex-direction: column; align-items: center; flex-shrink: 0; }
+  .attached { transform: scale(.62); transform-origin: top center; margin-top: -22px; }
+
+  .stack-entry {
+    display: flex; align-items: center; gap: 8px; background: #262a31; border: 1px solid #3a3f47;
+    border-radius: 5px; padding: 5px; margin-bottom: 6px; font-size: 12px;
+  }
+
+  /* Collapsed zone (graveyard/exile): shows the most-recently-added card's art
+     as the pile face (a count badge overlays it), reveals every card on hover.
+     position:fixed + JS-computed left/top (see showFloating), same as
+     .preview -- these piles sit in the right-hand rail, close enough to the
+     viewport edge that a fixed CSS anchor direction clips there. */
+  .zone-pile { position: relative; display: inline-block; }
+  .zone-pile-count {
+    position: absolute; right: -4px; bottom: -4px; background: #3a3f47; color: #fff;
+    font-size: 10px; padding: 1px 5px; border-radius: 8px; border: 1px solid #14161a;
+  }
+  .zone-flyout {
+    display: none; position: fixed; left: 0; top: 0;
+    background: #1b1e24; border: 1px solid #3a3f47; border-radius: 8px; padding: 8px;
+    gap: 5px; flex-wrap: wrap; width: 260px; z-index: 90; box-shadow: 0 8px 24px #000a;
+  }
 </style>
 
 <header>
   <h1>Game Replay</h1>
   <p>Step through a logged game's board state, event by event.</p>
+  <button id="btn-menu" title="Load / switch game">☰</button>
   <a href="/">← Training Ops</a>
-</header>
 
-<main>
-  <section id="picker">
+  <div class="menu-panel open" id="menu-panel">
     <h2>Load a game</h2>
     <div id="file-row">
       <input type="file" id="file-input" accept=".json">
       <select id="game-picker" disabled><option value="">— load a log file first —</option></select>
       <span class="hint" id="file-hint"></span>
     </div>
-  </section>
+  </div>
+</header>
 
-  <section id="scrub-panel" style="display:none">
-    <div id="controls">
-      <button id="btn-prev">◀</button>
-      <input type="range" id="scrubber" min="0" max="0" value="0">
-      <button id="btn-next">▶</button>
-      <span id="step-counter" class="hint"></span>
-    </div>
-    <div id="step-desc"></div>
-    <div id="turn-phase"></div>
-  </section>
-
+<main>
   <div class="board" id="board" style="display:none">
-    <div class="player-col" id="player-0">
-      <h3>Player 0 — <span class="life">20</span> life</h3>
-      <div class="mana-pool"></div>
-      <div class="zone-label">Hand</div>
-      <div class="zone-row hand"></div>
-      <div class="zone-label">Creatures</div>
-      <div class="zone-row bf-creatures"></div>
-      <div class="zone-label">Lands</div>
-      <div class="zone-row bf-lands"></div>
-      <div class="zone-label">Other permanents</div>
-      <div class="zone-row bf-other"></div>
-      <div class="zone-label">Graveyard</div>
-      <div class="graveyard"></div>
-      <div class="zone-label">Exile</div>
-      <div class="exile"></div>
-    </div>
-
     <div class="stack-col">
-      <h3>Stack</h3>
-      <div id="stack-list"></div>
+      <div class="stack-half">
+        <h3>Stack — P0</h3>
+        <div id="stack-list-0"></div>
+      </div>
+      <div class="stack-half">
+        <h3>Stack — P1</h3>
+        <div id="stack-list-1"></div>
+      </div>
     </div>
 
-    <div class="player-col" id="player-1">
-      <h3>Player 1 — <span class="life">20</span> life</h3>
-      <div class="mana-pool"></div>
-      <div class="zone-label">Hand</div>
-      <div class="zone-row hand"></div>
-      <div class="zone-label">Creatures</div>
-      <div class="zone-row bf-creatures"></div>
-      <div class="zone-label">Lands</div>
-      <div class="zone-row bf-lands"></div>
-      <div class="zone-label">Other permanents</div>
-      <div class="zone-row bf-other"></div>
-      <div class="zone-label">Graveyard</div>
-      <div class="graveyard"></div>
-      <div class="zone-label">Exile</div>
-      <div class="exile"></div>
+    <div class="players-col">
+      <div class="player-col" id="player-0">
+        <h3>Player 0 — <span class="life">20</span> life</h3>
+        <div class="player-body">
+          <div class="player-main">
+            <div class="zone-label">Hand</div>
+            <div class="zone-row hand"></div>
+            <div class="zone-label">Lands</div>
+            <div class="zone-row bf-lands"></div>
+            <div class="zone-label">Other permanents</div>
+            <div class="zone-row bf-other"></div>
+            <div class="zone-label">Creatures</div>
+            <div class="zone-row bf-creatures"></div>
+          </div>
+          <div class="player-side">
+            <div class="side-block"><div class="side-label">Library</div><div class="deck-badge"></div></div>
+            <div class="side-block"><div class="side-label">Graveyard</div><div class="graveyard"></div></div>
+            <div class="side-block"><div class="side-label">Exile</div><div class="exile"></div></div>
+            <div class="side-block"><div class="side-label">Mana pool</div><div class="mana-pool"></div></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="player-col" id="player-1">
+        <h3>Player 1 — <span class="life">20</span> life</h3>
+        <div class="player-body">
+          <div class="player-main">
+            <div class="zone-label">Creatures</div>
+            <div class="zone-row bf-creatures"></div>
+            <div class="zone-label">Other permanents</div>
+            <div class="zone-row bf-other"></div>
+            <div class="zone-label">Lands</div>
+            <div class="zone-row bf-lands"></div>
+            <div class="zone-label">Hand</div>
+            <div class="zone-row hand"></div>
+          </div>
+          <div class="player-side">
+            <div class="side-block"><div class="side-label">Library</div><div class="deck-badge"></div></div>
+            <div class="side-block"><div class="side-label">Graveyard</div><div class="graveyard"></div></div>
+            <div class="side-block"><div class="side-label">Exile</div><div class="exile"></div></div>
+            <div class="side-block"><div class="side-label">Mana pool</div><div class="mana-pool"></div></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="decision-col">
+      <div class="decision-half">
+        <h3>Agent's top actions — P0</h3>
+        <div id="decision-panel-0"><span class="hint">no decision data for this step</span></div>
+      </div>
+      <div class="decision-half">
+        <h3>Agent's top actions — P1</h3>
+        <div id="decision-panel-1"><span class="hint">no decision data for this step</span></div>
+      </div>
     </div>
   </div>
 </main>
+
+<footer id="scrub-panel" style="display:none">
+  <div id="controls">
+    <button id="btn-prev">◀</button>
+    <input type="range" id="scrubber" min="0" max="0" value="0">
+    <button id="btn-next">▶</button>
+    <span id="step-counter" class="hint"></span>
+  </div>
+  <div id="step-desc"></div>
+  <div id="turn-phase"></div>
+</footer>
 
 <script>
 let fileContent = null;
@@ -142,35 +260,56 @@ function escapeHtml(s) {
 // Hotlinked directly from Scryfall's own image-redirect endpoint -- no local
 // caching/storage, nothing committed to the repo. Fine for a local,
 // single-user viewer with a handful of concurrent image requests per step.
-function scryfallImgUrl(name) {
-  return `https://api.scryfall.com/cards/named?format=image&version=small&fuzzy=${encodeURIComponent(name)}`;
+function scryfallImgUrl(name, version) {
+  return `https://api.scryfall.com/cards/named?format=image&version=${version}&fuzzy=${encodeURIComponent(name)}`;
 }
 
 function cardThumb(name, opts) {
   opts = opts || {};
-  const cls = ['card-thumb', opts.tapped && 'tapped', opts.attacking && 'attacking', opts.blocking && 'blocking']
-    .filter(Boolean).join(' ');
+  const cls = ['card-thumb', opts.attacking && 'attacking', opts.blocking && 'blocking'].filter(Boolean).join(' ');
   const pt = (opts.power != null && opts.toughness != null) ? `<div class="pt">${opts.power}/${opts.toughness}</div>` : '';
   const tokenBadge = opts.is_token ? '<div class="token-badge">T</div>' : '';
   return `
-    <div class="${cls}" title="${escapeHtml(name)}">
-      <img src="${scryfallImgUrl(name)}" loading="lazy"
-           onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';">
-      <div class="card-fallback" style="display:none">${escapeHtml(name)}</div>
-      ${pt}${tokenBadge}
+    <div class="thumb-wrap${opts.tapped ? ' tapped' : ''}">
+      <div class="${cls}" title="${escapeHtml(name)}">
+        <img class="thumb" src="${scryfallImgUrl(name, 'small')}" loading="lazy"
+             onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';">
+        <div class="card-fallback" style="display:none">${escapeHtml(name)}</div>
+        ${pt}${tokenBadge}
+      </div>
+      <img class="preview" src="${scryfallImgUrl(name, 'normal')}" loading="lazy" onerror="this.style.display='none';">
     </div>`;
 }
 
-function zoneSummary(cards) {
+function zonePile(cards) {
   if (!cards.length) return '<span class="hint">empty</span>';
-  return `<details><summary>${cards.length} card${cards.length === 1 ? '' : 's'}</summary>${cards.map(escapeHtml).join(', ')}</details>`;
+  return `
+    <div class="zone-pile">
+      ${cardThumb(cards[cards.length - 1], {})}
+      <div class="zone-pile-count">${cards.length}</div>
+      <div class="zone-flyout">${cards.map(n => cardThumb(n, {})).join('')}</div>
+    </div>`;
 }
 
 function renderBoard(step) {
+  // Global (name/slot alone can collide across the two players): every aura,
+  // keyed by its enchanted permanent's controller+identity, so it renders
+  // nested under that permanent instead of as its own battlefield entry.
+  const aurasByTarget = new Map();
+  for (const idx of [0, 1]) {
+    for (const c of step.players[idx].battlefield) {
+      if (!c.enchanting) continue;
+      const key = `${c.enchanting.controller_idx}|${c.enchanting.name}|${c.enchanting.slot}`;
+      if (!aurasByTarget.has(key)) aurasByTarget.set(key, []);
+      aurasByTarget.get(key).push(c);
+    }
+  }
+
   for (const idx of [0, 1]) {
     const p = step.players[idx];
     const col = document.getElementById(`player-${idx}`);
     col.querySelector('.life').textContent = p.life;
+    col.querySelector('.deck-badge').textContent = `${p.library_remaining} left`;
     const manaEntries = Object.entries(p.mana_pool).filter(([, n]) => n > 0);
     col.querySelector('.mana-pool').innerHTML = manaEntries.length
       ? manaEntries.map(([c, n]) => `<span class="mana-badge">${escapeHtml(c)}: ${n}</span>`).join('')
@@ -178,24 +317,57 @@ function renderBoard(step) {
     col.querySelector('.hand').innerHTML = p.hand.length
       ? p.hand.map(n => cardThumb(n, {})).join('') : '<span class="hint">empty</span>';
 
-    const bf = p.battlefield;
+    const bf = p.battlefield.filter(c => !c.enchanting);  // auras render nested, not as their own entry
     const isLand = c => c.card_type === 'LAND';
     const isCreature = c => c.card_type === 'CREATURE' || (c.card_type == null && c.power != null);
     const creatures = bf.filter(isCreature);
     const lands = bf.filter(c => isLand(c) && !isCreature(c));
     const other = bf.filter(c => !isLand(c) && !isCreature(c));
-    col.querySelector('.bf-creatures').innerHTML = creatures.map(c => cardThumb(c.name, c)).join('') || '<span class="hint">—</span>';
-    col.querySelector('.bf-lands').innerHTML = lands.map(c => cardThumb(c.name, c)).join('') || '<span class="hint">—</span>';
-    col.querySelector('.bf-other').innerHTML = other.map(c => cardThumb(c.name, c)).join('') || '<span class="hint">—</span>';
+    const withAuras = c => {
+      const auras = aurasByTarget.get(`${idx}|${c.name}|${c.slot}`);
+      const host = cardThumb(c.name, c);
+      return auras ? `<div class="attach-group">${host}${auras.map(a => `<div class="attached">${cardThumb(a.name, a)}</div>`).join('')}</div>` : host;
+    };
+    col.querySelector('.bf-creatures').innerHTML = creatures.map(withAuras).join('') || '<span class="hint">—</span>';
+    col.querySelector('.bf-lands').innerHTML = lands.map(withAuras).join('') || '<span class="hint">—</span>';
+    col.querySelector('.bf-other').innerHTML = other.map(withAuras).join('') || '<span class="hint">—</span>';
 
-    col.querySelector('.graveyard').innerHTML = zoneSummary(p.graveyard);
-    col.querySelector('.exile').innerHTML = zoneSummary(p.exile);
+    col.querySelector('.graveyard').innerHTML = zonePile(p.graveyard);
+    col.querySelector('.exile').innerHTML = zonePile(p.exile);
   }
 
   const stack = [...step.stack].reverse();  // top of stack first
-  document.getElementById('stack-list').innerHTML = stack.length
-    ? stack.map(c => `<div class="stack-entry">${escapeHtml(c.name)} <span class="hint">(P${c.controller})</span></div>`).join('')
-    : '<span class="hint">empty</span>';
+  for (const idx of [0, 1]) {
+    const mine = stack.filter(c => c.controller === idx);
+    document.getElementById(`stack-list-${idx}`).innerHTML = mine.length
+      ? mine.map(c => `<div class="stack-entry">${cardThumb(c.name, {})}<div>${escapeHtml(c.name)}</div></div>`).join('')
+      : '<span class="hint">empty</span>';
+  }
+}
+
+// Renders a decision_weights step into whichever player's half made the
+// decision (step.active_player_idx), split the same way as the stack
+// column. The other half (and both halves for every non-decision step)
+// just clears, so this is safe to call unconditionally.
+function renderDecisionPanel(step) {
+  for (const idx of [0, 1]) {
+    const panel = document.getElementById(`decision-panel-${idx}`);
+    const mine = step.kind === 'decision_weights' && step.active_player_idx === idx
+      && step.candidates && step.candidates.length;
+    if (!mine) {
+      panel.innerHTML = '<span class="hint">no decision data for this step</span>';
+      continue;
+    }
+    panel.innerHTML = step.candidates.map(c => {
+      const chosen = c.index === step.chosen_index;
+      const pct = Math.round(c.probability * 100);
+      return `
+        <div class="decision-bar-row${chosen ? ' chosen' : ''}">
+          <div class="decision-bar-label"><span>${escapeHtml(c.label)}</span><span>${pct}%</span></div>
+          <div class="decision-bar-track"><div class="decision-bar-fill" style="width:${pct}%"></div></div>
+        </div>`;
+    }).join('') + `<div class="decision-value">Value estimate: ${step.value_estimate?.toFixed?.(2) ?? '?'}</div>`;
+  }
 }
 
 function renderStep(i) {
@@ -209,6 +381,7 @@ function renderStep(i) {
   document.getElementById('btn-prev').disabled = i === 0;
   document.getElementById('btn-next').disabled = i === currentSteps.length - 1;
   renderBoard(step);
+  renderDecisionPanel(step);
 }
 
 async function postJson(url, body) {
@@ -245,14 +418,57 @@ async function onGameChange(ev) {
     document.getElementById('scrubber').max = Math.max(0, currentSteps.length - 1);
     document.getElementById('scrub-panel').style.display = '';
     document.getElementById('board').style.display = '';
+    document.getElementById('menu-panel').classList.remove('open');
     renderStep(0);
   } catch (err) {
     alert('Failed to load game: ' + err.message);
   }
 }
 
+// Both .preview and .zone-flyout are position:fixed; clamp them inside the
+// viewport instead of a fixed CSS anchor direction, which clips near the
+// board's top/left/right edges (e.g. P0's zones sit right under the header).
+function showFloating(trigger, popup, display) {
+  popup.style.display = display;
+  const r = trigger.getBoundingClientRect();
+  const margin = 8;
+  const pw = popup.offsetWidth, ph = popup.offsetHeight;
+  let left = r.left + r.width / 2 - pw / 2;
+  left = Math.max(margin, Math.min(left, window.innerWidth - pw - margin));
+  let top = r.top - ph - margin;
+  if (top < margin) top = Math.min(r.bottom + margin, window.innerHeight - ph - margin);
+  popup.style.left = `${left}px`;
+  popup.style.top = `${top}px`;
+}
+
+document.addEventListener('mouseover', e => {
+  const thumb = e.target.closest('.card-thumb');
+  if (thumb) {
+    const preview = thumb.nextElementSibling;
+    if (preview && preview.classList.contains('preview')) showFloating(thumb, preview, 'block');
+  }
+  const pile = e.target.closest('.zone-pile');
+  if (pile) {
+    const flyout = pile.querySelector('.zone-flyout');
+    if (flyout) showFloating(pile, flyout, 'flex');
+  }
+});
+document.addEventListener('mouseout', e => {
+  const thumb = e.target.closest('.card-thumb');
+  if (thumb && !(e.relatedTarget && thumb.contains(e.relatedTarget))) {
+    const preview = thumb.nextElementSibling;
+    if (preview) preview.style.display = 'none';
+  }
+  const pile = e.target.closest('.zone-pile');
+  if (pile && !(e.relatedTarget && pile.contains(e.relatedTarget))) {
+    const flyout = pile.querySelector('.zone-flyout');
+    if (flyout) flyout.style.display = 'none';
+  }
+});
+
 document.getElementById('file-input').addEventListener('change', onFile);
 document.getElementById('game-picker').addEventListener('change', onGameChange);
+document.getElementById('btn-menu').addEventListener('click', () => document.getElementById('menu-panel').classList.toggle('open'));
 document.getElementById('scrubber').addEventListener('input', e => renderStep(Number(e.target.value)));
 document.getElementById('btn-prev').addEventListener('click', () => { if (currentIndex > 0) renderStep(currentIndex - 1); });
 document.getElementById('btn-next').addEventListener('click', () => { if (currentSteps && currentIndex < currentSteps.length - 1) renderStep(currentIndex + 1); });

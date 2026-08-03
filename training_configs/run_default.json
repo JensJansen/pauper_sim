@@ -5,5 +5,5 @@
   "checkpoint_opponent_rate": 0.0,
   "league_name": "4_deck_subleague_test",
   "roster": ["rakdos_madness", "dmir_terror", "elves", "mono_red_rally"],
-  "total_games": 50000
+  "total_games": 500000
 }

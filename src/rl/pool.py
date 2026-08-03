@@ -46,27 +46,16 @@ def _load_roster(manifest_path):
     return {name: f"../data/{filename}" for name, filename in roster.items()}
 
 
-def build_pool(manifest_path=DECK_MANIFEST, vocab_path=VOCAB_PATH, token_defs=TOKEN_DEFS, union_pending=True):
+def build_pool(manifest_path=DECK_MANIFEST, vocab_path=VOCAB_PATH, token_defs=TOKEN_DEFS):
     """Returns (decklists, vocab, deck_ctxs, fixed_tables) -- all dicts
     keyed by deck name, plus the one shared (persisted, append-only) vocab.
-    deck_ctxs[name] = (vocab, fixed_table, pending_kinds), the exact tuple
+    deck_ctxs[name] = (vocab, fixed_table), the exact tuple
     rl.agent._seat_step expects.
 
     token_defs: the token/pseudo-card CardDefs to reserve vocab indices +
     choosable-name actions for (defaults to the league's TOKEN_DEFS). A pool
     that runs cards making other tokens -- or the Undercity initiative marker,
-    a pseudo-card that appears on the stack -- must pass the fuller set.
-
-    union_pending (default True): every deck's fixed table is built from the
-    UNION of all decks' pending-resolution kinds, not just its own. A 2-player
-    game can hand EITHER player a resolution the OTHER deck created -- pay_unless
-    from a counter/Ward/Chain-Lightning rider, the venture kinds once the
-    initiative is stolen, choose_any_target for a spell copy -- so a pool with
-    those cross-player cards needs every table able to answer them or it
-    softlocks (confirmed via cross-deck smoke). Default True now that the league
-    roster includes those cards (dmir_terror/mono_blue_terror Ward, mono_red_
-    rally Chain Lightning, elves initiative); pass False only for a hand-picked
-    pool provably free of cross-player resolutions."""
+    a pseudo-card that appears on the stack -- must pass the fuller set."""
     deck_files = _load_roster(manifest_path)
     decklists = {name: game.parse_decklist_file(path) for name, path in deck_files.items()}
     vocab = CardVocab(list(decklists.values()), token_card_defs=token_defs, vocab_path=vocab_path)
@@ -78,16 +67,19 @@ def build_pool(manifest_path=DECK_MANIFEST, vocab_path=VOCAB_PATH, token_defs=TO
     # tokenized for the pick, see rl.features), not by a whole-league
     # "Choose: X" fixed row per card name. Each deck's fixed table stays
     # scoped to its own cards and does not grow with the roster.
-    union_kinds = None
-    if union_pending:
-        union_kinds = tuple(sorted(set().union(*(set(game.derive_pending_kinds(dl)) for dl in decklists.values()))))
-
+    #
+    # No pending_kinds union either (there used to be one here -- a 2-player
+    # game can hand EITHER player a resolution the OTHER deck created, e.g.
+    # pay_unless from a counter/Ward rider, so a naively per-deck-only table
+    # used to softlock the answering seat). drl_env.build_action_table now
+    # makes that exact split on its own, per decklist: every kind confirmed
+    # genuinely cross-player is unconditional in every deck's table (its own
+    # "UNIVERSAL DECISION ROWS" block), and every kind confirmed self-only
+    # reads that same decklist's own derive_pending_kinds internally -- see
+    # that function's own docstring for the full, audited kind-by-kind split.
     fixed_tables, deck_ctxs = {}, {}
     for name, decklist in decklists.items():
-        pending_kinds = union_kinds if union_pending else game.derive_pending_kinds(decklist)
-        fixed_table = build_fixed_action_table(
-            decklist, token_card_defs=token_defs, pending_kinds=pending_kinds,
-        )
+        fixed_table = build_fixed_action_table(decklist, token_card_defs=token_defs)
         fixed_tables[name] = fixed_table
-        deck_ctxs[name] = (vocab, fixed_table, pending_kinds)
+        deck_ctxs[name] = (vocab, fixed_table)
     return decklists, vocab, deck_ctxs, fixed_tables

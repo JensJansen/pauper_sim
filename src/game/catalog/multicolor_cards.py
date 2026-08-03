@@ -26,12 +26,12 @@ from ..effects.casting import (
     bounce_land_etb, capture_any_target, cast_aura, cast_permanent_from_hand,
     cast_targeting_creature, has_creature_target, target_still_legal,
 )
-from ..effects.shared import any_creature_on_battlefield, card_subtypes, discard_from_hand_to_graveyard
+from ..effects.shared import any_creature_on_either_battlefield, card_subtypes, discard_from_hand_to_graveyard
 from ..effects.stack import push_to_stack
 from ..effects.state_based import check_state_based_actions, destroy_permanent
 from ..effects.stats import can_be_targeted
 from ..effects.tokens import ELDRAZI_SPAWN_TOKEN_CARD_DEF, create_token
-from ..effects.win_check import deal_damage_to_opponent
+from ..effects.win_check import deal_damage_to_player
 
 MULTICOLOR_CARD_CATALOG = {
     "Wooded Ridgeline": CardDef("Wooded Ridgeline", CardType.LAND, None, EffectId.WOODED_RIDGELINE),
@@ -87,6 +87,28 @@ MULTICOLOR_CARD_CATALOG = {
         power=2, toughness=3, devoid=True, subtypes=("Eldrazi", "Drone"),
     ),
 }
+
+
+def jagged_barrens_etb(state, permanent):
+    """When this land enters, it deals 1 damage to target opponent. Real
+    "target opponent": the opponent is the only ever-legal candidate in
+    this strictly-2-player engine (no player-hexproof/protection/removal-
+    from-game mechanic exists anywhere here to make them illegal -- same
+    vacuous-restriction class as Terminate's "can't be regenerated"), so the
+    target is captured directly rather than routed through
+    begin_choose_target_player, which would wrongly also offer "yourself"
+    (real "target opponent" never does) -- see black_cards.mesmeric_fiend_
+    etb's own docstring for the identical reasoning. Target-at-promotion
+    (etb_targets: True, 603.3d); no opponent (1-player) -> nothing to
+    target, so the ETB does nothing there."""
+    if len(state.players) < 2:
+        return
+    opponent_idx = 1 - state.active_idx
+
+    def _resolve(state, card_def):
+        deal_damage_to_player(state, opponent_idx, 1)
+
+    push_to_stack(state, permanent.card_def, _resolve, reserves_hand_card=False, is_spell=False)
 
 
 def cast_writhing_chrysalis(state, card_def):
@@ -161,8 +183,8 @@ MULTICOLOR_EFFECT_REGISTRY = {
     EffectId.JAGGED_BARRENS: {
         "mana": ("flexible", {"B", "R"}),
         "enters_tapped": True,
-        # Deals 1 damage to target opponent.
-        "etb_trigger": lambda state, permanent: deal_damage_to_opponent(state, 1),
+        "etb_trigger": lambda state, permanent: jagged_barrens_etb(state, permanent),
+        "etb_targets": True,  # target opponent captured at promotion (603.3d); the only ever-legal candidate here
     },
     # --- the four indestructible Bridge artifact lands: enter tapped, tap
     # for one of two colors. Indestructibility (extra["indestructible"]) is
@@ -256,7 +278,7 @@ MULTICOLOR_EFFECT_REGISTRY = {
             "resolve": lambda state, card_def: cast_aura(
                 state, card_def, lambda p: p.card_type == CardType.CREATURE,
             ),
-            "extra_legal": lambda state: any_creature_on_battlefield(state),
+            "extra_legal": lambda state: any_creature_on_either_battlefield(state),
             "precast_choice": True,  # real MTG "enchant target creature" -- must be chosen before the stack, see drl_env._precast_choice_execute
         },
         "pending_kinds": {"choose_any_target"},  # Aura: cast_aura targets any creature (either side), hexproof-aware

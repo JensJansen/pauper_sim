@@ -54,8 +54,8 @@ def test_create_token_and_blood_sac():
 
 def test_blood_sac_triggers_gixian_infiltrator():
     """Regression: activate_blood_sac/activate_clue_sac/activate_food_sac
-    now call fire_sacrifice_triggers too, not just sacrifice_to_graveyard/
-    execute_sacrifice_option -- so sacrificing a TOKEN still triggers
+    now call fire_sacrifice_triggers too, not just sacrifice_to_graveyard --
+    so sacrificing a TOKEN still triggers
     "whenever you sacrifice another permanent" (Gixian Infiltrator), queued
     and placed on the stack like any other triggered ability, not applied
     immediately."""

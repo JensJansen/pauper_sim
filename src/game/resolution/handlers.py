@@ -1249,9 +1249,17 @@ def begin_discard_or_sacrifice(state, sac_predicate, on_complete):
     or nothing was payable to begin with; callers that only care whether
     anything was paid (Highway Robbery's own "if you do, draw two cards")
     just branch on that bool, same shape begin_discard's own
-    bool(discarded_cards) contract already has."""
+    bool(discarded_cards) contract already has.
+
+    The SACRIFICE half is a real per-instance player choice, same fix as
+    begin_sacrifice's own: picking "sacrifice" (execute_discard_or_
+    sacrifice_trigger_sacrifice) opens a nested choose_permanent
+    sub-decision for WHICH exact permanent pays it, instead of an
+    arbitrary first-same-name match -- a Utopia-Sprawl/Abundant-Growth-
+    enchanted land is not interchangeable with a bare one of the same
+    name."""
     begin_resolution(state, "discard_or_sacrifice", on_complete, sac_predicate=sac_predicate)
-    if not discard_or_sacrifice_discard_options(state) and not discard_or_sacrifice_sacrifice_options(state):
+    if not discard_or_sacrifice_discard_options(state) and not discard_or_sacrifice_can_sacrifice(state):
         complete_resolution(state, False)
 
 
@@ -1259,26 +1267,46 @@ def discard_or_sacrifice_discard_options(state):
     return _available_hand_names(state)
 
 
-def discard_or_sacrifice_sacrifice_options(state):
+def discard_or_sacrifice_can_sacrifice(state):
+    """Whether the SACRIFICE half has any eligible permanent right now --
+    gates both the trigger action's own legal() (drl_env._discard_or_
+    sacrifice_trigger_sacrifice_legal) and this function's own begin-time
+    check above."""
     pending = state.pending_resolution
-    return sorted({p.card_def.name for p in state.battlefield if pending["sac_predicate"](p)})
+    return any(pending["sac_predicate"](p) for p in state.battlefield)
 
 
-def execute_discard_or_sacrifice_option(state, mode, name):
-    if mode == "discard":
-        card = next(c for c in state.hand if c.name == name)
-        _discard_one(state, card)
-    else:
-        permanent = next(p for p in state.battlefield if p.card_def.name == name)
-        state.battlefield.remove(permanent)
-        state.move_card(permanent.card_def, state.graveyard)
-        state.log_event(
-            "zone_move", permanent=(permanent.card_def.name, permanent.slot), from_zone="battlefield",
-            to_zone="graveyard", reason="sacrifice",
-        )
-        from ..effects.shared import fire_sacrifice_triggers
-        fire_sacrifice_triggers(state, state.active_idx, permanent.card_def)  # Gixian Infiltrator
+def execute_discard_or_sacrifice_discard(state, name):
+    card = next(c for c in state.hand if c.name == name)
+    _discard_one(state, card)
     complete_resolution(state, True)
+
+
+def execute_discard_or_sacrifice_trigger_sacrifice(state):
+    """Opens the exact (name, slot) choose_permanent sub-decision for WHICH
+    permanent pays this optional cost -- same real per-instance choice
+    begin_sacrifice's own predicate-driven picks get (see its own
+    docstring), never an arbitrary first-match. Captures the outer
+    on_complete/sac_predicate before opening the nested resolution --
+    begin_choose_permanent's own begin_resolution call replaces
+    state.pending_resolution wholesale, same "capture first" contract
+    declare_blocker_assignment's own nested chain already documents.
+    Actually sacrificing the chosen permanent goes through state_based.
+    sacrifice_to_graveyard, the one canonical "leave the battlefield by
+    sacrifice" path (token-ceases / DFC-front-face / dies-trigger handling
+    shared with Lembas, Chromatic Star, ...) instead of a second, inlined
+    copy of that logic."""
+    from ..effects.state_based import sacrifice_to_graveyard
+    outer_on_complete = state.pending_resolution["on_complete"]
+    sac_predicate = state.pending_resolution["sac_predicate"]
+
+    def _after_choice(state, choice):
+        name, slot = choice
+        permanent = next(p for p in state.battlefield if p.card_def.name == name and p.slot == slot)
+        sacrifice_to_graveyard(state, permanent)
+        outer_on_complete(state, True)
+
+    begin_choose_permanent(state, sac_predicate, _after_choice)
 
 
 def execute_discard_or_sacrifice_decline(state):
@@ -1419,9 +1447,10 @@ def begin_order_triggers(state, entries, on_complete):
     before this is ever opened for either player's group.
 
     entries: list of {"card_def", "resolve"} dicts (plain triggers, already
-    stack-ready) or {"card_def", "permanent", "targeting": True} dicts
-    (target-at-promotion ETBs -- placing one runs its OWN etb_trigger hook
-    instead, see execute_order_triggers_option's targeting branch) -- built
+    stack-ready) or {"card_def", "permanent", "targeting": True, "hook"}
+    dicts (target-at-promotion ETBs/LTBs -- placing one runs its OWN
+    etb_trigger/ltb_trigger hook (whichever "hook" names) instead, see
+    execute_order_triggers_option's targeting branch) -- built
     by game.effects.triggers.promote_triggers_to_stack, which is
     also what turns each queued trigger's own (type, kind) into the right
     resolve function -- this module only ever deals in the stack's own
@@ -1450,11 +1479,12 @@ def execute_order_triggers_option(state, name):
     if entry.get("targeting"):
         # Target-at-promotion (game.effects.triggers.promote_triggers_to_
         # stack's own docstring): placing this entry means running its OWN
-        # etb_trigger hook NOW -- it opens target selection and pushes its
-        # own stack entry once targets are locked, rather than this function
-        # pushing a plain resolve directly. Same two-way branch
-        # promote_triggers_to_stack's own single-entry fast path uses.
-        registry.EFFECT_REGISTRY[entry["card_def"].effect_id]["etb_trigger"](state, entry["permanent"])
+        # etb_trigger/ltb_trigger hook (entry["hook"]) NOW -- it opens target
+        # selection and pushes its own stack entry once targets are locked,
+        # rather than this function pushing a plain resolve directly. Same
+        # two-way branch promote_triggers_to_stack's own single-entry fast
+        # path uses.
+        registry.EFFECT_REGISTRY[entry["card_def"].effect_id][entry["hook"]](state, entry["permanent"])
     else:
         # Same controller field push_to_stack itself stamps on every entry
         # -- state.active_idx here is still the
@@ -1478,55 +1508,52 @@ def execute_order_triggers_option(state, name):
 
 def begin_sacrifice(state, predicate, n, on_complete):
     """Choose and sacrifice n of your own battlefield permanents matching
-    predicate, one at a time -- same by-name fungibility every other
-    resolution here uses. A predicate-based primitive covering both
-    creature-sacrifice costs (Dread Return's own Flashback:
-    `begin_sacrifice(state, lambda p: p.card_type == CardType.CREATURE, 3,
-    on_complete)`) and land-sacrifice costs (Fireblast's alt-cost, Lava
-    Dart's Flashback, Highway Robbery's discard-or-sac choice).
+    predicate, one at a time. Real Magic (602.5a/602.5g): naming WHICH
+    permanent pays a "sacrifice a [type]" cost is the PLAYER'S OWN choice
+    among every eligible one -- two same-named permanents stop being
+    interchangeable the instant one differs from the other (an attached
+    Aura, a counter, ...), so this delegates to begin_choose_permanent (the
+    SAME exact-(name, slot) primitive Aura targets/Crop Rotation's own
+    sacrifice cost already use) once per permanent, chained via nested
+    on_complete -- same repeated-resolution shape declare_blocker_
+    assignment/begin_choose_delve_amount's own callers already use
+    elsewhere. Actually sacrificing each chosen permanent goes through
+    state_based.sacrifice_to_graveyard, the one canonical "leave the
+    battlefield by sacrifice" path (token-ceases / DFC-front-face /
+    dies-trigger handling all shared with Lembas, Chromatic Star, Nihil
+    Spellbomb, ...) instead of a second, inlined copy of that logic.
+
+    A predicate-based primitive covering both creature-sacrifice costs
+    (Dread Return's own Flashback: `begin_sacrifice(state, lambda p:
+    p.card_type == CardType.CREATURE, 3, on_complete)`) and land-sacrifice
+    costs (Fireblast's alt-cost, Lava Dart's Flashback, Crop Rotation's own
+    sacrifice).
 
     Caller's own legality check guarantees n eligible permanents exist
     before this is ever offered (same "guaranteed payable, not a maybe"
-    contract every alternate cost path here already follows) -- the
-    n<=0/empty-options branch below is pure belt-and-suspenders, matching
-    every other pending kind here. on_complete(state, True) once n are
-    sacrificed (False only via that defensive n<=0 fallback)."""
-    begin_resolution(state, "sacrifice", on_complete, predicate=predicate, remaining=n)
-    if not sacrifice_options(state):
-        complete_resolution(state, n <= 0)
+    contract every alternate cost path here already follows) --
+    on_complete(state, True) once n are sacrificed (False only via the
+    defensive n<=0 fallback, matching every other pending kind here)."""
+    if n <= 0:
+        on_complete(state, False)
+        return
+    _sacrifice_n_via_choice(state, predicate, n, on_complete)
 
 
-def sacrifice_options(state):
-    pending = state.pending_resolution
-    if pending["remaining"] <= 0:
-        return []
-    predicate = pending["predicate"]
-    return sorted({p.card_def.name for p in state.battlefield if predicate(p)})
+def _sacrifice_n_via_choice(state, predicate, remaining, on_complete):
+    from ..effects.state_based import sacrifice_to_graveyard
 
+    def _after_choice(state, choice):
+        if choice is None:  # belt-and-suspenders -- begin_choose_permanent's own empty-options fallback
+            on_complete(state, False)
+            return
+        name, slot = choice
+        permanent = next(p for p in state.battlefield if p.card_def.name == name and p.slot == slot)
+        sacrifice_to_graveyard(state, permanent)
+        if remaining - 1 <= 0:
+            on_complete(state, True)
+        else:
+            _sacrifice_n_via_choice(state, predicate, remaining - 1, on_complete)
 
-def execute_sacrifice_option(state, name):
-    pending = state.pending_resolution
-    predicate = pending["predicate"]
-    permanent = next(p for p in state.battlefield if p.card_def.name == name and predicate(p))
-    state.battlefield.remove(permanent)
-    # 400.7 linked-ability tracking: see state_based._destroy_creature's own
-    # comment -- stash the fresh graveyard instance so an ltb_trigger needing
-    # the EXACT card that left (Lembas) can reference it, not bridge by name.
-    permanent.flags["graveyard_instance"] = state.move_card(permanent.card_def, state.graveyard)
-    state.log_event(
-        "zone_move", permanent=(permanent.card_def.name, permanent.slot), from_zone="battlefield",
-        to_zone="graveyard", reason="sacrifice",
-    )
-    # Leaves-the-battlefield triggered ability (Mesmeric Fiend, sacrificed --
-    # e.g. to Dread Return's Flashback). Same three lines as state_based.
-    # _queue_leave_triggers, inlined here because resolution can't import
-    # state_based without a cycle (state_based imports resolution).
-    ltb_spec = registry.EFFECT_REGISTRY.get(permanent.card_def.effect_id, {})
-    if ltb_spec.get("ltb_trigger") is not None:
-        state.trigger_queue.append({"type": "ltb", "card_def": permanent.card_def, "permanent": permanent})
-    from ..effects.shared import fire_sacrifice_triggers
-    fire_sacrifice_triggers(state, state.active_idx, permanent.card_def)  # Gixian Infiltrator / Writhing Chrysalis
-    pending["remaining"] -= 1
-    if pending["remaining"] <= 0:
-        complete_resolution(state, True)
+    begin_choose_permanent(state, predicate, _after_choice)
 
