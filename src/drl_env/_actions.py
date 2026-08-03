@@ -28,9 +28,12 @@ import game
 #      resolution of anything else without clobbering it) instead of
 #      resolving in one shot -- see state.mana_subdecision's own docstring
 #      and _mana_extra_choose_legal's own docstring for why.
-#      "Filter <name> for <output_color>, paying <input_color>" (Conduit
-#      Pylons/Barrels): an atomic pool->pool conversion, same category and
-#      same "no nested resolution" reasoning.
+#      "Filter <name>, paying <input_color>" (Conduit Pylons/Barrels): pays
+#      the {1} activation cost immediately as a flat fixed-table row, then
+#      opens the shared choose_color mana_subdecision stage (see "Tap
+#      <name>"/Saruli's own note above and _filter_mana_execute's own
+#      docstring) to pick the output color via the "Produce <color>"
+#      buttons -- no nested pay_cost either, same reasoning.
 #   B. Cast <name>                  -- one per card with a registry "cast" entry
 #   C. Activate <name> (<ability>)  -- one per registered activated ability
 #   D. Forestcycle <name>           -- one per registry "forestcycle" entry
@@ -802,7 +805,15 @@ def _attack_legal(name, slot):
     unless it has haste. Attacking stays fully optional: a model can leave
     any subset of eligible creatures back, Pass with zero attackers
     declared is still legal (same as always -- state.attackers simply
-    starts, and can stay, empty for this turn)."""
+    starts, and can stay, empty for this turn).
+
+    Gated _GATE_NO_PENDING (owner-confirmed): a genuine DECLARE_ATTACKERS
+    window never coexists with an open pending_resolution -- anything an
+    attack declaration itself triggers (e.g. "on attacks" abilities) gets
+    its own later priority window, before declare-blockers, not during
+    declare-attackers. So `pending is not None` already rules this out;
+    the phase/turn-owner checks below still gate the (much more common)
+    case where pending IS None but it isn't a legal attack window."""
     def legal(state):
         if state.phase is not game.turn.Phase.DECLARE_ATTACKERS:
             return False
@@ -810,6 +821,7 @@ def _attack_legal(name, slot):
             return False
         p = _cached_battlefield_lookup(state).get((name, slot))
         return p is not None and game.creature_attack_eligible(state, p)
+    legal._pending_gate = _GATE_NO_PENDING
     return legal
 
 
@@ -1905,7 +1917,10 @@ def build_action_table(decklist, registry, token_card_defs=(),
     # (605.1a/605.3b): mana_subdecision is a field SEPARATE from
     # pending_resolution specifically so this can still open mid-resolution
     # of anything else without clobbering it -- see state.mana_subdecision's
-    # own docstring.
+    # own docstring. needs_mana_subdecision_color_buttons is shared with the
+    # mana-filter block below -- either mechanic reaches the SAME
+    # choose_color stage (game.begin_mana_color_choice), so a deck needs the
+    # buttons if EITHER is present, even with only one of the two.
     needs_mana_subdecision_color_buttons = False
     extra_tap_source_names = sorted(
         {name for name in distinct_names if "mana_extra_choose" in registry.get(game.CARD_DEFS[name].effect_id, {})}
@@ -1916,23 +1931,27 @@ def build_action_table(decklist, registry, token_card_defs=(),
         needs_mana_subdecision_color_buttons = True
 
     # Mana filters (Conduit Pylons / Barrels of Blasting Jelly): "{1}: add one
-    # mana of <output_color>" -- an ATOMIC pool->pool conversion (spend one
-    # already-floated <input_color> pip, add one <output_color> pip), one row
-    # per (source, output_color, input_color) triple. Atomic for the same
-    # reason the extra-tap rows above are: folding the "which pip pays the
-    # {1}" choice into a nested pay_cost would open a second pending
-    # resolution mid-activation, at risk of clobbering whatever's already
-    # open. input_color ranges over every pool color (any floating pip, incl.
-    # colorless, can pay a generic {1}); output_color is the filter's own
-    # "any [true] color" spec.
-    for name in sorted({n for n in distinct_names if "filter_mana" in registry.get(game.CARD_DEFS[n].effect_id, {})}):
-        for output_color in sorted(registry.get(game.CARD_DEFS[name].effect_id, {})["filter_mana"]["colors"]):
-            for input_color in game.POOL_COLORS:
-                actions.append((
-                    f"Filter {name} for {output_color}, paying {input_color}",
-                    _filter_mana_legal(name, output_color, input_color),
-                    _filter_mana_execute(name, output_color, input_color),
-                ))
+    # mana of any color" -- the {1} half is a flat fixed-table row per
+    # (source, input_color): which floating pip pays it, paid immediately.
+    # input_color ranges over every pool color (any floating pip, incl.
+    # colorless, can pay a generic {1}). The output half (which color comes
+    # out) is a SEPARATE, later choice via the shared choose_color
+    # mana_subdecision stage above -- reusing Saruli's own "Produce <color>"
+    # buttons rather than a second per-row dimension (output_color x
+    # input_color used to be a real cross product here; see
+    # _filter_mana_execute). Never a nested pay_cost for the {1} itself:
+    # folding it into one would open a second pending resolution
+    # mid-activation, at risk of clobbering whatever's already open.
+    filter_source_names = sorted({n for n in distinct_names if "filter_mana" in registry.get(game.CARD_DEFS[n].effect_id, {})})
+    for name in filter_source_names:
+        for input_color in game.POOL_COLORS:
+            actions.append((
+                f"Filter {name}, paying {input_color}",
+                _filter_mana_legal(name, input_color),
+                _filter_mana_execute(name, input_color),
+            ))
+    if filter_source_names:
+        needs_mana_subdecision_color_buttons = True
 
     # Tracked so the generic choose_cast_mode/choose_cast_x/choose_delve_amount
     # buttons below only get added to a deck's table that actually has a card
@@ -2511,9 +2530,10 @@ def build_action_table(decklist, registry, token_card_defs=(),
             actions.append((f"Delve {n}", _choose_delve_amount_legal(n), _choose_delve_amount_execute(n)))
 
     # Shared "Produce <color>" buttons for the choose_color stage of a
-    # mana_subdecision (Saruli Caretaker) -- deck-gated same as the buttons
-    # just above (this is never posed by an opponent's card, only ever
-    # opened by this deck's own mana_extra_choose source).
+    # mana_subdecision -- reused by BOTH Saruli-shaped mana_extra_choose
+    # sources and filter_mana sources (whichever one is present sets
+    # needs_mana_subdecision_color_buttons above); never posed by an
+    # opponent's card, only ever opened by this deck's own source.
     if needs_mana_subdecision_color_buttons:
         for color in game.COLORS:
             actions.append((
@@ -2692,22 +2712,16 @@ def _mana_extra_choose_execute(name):
 
 
 def _mana_subdecision_color_legal(color):
-    """Shared "Produce <color>" button, reused by every mana_extra_choose
-    card -- legal only mid the choose_color stage of a mana_subdecision,
-    and only if the ALREADY-RESOLVED source can actually produce this color
-    (game.mana_output raises for an out-of-set color on a "flexible"
-    source, same check _find_mana_source's own color-producibility check
-    already made for ordinary mana sources) -- generic, not hardcoded to
-    Saruli's own 5-true-color case, though Saruli's own ("flexible",
-    set(COLORS)) spec means all 5 always pass here once a target is locked
-    in."""
+    """Shared "Produce <color>" button, reused by every gate-free mana
+    ability with a final choose-a-color step (Saruli Caretaker;
+    filter_mana cards) -- legal only mid the choose_color stage of a
+    mana_subdecision, and only if whichever ability opened it says this
+    color is currently offerable (state.mana_subdecision["can_produce"],
+    bound as a closure by that opener -- see game.resolution.
+    begin_mana_color_choice's own docstring for what each real caller
+    binds). Generic: this function has no idea which ability is asking."""
     def legal(state):
-        sub = state.mana_subdecision
-        try:
-            game.mana_output(sub["source"], state, color)
-        except ValueError:
-            return False
-        return True
+        return state.mana_subdecision["can_produce"](state, color)
     legal._mana_subdecision_gate = "choose_color"
     return legal
 
@@ -2747,21 +2761,27 @@ def _cached_filter_source(state, name):
     return cache[name]
 
 
-def _filter_mana_legal(name, output_color, input_color):
-    """A mana filter is a pool->pool conversion -- "{1}[, {T}]: add one mana of
-    any color" -- ATOMIC, like every other mana ability (605.1a): spending the
-    {1} and adding `output_color` both happen in one action, never a nested
-    pay_cost (which would risk clobbering whatever pending_resolution is
-    already open -- state.pending_resolution is a single slot, not a stack;
-    same reasoning state.mana_subdecision's own docstring gives for why
-    Saruli Caretaker needs a wholly separate field instead). No
-    pending-resolution gate. Legal iff an unused filter named `name` exists
-    and the pool already holds a floating `input_color` pip to spend on its
-    {1} activation cost (any color, including colorless, can pay a generic
-    cost) -- AND, mid-payment, converting that pip away must not strand the
-    payment (see _filter_would_strand_payment). Uses the sweep-scoped
+def _filter_mana_legal(name, input_color):
+    """A mana filter's OWN activation cost -- "{1}[, {T}]: add one mana of
+    any color", the {1} half -- paid immediately as a flat fixed-table
+    action, one row per (source, input_color): which floating pip pays the
+    {1}. The output half (which color comes out) is a separate, later
+    choice via the shared choose_color mana_subdecision stage (see
+    _filter_mana_execute) -- reusing Saruli Caretaker's own machinery,
+    since "offer a small set of colors, then produce the chosen one" is
+    identical between the two abilities; only how each PAYS to get there
+    differs. Never a nested pay_cost for the {1} itself (which would risk
+    clobbering whatever pending_resolution is already open --
+    state.pending_resolution is a single slot, not a stack; same reasoning
+    state.mana_subdecision's own docstring gives) -- no pending-resolution
+    gate, per 605.1a. Legal iff an unused filter named `name` exists and
+    the pool already holds a floating `input_color` pip (any color,
+    including colorless, can pay a generic cost) -- AND, mid-payment,
+    converting that pip away must not strand the payment (see
+    _filter_would_strand_payment). Uses the sweep-scoped
     _cached_filter_source cache, not a fresh scan -- this legal() runs once
-    per (source, output_color, input_color) row."""
+    per (source, input_color) row, POOL_COLORS-many per source now instead
+    of POOL_COLORS x len(colors)."""
     def legal(state):
         if _cached_filter_source(state, name) is None or state.mana_pool.get(input_color, 0) <= 0:
             return False
@@ -2831,7 +2851,15 @@ def _filter_would_strand_payment(state, input_color):
     return state.mana_pool.get(input_color, 0) - 1 < still_needed
 
 
-def _filter_mana_execute(name, output_color, input_color):
+def _filter_mana_execute(name, input_color):
+    """Pays the {1} immediately (taps/flags the resolved source, spends the
+    chosen input pip -- exactly what the pre-split atomic execute did for
+    this half, unchanged), then opens the SHARED choose_color
+    mana_subdecision stage (game.begin_mana_color_choice) for the output
+    half -- can_produce/on_choose_color read the resolved source's own
+    "filter_mana" spec fresh (not a closed-over table-build-time value),
+    same reasoning _mana_extra_choose_execute's own docstring gives for a
+    token-sourced name."""
     def execute(state):
         p = _find_filter_source(state, name)
         if name == "Barrels of Blasting Jelly":
@@ -2842,8 +2870,17 @@ def _filter_mana_execute(name, output_color, input_color):
         if state.mana_pool[input_color] <= 0:
             del state.mana_pool[input_color]
         state.log_event("mana_spend", color=input_color, toward="filter")
-        state.mana_pool[output_color] = state.mana_pool.get(output_color, 0) + 1
-        state.log_event("mana_tap", permanent=(name, p.slot), mode="filter", produced=[output_color])
+
+        colors = game.EFFECT_REGISTRY[p.card_def.effect_id]["filter_mana"]["colors"]
+
+        def can_produce(state, color):
+            return color in colors
+
+        def on_choose_color(state, color):
+            state.mana_pool[color] = state.mana_pool.get(color, 0) + 1
+            state.log_event("mana_tap", permanent=(name, p.slot), mode="filter", produced=[color])
+
+        game.begin_mana_color_choice(state, can_produce, on_choose_color)
     return execute
 
 
@@ -2892,6 +2929,34 @@ def _validate_choose_name_coverage(state, actions):
         )
 
 
+_mana_subdecision_rows_cache = {}  # id(actions) -> (actions, [(idx, mana_subdecision_gate), ...] for entries stamped with one)
+_MANA_SUBDECISION_ROWS_CACHE_CAP = 32  # ponytail: FIFO-evicted, not reset per sweep like its siblings (this cache must survive across sweeps -- see below) -- bounds memory when a caller (e.g. a persistent multiprocessing worker) rebuilds fresh `actions` tables across many calls instead of reusing one per deck for the session
+
+
+def _mana_subdecision_rows(actions):
+    """The (idx, _mana_subdecision_gate) pairs for entries carrying that
+    stamp, cached once per distinct `actions` table (see legal_action_mask's
+    own docstring for the id()-cache lifecycle reasoning -- identical to
+    the removed _action_gates' -- this is the ONE gate still worth caching:
+    _mana_subdecision_color_legal is unsafe to call unconditionally (see
+    its own body -- it dereferences state.mana_subdecision["can_produce"]
+    with no None-guard, so calling it with no subdecision open raises
+    TypeError, not a graceful False), so legal_action_mask MUST know which
+    few indices those are without calling them first to find out. Empty for
+    most decks -- populated only by a Saruli-Caretaker-shaped
+    mana_extra_choose card or a filter_mana card (Conduit Pylons/Barrels of
+    Blasting Jelly)."""
+    cached = _mana_subdecision_rows_cache.get(id(actions))
+    if cached is not None and cached[0] is actions:
+        return cached[1]
+    rows = [(idx, legal_fn._mana_subdecision_gate) for idx, (_name, legal_fn, _execute) in enumerate(actions)
+            if getattr(legal_fn, "_mana_subdecision_gate", None) is not None]
+    if len(_mana_subdecision_rows_cache) >= _MANA_SUBDECISION_ROWS_CACHE_CAP:
+        _mana_subdecision_rows_cache.pop(next(iter(_mana_subdecision_rows_cache)))
+    _mana_subdecision_rows_cache[id(actions)] = (actions, rows)
+    return rows
+
+
 def legal_action_mask(state, actions):
     """Stateless -- takes the action table explicitly, so any caller (the
     token pipeline's own _seat_step, a direct game-loop driver, ...)
@@ -2899,32 +2964,50 @@ def legal_action_mask(state, actions):
     deck's own table, none privileged as a default (a caller with its own
     decklist always has its own table to pass).
 
-    Category-gating (profiled, not guessed: this table can run ~300 entries
-    long, and every single one of those closures gets called on every
-    sweep regardless of relevance
-    training-speed followup): most `_X_legal` closures start with a cheap,
-    static check of state.pending_resolution (either "must be None" or
-    "must be one specific kind/set of kinds") before doing any real work.
-    Each such closure is stamped with a `._pending_gate` attribute at
-    creation time -- `_GATE_NO_PENDING`, or a frozenset of the
-    pending_resolution["kind"] values it could possibly be legal under --
-    copied directly from that closure's own first-line check, changing WHEN
-    it gets called, never WHAT it returns. A closure with no `._pending_gate`
-    stamped (attack, and anything the gate-stamping audit didn't touch) is
-    always called -- the fail-safe default, not an optimization gap that can
-    go wrong.
+    Calls every closure directly -- no pending_resolution-based category
+    gating. A gating layer (skip a closure via a cheap pre-check on
+    state.pending_resolution["kind"], mirroring each closure's own first-
+    line check -- see every `._pending_gate =` stamp still sitting on the
+    closures below) was tried, INCLUDING a per-table cache of the gate
+    lookups (avoiding a fresh getattr every sweep), and measured SLOWER
+    than calling everything unconditionally -- consistently, ~15-25%,
+    across every pending kind that occurs in real play (controlled, order-
+    randomized timing over 4000 real captured decisions, comparing on the
+    SAME states in interleaved repeats to rule out cache-warmup bias).
+    Most `_X_legal` closures are already cheap enough (one or two
+    attribute/dict checks) that the overhead of DECIDING whether to call
+    them costs as much or more than just calling them. The `._pending_gate`
+    stamps are left in place as documentation of each closure's real
+    legality precondition (and in case a more selective future approach --
+    gating only the handful of genuinely expensive closures instead of all
+    ~300 -- turns out to be worth it); this sweep no longer reads them.
 
-    A SEPARATE gate, `._mana_subdecision_gate`, governs the "Produce <color>"
-    buttons (state.mana_subdecision's own choose_color stage) -- checked
-    BEFORE the pending_resolution logic above and takes EXCLUSIVE priority
-    over it: whenever a mana_subdecision is open, every other closure (gate-
-    free or not) is suppressed outright, and only the matching-stage
-    mana_subdecision closures are ever called. This is what lets a gate-free
-    mana ability (Saruli Caretaker) open its own multi-step choice without
-    a SECOND such ability (or anything else) interleaving mid-choice, while
-    still never touching state.pending_resolution at all -- see
-    state.mana_subdecision's own docstring for why this can't just be
-    another pending_resolution kind.
+    state.mana_subdecision is NOT the same kind of optional speed layer,
+    and is NOT dropped: it's the ONLY thing that makes every OTHER action
+    illegal while a gate-free mana ability's own multi-step choice (Saruli
+    Caretaker: tap another creature, then choose a color) is open -- no
+    individual `_X_legal` closure checks state.mana_subdecision itself
+    except `_mana_subdecision_color_legal` (gated to its own "choose_color"
+    stage, and unsafe to call at all when no subdecision is open -- see
+    _mana_subdecision_rows' own docstring). Skipping this check would
+    silently make every other action look legal mid-subdecision (or crash
+    on the "Produce <color>" rows specifically); see
+    test_saruli_caretaker_two_stage_mana_subdecision for the regression
+    coverage. Three cases, cheapest first:
+      1. This deck's table has no mana_subdecision-gated row at all (most
+         decks) -- every closure is safe to call unconditionally, so this
+         degenerates to exactly the same zero-overhead sweep as case 1
+         above, no per-entry check of any kind.
+      2. The table has such a row, but none is open right now -- everything
+         else is still safe to call directly; only the (few, known-by-index)
+         subdecision rows are forced False without being called.
+      3. A subdecision is genuinely open -- exclusive priority, suppress
+         everything except the matching-stage subdecision closures, mirroring
+         how activating a mana ability is atomic from everyone else's view
+         in real Magic. See state.mana_subdecision's own docstring for why
+         this can't just be another pending_resolution kind (a single slot,
+         not a stack -- a second pending would clobber whatever's already
+         open).
 
     Resets _battlefield_lookup_cache, _mana_ability_options_cache,
     _mana_source_cache, _filter_source_cache, and game.mana's own
@@ -2936,43 +3019,35 @@ def legal_action_mask(state, actions):
     that -- belt-and-suspenders for a module-level global, not load-bearing.
     mana.py's own cache is reset from here, not self-invalidating there, for
     the same reason the others aren't: see game.mana._enchanting's own
-    docstring."""
+    docstring.
+
+    Mask is built as a plain list and converted to a numpy array ONCE at
+    the end -- indexed numpy writes in a tight Python loop carry real
+    per-call overhead, the same lesson rl.arch.pad_token_batch's own
+    docstring already applies to token tensors."""
     global _battlefield_lookup_cache, _mana_ability_options_cache, _mana_source_cache, _filter_source_cache
     _battlefield_lookup_cache = None
     _mana_ability_options_cache = None
     _mana_source_cache = None
     _filter_source_cache = None
     game.reset_mana_cache()
-    pending = state.pending_resolution
-    pending_kind = pending["kind"] if pending is not None else None
     mana_sub = state.mana_subdecision
-    mana_sub_stage = mana_sub["stage"] if mana_sub is not None else None
+    sub_rows = _mana_subdecision_rows(actions)
     try:
-        mask = np.zeros(len(actions), dtype=bool)
-        for idx, (_name, legal_fn, _execute) in enumerate(actions):
-            sub_gate = getattr(legal_fn, "_mana_subdecision_gate", None)
-            if sub_gate is not None:
-                # Exclusive to the mana_subdecision window: legal ONLY when
-                # a sub-decision is open AND at exactly this stage -- never
-                # reaches the pending_resolution gate logic below at all.
-                if sub_gate == mana_sub_stage:
-                    mask[idx] = legal_fn(state)
-                continue
-            if mana_sub is not None:
-                # A mana_subdecision takes exclusive priority: suppress
-                # EVERYTHING else -- gate-free mana abilities included --
-                # while it's open, mirroring how activating a mana ability
-                # is atomic from everyone else's view in real Magic.
-                continue
-            gate = getattr(legal_fn, "_pending_gate", None)
-            if gate is _GATE_NO_PENDING:
-                if pending is not None:
-                    continue
-            elif gate is not None and pending_kind not in gate:
-                continue
-            mask[idx] = legal_fn(state)
+        if not sub_rows:
+            mask = [legal_fn(state) for _name, legal_fn, _execute in actions]
+        elif mana_sub is None:
+            sub_indices = {idx for idx, _gate in sub_rows}
+            mask = [False if idx in sub_indices else legal_fn(state)
+                    for idx, (_name, legal_fn, _execute) in enumerate(actions)]
+        else:
+            mana_sub_stage = mana_sub["stage"]
+            mask = [False] * len(actions)
+            for idx, gate in sub_rows:
+                if gate == mana_sub_stage:
+                    mask[idx] = actions[idx][1](state)
         _validate_choose_name_coverage(state, actions)
-        return mask
+        return np.asarray(mask, dtype=bool)
     finally:
         _battlefield_lookup_cache = None
         _mana_ability_options_cache = None

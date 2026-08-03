@@ -132,8 +132,9 @@ def test_abundant_growth_granted_color_only_via_enchanted_permanent():
         pass
 
 
-# Mana filters (Conduit Pylons / Barrels of Blasting Jelly) are now an
-# explicit POOL->POOL conversion action ("Filter X for <color>": spend {1}
-# from the pool, add one mana of that color) owned by the action layer
+# Mana filters (Conduit Pylons / Barrels of Blasting Jelly) are a two-step
+# pay-then-choose-color action ("Filter X, paying <color>" pays the {1}
+# immediately; the output color is chosen afterward via the shared
+# choose_color mana_subdecision stage) owned by the action layer
 # (drl_env._filter_mana_*), not a mana primitive here -- so their own test
 # lives with that code, not in this module.

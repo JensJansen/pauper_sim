@@ -437,24 +437,37 @@ class GameState:
         self.pending_resolution = None
 
         # None, or a dict describing an in-progress GATE-FREE mana ability's
-        # own multi-step choice (currently: Saruli Caretaker's "tap another
-        # creature, then choose a color" -- 602.5g cost choice then the
-        # ability's own color-choice effect). Deliberately a SEPARATE field
-        # from pending_resolution, not a nested/stacked use of it:
-        # pending_resolution is a single slot, and a gate-free mana ability
-        # (605.1a/605.3b -- legal in ANY priority window, even mid-resolution
-        # of something else, e.g. mid pay_unless) must be able to open its
-        # own multi-step choice WITHOUT clobbering whatever's already
-        # pending. While this is set, it takes exclusive priority over
-        # everything else (drl_env.legal_action_mask/rl.action_bridge's own
-        # dispatch) -- mirrors how activating a mana ability is atomic from
-        # everyone else's view in real Magic; once both steps complete,
-        # control returns to whatever pending_resolution already held,
-        # completely untouched. Shape while open: {"stage": "choose_target"
-        # | "choose_color", "source": Permanent, "target_predicate":
-        # callable, "target": Permanent | None}. See
-        # game.resolution.begin_mana_subdecision/execute_mana_subdecision_
-        # target/execute_mana_subdecision_color.
+        # own multi-step choice -- currently two shapes: Saruli Caretaker's
+        # "tap another creature, then choose a color" (602.5g cost choice
+        # then the ability's own color-choice effect), and a mana filter's
+        # "pay the activation cost [fixed table row], then choose the
+        # output color" (the cost half is a flat action, not a stage of
+        # this dict at all -- see drl_env._actions._filter_mana_execute).
+        # Deliberately a SEPARATE field from pending_resolution, not a
+        # nested/stacked use of it: pending_resolution is a single slot,
+        # and a gate-free mana ability (605.1a/605.3b -- legal in ANY
+        # priority window, even mid-resolution of something else, e.g. mid
+        # pay_unless) must be able to open its own multi-step choice
+        # WITHOUT clobbering whatever's already pending. While this is set,
+        # it takes exclusive priority over everything else (drl_env.
+        # legal_action_mask/rl.action_bridge's own dispatch) -- mirrors how
+        # activating a mana ability is atomic from everyone else's view in
+        # real Magic; once the choice completes, control returns to
+        # whatever pending_resolution already held, completely untouched.
+        #
+        # The ONE stage every such ability shares -- "choose_color" -- is a
+        # generic primitive (game.resolution.begin_mana_color_choice) that
+        # knows nothing about who opened it: {"stage": "choose_color",
+        # "can_produce": (state, color) -> bool, "on_choose_color": (state,
+        # color) -> None}, both bound as closures by whichever ability is
+        # completing (Saruli: tap its stored target then activate its own
+        # "mana"-spec source; a filter: add the color straight to the
+        # pool). Saruli's OWN first stage additionally carries {"stage":
+        # "choose_target", "source": Permanent, "target_predicate":
+        # callable, "target": Permanent | None} -- game.resolution.
+        # begin_mana_subdecision/execute_mana_subdecision_target -- a mana
+        # filter has no equivalent first stage; it opens straight into
+        # choose_color from its own flat fixed-table row's execute.
         self.mana_subdecision = None
 
         # list[dict {"card_def": CardDef, "resolve": (state, card_def) ->

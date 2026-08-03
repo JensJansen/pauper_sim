@@ -875,29 +875,39 @@ def test_conduit_pylons_taps_for_colorless():
 
 def test_conduit_pylons_filter_any_color_gated_on_untapped():
     """Conduit Pylons' own second ability -- "{1}: Add one mana of any
-    color" (filter_mana): an ATOMIC pool->pool conversion, legal only
-    while Pylons itself is still UNTAPPED (real text shares the land's own
-    {T} with its plain {T}: Add {C} ability, so only one of the two can be
-    used a turn), and using it taps Pylons -- distinct from Barrels of
-    Blasting Jelly's own once-per-turn used_this_turn flag gating the
-    identical shape (see this module's own docstring)."""
+    color" (filter_mana): a two-step conversion (pay the {1} immediately,
+    then choose the output color via the shared choose_color
+    mana_subdecision stage -- see drl_env._actions._filter_mana_execute),
+    legal only while Pylons itself is still UNTAPPED (real text shares the
+    land's own {T} with its plain {T}: Add {C} ability, so only one of the
+    two can be used a turn), and paying its {1} taps Pylons immediately --
+    distinct from Barrels of Blasting Jelly's own once-per-turn
+    used_this_turn flag gating the identical shape (see this module's own
+    docstring)."""
     actions = drl_env.build_action_table([("Conduit Pylons", 1)], registry.EFFECT_REGISTRY)
     pylons = Permanent(registry.CARD_DEFS["Conduit Pylons"])
     state = GameState(on_the_play=True)
     state.battlefield = [pylons]
     state.mana_pool = {"U": 1}
-    _, legal, execute = next((nm, lg, ex) for nm, lg, ex in actions if nm == "Filter Conduit Pylons for G, paying U")
+    _, legal, execute = next((nm, lg, ex) for nm, lg, ex in actions if nm == "Filter Conduit Pylons, paying U")
     assert legal(state)
     execute(state)
-    assert state.mana_pool == {"G": 1}  # U spent, G produced
-    assert pylons.tapped  # filtering taps Pylons itself
+    assert state.mana_pool == {}  # U spent as the cost; no output produced yet
+    assert pylons.tapped  # paying the {1} taps Pylons itself, immediately
+    assert state.mana_subdecision is not None and state.mana_subdecision["stage"] == "choose_color"
+
+    _, _produce_g_legal, produce_g_execute = next((nm, lg, ex) for nm, lg, ex in actions if nm == "Produce G")
+    produce_g_execute(state)
+    assert state.mana_pool == {"G": 1}
+    assert state.mana_subdecision is None
+
     # This test drives legal()/execute() directly rather than through a real
     # legal_action_mask sweep, so the sweep-scoped _filter_source_cache
     # (drl_env._actions, reset before/after every real sweep) must be reset
     # by hand here -- otherwise it would keep serving the stale, pre-tap
-    # lookup from the "for G, paying U" check just above.
+    # lookup from the "paying U" check above.
     drl_env._actions._filter_source_cache = None
-    _, legal_again, _ = next((nm, lg, ex) for nm, lg, ex in actions if nm == "Filter Conduit Pylons for U, paying G")
+    _, legal_again, _ = next((nm, lg, ex) for nm, lg, ex in actions if nm == "Filter Conduit Pylons, paying G")
     assert not legal_again(state)  # now tapped -- the filter's own gate closes
 
 

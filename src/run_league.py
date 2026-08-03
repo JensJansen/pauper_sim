@@ -228,6 +228,13 @@ def _run_session(n_iterations, games_per_iteration, snapshot_every, executor, n_
         live_nets[name] = net
         optimizers[name] = optimizer
 
+    # Fixed for the whole session (shared never trains, trunk widths never
+    # resize) -- computed once here rather than re-derived by
+    # collect_rollout_league_parallel on every one of its
+    # n_iterations * len(train_decks) calls below.
+    shared_state_dict = shared.state_dict()
+    all_trunk_hidden = {name: tuple(layer.out_features for layer in net.trunk_layers) for name, net in live_nets.items()}
+
     # Per-deck mulligan model (rl.mulligan): owns the pregame keep/mulligan +
     # bottoming, trained by its OWN REINFORCE with a direct game-outcome reward
     # (decoupled from the main PPO above). Shares the same frozen stack. Resets
@@ -300,8 +307,8 @@ def _run_session(n_iterations, games_per_iteration, snapshot_every, executor, n_
             elif executor is not None:
                 buffers_by_deck, mull_by_deck, played = collect_rollout_league_parallel(
                     name, live_nets, reward_fn_name, league_dir, horizon, games_per_iteration,
-                    executor, n_workers, SHARED_HPARAMS, mulligan_state_dicts, game_logs=game_logs,
-                    checkpoint_rate=checkpoint_rate,
+                    executor, n_workers, SHARED_HPARAMS, shared_state_dict, all_trunk_hidden,
+                    mulligan_state_dicts, game_logs=game_logs, checkpoint_rate=checkpoint_rate,
                 )
             else:
                 buffers_by_deck, mull_by_deck, played = collect_rollout_league(

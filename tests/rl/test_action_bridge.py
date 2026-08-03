@@ -333,9 +333,9 @@ def test_stranded_payment_filter_regression():
     # drl_env._actions._filter_would_strand_payment forbids exactly that.
     tron_decklist = game.parse_decklist_file("../data/monster_tron.txt")
     tron_table = drl_env.build_action_table(tron_decklist, game.EFFECT_REGISTRY)
-    # "Filter Barrels of Blasting Jelly for U, paying G" -- the exact action from the crash.
+    # "Filter Barrels of Blasting Jelly, paying G" -- the exact action from the crash.
     filt_idx = next(i for i, (n, _l, _e) in enumerate(tron_table)
-                    if n == "Filter Barrels of Blasting Jelly for U, paying G")
+                    if n == "Filter Barrels of Blasting Jelly, paying G")
     st = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
     st.battlefield = [Permanent(game.CARD_DEFS["Barrels of Blasting Jelly"])]
     st.mana_pool.update({"G": 1})
@@ -481,7 +481,7 @@ def test_choose_cast_copy_stranded_payment_regression():
     bw_decklist = game.parse_decklist_file("../data/monster_tron.txt")
     bw_table = drl_env.build_action_table(bw_decklist, game.EFFECT_REGISTRY)
     bw_filt_idx = next(i for i, (n, _l, _e) in enumerate(bw_table)
-                        if n == "Filter Barrels of Blasting Jelly for U, paying G")
+                        if n == "Filter Barrels of Blasting Jelly, paying G")
     # Not yet activated: the filter is a free, ordinary pool->pool conversion.
     assert drl_env.legal_action_mask(bw_state, bw_table)[bw_filt_idx], "filter must stay legal before any commitment"
     resolve_calls = []

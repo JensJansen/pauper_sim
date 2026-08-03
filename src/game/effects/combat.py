@@ -308,13 +308,10 @@ def combat_damage_step(state):
     groups = list(state.blocked_by.items())  # [(attacker, [blockers, ...])] -- gang-blocking (list-valued)
     all_combatants = set(state.attackers) | {b for _a, blockers in groups for b in blockers}
 
-    enchanting_by_target = {}
-    if all_combatants:
-        for player in state.players:
-            for aura in player.battlefield:
-                target = aura.flags.get("enchanting")
-                if target is not None:
-                    enchanting_by_target.setdefault(id(target), []).append(aura)
+    # Scan taken once and reused for every combatant checked below -- see
+    # stats.enchanting_by_target's own docstring for the shared caution
+    # about why this snapshot is safe today.
+    enchanting_by_target = stats.enchanting_by_target(state) if all_combatants else {}
 
     def _facts(permanent):
         auras = enchanting_by_target.get(id(permanent), ())

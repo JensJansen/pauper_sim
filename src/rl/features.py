@@ -255,7 +255,7 @@ def _stack_target_map(state):
     return obj_controllers, player_controllers
 
 
-def build_token_set(state, my_seat_idx, vocab):
+def build_token_set(state, my_seat_idx, vocab, include_rows=True):
     """Every public-zone card for BOTH seats, as a flat list of (vocab_index,
     feature_row, identity) triples -- one shared token set, side-flagged
     rather than two separately-encoded halves, so a joint Set Transformer
@@ -265,6 +265,14 @@ def build_token_set(state, my_seat_idx, vocab):
     returned list is NOT meaningful (a permutation-invariant encoder
     consumes it) but IS deterministic given the same state, for
     reproducibility.
+
+    include_rows=False skips _token_row entirely (feature_row is None in every
+    triple) -- identities (and vocab_index) are still real and complete, only
+    the expensive per-token dynamic computation (permanent_power/toughness,
+    blocked-by set construction) is dropped. For rl.agent._build_decision's
+    forced-decision check: identities are all it needs to determine legality
+    (pointer_legal_mask) and a forced decision never runs the network, so the
+    feature rows would otherwise be computed and immediately discarded unused.
 
     identity: the live Permanent for a battlefield token, the exact CardInstance
     for a graveyard card (Permanent subclasses CardInstance, so battlefield vs
@@ -302,14 +310,12 @@ def build_token_set(state, my_seat_idx, vocab):
     that choose_graveyard_card pick, exactly what the real reveal shows the
     caster (see the hand-reveal block at the end of this function)."""
     opponent_seat_idx = 1 - my_seat_idx
-    enchanting_by_target = {}
-    for player in state.players:
-        for aura in player.battlefield:
-            target = aura.flags.get("enchanting")
-            if target is not None:
-                enchanting_by_target.setdefault(id(target), []).append(aura)
+    # Scan taken once and reused for every token built below -- see
+    # game.enchanting_by_target's own docstring for the shared caution about
+    # why this snapshot is safe today.
+    enchanting_by_target = game.enchanting_by_target(state) if include_rows else {}
 
-    obj_controllers, _player_controllers = _stack_target_map(state)  # player half is rl.agent._scalar_features's job
+    obj_controllers, _player_controllers = _stack_target_map(state) if include_rows else ({}, None)  # player half is rl.agent._scalar_features's job; skip entirely when rows aren't needed
 
     def _targeted(obj):
         controllers = obj_controllers.get(id(obj), ())
@@ -320,6 +326,9 @@ def build_token_set(state, my_seat_idx, vocab):
         is_mine = seat_idx == my_seat_idx
         player = state.players[seat_idx]
         for p in player.battlefield:
+            if not include_rows:
+                tokens.append((vocab.index(p.card_def.name), None, p))
+                continue
             auras = enchanting_by_target.get(id(p), ())
             tm, tt = _targeted(p)
             tokens.append((vocab.index(p.card_def.name),
@@ -330,14 +339,21 @@ def build_token_set(state, my_seat_idx, vocab):
             # identity = the exact CardInstance, so two same-named graveyard cards
             # are DISTINCT pointer targets (and a flickered/returned card, being a
             # new instance, is a new token) -- MTG 400.7.
+            if not include_rows:
+                tokens.append((vocab.index(inst.name), None, inst))
+                continue
             tm, tt = _targeted(inst)
             tokens.append((vocab.index(inst.name),
                             _token_row(inst.name, "graveyard", is_mine, vocab, targeted_by_mine=tm, targeted_by_theirs=tt),
                             inst))
         for card_def, _plotted_turn in player.exile:
-            tokens.append((vocab.index(card_def.name), _token_row(card_def.name, "exile", is_mine, vocab), None))
+            row = _token_row(card_def.name, "exile", is_mine, vocab) if include_rows else None
+            tokens.append((vocab.index(card_def.name), row, None))
     for entry in state.stack:
         is_mine = entry["controller"] == my_seat_idx
+        if not include_rows:
+            tokens.append((vocab.index(entry["card_def"].name), None, entry))
+            continue
         tm, tt = _targeted(entry)  # a spell/ability can itself be targeted, e.g. Counterspell
         tokens.append((vocab.index(entry["card_def"].name),
                         _token_row(entry["card_def"].name, "stack", is_mine, vocab, targeted_by_mine=tm, targeted_by_theirs=tt),
@@ -361,7 +377,6 @@ def build_token_set(state, my_seat_idx, vocab):
                 # DEFERRED hand: still CardDefs (interned), so identity = the CardDef.
                 # Two same-named nonland hand cards are indistinguishable until hand
                 # instances land -- acceptable, no pool card reveals such a pair.
-                tokens.append((vocab.index(card_def.name),
-                                _token_row(card_def.name, "hand", hand_owner == my_seat_idx, vocab),
-                                card_def))
+                row = _token_row(card_def.name, "hand", hand_owner == my_seat_idx, vocab) if include_rows else None
+                tokens.append((vocab.index(card_def.name), row, card_def))
     return tokens

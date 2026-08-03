@@ -67,9 +67,11 @@ clause is a deliberate, documented drop rather than a guess:
 {symbols}) -- caller chooses one of several. "filter_mana": {"colors":
 {...}} marks Barrels of Blasting Jelly's and Conduit Pylons' colored-pip
 filter ability (as opposed to Conduit Pylons' plain {T}: Add {C}, which
-IS a "fixed" mana source below) -- an ATOMIC pool->pool conversion
-(drl_env._filter_mana_legal/_execute: spend one floating pip, add one of
-any of the 5 colors), never a nested cost payment."""
+IS a "fixed" mana source below) -- a two-step pay-then-choose-color
+conversion (drl_env._filter_mana_legal/_execute: spend one floating pip as
+the {1} activation cost immediately, then choose which of the 5 colors to
+add via the shared choose_color mana_subdecision stage), never a nested
+cost payment."""
 
 from .. import registry
 from ..cards import CardDef, CardType, EffectId

@@ -81,6 +81,31 @@ def _enchanting_auras(state, permanent):
                 yield aura
 
 
+def enchanting_by_target(state):
+    """Every Aura on either battlefield, bucketed by id(enchanted permanent)
+    -- one full scan producing a dict a caller can then read many
+    permanents' auras from via `.get(id(permanent), ())`, instead of paying
+    _enchanting_auras' own per-permanent scan once per permanent checked.
+    Shared by every caller that reads MANY permanents' auras from the SAME
+    state in one pass: combat.combat_damage_step, state_based.
+    check_state_based_actions, rl.features.build_token_set.
+
+    CAUTION -- each caller takes this snapshot once and reuses it for every
+    permanent it checks in that one call. Safe today because no Aura in this
+    pool has flash (though this engine already models flash on other card
+    types) and nothing in any current caller casts or (de)attaches an Aura
+    mid-call. If a flash/instant-speed Aura is ever added, re-verify it
+    can't attach/detach inside a caller's own scan-to-read window before
+    trusting this snapshot there."""
+    result = {}
+    for player in state.players:
+        for aura in player.battlefield:
+            target = aura.flags.get("enchanting")
+            if target is not None:
+                result.setdefault(id(target), []).append(aura)
+    return result
+
+
 def enchantment_count(state, aura):
     """How many ENCHANTMENT-type permanents `aura`'s OWN controller has on
     the battlefield -- shared by every "for each [other] enchantment you

@@ -68,7 +68,7 @@ from .effects.madness_and_plot import execute_madness_cast, plot_to_exile
 from .effects.shared import find_and_remove_by_name
 from .effects.stack import counter_spell, on_cast_trigger, push_ability_to_stack, push_to_stack, resolve_top_of_stack
 from .effects.state_based import HAND_SIZE_LIMIT, cleanup_step
-from .effects.stats import creature_keywords, enchantment_count, has_keyword, permanent_power, permanent_toughness
+from .effects.stats import creature_keywords, enchanting_by_target, enchantment_count, has_keyword, permanent_power, permanent_toughness
 from .effects.tokens import (
     BIRD_ILLUSION_TOKEN_CARD_DEF,
     BLOOD_TOKEN_CARD_DEF,
@@ -125,6 +125,7 @@ from .resolution import (
     begin_choose_target_player,
     begin_declare_blockers,
     begin_exile_n_from_graveyard,
+    begin_mana_color_choice,
     begin_mana_subdecision,
     begin_may_cast,
     begin_may_copy,

@@ -819,11 +819,13 @@ def begin_mana_subdecision(state, source, target_predicate):
     Saruli Caretaker's "tap another creature, then choose a color") --
     deliberately NOT begin_resolution/state.pending_resolution (a single
     slot that would be clobbered; see state.mana_subdecision's own
-    docstring for the full reasoning). No on_complete callback -- unlike
-    pending_resolution, this mechanism has exactly one, fixed two-stage
-    shape and always ends the same way (execute_mana_subdecision_color taps
-    the source and produces mana), so there's nothing for a caller to
-    customize."""
+    docstring for the full reasoning). Saruli's own stage-1 entry point --
+    "which creature to tap" is a COST CHOICE with no counterpart in a mana
+    filter's own flow (drl_env._actions._filter_mana_execute opens straight
+    into begin_mana_color_choice below, no target stage at all), so this
+    function stays exactly as narrow as it always was; only the SHARED
+    choose_color stage (begin_mana_color_choice/execute_mana_subdecision_
+    color) needed generalizing to serve both."""
     state.mana_subdecision = {
         "stage": "choose_target", "source": source, "target_predicate": target_predicate, "target": None,
     }
@@ -831,30 +833,87 @@ def begin_mana_subdecision(state, source, target_predicate):
 
 
 def execute_mana_subdecision_target(state, target):
-    """Records the chosen tap target and advances to the color stage --
-    mutates the SAME dict in place (not complete_resolution-style clear +
-    fire), since source/target are still needed for the final step."""
+    """Records the chosen tap target, then opens the shared choose_color
+    stage with SARULI'S OWN completion behavior bound (tap the target,
+    THEN produce mana from the resolved source via a real "mana"-spec
+    activation) -- mutates the SAME dict in place (not complete_resolution-
+    style clear + fire), since source/target are still needed by
+    on_choose_color below and by test/introspection code that reads
+    state.mana_subdecision directly."""
+    from ..mana import activate_mana_source, mana_output  # call-time import -- mana imports resolution, see pay_unless_pay's own comment
+
     sub = state.mana_subdecision
     sub["target"] = target
-    sub["stage"] = "choose_color"
+    source = sub["source"]
     state.log_event("mana_subdecision_target", target=(target.card_def.name, target.slot))
+
+    def can_produce(state, color):
+        # game.mana_output raises for an out-of-set color on a "flexible"
+        # source -- same check _find_mana_source's own color-producibility
+        # check already makes for ordinary mana sources. Generic, not
+        # hardcoded to Saruli's own 5-true-color case, though Saruli's own
+        # ("flexible", set(COLORS)) spec means all 5 always pass here.
+        try:
+            mana_output(source, state, color)
+        except ValueError:
+            return False
+        return True
+
+    def on_choose_color(state, color):
+        # Tap-target-then-activate-source order matches exactly what the
+        # pre-generalization implementation did, preserving identical
+        # observable behavior.
+        target.tapped = True
+        activate_mana_source(state, source, color)
+
+    begin_mana_color_choice(state, can_produce, on_choose_color)
+
+
+def begin_mana_color_choice(state, can_produce, on_choose_color):
+    """Opens (Saruli, via execute_mana_subdecision_target above -- or
+    re-opens, mutating in place, preserving whatever an earlier stage
+    already stashed on the dict) the ONE part of a gate-free mana ability's
+    multi-step choice that's genuinely identical across every such ability:
+    offer a small set of colors, then run a completion once one's picked.
+    Deliberately the ONLY thing this primitive knows about its caller --
+    everything upstream (how many stages came before this one, what "cost"
+    was already paid to get here) is entirely the caller's own business,
+    so a mana filter (drl_env._actions._filter_mana_execute) can open
+    straight into this with no prior stage at all, while Saruli's own
+    choose_target stage feeds into it, without either needing to know the
+    other exists.
+
+    can_produce(state, color) -> bool: is this color currently offerable
+    (drl_env._actions._mana_subdecision_color_legal's own check, gated to
+    this stage).
+    on_choose_color(state, color) -> None: what happens once a color is
+    picked (execute_mana_subdecision_color below calls this after clearing
+    state.mana_subdecision, mirroring complete_resolution's own "clear
+    pending before firing effects" order) -- owns producing/converting mana
+    and any other completion side effect (Saruli: tap the stored target,
+    then activate the source; a filter: add the chosen color straight to
+    the pool). Bound as a closure over whatever context its own caller
+    needs (a target, a source, an input color already spent) -- this
+    primitive never inspects that context itself."""
+    sub = state.mana_subdecision
+    if sub is None:
+        sub = {}
+        state.mana_subdecision = sub
+    sub["stage"] = "choose_color"
+    sub["can_produce"] = can_produce
+    sub["on_choose_color"] = on_choose_color
 
 
 def execute_mana_subdecision_color(state, color):
-    """Closes the sub-decision, THEN taps the target and produces mana --
-    clearing state.mana_subdecision before firing effects mirrors
-    complete_resolution's own "clear pending before on_complete" order.
-    Tap-target-then-activate-source order matches exactly what the old
-    single-atomic-row implementation did, preserving identical observable
-    behavior."""
-    from ..mana import activate_mana_source  # call-time import -- mana imports resolution, see pay_unless_pay's own comment
-
+    """Closes the sub-decision, THEN runs whichever completion its caller
+    bound (see begin_mana_color_choice) -- clearing state.mana_subdecision
+    before firing effects mirrors complete_resolution's own "clear pending
+    before on_complete" order."""
     sub = state.mana_subdecision
-    source, target = sub["source"], sub["target"]
+    on_choose_color = sub["on_choose_color"]
     state.mana_subdecision = None
-    target.tapped = True
     state.log_event("mana_subdecision_complete", color=color)
-    activate_mana_source(state, source, color)
+    on_choose_color(state, color)
 
 
 def begin_throne_reveal(state, n, on_complete):

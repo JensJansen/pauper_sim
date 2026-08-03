@@ -155,11 +155,19 @@ def _build_decision(state, seat, deck_ctx, horizon):
     the network entirely.
     identities is read straight off the token set (each token is (vocab_idx,
     feature_row, identity)); the pointer mask -- and its buffer-stored width --
-    are the RAW token count, exactly what ppo_update re-pads per minibatch."""
+    are the RAW token count, exactly what ppo_update re-pads per minibatch.
+
+    Two-pass token set: the mask (and thus forced-ness) only needs each
+    token's identity, not its full dynamic feature row (permanent_power/
+    toughness, blocked-by sets -- build_token_set's expensive part). So the
+    first pass asks for identities only (include_rows=False); the real
+    per-token rows + scalar features are only built once we know a forward
+    pass will actually consume them (sole is None). A forced decision never
+    reads dec.tokens/dec.scalar (_seat_step returns before touching either),
+    so those stay None for it rather than paying for values nobody reads."""
     vocab, fixed_table = deck_ctx
-    tokens = build_token_set(state, seat, vocab)
-    scalar = _scalar_features(state, seat, horizon)
-    identities = [identity for _idx, _row, identity in tokens]
+    cheap_tokens = build_token_set(state, seat, vocab, include_rows=False)
+    identities = [identity for _idx, _row, identity in cheap_tokens]
 
     fixed_mask = np.asarray(drl_env.legal_action_mask(state, fixed_table), dtype=bool)
     pointer_mask = pointer_legal_mask(state, identities) if any_pointer_legal(state) else [False] * len(identities)
@@ -169,6 +177,10 @@ def _build_decision(state, seat, deck_ctx, horizon):
     if legal.size == 0:
         _raise_all_false(state, seat)
     sole = int(legal[0]) if legal.size == 1 else None
+    if sole is not None:
+        return _Decision(None, None, full_mask, identities, fixed_table, len(fixed_table), int(legal.size), sole)
+    tokens = build_token_set(state, seat, vocab)
+    scalar = _scalar_features(state, seat, horizon)
     return _Decision(tokens, scalar, full_mask, identities, fixed_table, len(fixed_table), int(legal.size), sole)
 
 

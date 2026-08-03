@@ -27,15 +27,23 @@ def check_state_based_actions(state):
     FIRST, then removes them (real Magic's simultaneous SBA semantics, not a
     one-at-a-time recheck). Scans the whole battlefield -- a strict, cheap
     superset of "just-damaged," since this runs before every priority round,
-    not just once per combat."""
+    not just once per combat.
+
+    Every candidate's enchanting Auras are looked up via ONE battlefield scan
+    (stats.enchanting_by_target) instead of stats.permanent_toughness
+    re-scanning per creature -- same fetch-once-reuse pattern as combat.
+    combat_damage_step's own creature_facts; see that shared helper's own
+    docstring for why this snapshot is safe today."""
     candidates = [
         p for player in state.players for p in player.battlefield if p.card_type == CardType.CREATURE
     ]
+    enchanting_by_target = stats.enchanting_by_target(state) if candidates else {}
     # flags["deathtouched"] (set by combat only on a real deathtouch hit)
     # implies damage was dealt (704.5h); toughness <= 0 is caught too (0 >= 0).
     dead = [
         p for p in candidates
-        if p.damage_marked >= stats.permanent_toughness(state, p) or p.flags.get("deathtouched")
+        if p.damage_marked >= stats.permanent_toughness(state, p, enchanting_auras=enchanting_by_target.get(id(p), ()))
+        or p.flags.get("deathtouched")
     ]
     for permanent in dead:
         _destroy_creature(state, permanent)

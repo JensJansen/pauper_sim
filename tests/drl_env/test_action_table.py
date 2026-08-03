@@ -604,12 +604,18 @@ def test_saruli_caretaker_two_stage_mana_subdecision():
     assert not tap_legal(state)  # Saruli itself now tapped -- no untapped source left, no longer offered at all
 
 
-def test_mana_filter_atomic_pool_conversion():
-    # Mana filter (Barrels of Blasting Jelly / Conduit Pylons), F11 atomic
-    # redesign: "Filter X for <output>, paying <input>" spends one floating
-    # <input> pip and adds one <output> pip in ONE action -- no nested
-    # pay_cost. Float {U}: filtering it into {B} is legal only while that U
-    # pip is actually floating; illegal for a color not currently floating.
+def test_mana_filter_two_step_color_choice():
+    # Mana filter (Barrels of Blasting Jelly / Conduit Pylons), two-step
+    # redesign reusing Saruli Caretaker's own choose_color mana_subdecision
+    # machinery (game.begin_mana_color_choice): step 1, a flat fixed-table
+    # row "Filter X, paying <input>", pays the cost immediately (taps/flags
+    # the source, spends the input pip) and opens the shared choose_color
+    # stage; step 2, one of the same "Produce <color>" buttons Saruli uses,
+    # produces the chosen output color into the pool. No nested pay_cost --
+    # state.mana_subdecision stays a field separate from
+    # state.pending_resolution throughout. Float {U}: paying with it is
+    # legal only while that U pip is actually floating; illegal for a color
+    # not currently floating.
     filter_decklist = [("Barrels of Blasting Jelly", 2)]
     filter_actions = build_action_table(filter_decklist, game.EFFECT_REGISTRY)
 
@@ -618,16 +624,121 @@ def test_mana_filter_atomic_pool_conversion():
     state.battlefield = [barrels]
     state.mana_pool = {"U": 1}
 
-    _, legal_ub, execute_ub = filter_actions[_action_index(filter_actions, "Filter Barrels of Blasting Jelly for B, paying U")]
-    _, legal_wb, _ = filter_actions[_action_index(filter_actions, "Filter Barrels of Blasting Jelly for B, paying W")]
+    pay_u_idx = _action_index(filter_actions, "Filter Barrels of Blasting Jelly, paying U")
+    pay_w_idx = _action_index(filter_actions, "Filter Barrels of Blasting Jelly, paying W")
+    _, legal_pay_u, execute_pay_u = filter_actions[pay_u_idx]
+    _, legal_pay_w, _execute_pay_w = filter_actions[pay_w_idx]
 
-    assert legal_ub(state)
-    assert not legal_wb(state)  # no floating W to spend
+    # Exactly one row per POOL_COLOR (no output_color cross product anymore):
+    # the redesign's own stated goal -- 6 rows for this one source, not 30.
+    filter_rows = [n for n, _l, _e in filter_actions if n.startswith("Filter Barrels of Blasting Jelly")]
+    assert len(filter_rows) == len(game.POOL_COLORS) == 6, filter_rows
 
-    execute_ub(state)
-    assert state.mana_pool == {"B": 1}  # U spent, B produced -- net one pip converted
-    assert barrels.flags.get("used_this_turn", False) is True
-    assert not legal_ub(state)  # Barrels' own once-per-turn gate now closed
+    # A deck with a filter card but NO Saruli-shaped mana_extra_choose card
+    # must still get the shared "Produce <color>" rows -- build_action_table's
+    # needs_mana_subdecision_color_buttons gate must trigger on filter_mana
+    # too, not just mana_extra_choose.
+    for color in game.COLORS:
+        assert f"Produce {color}" in [n for n, _l, _e in filter_actions]
+
+    assert legal_pay_u(state)
+    assert not legal_pay_w(state)  # no floating W to spend
+
+    execute_pay_u(state)
+    assert state.mana_pool == {}, "the U pip is spent immediately as the cost -- no output produced yet"
+    assert barrels.flags.get("used_this_turn", False) is True, "cost paid immediately, same as before the redesign"
+    assert state.mana_subdecision is not None and state.mana_subdecision["stage"] == "choose_color"
+
+    # Exclusive priority: no OTHER filter row (this source's own gate is
+    # already closed anyway, but even a hypothetical second untapped source
+    # would be suppressed) is reachable while the subdecision is open --
+    # legal_action_mask's own dispatch, not either closure's own logic.
+    mask = legal_action_mask(state, filter_actions)
+    assert not any(mask[i] for i, (n, _l, _e) in enumerate(filter_actions) if n.startswith("Filter "))
+    for color in game.COLORS:
+        assert mask[_action_index(filter_actions, f"Produce {color}")], (
+            f"Produce {color} must be legal mid choose_color stage -- Barrels' filter_mana spec is all 5 true colors"
+        )
+
+    produce_b_idx = _action_index(filter_actions, "Produce B")
+    _, _produce_b_legal, produce_b_execute = filter_actions[produce_b_idx]
+    produce_b_execute(state)
+
+    assert state.mana_pool == {"B": 1}  # U spent at step 1, B produced at step 2 -- net one pip converted
+    assert state.mana_subdecision is None
+    assert not legal_pay_u(state)  # Barrels' own once-per-turn gate now closed -- no more floating U to spend either way
+
+
+def test_mana_filter_row_count_stays_flat_not_cross_product():
+    # Durable regression guard against re-introducing the output_color x
+    # input_color cross product: monster_tron runs BOTH real filter cards
+    # (Conduit Pylons + Barrels of Blasting Jelly), so its table is where the
+    # old design's ~60-row block lived. Now: POOL_COLORS (6) rows per source,
+    # nothing more -- output color is chosen via the shared "Produce <color>"
+    # buttons, not a per-row dimension.
+    tron_decklist = game.parse_decklist_file(str(DATA_DIR / "monster_tron.txt"))
+    tron_actions = build_action_table(tron_decklist, game.EFFECT_REGISTRY)
+    filter_rows = [n for n, _l, _e in tron_actions if n.startswith("Filter ")]
+    assert len(filter_rows) == 2 * len(game.POOL_COLORS) == 12, filter_rows
+    produce_rows = [n for n, _l, _e in tron_actions if n.startswith("Produce ")]
+    assert len(produce_rows) == len(game.COLORS) == 5, produce_rows
+
+
+def test_mana_subdecision_rows_cache_stays_bounded():
+    # Regression guard: _mana_subdecision_rows_cache persists ACROSS sweeps
+    # (unlike its per-sweep-reset siblings -- see its own docstring), so it
+    # must never grow without bound when many distinct `actions` tables are
+    # looked up over a process's lifetime (e.g. a multiprocessing worker
+    # rebuilding a fresh table per task instead of reusing one per deck).
+    tron_decklist = game.parse_decklist_file(str(DATA_DIR / "monster_tron.txt"))
+    _actions._mana_subdecision_rows_cache.clear()
+    for _ in range(_actions._MANA_SUBDECISION_ROWS_CACHE_CAP + 10):
+        fresh_actions = build_action_table(tron_decklist, game.EFFECT_REGISTRY)
+        _actions._mana_subdecision_rows(fresh_actions)
+        assert len(_actions._mana_subdecision_rows_cache) <= _actions._MANA_SUBDECISION_ROWS_CACHE_CAP
+    _actions._mana_subdecision_rows_cache.clear()
+
+
+def test_mana_filter_mid_pay_cost_completes_without_disturbing_original_payment():
+    # The reason filtering couldn't just be an ordinary nested pay_cost in
+    # the first place: state.pending_resolution is a single slot. This
+    # proves the two-step redesign genuinely preserves that guarantee --
+    # opening state.mana_subdecision mid an already-open pay_cost, then
+    # completing BOTH subdecision steps, must leave the ORIGINAL
+    # pending_resolution completely untouched and still completable
+    # afterward (not just legal to attempt, per
+    # test_stranded_payment_filter_regression -- this drives it all the way
+    # through, the same real scenario a training game encounters).
+    tron_decklist = game.parse_decklist_file(str(DATA_DIR / "monster_tron.txt"))
+    tron_actions = build_action_table(tron_decklist, game.EFFECT_REGISTRY)
+    state = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
+    state.battlefield = [Permanent(game.CARD_DEFS["Barrels of Blasting Jelly"])]
+    state.mana_pool.update({"G": 2})  # a SPARE green pip -- converting one away can't strand the {G} still owed
+
+    game.begin_pay_cost(state, {"G": 1}, on_complete=lambda s: s.log_event("payment_complete"))
+    assert state.pending_resolution["kind"] == "pay_cost" and state.pending_resolution["remaining"] == {"G": 1}
+
+    pay_idx = _action_index(tron_actions, "Filter Barrels of Blasting Jelly, paying G")
+    _, legal_pay, execute_pay = tron_actions[pay_idx]
+    assert legal_pay(state), "a SPARE pip of the owed color must stay convertible mid-payment"
+    execute_pay(state)
+    assert state.mana_subdecision is not None and state.mana_subdecision["stage"] == "choose_color"
+    assert state.pending_resolution["kind"] == "pay_cost" and state.pending_resolution["remaining"] == {"G": 1}, (
+        "the original payment must be completely untouched while the subdecision is open"
+    )
+    assert state.mana_pool == {"G": 1}  # the spare pip spent; the still-owed one untouched
+
+    produce_idx = _action_index(tron_actions, "Produce W")
+    _, _produce_legal, produce_execute = tron_actions[produce_idx]
+    produce_execute(state)
+    assert state.mana_subdecision is None
+    assert state.mana_pool == {"G": 1, "W": 1}
+    assert state.pending_resolution["kind"] == "pay_cost", "control returns to the ORIGINAL pending, unchanged"
+
+    # The original payment is still completable -- the invariant that matters.
+    assert "G" in game.pool_spend_options(state)
+    game.execute_pool_spend(state, "G")
+    assert state.pending_resolution is None
 
 
 def test_mana_row_generation_derives_from_registry_kind():

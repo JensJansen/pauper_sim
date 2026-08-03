@@ -394,8 +394,8 @@ def _league_rollout_worker(training_deck_name, all_state_dicts, all_trunk_hidden
 
 
 def collect_rollout_league_parallel(training_deck_name, live_nets, reward_fn_name, league_root_dir, horizon, n_games,
-                                     executor, n_workers, shared_hparams, mulligan_state_dicts=None, game_logs=None,
-                                     checkpoint_rate=0.0):
+                                     executor, n_workers, shared_hparams, shared_state_dict, all_trunk_hidden,
+                                     mulligan_state_dicts=None, game_logs=None, checkpoint_rate=0.0):
     """Orchestrator (runs in the MAIN process): splits n_games across
     n_workers, submits one _league_rollout_worker task per worker via the
     given (already-created, reused-across-calls) ProcessPoolExecutor --
@@ -407,12 +407,16 @@ def collect_rollout_league_parallel(training_deck_name, live_nets, reward_fn_nam
     in-process -- including sampling some OTHER deck's current live net,
     not just training_deck_name's own or frozen snapshots.
 
+    shared_state_dict, all_trunk_hidden: the FROZEN shared stack's weights and
+    every live net's trunk widths -- both fixed for the whole session (the
+    shared stack never trains, trunk widths never resize), so the caller
+    computes them ONCE (run_league._run_session, right after live_nets is
+    built) instead of this function re-deriving them from live_nets on every
+    one of the n_iterations * len(train_decks) calls it gets per session.
+
     checkpoint_rate: forwarded to every worker's own pool.sample_opponent
     call verbatim -- see rl.league.LeaguePool.sample_opponent's docstring."""
-    shared = live_nets[training_deck_name].shared_stack
-    shared_state_dict = shared.state_dict()
     all_state_dicts = {name: net.state_dict() for name, net in live_nets.items()}
-    all_trunk_hidden = {name: tuple(layer.out_features for layer in net.trunk_layers) for name, net in live_nets.items()}
 
     base = n_games // n_workers
     remainder = n_games % n_workers
@@ -531,6 +535,10 @@ def ppo_update(net, optimizers, buf, device, n_epochs=4, batch_size=64, gamma=0.
     total = len(buf)
     indices = np.arange(total)
     last_policy_loss = last_value_loss = last_entropy = 0.0
+    # net's parameter set is fixed for this whole call -- listing it once
+    # avoids re-walking the module tree (net.parameters() -> named_modules())
+    # on every one of the n_epochs * n_minibatches clip_grad_norm_ calls below.
+    all_params = list(net.parameters())
     for _epoch in range(n_epochs):
         np.random.shuffle(indices)
         for start in range(0, total, batch_size):
@@ -596,7 +604,6 @@ def ppo_update(net, optimizers, buf, device, n_epochs=4, batch_size=64, gamma=0.
             for opt in optimizers:
                 opt.zero_grad()
             loss.backward()
-            all_params = list(net.parameters())
             torch.nn.utils.clip_grad_norm_(all_params, max_grad_norm)
             for opt in optimizers:
                 opt.step()
