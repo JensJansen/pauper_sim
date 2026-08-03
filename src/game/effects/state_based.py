@@ -102,6 +102,11 @@ def _destroy_creature(state, permanent):
     its controller's graveyard (the default)."""
     owner = next(player for player in state.players if permanent in player.battlefield)
     owner_idx = state.players.index(owner)
+    # Stashed so an ltb_trigger resolving LATER (after a priority window, by
+    # which point state.active_idx may no longer be this permanent's owner --
+    # see Nihil Spellbomb's dies-trigger) can still recover its true
+    # controller instead of misreading whoever's turn it now is.
+    permanent.flags["owner_idx"] = owner_idx
     owner.battlefield.remove(permanent)
     departing = departing_card_def(permanent)  # front face for a DFC leaving the battlefield
     is_token = departing.name not in registry.CARD_DEFS
@@ -189,6 +194,7 @@ def sacrifice_to_graveyard(state, permanent):
 
     owner = next(player for player in state.players if permanent in player.battlefield)
     owner_idx = state.players.index(owner)
+    permanent.flags["owner_idx"] = owner_idx  # see _destroy_creature's own comment -- true controller for a later-resolving ltb_trigger
     owner.battlefield.remove(permanent)
     departing = departing_card_def(permanent)  # front face for a DFC leaving the battlefield
     is_token = departing.name not in registry.CARD_DEFS

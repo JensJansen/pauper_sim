@@ -193,9 +193,14 @@ def nihil_spellbomb_sac(state, permanent):
 
 def nihil_spellbomb_dies(state, permanent):
     """"When put into a graveyard from the battlefield, you may pay {B}. If you
-    do, draw a card." The controller (active player at this trigger's
-    resolution) may pay {B} for the draw."""
-    payer = state.active_idx
+    do, draw a card." The controller -- Nihil Spellbomb's owner, NOT
+    necessarily whoever is active when this trigger resolves (a later
+    priority window can flip state.active_idx before an LTB trigger actually
+    resolves) -- may pay {B} for the draw. `owner_idx` is stashed on the
+    permanent's own flags at removal time (state_based._destroy_creature /
+    sacrifice_to_graveyard), the same real controller a later resolution
+    can no longer derive from the battlefield (the permanent's already gone)."""
+    payer = permanent.flags["owner_idx"]
 
     def _on_result(state, paid):
         if paid:

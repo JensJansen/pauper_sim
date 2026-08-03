@@ -14,7 +14,8 @@ from ..effects.casting import (
     target_still_legal,
 )
 from ..effects.shared import (
-    any_creature_on_either_battlefield, card_subtypes, discard_from_hand_to_graveyard, find_and_remove_by_name, find_to_hand,
+    any_creature_on_either_battlefield, any_land_on_either_battlefield, card_subtypes, discard_from_hand_to_graveyard,
+    find_and_remove_by_name, find_to_hand,
 )
 from ..effects.stack import push_ability_to_stack, push_to_stack
 from ..effects.state_based import check_state_based_actions
@@ -40,7 +41,11 @@ GREEN_CARD_CATALOG = {
     ),
     "Masked Vandal": CardDef(
         "Masked Vandal", CardType.CREATURE, {"generic": 1, "G": 1}, EffectId.MASKED_VANDAL, power=1, toughness=3,
-        subtypes=("Elf",),  # real Masked Vandal is a Changeling (every creature type) -- only the Elf type matters in this pool (Priest of Titania / Wellwisher / Timberwatch Elf count it)
+        # AUTHORIZED SIMPLIFICATION: real Masked Vandal is a Changeling (every
+        # creature type simultaneously); narrowed here to just "Elf", the only
+        # creature type any card in this pool ever counts (Priest of Titania /
+        # Wellwisher / Timberwatch Elf) -- approved 2026-08-03 (repo owner).
+        subtypes=("Elf",),
     ),
     "Saruli Caretaker": CardDef(
         "Saruli Caretaker", CardType.CREATURE, {"G": 1}, EffectId.SARULI_CARETAKER, defender=True, power=1, toughness=1,
@@ -199,8 +204,9 @@ def _wall_of_roots_on_tap(state, permanent):
 
 def cast_roost_seek(state, card_def):
     """Sagu Wildling's Omen sorcery half: {G}, search library for a basic
-    land -- two possible names here (Forest or Swamp), a real model
-    choice, unlike Land Grant's single fixed target below.
+    land card -- real oracle text has no color restriction (any of the five
+    basics is a legal find, not just Forest/Swamp), a real model choice,
+    unlike Land Grant's single fixed target below.
 
     Omen's own rule, unlike every other sorcery/instant in this catalog
     AND unlike real Adventure: this does NOT exile itself. The real
@@ -216,7 +222,7 @@ def cast_roost_seek(state, card_def):
     if card_def in state.hand:
         state.hand.remove(card_def)  # normally already gone (removed at cast, push_to_stack); tolerant since this is the resolving spell
     state.library.append(card_def)  # Omen: shuffles ITSELF into the LIBRARY (stack -> library), not graveyard
-    resolution.begin_search_fetch(state, lambda c: c.card_type == CardType.LAND, find_to_hand)
+    resolution.begin_search_fetch(state, lambda c: c.card_type == CardType.LAND and c.extra.get("basic", False), find_to_hand)
 
 
 def cast_sagu_wildling_creature(state, card_def):
@@ -236,9 +242,16 @@ def cast_sagu_wildling_creature(state, card_def):
 
 
 def gatecreeper_vine_etb(state):
-    """ETB: may search a basic land to hand -- optional even when a target
-    exists, unlike Expedition Map/Crop Rotation's mandatory fetches."""
-    resolution.begin_search_fetch(state, lambda c: c.card_type == CardType.LAND, find_to_hand, optional=True)
+    """ETB: may search a basic land OR a Gate card to hand (real text: "a
+    basic land card or a Gate card") -- optional even when a target exists,
+    unlike Expedition Map/Crop Rotation's mandatory fetches. No Gate-subtype
+    card exists in this pool today, so in practice this only ever finds a
+    basic; the "Gate" half of the predicate is kept so it stays correct if
+    one is ever added."""
+    resolution.begin_search_fetch(
+        state, lambda c: c.card_type == CardType.LAND and (c.extra.get("basic", False) or "Gate" in card_subtypes(c)),
+        find_to_hand, optional=True,
+    )
 
 
 NYXBORN_HYDRA_MAX_X = 10  # ponytail: the action table needs a finite X range to enumerate; plan_payment already masks out any X this player can't currently afford, so this only bounds the table size, not what's ever actually playable. Raise it if a real game ever shows it binding.
@@ -1191,7 +1204,14 @@ GREEN_EFFECT_REGISTRY = {
     EffectId.ABUNDANT_GROWTH: {
         "cast": {
             "resolve": lambda state, card_def: cast_abundant_growth(state, card_def),
-            "extra_legal": lambda state: any(p.card_def.card_type == CardType.LAND for p in state.battlefield),
+            # any_land_on_either_battlefield, not the caster's own battlefield
+            # only: cast_aura's own target predicate below is "any land,
+            # either side" (real Magic "Enchant land", no "you control"
+            # restriction), same reasoning any_creature_on_either_battlefield
+            # already documents for the creature-targeting Auras in this file
+            # -- a land-screwed caster whose opponent controls a land still
+            # has a real legal target (601.2c).
+            "extra_legal": lambda state: any_land_on_either_battlefield(state),
             "precast_choice": True,  # real MTG "enchant target land" -- must be chosen before the stack, see drl_env._precast_choice_execute
         },
         "pending_kinds": {"choose_any_target"},  # Aura: cast_aura targets any land (either side), hexproof/shroud aware

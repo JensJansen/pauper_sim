@@ -499,10 +499,9 @@ Step through a logged game's board state one event at a time. MVP scope per
   graveyard card or stack entry has no `slot`) — the logging side never
   bakes a string, matching every other event kind in this file.
 - **Every mulligan-round draw, reject, and bottom-card pick is its own step**
-  (owner directive), not netted into one "opening hands" summary the way
-  `convert.py`'s `EventStreamReplayBuilder` nets it — each is a genuinely
-  separate decision (its own `rl/mulligan.py` forward pass), exactly the
-  kind of moment this viewer exists to make visible, and each gets its own
+  (owner directive), not netted into one "opening hands" summary — each is a
+  genuinely separate decision (its own `rl/mulligan.py` forward pass), exactly
+  the kind of moment this viewer exists to make visible, and each gets its own
   top-5 panel from the decision-weights logging above.
 - **Library count is a simplified approximation** (owner-authorized): assume a
   real 60-card constructed deck, decrement once per card actually drawn
@@ -514,8 +513,7 @@ Step through a logged game's board state one event at a time. MVP scope per
 - Event kinds with no board-visible effect (`priority_flip`,
   `resolution_begin`/`complete`, `pump`/`explore`/`animated` — the log entry
   doesn't carry enough to render unambiguously, etc.) still advance the
-  scrubber with a plain label so the timeline never silently skips a step,
-  matching `convert.py`'s own documented scope.
+  scrubber with a plain label so the timeline never silently skips a step.
 - **`pass` is dropped entirely, not just given a no-op step** (owner-authorized
   simplification): a priority pass carries no information beyond what already
   gets its own step — the stack's top item resolving or the phase advancing —

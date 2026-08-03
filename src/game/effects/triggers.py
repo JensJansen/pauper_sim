@@ -265,10 +265,11 @@ def _place_trigger_groups(state, groups, original_active_idx):
     (owner_idx, entries), rest = groups[0], groups[1:]
     state.active_idx = owner_idx
     if len(entries) == 1:
-        # Same two-way placement branch execute_order_triggers_option uses for
-        # the 2+ case below -- inlined here (not shared) for the same "can't
-        # import across this pair without a cycle" reason state_based/
-        # handlers duplicate their own leaves-battlefield three-liner.
+        # Same two-way placement branch execute_order_triggers_option (in
+        # resolution/handlers.py) uses for the 2+ case below -- inlined here,
+        # not shared, because triggers.py already imports resolution at
+        # module level (this file's own top import), so handlers.py importing
+        # a shared helper back out of effects.triggers would cycle.
         entry = entries[0]
         if entry.get("targeting"):
             registry.EFFECT_REGISTRY[entry["card_def"].effect_id][entry["hook"]](state, entry["permanent"])

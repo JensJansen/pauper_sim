@@ -2,8 +2,8 @@
 for a cost-less land, whose only mana output is red). Costs/types/oracle text
 are direct Scryfall pulls; creature power/toughness is a design choice. Breath
 Weapon (real {2}{R}) files here despite being Tron filler; its "non-Dragon"
-filter is dropped as a checked invariant (no Dragon exists in this catalog), so
-cast_breath_weapon is a symmetric "2 damage to each creature" wipe."""
+filter is enforced against green's Avenging Hunter (a Dragon), so
+cast_breath_weapon is NOT a purely symmetric wipe -- Dragons are excluded."""
 
 from .. import resolution
 from ..cards import CardDef, CardType, EffectId
@@ -643,16 +643,15 @@ def cast_end_the_festivities(state, card_def):
 
 
 def cast_breath_weapon(state, card_def):
-    """Real text: deals 2 damage to each NON-DRAGON creature. No card in
-    this catalog is ever a Dragon (creature subtype isn't tracked at all
-    here -- nothing needs it anywhere else), so that filter is always
-    satisfied: this hits every creature currently in play, on either
-    player's battlefield, a real symmetric board wipe (this deck's own
-    creatures included, exactly like the real card)."""
+    """Real text: deals 2 damage to each NON-DRAGON creature. Green's
+    Avenging Hunter (subtypes=("Dragon", "Ranger")) is a Dragon in this
+    pool, so the filter is live, not vacuous -- it must be excluded on
+    either battlefield, same symmetric-wipe shape otherwise (this deck's
+    own creatures included, exactly like the real card)."""
     discard_from_hand_to_graveyard(state, card_def)
     for player in state.players:
         for permanent in player.battlefield:
-            if permanent.card_type == CardType.CREATURE:
+            if permanent.card_type == CardType.CREATURE and "Dragon" not in card_subtypes(permanent.card_def):
                 permanent.damage_marked += 2
     check_state_based_actions(state)
 
@@ -719,7 +718,7 @@ RED_EFFECT_REGISTRY = {
                 "resolve": lambda state, permanent: krark_clan_shaman_activate(state, permanent),
             },
         },
-        "pending_kinds": {"sacrifice"},
+        "pending_kinds": {"choose_permanent"},
     },
     EffectId.MAKESHIFT_MUNITIONS: {
         "cast": {"resolve": lambda state, card_def: cast_permanent_from_hand(state, card_def)},
@@ -729,7 +728,7 @@ RED_EFFECT_REGISTRY = {
                 "resolve": lambda state, permanent: makeshift_munitions_activate(state, permanent),
             },
         },
-        "pending_kinds": {"sacrifice", "choose_any_target"},
+        "pending_kinds": {"choose_permanent", "choose_any_target"},
     },
     EffectId.EXPERIMENTAL_SYNTHESIZER: {
         "cast": {"resolve": lambda state, card_def: cast_permanent_from_hand(state, card_def)},
@@ -843,7 +842,7 @@ RED_EFFECT_REGISTRY = {
             "extra_legal": lambda state: _fireblast_alt_extra_legal(state),
             "resolve": lambda state, card_def: cast_fireblast_alt(state, card_def),
         },
-        "pending_kinds": {"sacrifice", "choose_any_target"},
+        "pending_kinds": {"choose_permanent", "choose_any_target"},
     },
     EffectId.LAVA_DART: {
         "cast": {"resolve": lambda state, card_def: cast_lava_dart(state, card_def), "precast_choice": True},
@@ -851,7 +850,7 @@ RED_EFFECT_REGISTRY = {
             "legal": lambda state: any(p.card_def.name == "Mountain" for p in state.battlefield),
             "resolve": lambda state, card_def: flashback_lava_dart(state, card_def),
         },
-        "pending_kinds": {"sacrifice", "choose_any_target"},
+        "pending_kinds": {"choose_permanent", "choose_any_target"},
     },
     EffectId.END_THE_FESTIVITIES: {
         "cast": {"resolve": lambda state, card_def: cast_end_the_festivities(state, card_def)},

@@ -269,6 +269,13 @@ function cardThumb(name, opts) {
   const cls = ['card-thumb', opts.attacking && 'attacking', opts.blocking && 'blocking'].filter(Boolean).join(' ');
   const pt = (opts.power != null && opts.toughness != null) ? `<div class="pt">${opts.power}/${opts.toughness}</div>` : '';
   const tokenBadge = opts.is_token ? '<div class="token-badge">T</div>' : '';
+  // opts.noPreview: the .zone-pile face thumb skips its own .preview -- the
+  // pile already sits inside a .zone-pile, whose delegated hover shows the
+  // .zone-flyout; without this, hovering the pile face matches BOTH the
+  // .card-thumb hover (this .preview) and the .zone-pile hover (.zone-flyout)
+  // at once, showing two overlapping popups.
+  const preview = opts.noPreview ? '' :
+    `<img class="preview" src="${scryfallImgUrl(name, 'normal')}" loading="lazy" onerror="this.style.display='none';">`;
   return `
     <div class="thumb-wrap${opts.tapped ? ' tapped' : ''}">
       <div class="${cls}" title="${escapeHtml(name)}">
@@ -277,7 +284,7 @@ function cardThumb(name, opts) {
         <div class="card-fallback" style="display:none">${escapeHtml(name)}</div>
         ${pt}${tokenBadge}
       </div>
-      <img class="preview" src="${scryfallImgUrl(name, 'normal')}" loading="lazy" onerror="this.style.display='none';">
+      ${preview}
     </div>`;
 }
 
@@ -285,7 +292,7 @@ function zonePile(cards) {
   if (!cards.length) return '<span class="hint">empty</span>';
   return `
     <div class="zone-pile">
-      ${cardThumb(cards[cards.length - 1], {})}
+      ${cardThumb(cards[cards.length - 1], { noPreview: true })}
       <div class="zone-pile-count">${cards.length}</div>
       <div class="zone-flyout">${cards.map(n => cardThumb(n, {})).join('')}</div>
     </div>`;

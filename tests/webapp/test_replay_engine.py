@@ -124,8 +124,7 @@ def test_state_based_death_moves_to_graveyard():
 
 
 def test_same_phase_flashback_does_not_duplicate_card():
-    """Ported identity-tracking check: convert.py's real Lava Dart bug (see
-    its test_same_phase_flashback_reuses_resolved_card) -- a card recast in
+    """Identity-tracking check for a real Lava Dart bug: a card recast in
     the SAME phase it just resolved must reuse that resolution, not spawn a
     phantom second copy stuck on the stack."""
     events = [

@@ -9,26 +9,43 @@ import drl_env
 from game import registry, resolution
 from game.cards import CardDef, CardType, EffectId
 from game.catalog.red_cards import (
+    _fireblast_alt_extra_legal,
     _goblin_bushwhacker_kicked,
+    _grab_the_prize_extra_legal,
+    _makeshift_munitions_legal,
+    activate_melded_moxite_sac,
     activate_reckless_lackey_sac,
     cast_breath_weapon,
     cast_chain_lightning,
     cast_cleansing_wildfire,
     cast_end_the_festivities,
+    cast_faithless_looting,
+    cast_fiery_temper,
+    cast_fireblast,
+    cast_fireblast_alt,
     cast_galvanic_blast,
+    cast_grab_the_prize,
     cast_highway_robbery,
+    cast_highway_robbery_from_exile,
+    cast_lava_dart,
     cast_lightning_bolt,
     cast_rally_at_the_hornburg,
     cast_reckless_impulse,
     experimental_synthesizer_sac,
+    flashback_faithless_looting,
+    flashback_lava_dart,
     krark_clan_shaman_activate,
+    makeshift_munitions_activate,
+    melded_moxite_etb,
+    voldaren_epicure_etb,
 )
 from game.effects.casting import cast_permanent_from_hand
-from game.effects.stack import resolve_top_of_stack
+from game.effects.madness_and_plot import execute_madness_cast, plot_to_exile
+from game.effects.stack import on_cast_trigger, resolve_top_of_stack
 from game.effects.state_based import sacrifice_to_graveyard
 from game.effects.stats import has_keyword, permanent_power
 from game.effects.triggers import promote_triggers_to_stack
-from game.mana import activate_mana_source, execute_pool_spend, pool_spend_options
+from game.mana import activate_mana_source, begin_pay_cost, execute_pool_spend, pool_spend_options
 from game.state import GameState, Permanent, PlayerState
 from game.turn import Phase, untap_step
 
@@ -54,6 +71,32 @@ def test_breath_weapon_symmetric_two_damage_wipe():
     assert mine_survives in state.players[0].battlefield and mine_survives.damage_marked == 2
     assert theirs_dies not in state.players[1].battlefield
     assert not_a_creature in state.players[0].battlefield  # a land is never a valid target
+
+
+def test_breath_weapon_spares_dragons_avenging_hunter_regression():
+    """REGRESSION: cast_breath_weapon used to be a purely symmetric "2
+    damage to each creature" wipe, on the (now-false) assumption that no
+    Dragon exists in this card pool. Green's Avenging Hunter
+    (registry.CARD_DEFS["Avenging Hunter"], subtypes=("Dragon","Ranger"))
+    IS a Dragon, so the real card's non-Dragon filter must actually bite:
+    the Dragon takes ZERO damage while an ordinary non-Dragon creature
+    still takes the full 2 -- same symmetric-wipe shape otherwise (either
+    battlefield). Sanity check that this actually distinguishes old vs new
+    behavior: under the old (purely symmetric) code the Dragon would have
+    taken 2 damage too, same as the non-Dragon; here it must take 0."""
+    state = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
+    breath_weapon = CardDef("Breath Weapon", CardType.INSTANT, {"generic": 2, "R": 1}, EffectId.BREATH_WEAPON)
+    state.hand = [breath_weapon]
+    dragon = Permanent(registry.CARD_DEFS["Avenging Hunter"])  # a real Dragon in this pool
+    dragon.slot = 1
+    non_dragon = Permanent(CardDef("Grizzly Bears", CardType.CREATURE, None, EffectId.FILLER, power=2, toughness=4))
+    non_dragon.slot = 1
+    state.players[1].battlefield = [dragon, non_dragon]
+
+    cast_breath_weapon(state, breath_weapon)
+    assert dragon in state.players[1].battlefield and dragon.damage_marked == 0  # Dragon filter is LIVE, not vacuous
+    assert dragon.damage_marked != 2, "old symmetric behavior would have marked 2 damage on the Dragon"
+    assert non_dragon.damage_marked == 2  # a real non-Dragon on the same battlefield still takes the full 2
 
 
 def test_end_the_festivities_hits_only_the_opponent_not_the_caster():
@@ -288,6 +331,28 @@ def test_chain_lightning_pay_but_decline_copy():
     assert state.pending_resolution is None and state.stack == []  # no copy made
     assert state.active_idx == 0  # restored to controller
     assert sum(state.players[1].mana_pool.values()) == 0  # the {R}{R} was still spent
+
+
+def test_chain_lightning_rider_decline_no_copy():
+    """The rider's FIRST "may": the affected player DECLINES to pay {R}{R}
+    at all (whether because they can't afford it or simply choose not to --
+    both existing Chain Lightning tests above always float exactly {R}{R}
+    and always choose to pay). No copy, no retarget -- the chain just
+    stops, and no mana is spent."""
+    state = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
+    state.active_idx = 0
+    # Opponent has NO mana floated at all -- can't afford (and here, declines) {R}{R}.
+    chain = CardDef("Chain Lightning", CardType.SORCERY, {"R": 1}, EffectId.CHAIN_LIGHTNING)
+    state.players[0].hand = [chain]
+    cast_chain_lightning(state, chain)
+    resolution.execute_choose_any_target_player(state, 1)
+    resolve_top_of_stack(state)
+    assert state.players[1].life_total == 17  # the original 3 damage still happened
+    assert state.pending_resolution["kind"] == "pay_unless" and state.active_idx == 1
+    resolution.pay_unless_decline(state)
+    assert state.pending_resolution is None and state.stack == []  # no copy made, chain stops here
+    assert state.active_idx == 0  # restored to the resolving spell's controller
+    assert sum(state.players[1].mana_pool.values()) == 0  # nothing was ever spent
 
 
 def test_cleansing_wildfire_own_land():
@@ -526,6 +591,8 @@ def test_experimental_synthesizer_impulse_and_samurai():
     experimental_synthesizer_sac(state, es)
     _drive_stack(state)
     assert any(p.card_def.name == "Samurai" for p in state.battlefield) and len(state.impulse) == 2  # + LTB impulse
+    samurai = next(p for p in state.battlefield if p.card_def.name == "Samurai")
+    assert has_keyword(state, samurai, "vigilance")  # 2/2 white Samurai WITH vigilance (real card text)
 
 
 def test_clockwork_percussionist_dies_into_impulse():
@@ -571,3 +638,517 @@ def test_galvanic_blast_metalcraft_four_damage():
     resolution.execute_choose_any_target_creature(state, 1, "Victim", 1)
     resolve_top_of_stack(state)
     assert victim.damage_marked == 4  # metalcraft -> 4
+
+
+def test_voldaren_epicure_etb_damages_opponent_and_creates_blood():
+    """Voldaren Epicure ETB (voldaren_epicure_etb): "1 damage to each
+    opponent. Create a Blood token." Only ever appeared as inert battlefield
+    filler elsewhere -- this actually resolves the ETB."""
+    state = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
+    state.active_idx = 0
+    voldaren_epicure_etb(state)
+    assert state.players[1].life_total == 19  # 1 damage to the opponent
+    assert any(p.card_def.name == "Blood" for p in state.players[0].battlefield)  # Blood token created
+
+
+def test_fiery_temper_baseline_cast_hits_any_target():
+    """Fiery Temper's baseline {1}{R}{R} cast (cast_fiery_temper): 3 damage
+    to any target -- never invoked by any other test (only its Madness
+    mode and its own discard-bait role are exercised elsewhere)."""
+    state = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
+    ft = CardDef("Fiery Temper", CardType.INSTANT, {"generic": 1, "R": 2}, EffectId.FIERY_TEMPER)
+    state.players[0].hand = [ft]
+    cast_fiery_temper(state, ft)
+    resolution.execute_choose_any_target_player(state, 1)
+    assert ft not in state.players[0].hand
+    resolve_top_of_stack(state)
+    assert state.players[1].life_total == 17 and any(c.name == "Fiery Temper" for c in state.players[0].graveyard)
+
+
+def test_fiery_temper_madness_cast_via_real_discard_chain():
+    """Fiery Temper's Madness {R} (madness_fiery_temper), driven through a
+    REAL discard trigger end to end -- unlike every other place in this
+    suite, which only confirms the madness trigger QUEUES. Faithless
+    Looting's own mandatory discard-2 discards Fiery Temper (Madness
+    replacement: hand -> exile, not graveyard); casting it for {R} deals 3
+    to the chosen target and the card ends up in the graveyard, never
+    having touched hand again."""
+    state = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
+    state.active_idx = 0
+    fl = registry.CARD_DEFS["Faithless Looting"]
+    ft = registry.CARD_DEFS["Fiery Temper"]
+    state.players[0].hand = [fl, ft]
+    state.players[0].library = [CardDef(f"D{i}", CardType.LAND, None, EffectId.MOUNTAIN) for i in range(2)]
+    mountain = Permanent(registry.CARD_DEFS["Mountain"])
+    state.players[0].battlefield = [mountain]
+
+    cast_faithless_looting(state, fl)  # draw 2, mandatory discard 2
+    assert len(state.players[0].hand) == 3  # Fiery Temper + 2 drawn
+    resolution.execute_discard_option(state, "Fiery Temper")  # Madness replacement: -> exile, not graveyard
+    resolution.execute_discard_option(state, "D0")  # the second mandatory discard, an ordinary card
+    assert ft not in state.players[0].hand
+    assert any(cd.name == "Fiery Temper" for cd, _stamp in state.exile)
+    assert state.trigger_queue and state.trigger_queue[0]["kind"] == "madness"
+
+    promote_triggers_to_stack(state)
+    resolve_top_of_stack(state)  # opens the cast-or-graveyard decision
+    assert state.pending_resolution["kind"] == "madness_decision"
+
+    activate_mana_source(state, mountain)  # float-first: float {R} BEFORE casting
+    execute_madness_cast(state)
+    assert state.pending_resolution["kind"] == "pay_cost"
+    guard = 0
+    while state.pending_resolution is not None and state.pending_resolution["kind"] == "pay_cost":
+        guard += 1
+        assert guard < 10
+        execute_pool_spend(state, pool_spend_options(state)[0])
+    assert state.pending_resolution["kind"] == "choose_any_target"  # precast_choice -- target locked before it resolves
+    resolution.execute_choose_any_target_player(state, 1)
+    resolve_top_of_stack(state)
+    assert state.players[1].life_total == 17  # 3 damage
+    assert any(c.name == "Fiery Temper" for c in state.players[0].graveyard)  # ends up in the graveyard
+    assert not any(cd.name == "Fiery Temper" for cd, _stamp in state.exile)  # left exile
+
+
+def test_faithless_looting_cast_draws_two_discards_two():
+    """Faithless Looting's baseline {R} cast (cast_faithless_looting):
+    draw 2, then mandatory discard 2 -- never invoked by any other test."""
+    state = GameState(on_the_play=True)
+    fl = CardDef("Faithless Looting", CardType.SORCERY, {"R": 1}, EffectId.FAITHLESS_LOOTING)
+    spare_a = CardDef("Spare A", CardType.LAND, None, EffectId.MOUNTAIN)
+    spare_b = CardDef("Spare B", CardType.LAND, None, EffectId.MOUNTAIN)
+    state.hand = [fl, spare_a, spare_b]
+    state.library = [CardDef(f"Draw{i}", CardType.LAND, None, EffectId.MOUNTAIN) for i in range(2)]
+
+    cast_faithless_looting(state, fl)
+    assert fl not in state.hand and any(c.name == "Faithless Looting" for c in state.graveyard)
+    assert len(state.hand) == 4  # Spare A/B + 2 drawn
+    resolution.execute_discard_option(state, "Spare A")
+    resolution.execute_discard_option(state, "Spare B")
+    assert state.pending_resolution is None
+    assert len(state.hand) == 2 and all(c.name.startswith("Draw") for c in state.hand)
+    assert sorted(c.name for c in state.graveyard) == ["Faithless Looting", "Spare A", "Spare B"]
+
+
+def test_faithless_looting_flashback_effect_resolves_and_exiles():
+    """flashback_faithless_looting's own EFFECT (draw 2/discard 2) actually
+    executing, and the flashed-back card ending up EXILED, never back in
+    the graveyard (real Flashback, 702.34). Distinct from
+    test_faithless_looting_flashback_requires_mana
+    (tests/drl_env/test_action_table.py), which only exercises the {2}{R}
+    mana gate and never resolves the effect."""
+    state = GameState(on_the_play=True)
+    fl_inst = state.new_instance(registry.CARD_DEFS["Faithless Looting"])
+    state.graveyard = [fl_inst]
+    state.hand = [CardDef("Spare A", CardType.LAND, None, EffectId.MOUNTAIN), CardDef("Spare B", CardType.LAND, None, EffectId.MOUNTAIN)]
+    state.library = [CardDef(f"Draw{i}", CardType.LAND, None, EffectId.MOUNTAIN) for i in range(2)]
+
+    flashback_faithless_looting(state, fl_inst)
+    assert fl_inst not in state.graveyard  # left the graveyard the moment Flashback was chosen
+    assert len(state.stack) == 1
+    resolve_top_of_stack(state)
+    assert len(state.hand) == 4  # Spare A/B + 2 drawn
+    resolution.execute_discard_option(state, "Spare A")
+    resolution.execute_discard_option(state, "Spare B")
+    assert len(state.hand) == 2 and all(c.name.startswith("Draw") for c in state.hand)
+    assert not any(c.name == "Faithless Looting" for c in state.graveyard)  # never graveyarded -- exiled instead
+
+
+def test_highway_robbery_plot_cost_and_cast_from_exile():
+    """Highway Robbery's OWN Plot {1}{R} (its registry "plot" spec's own
+    cost) and cast_highway_robbery_from_exile -- exercised with the REAL
+    card, not the generic FILLER double
+    test_plot_to_exile_moves_hand_card_with_turn_stamp already covers
+    (tests/game/effects/test_madness_and_plot.py). cast_highway_robbery_
+    from_exile reruns the SAME discard-or-sacrifice may as a normal cast,
+    moving the card exile -> graveyard, never touching hand again."""
+    plot_spec = registry.EFFECT_REGISTRY[EffectId.HIGHWAY_ROBBERY]["plot"]
+    assert plot_spec["cost"] == {"generic": 1, "R": 1}  # real Plot cost
+
+    state = GameState(on_the_play=True)
+    hr = registry.CARD_DEFS["Highway Robbery"]
+    spare = CardDef("Spare Card", CardType.INSTANT, {"R": 1}, EffectId.FILLER)
+    state.hand = [hr, spare]
+    plot_to_exile(state, hr)
+    assert state.hand == [spare]
+    assert state.exile == [(hr, state.turn_number)]
+
+    state.library = [CardDef(f"Filler {i}", CardType.LAND, None, EffectId.MOUNTAIN) for i in range(2)]
+    cast_highway_robbery_from_exile(state, hr)
+    assert any(c.name == "Highway Robbery" for c in state.graveyard)  # exile -> graveyard, never hand
+    assert hr not in state.hand
+    assert state.pending_resolution["kind"] == "discard_or_sacrifice"
+    resolution.execute_discard_or_sacrifice_discard(state, "Spare Card")
+    assert any(c.name == "Spare Card" for c in state.graveyard)
+    assert len(state.hand) == 2 and all(c.name.startswith("Filler") for c in state.hand)  # drew 2
+
+
+def test_grab_the_prize_extra_legal_requires_second_hand_card():
+    """Grab the Prize's discard is a real additional cost (_grab_the_prize_
+    extra_legal): needs a card in hand BESIDES the one being cast -- with
+    nothing else in hand, casting it is illegal."""
+    state = GameState(on_the_play=True)
+    gtp = registry.CARD_DEFS["Grab the Prize"]
+    state.hand = [gtp]
+    assert not _grab_the_prize_extra_legal(state)
+    state.hand = [gtp, CardDef("Spare", CardType.LAND, None, EffectId.MOUNTAIN)]
+    assert _grab_the_prize_extra_legal(state)
+
+
+def test_grab_the_prize_discard_nonland_deals_damage():
+    """cast_grab_the_prize / _grab_the_prize_effect: draw 2; if the
+    discarded card wasn't a land, 2 damage to each opponent."""
+    state = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
+    state.active_idx = 0
+    gtp = registry.CARD_DEFS["Grab the Prize"]
+    nonland = CardDef("Spare Bolt", CardType.INSTANT, {"R": 1}, EffectId.FILLER)
+    state.players[0].hand = [gtp, nonland]
+    state.players[0].library = [CardDef(f"D{i}", CardType.LAND, None, EffectId.MOUNTAIN) for i in range(2)]
+
+    cast_grab_the_prize(state, gtp)
+    assert state.pending_resolution["kind"] == "discard"
+    resolution.execute_discard_option(state, "Spare Bolt")
+    assert len(state.players[0].hand) == 2  # drew 2
+    assert state.players[1].life_total == 18  # 2 damage -- discarded card wasn't a land
+    assert any(c.name == "Grab the Prize" for c in state.players[0].graveyard)
+
+
+def test_grab_the_prize_discard_land_no_damage():
+    """(b) discarding a LAND: still draw 2, but no damage."""
+    state = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
+    state.active_idx = 0
+    gtp = registry.CARD_DEFS["Grab the Prize"]
+    land = CardDef("Spare Land", CardType.LAND, None, EffectId.MOUNTAIN)
+    state.players[0].hand = [gtp, land]
+    state.players[0].library = [CardDef(f"D{i}", CardType.LAND, None, EffectId.MOUNTAIN) for i in range(2)]
+
+    cast_grab_the_prize(state, gtp)
+    resolution.execute_discard_option(state, "Spare Land")
+    assert len(state.players[0].hand) == 2  # drew 2
+    assert state.players[1].life_total == 20  # discarded card WAS a land -- no damage
+
+
+def test_melded_moxite_etb_discard_draws_two():
+    """melded_moxite_etb: "you may discard a card. If you do, draw two
+    cards." (a) discarding -- draws 2."""
+    state = GameState(on_the_play=True)
+    spare = CardDef("Spare", CardType.LAND, None, EffectId.MOUNTAIN)
+    state.hand = [spare]
+    state.library = [CardDef(f"D{i}", CardType.LAND, None, EffectId.MOUNTAIN) for i in range(2)]
+    melded_moxite_etb(state)
+    assert state.pending_resolution["kind"] == "discard" and state.pending_resolution["optional"] is True
+    resolution.execute_discard_option(state, "Spare")
+    assert len(state.hand) == 2  # drew 2 after discarding
+
+
+def test_melded_moxite_etb_decline_no_draw():
+    """(b) declining outright -- genuinely optional, no draw."""
+    state = GameState(on_the_play=True)
+    spare = CardDef("Spare", CardType.LAND, None, EffectId.MOUNTAIN)
+    state.hand = [spare]
+    melded_moxite_etb(state)
+    resolution.execute_discard_decline(state)
+    assert state.hand == [spare]  # untouched, no draw
+    assert state.pending_resolution is None
+
+
+def test_melded_moxite_sac_pays_three_and_creates_tapped_robot():
+    """Melded Moxite's {3} sac ability (activate_melded_moxite_sac): its
+    own {3} mana-cost gating and the tapped-Robot-token effect, neither of
+    which the unrelated Gixian-sacrifice-trigger regression elsewhere
+    exercises (that one only confirms the sacrifice fires the OTHER
+    creature's trigger, never Melded Moxite's own cost/effect)."""
+    state = GameState(on_the_play=True)
+    mm = Permanent(registry.CARD_DEFS["Melded Moxite"])
+    mm.slot = 1
+    mountains = [Permanent(registry.CARD_DEFS["Mountain"]) for _ in range(3)]
+    state.battlefield = [mm] + mountains
+    for m in mountains:
+        activate_mana_source(state, m)
+    assert state.mana_pool.get("R", 0) == 3
+
+    begin_pay_cost(state, mm.card_def.extra["sac_ability_cost"], on_complete=lambda s: activate_melded_moxite_sac(s, mm))
+    assert state.pending_resolution["kind"] == "pay_cost" and state.pending_resolution["remaining"] == {"generic": 3}
+    guard = 0
+    while state.pending_resolution is not None:
+        guard += 1
+        assert guard < 10
+        execute_pool_spend(state, pool_spend_options(state)[0])
+    assert mm not in state.battlefield and any(c.name == "Melded Moxite" for c in state.graveyard)
+    resolve_top_of_stack(state)
+    robot = next(p for p in state.battlefield if p.card_def.name == "Robot")
+    assert robot.tapped is True and permanent_power(state, robot) == 2  # tapped 2/2 Robot
+
+
+def test_fireblast_hard_cast_deals_four():
+    """Fireblast's baseline {4}{R}{R} cast (cast_fireblast): 4 damage to
+    any target -- never invoked by any other test."""
+    state = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
+    fb = CardDef("Fireblast", CardType.INSTANT, {"generic": 4, "R": 2}, EffectId.FIREBLAST)
+    state.players[0].hand = [fb]
+    cast_fireblast(state, fb)
+    resolution.execute_choose_any_target_player(state, 1)
+    resolve_top_of_stack(state)
+    assert state.players[1].life_total == 16  # 20 - 4
+    assert any(c.name == "Fireblast" for c in state.players[0].graveyard)
+
+
+def test_fireblast_alt_cost_sacrifices_two_mountains_no_mana():
+    """Fireblast's alt cost (cast_fireblast_alt): sacrifice 2 Mountains
+    instead of paying mana -- same 4 damage to any target."""
+    state = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
+    fb = registry.CARD_DEFS["Fireblast"]
+    mountains = [Permanent(registry.CARD_DEFS["Mountain"]) for _ in range(2)]
+    mountains[0].slot = 1
+    mountains[1].slot = 2
+    state.players[0].hand = [fb]
+    state.players[0].battlefield = mountains
+    assert _fireblast_alt_extra_legal(state)
+
+    cast_fireblast_alt(state, fb)
+    assert fb not in state.players[0].hand and any(c.name == "Fireblast" for c in state.players[0].graveyard)
+    assert state.pending_resolution["kind"] == "choose_permanent"
+    resolution.execute_choose_permanent_option(state, "Mountain", 1)
+    assert state.pending_resolution["kind"] == "choose_permanent"
+    resolution.execute_choose_permanent_option(state, "Mountain", 2)
+    assert state.players[0].battlefield == []  # both Mountains sacrificed
+    assert state.pending_resolution["kind"] == "choose_any_target"
+    resolution.execute_choose_any_target_player(state, 1)
+    resolve_top_of_stack(state)
+    assert state.players[1].life_total == 16  # 4 damage, no mana ever paid
+    assert sum(state.players[0].mana_pool.values()) == 0
+
+
+def test_fireblast_alt_illegal_with_fewer_than_two_mountains():
+    """_fireblast_alt_extra_legal: fewer than 2 Mountains controlled ->
+    illegal to even attempt the alt cost."""
+    state = GameState(on_the_play=True)
+    state.battlefield = [Permanent(registry.CARD_DEFS["Mountain"])]  # only 1
+    assert not _fireblast_alt_extra_legal(state)
+    state.battlefield = []
+    assert not _fireblast_alt_extra_legal(state)
+
+
+def test_guttersnipe_on_cast_deals_two_to_opponent():
+    """Guttersnipe's on_cast trigger (guttersnipe_on_cast): "Whenever you
+    cast an instant or sorcery spell, this creature deals 2 damage to each
+    opponent" -- fires via the generic on_cast_trigger chokepoint every
+    real cast path calls once a spell's cost is paid. Only ever appeared as
+    inert filler elsewhere; this actually casts an instant with Guttersnipe
+    on the battlefield."""
+    state = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
+    state.active_idx = 0
+    guttersnipe = Permanent(registry.CARD_DEFS["Guttersnipe"])
+    guttersnipe.slot = 1
+    state.players[0].battlefield = [guttersnipe]
+    bolt = registry.CARD_DEFS["Lightning Bolt"]
+    state.players[0].hand = [bolt]
+
+    on_cast_trigger(state, bolt)  # what every real cast path calls once the cost is paid
+    cast_lightning_bolt(state, bolt)
+    resolution.execute_choose_any_target_player(state, 1)
+    _drive_stack(state)
+    assert state.players[1].life_total == 20 - 3 - 2  # Bolt's 3 + Guttersnipe's 2
+
+
+def test_lava_dart_cast_deals_one():
+    """Lava Dart's baseline {R} cast (cast_lava_dart): 1 damage to any
+    target -- never invoked by any other test."""
+    state = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
+    ld = CardDef("Lava Dart", CardType.INSTANT, {"R": 1}, EffectId.LAVA_DART)
+    state.players[0].hand = [ld]
+    cast_lava_dart(state, ld)
+    resolution.execute_choose_any_target_player(state, 1)
+    resolve_top_of_stack(state)
+    assert state.players[1].life_total == 19
+    assert any(c.name == "Lava Dart" for c in state.players[0].graveyard)
+
+
+def test_lava_dart_flashback_sacrifices_mountain_no_mana():
+    """Lava Dart's Flashback (flashback_lava_dart): sacrifice a Mountain,
+    no mana at all -- same 1 damage to any target."""
+    state = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
+    ld_inst = state.new_instance(registry.CARD_DEFS["Lava Dart"])
+    state.players[0].graveyard = [ld_inst]
+    mountain = Permanent(registry.CARD_DEFS["Mountain"])
+    mountain.slot = 1
+    state.players[0].battlefield = [mountain]
+
+    flashback_lava_dart(state, ld_inst)
+    assert ld_inst not in state.players[0].graveyard  # left the graveyard the moment Flashback was chosen
+    assert state.pending_resolution["kind"] == "choose_permanent"
+    resolution.execute_choose_permanent_option(state, "Mountain", 1)
+    assert mountain not in state.players[0].battlefield
+    assert state.pending_resolution["kind"] == "choose_any_target"
+    resolution.execute_choose_any_target_player(state, 1)
+    resolve_top_of_stack(state)
+    assert state.players[1].life_total == 19  # 1 damage, no mana spent
+    assert sum(state.players[0].mana_pool.values()) == 0
+
+
+def test_goblin_bushwhacker_unkicked_via_action_table_only_charges_r():
+    """Goblin Bushwhacker's UNKICKED baseline {R} mode -- both existing
+    Bushwhacker tests only exercise the KICKED mode. "Mode 1" charges just
+    the card's own {R} (no cost override, unlike kicked's {R}{R} override),
+    and goblin_bushwhacker_etb correctly no-ops -- no team pump -- when not
+    kicked."""
+    bw_dl = [("Goblin Bushwhacker", 4), ("Mountain", 8)]
+    bw_byname = {a[0]: (a[1], a[2]) for a in drl_env.build_action_table(bw_dl, registry.EFFECT_REGISTRY)}
+    state = GameState(on_the_play=True)
+    state.phase = Phase.MAIN1
+    state.turn_player_idx = 0
+    state.active_idx = 0
+    state.hand = [registry.CARD_DEFS["Goblin Bushwhacker"]]
+    ally = Permanent(CardDef("Ally", CardType.CREATURE, None, EffectId.FILLER, power=1, toughness=1))
+    ally.slot = 1
+    state.battlefield = [ally, Permanent(registry.CARD_DEFS["Mountain"])]
+    activate_mana_source(state, state.battlefield[1])
+    assert state.mana_pool.get("R", 0) == 1
+    cast_legal, cast_execute = bw_byname["Cast Goblin Bushwhacker"]
+    assert cast_legal(state)
+    cast_execute(state)
+    assert state.pending_resolution["kind"] == "choose_cast_mode"
+    mode1_legal, mode1_execute = bw_byname["Mode 1"]  # registry order: unkicked (Mode 1), kicked (Mode 2)
+    assert mode1_legal(state)
+    mode1_execute(state)
+    assert state.pending_resolution["kind"] == "pay_cost"
+    assert state.pending_resolution["remaining"] == {"R": 1}, (
+        "unkicked mode must charge only the card's own base {R}, no override"
+    )
+    guard = 0
+    while state.pending_resolution is not None:
+        guard += 1
+        assert guard < 30
+        execute_pool_spend(state, pool_spend_options(state)[0])
+    while state.stack:
+        resolve_top_of_stack(state)
+    promote_triggers_to_stack(state)
+    while state.stack:
+        resolve_top_of_stack(state)
+    gob = next(p for p in state.battlefield if p.card_def.name == "Goblin Bushwhacker")
+    assert permanent_power(state, gob) == 1 and not has_keyword(state, gob, "haste"), (
+        "unkicked -- goblin_bushwhacker_etb must no-op, no team pump"
+    )
+    assert permanent_power(state, ally) == 1 and not has_keyword(state, ally, "haste")
+
+
+def test_reckless_lackey_sac_via_action_table_pays_generic_and_r():
+    """Reckless Lackey's {2}{R} sac ability's OWN sac_ability_cost
+    mana-gating dispatch, driven through the REAL action table (mirrors
+    test_goblin_bushwhacker_via_action_table_cost_override_mode's style).
+    Its resolve effect (draw + Treasure) IS already tested directly
+    (test_reckless_lackey_sac_draws_and_makes_treasure) and via the
+    Gixian-trigger regression -- this only exercises the {2}{R} payment
+    path itself."""
+    rl_dl = [("Reckless Lackey", 1), ("Mountain", 8)]
+    rl_byname = {a[0]: (a[1], a[2]) for a in drl_env.build_action_table(rl_dl, registry.EFFECT_REGISTRY)}
+    state = GameState(on_the_play=True)
+    state.phase = Phase.MAIN1
+    state.turn_player_idx = 0
+    state.active_idx = 0
+    lackey = Permanent(registry.CARD_DEFS["Reckless Lackey"])
+    lackey.slot = 1
+    mountains = [Permanent(registry.CARD_DEFS["Mountain"]) for _ in range(3)]
+    state.battlefield = [lackey] + mountains
+    state.library = [CardDef("Top", CardType.LAND, None, EffectId.MOUNTAIN)]
+    for m in mountains:
+        activate_mana_source(state, m)
+    assert state.mana_pool.get("R", 0) == 3
+    legal, execute = rl_byname["Activate Reckless Lackey (sac)"]
+    assert legal(state)
+    execute(state)
+    assert state.pending_resolution["kind"] == "pay_cost"
+    assert state.pending_resolution["remaining"] == {"generic": 2, "R": 1}
+    guard = 0
+    while state.pending_resolution is not None:
+        guard += 1
+        assert guard < 10
+        execute_pool_spend(state, pool_spend_options(state)[0])
+    assert lackey not in state.battlefield and any(c.name == "Reckless Lackey" for c in state.graveyard)
+    resolve_top_of_stack(state)
+    assert len(state.hand) == 1 and any(p.card_def.name == "Treasure" for p in state.battlefield)
+
+
+def test_krark_clan_shaman_illegal_with_no_artifact():
+    """Krark-Clan Shaman's sac-artifact ability's own "legal" gate
+    (_controls_artifact, via its registry "sweep" spec): zero artifacts
+    controlled -> illegal to even activate. The resolve effect itself IS
+    already well tested via direct calls with an artifact present
+    (test_krark_clan_shaman_sac_artifact_sweeps_nonflyers)."""
+    state = GameState(on_the_play=True)
+    krark = Permanent(registry.CARD_DEFS["Krark-Clan Shaman"])
+    krark.slot = 1
+    state.battlefield = [krark]  # no artifact anywhere
+    ability = registry.EFFECT_REGISTRY[EffectId.KRARK_CLAN_SHAMAN]["activated_abilities"]["sweep"]
+    assert ability["legal"](state, krark) is False
+
+
+def test_makeshift_munitions_activate_pays_one_sacrifices_and_deals_damage():
+    """Makeshift Munitions' {1} + sacrifice-an-artifact-or-creature
+    activated ability (makeshift_munitions_activate/_makeshift_munitions_
+    legal): pay {1}, then sacrifice (a real per-instance choice), then 1
+    damage to a chosen target -- completely untested elsewhere."""
+    state = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
+    state.active_idx = 0
+    mm = Permanent(registry.CARD_DEFS["Makeshift Munitions"])
+    creature = Permanent(CardDef("Fodder", CardType.CREATURE, None, EffectId.FILLER, power=1, toughness=1))
+    creature.slot = 1
+    mountain = Permanent(registry.CARD_DEFS["Mountain"])
+    state.players[0].battlefield = [mm, creature, mountain]
+    activate_mana_source(state, mountain)
+    assert state.mana_pool.get("R", 0) == 1
+    assert _makeshift_munitions_legal(state, mm)
+
+    makeshift_munitions_activate(state, mm)
+    assert state.pending_resolution["kind"] == "pay_cost"
+    guard = 0
+    while state.pending_resolution is not None and state.pending_resolution["kind"] == "pay_cost":
+        guard += 1
+        assert guard < 10
+        execute_pool_spend(state, pool_spend_options(state)[0])
+    assert state.pending_resolution["kind"] == "choose_permanent"  # WHICH artifact/creature pays the sacrifice
+    resolution.execute_choose_permanent_option(state, "Fodder", 1)
+    assert creature not in state.players[0].battlefield
+    assert state.pending_resolution["kind"] == "choose_any_target"
+    resolution.execute_choose_any_target_player(state, 1)
+    resolve_top_of_stack(state)
+    assert state.players[1].life_total == 19  # 1 damage
+
+
+def test_experimental_synthesizer_sac_via_action_table_sorcery_speed_and_cost():
+    """Experimental Synthesizer's {2}{R} sac ability's cost_key mana-gating
+    dispatch AND its "speed": Speed.SORCERY ("Activate only as a sorcery")
+    timing restriction, driven through the REAL action table -- unlike
+    test_experimental_synthesizer_impulse_and_samurai above, which calls
+    experimental_synthesizer_sac directly and never touches either gate."""
+    es_dl = [("Experimental Synthesizer", 1), ("Mountain", 8)]
+    es_byname = {a[0]: (a[1], a[2]) for a in drl_env.build_action_table(es_dl, registry.EFFECT_REGISTRY)}
+    state = GameState(on_the_play=True)
+    state.phase = Phase.MAIN1
+    state.turn_player_idx = 0
+    state.active_idx = 0
+    es = Permanent(registry.CARD_DEFS["Experimental Synthesizer"])
+    es.slot = 1
+    mountains = [Permanent(registry.CARD_DEFS["Mountain"]) for _ in range(3)]
+    state.battlefield = [es] + mountains
+    for m in mountains:
+        activate_mana_source(state, m)
+    assert state.mana_pool.get("R", 0) == 3
+    legal, execute = es_byname["Activate Experimental Synthesizer (make_samurai)"]
+
+    state.phase = Phase.DECLARE_ATTACKERS  # a real phase, but not a main phase
+    assert not legal(state), "\"Activate only as a sorcery\" must be illegal outside MAIN1/MAIN2"
+
+    state.phase = Phase.MAIN1
+    assert legal(state)
+    execute(state)
+    assert state.pending_resolution["kind"] == "pay_cost"
+    assert state.pending_resolution["remaining"] == {"generic": 2, "R": 1}
+    guard = 0
+    while state.pending_resolution is not None:
+        guard += 1
+        assert guard < 10
+        execute_pool_spend(state, pool_spend_options(state)[0])
+    assert es not in state.battlefield  # sacrificed as part of the effect's own resolve
+    _drive_stack(state)
+    assert any(p.card_def.name == "Samurai" for p in state.battlefield)

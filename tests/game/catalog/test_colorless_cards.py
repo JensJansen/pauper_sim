@@ -13,25 +13,34 @@ from game.catalog.colorless_cards import (
     _pinnacle_kill_ship_station_legal,
     _pinnacle_kill_ship_station_resolve,
     activate_barrels_of_blasting_jelly_burn,
+    activate_bonders_ornament_draw,
     activate_candy_trail_sac,
+    activate_expedition_map,
     activate_relic_of_progenitus_draw,
     activate_relic_of_progenitus_exile,
+    activate_tocasia_dig_site_surveil,
     activate_twisted_landscape_fetch,
     cast_boulderbranch_prototype,
     cast_maelstrom_colossus,
     chromatic_star_mana,
     cycle_ash_barrens,
+    cycle_twisted_landscape,
     lembas_sac,
+    nihil_spellbomb_dies,
     nihil_spellbomb_sac,
     pinnacle_kill_ship_etb,
 )
-from game.effects.casting import cast_permanent_from_hand
+from game.effects.casting import cast_permanent_from_hand, play_land_from_hand
 from game.effects.stack import resolve_top_of_stack
 from game.effects.state_based import sacrifice_to_graveyard
 from game.effects.stats import has_keyword, permanent_power, permanent_toughness
+from game.effects.tokens import (
+    CLUE_TOKEN_CARD_DEF, MAP_TOKEN_CARD_DEF, TREASURE_TOKEN_CARD_DEF, activate_clue_sac, activate_map_sac,
+)
 from game.effects.triggers import promote_triggers_to_stack
-from game.mana import execute_pool_spend, pool_spend_options
+from game.mana import activate_mana_source, execute_pool_spend, pool_spend_options
 from game.state import GameState, Permanent, PlayerState
+from game.turn import Phase, Speed
 
 
 def _resolve_etb(state):
@@ -672,6 +681,65 @@ def test_nihil_spellbomb_sac_exiles_graveyard_then_dies_may_pay_b_draw():
     assert len(state.players[0].hand) == 1  # paid, drew
 
 
+def test_nihil_spellbomb_dies_trigger_belongs_to_its_own_owner_not_whoever_is_active():
+    """REGRESSION: nihil_spellbomb_dies's "may pay {B}, draw" choice belongs
+    to Nihil Spellbomb's own CONTROLLER (its owner) -- NOT necessarily
+    whoever happens to be state.active_idx when the trigger actually
+    resolves. The OLD (buggy) implementation read `payer = state.active_idx`
+    directly inside nihil_spellbomb_dies; the fix instead reads
+    `permanent.flags["owner_idx"]`, stashed by state_based._destroy_creature/
+    sacrifice_to_graveyard the instant the permanent actually left the
+    battlefield -- see that function's own docstring.
+
+    Called DIRECTLY (not through nihil_spellbomb_sac -> promote_triggers_
+    to_stack -> resolve_top_of_stack): driving it through that real pipeline
+    can't actually distinguish the two versions here, because resolve_top_
+    of_stack always resets state.active_idx to the stack entry's own
+    stamped "controller" -- and promote_triggers_to_stack stamps that
+    controller while active_idx is briefly flipped to the trigger's true
+    owner during promotion (game.effects.triggers._place_trigger_groups),
+    so by the time any ltb_trigger hook actually runs, state.active_idx is
+    ALREADY the correct owner regardless of which line nihil_spellbomb_dies
+    itself reads. The bug is only reachable exactly the way it was filed:
+    a direct call with active_idx pointing at the wrong player.
+
+    Player 1 (NOT the active player, active_idx=0) owns the Spellbomb.
+    Player 0 is ALSO given a floating {B} (and both players a library card,
+    so a draw either way can't crash on an empty library), so the OLD
+    buggy code -- which would open the "may pay" prompt against whoever
+    state.active_idx happens to be, player 0 -- has something to wrongly
+    pay with instead of correctly refusing/crashing; the assertions below
+    would cleanly FAIL against it.
+
+    (Only the "who gets asked / whose mana pays" half is asserted here --
+    the fixed code's own resulting `state.draw(1)` runs from whatever
+    active_idx resolution.pay_unless_pay's own payment-complete callback
+    restores it to, which is state.active_idx as it stood BEFORE this
+    direct call -- always the true owner in any real, un-bypassed
+    resolve_top_of_stack-driven game, but genuinely a separate, narrower
+    question from "who was offered the choice / whose mana was spent" in
+    this deliberately pipeline-bypassing direct-call construction, so it's
+    not asserted here -- see this file's own final report for the full
+    note.)"""
+    state = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
+    state.active_idx = 0  # active player is 0 ...
+    nihil = Permanent(registry.CARD_DEFS["Nihil Spellbomb"])
+    nihil.slot = 1
+    nihil.flags["owner_idx"] = 1  # ... but the Spellbomb's real owner/controller is player 1
+    state.players[1].library = [CardDef("d", CardType.LAND, None, EffectId.SWAMP, basic=True)]
+    state.players[1].mana_pool = {"B": 1}
+    state.players[0].library = [CardDef("decoy", CardType.LAND, None, EffectId.SWAMP, basic=True)]
+    state.players[0].mana_pool = {"B": 1}  # the OLD bug would find this and wrongly spend via player 0 instead
+
+    nihil_spellbomb_dies(state, nihil)
+    assert state.pending_resolution["kind"] == "pay_unless"
+    assert state.active_idx == 1  # begin_pay_unless flips active_idx to the PAYER -- must be the owner (1), not player 0
+    resolution.pay_unless_pay(state)
+    while state.pending_resolution is not None and state.pending_resolution["kind"] == "pay_cost":
+        execute_pool_spend(state, pool_spend_options(state)[0])
+    assert state.players[1].mana_pool == {} and state.players[0].mana_pool == {"B": 1}  # PLAYER 1's own B spent; player 0's untouched
+
+
 def test_lembas_dies_shuffles_itself_into_library():
     """Lembas: "When put into a graveyard from the battlefield, its owner
     shuffles it into their library." A 400.7 linked ability -- driven
@@ -725,3 +793,307 @@ def test_chromatic_star_any_color_choice_and_dies_draw():
     assert state.mana_pool.get("U") == 1 and "C" not in state.mana_pool  # a real blue, not colorless
     _drive(state)  # the dies-trigger (draw) was queued by the sacrifice
     assert len(state.hand) == 1  # dies-draw fired
+
+
+def test_tron_lands_double_mana_when_all_three_controlled():
+    """Tron lands' ("tron",) mana shape: once you control all three of
+    Urza's Mine/Power Plant/Tower, EACH one taps for its own doubled
+    amount -- Mine/Power Plant for {C}{C}, Tower for {C}{C}{C} -- instead
+    of the ordinary single {C}. Controlling only one or two of them
+    produces just the plain single {C}, same as any other land."""
+    state = GameState(on_the_play=True)
+    mine = Permanent(registry.CARD_DEFS["Urza's Mine"])
+    plant = Permanent(registry.CARD_DEFS["Urza's Power Plant"])
+    tower = Permanent(registry.CARD_DEFS["Urza's Tower"])
+    state.battlefield = [mine, plant, tower]
+    activate_mana_source(state, mine)
+    assert state.mana_pool == {"C": 2}  # all three online -- Mine doubles
+    activate_mana_source(state, tower)
+    assert state.mana_pool == {"C": 5}  # + Tower's own tripled {C}{C}{C}
+
+    solo_state = GameState(on_the_play=True)
+    solo_mine = Permanent(registry.CARD_DEFS["Urza's Mine"])
+    solo_state.battlefield = [solo_mine]
+    activate_mana_source(solo_state, solo_mine)
+    assert solo_state.mana_pool == {"C": 1}  # alone -- just a plain single C
+
+    two_state = GameState(on_the_play=True)
+    two_mine = Permanent(registry.CARD_DEFS["Urza's Mine"])
+    two_plant = Permanent(registry.CARD_DEFS["Urza's Power Plant"])
+    two_state.battlefield = [two_mine, two_plant]
+    activate_mana_source(two_state, two_mine)
+    assert two_state.mana_pool == {"C": 1}  # only two of three -- still just one C
+
+
+def test_tocasia_dig_site_taps_for_colorless():
+    """Tocasia's Dig Site: plain "{T}: Add {C}" mana ability -- shares its
+    {T} with the {3}, T: Surveil 1 ability below (verified via Scryfall:
+    "{T}: Add {C}. {3}, {T}: Surveil 1.", no enters-tapped clause)."""
+    state = GameState(on_the_play=True)
+    dig_site = Permanent(registry.CARD_DEFS["Tocasia's Dig Site"])
+    state.battlefield = [dig_site]
+    activate_mana_source(state, dig_site)
+    assert state.mana_pool == {"C": 1} and dig_site.tapped
+
+
+def test_tocasia_dig_site_surveil_ability():
+    """Tocasia's Dig Site's own second ability: "{3}, T: Surveil 1."
+    Faithful timing: the {T} is a COST, paid now; the surveil is the
+    effect, on the stack, resolving after a priority window."""
+    state = GameState(on_the_play=True)
+    dig_site = Permanent(registry.CARD_DEFS["Tocasia's Dig Site"])
+    state.battlefield = [dig_site]
+    state.library = [CardDef("Top Card", CardType.LAND, None, EffectId.FOREST, basic=True)]
+    activate_tocasia_dig_site_surveil(state, dig_site)
+    assert dig_site.tapped  # {T} -- a cost, paid now
+    assert len(state.stack) == 1  # the surveil is the effect, on the stack
+    resolve_top_of_stack(state)
+    assert state.pending_resolution["kind"] == "surveil"
+
+
+def test_conduit_pylons_etb_surveils_one():
+    """Conduit Pylons ETB: "surveil 1" (a real Scryfall pull, per this
+    module's own docstring)."""
+    state = GameState(on_the_play=True)
+    pylons = registry.CARD_DEFS["Conduit Pylons"]
+    state.hand = [pylons]
+    state.library = [CardDef("Top Card", CardType.LAND, None, EffectId.FOREST, basic=True)]
+    play_land_from_hand(state, pylons)
+    _resolve_etb(state)
+    assert state.pending_resolution["kind"] == "surveil"
+
+
+def test_conduit_pylons_taps_for_colorless():
+    """Conduit Pylons: plain "{T}: Add {C}" -- a "fixed" mana source,
+    distinct from its own {1} filter ability below."""
+    state = GameState(on_the_play=True)
+    pylons = Permanent(registry.CARD_DEFS["Conduit Pylons"])
+    state.battlefield = [pylons]
+    activate_mana_source(state, pylons)
+    assert state.mana_pool == {"C": 1} and pylons.tapped
+
+
+def test_conduit_pylons_filter_any_color_gated_on_untapped():
+    """Conduit Pylons' own second ability -- "{1}: Add one mana of any
+    color" (filter_mana): an ATOMIC pool->pool conversion, legal only
+    while Pylons itself is still UNTAPPED (real text shares the land's own
+    {T} with its plain {T}: Add {C} ability, so only one of the two can be
+    used a turn), and using it taps Pylons -- distinct from Barrels of
+    Blasting Jelly's own once-per-turn used_this_turn flag gating the
+    identical shape (see this module's own docstring)."""
+    actions = drl_env.build_action_table([("Conduit Pylons", 1)], registry.EFFECT_REGISTRY)
+    pylons = Permanent(registry.CARD_DEFS["Conduit Pylons"])
+    state = GameState(on_the_play=True)
+    state.battlefield = [pylons]
+    state.mana_pool = {"U": 1}
+    _, legal, execute = next((nm, lg, ex) for nm, lg, ex in actions if nm == "Filter Conduit Pylons for G, paying U")
+    assert legal(state)
+    execute(state)
+    assert state.mana_pool == {"G": 1}  # U spent, G produced
+    assert pylons.tapped  # filtering taps Pylons itself
+    # This test drives legal()/execute() directly rather than through a real
+    # legal_action_mask sweep, so the sweep-scoped _filter_source_cache
+    # (drl_env._actions, reset before/after every real sweep) must be reset
+    # by hand here -- otherwise it would keep serving the stale, pre-tap
+    # lookup from the "for G, paying U" check just above.
+    drl_env._actions._filter_source_cache = None
+    _, legal_again, _ = next((nm, lg, ex) for nm, lg, ex in actions if nm == "Filter Conduit Pylons for U, paying G")
+    assert not legal_again(state)  # now tapped -- the filter's own gate closes
+
+
+def test_bonders_ornament_draw_ability():
+    """Bonder's Ornament's own "{4}, T: draw a card" -- shares its {T}
+    with its own plain flexible mana ability (already tested elsewhere,
+    not duplicated here). Faithful timing: the {T} is a COST, paid now;
+    the draw is the effect, on the stack, resolving after a priority
+    window."""
+    state = GameState(on_the_play=True)
+    ornament = Permanent(registry.CARD_DEFS["Bonder's Ornament"])
+    state.battlefield = [ornament]
+    state.library = [CardDef("Drawn", CardType.LAND, None, EffectId.FOREST, basic=True)]
+    activate_bonders_ornament_draw(state, ornament)
+    assert ornament.tapped  # {T} -- a cost, paid immediately
+    assert len(state.stack) == 1 and state.hand == []
+    resolve_top_of_stack(state)
+    assert [c.name for c in state.hand] == ["Drawn"]
+
+
+def test_candy_trail_etb_scry_two():
+    """Candy Trail's ETB: scry 2 (its own separate sac ability -- gain 3
+    life AND draw a card -- is already covered above; this only exercises
+    the ETB half, never exercised anywhere else)."""
+    state = GameState(on_the_play=True)
+    candy_trail = CardDef(
+        "Candy Trail", CardType.ARTIFACT, {"generic": 1}, EffectId.CANDY_TRAIL, sac_ability_cost={"generic": 2},
+    )
+    state.hand = [candy_trail]
+    state.library = [
+        CardDef("Top", CardType.LAND, None, EffectId.FOREST, basic=True),
+        CardDef("Second", CardType.LAND, None, EffectId.MOUNTAIN, basic=True),
+    ]
+    cast_permanent_from_hand(state, candy_trail)
+    _resolve_etb(state)
+    assert state.pending_resolution["kind"] == "scry"
+    assert len(state.pending_resolution["remaining"]) == 2  # scry TWO, not scry one
+
+
+def test_twisted_landscape_cycling_draws_a_card():
+    """Cycling {B}{R}{G}: discard this card from hand, draw a card (plain
+    Cycling has the draw rider, unlike Ash Barrens' own Basic Landcycling
+    above). Its fetch ability is already covered elsewhere in this file --
+    not duplicated here."""
+    state = GameState(on_the_play=True)
+    twisted = CardDef(
+        "Twisted Landscape", CardType.LAND, None, EffectId.TWISTED_LANDSCAPE,
+        fetch_ability_cost={}, cycling_cost={"B": 1, "R": 1, "G": 1},
+    )
+    state.hand = [twisted]
+    state.library = [CardDef("Drawn", CardType.LAND, None, EffectId.FOREST, basic=True)]
+    cycle_twisted_landscape(state, twisted)
+    assert [c.name for c in state.graveyard] == ["Twisted Landscape"]  # discarded itself
+    assert [c.name for c in state.hand] == ["Drawn"]  # the draw rider
+
+
+def test_lembas_etb_scry_then_draw():
+    """Lembas ETB: scry 1, THEN draw a card (the draw chained onto the
+    scry's own completion) -- driven through the real cast/ETB path,
+    unlike the file's other two Lembas tests, which both invoke
+    lembas_sac directly and never touch the ETB at all."""
+    state = GameState(on_the_play=True)
+    lembas = registry.CARD_DEFS["Lembas"]
+    state.hand = [lembas]
+    state.library = [CardDef("Scried", CardType.LAND, None, EffectId.FOREST, basic=True)]
+    cast_permanent_from_hand(state, lembas)
+    _resolve_etb(state)
+    assert state.pending_resolution["kind"] == "scry"
+    resolution.execute_scry_surveil_option(state, "keep")  # keep it on top
+    assert state.pending_resolution is None
+    assert [c.name for c in state.hand] == ["Scried"]  # scry kept it on top -- the draw picked it right back up
+
+
+def test_clue_token_sac_pay_and_draw():
+    """Clue's own resolve: "{2}, Sacrifice this artifact: Draw a card"
+    (Investigate makes one -- Toxin Analysis). The {2} mana is handled
+    generically by drl_env's cost_key wiring in real play; activate_clue_
+    sac is called directly here, post-cost, same convention as Chromatic
+    Star's/Candy Trail's own sac-ability tests above."""
+    state = GameState(on_the_play=True)
+    clue = Permanent(CLUE_TOKEN_CARD_DEF)
+    state.battlefield = [clue]
+    state.library = [CardDef("Drawn", CardType.LAND, None, EffectId.FOREST, basic=True)]
+    activate_clue_sac(state, clue)
+    assert clue not in state.battlefield
+    assert not any(c.name == "Clue" for c in state.graveyard)  # a TOKEN -- ceases to exist, never a graveyard trip
+    assert len(state.stack) == 1 and state.hand == []
+    resolve_top_of_stack(state)
+    assert [c.name for c in state.hand] == ["Drawn"]
+
+
+def test_expedition_map_activate_completes_the_search_to_hand():
+    """Expedition Map's own {2}, T, Sacrifice: search library for a land --
+    the existing coverage elsewhere in this file only confirms the ability
+    fires a Gixian-Infiltrator sacrifice trigger; this drives the search
+    all the way to completion, landing the found card in hand."""
+    state = GameState(on_the_play=True)
+    emap = Permanent(registry.CARD_DEFS["Expedition Map"])
+    state.battlefield = [emap]
+    state.library = [
+        CardDef("Nonland", CardType.ARTIFACT, {"generic": 1}, EffectId.FILLER),
+        CardDef("Forest", CardType.LAND, None, EffectId.FOREST, basic=True),
+    ]
+    activate_expedition_map(state, emap)
+    assert emap not in state.battlefield  # sacrificed -- a cost, paid immediately
+    assert state.graveyard[-1].name == "Expedition Map"
+    assert len(state.stack) == 1  # the search is the effect, on the stack
+    resolve_top_of_stack(state)
+    assert resolution.search_fetch_options(state) == ["Forest"]  # only the land is offered
+    resolution.execute_search_fetch_option(state, "Forest")
+    assert [c.name for c in state.hand] == ["Forest"]  # actually landed in hand, not left mid-search
+
+
+def test_lotus_petal_mana_any_color_choice_and_consumed():
+    """Lotus Petal: "{T}, Sacrifice this artifact: Add one mana of any
+    color" -- a real color-fixing choice (mana.py's own "flexible" mana
+    kind), made by the activator AT ACTIVATION (unlike Chromatic Star's
+    own color choice above, which opens a resolution AFTER its
+    sac-triggered dies-draw) -- mirrors that same test's own shape, for
+    Lotus Petal specifically. Consumed -- sacrificed to the graveyard (a
+    real card, unlike Treasure's own token version below)."""
+    state = GameState(on_the_play=True)
+    petal = Permanent(registry.CARD_DEFS["Lotus Petal"])
+    state.battlefield = [petal]
+    activate_mana_source(state, petal, color_choice="G")
+    assert state.mana_pool.get("G") == 1 and "C" not in state.mana_pool  # a real green, not colorless
+    assert petal not in state.battlefield  # consumed -- sacrificed, not merely tapped
+    assert state.graveyard[-1].name == "Lotus Petal"
+
+
+def test_pinnacle_kill_ship_cast_auto_fires_etb_trigger():
+    """Cast Pinnacle Kill-Ship from hand through the real cast path -- the
+    ETB trigger (pinnacle_kill_ship_etb) must fire as an automatic
+    consequence of casting/entering, not merely when called directly (each
+    half is already unit-tested in isolation elsewhere in this file)."""
+    state = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
+    kill_ship_def = registry.CARD_DEFS["Pinnacle Kill-Ship"]
+    victim = Permanent(CardDef("Victim", CardType.CREATURE, None, EffectId.FILLER, power=1, toughness=3))
+    victim.slot = 1
+    state.players[1].battlefield = [victim]
+    state.hand = [kill_ship_def]
+    cast_permanent_from_hand(state, kill_ship_def)
+    promote_triggers_to_stack(state)
+    assert state.pending_resolution["kind"] == "choose_any_target"  # the ETB genuinely fired off the real cast/entry
+    resolution.execute_choose_any_target_creature(state, 1, "Victim", 1)
+    resolve_top_of_stack(state)
+    assert victim not in state.players[1].battlefield  # 10 damage landed -- the real chain ran end to end
+
+
+def test_treasure_token_mana_any_color_choice_and_ceases_to_exist():
+    """Treasure: "{T}, Sacrifice this artifact: Add one mana of any color"
+    -- consumed on tap like Lotus Petal, but a TOKEN: it ceases to exist
+    entirely rather than making a graveyard trip."""
+    state = GameState(on_the_play=True)
+    treasure = Permanent(TREASURE_TOKEN_CARD_DEF)
+    state.battlefield = [treasure]
+    activate_mana_source(state, treasure, color_choice="R")
+    assert state.mana_pool.get("R") == 1 and "C" not in state.mana_pool  # a real red, not colorless
+    assert treasure not in state.battlefield
+    assert not any(c.name == "Treasure" for c in state.graveyard)  # ceases to exist -- never a graveyard trip
+
+
+def test_map_token_own_wiring_creature_choice_cost_and_sorcery_speed_gate():
+    """Map's own "{1}, {T}, Sacrifice this token: Target creature you
+    control explores. Activate only as a sorcery." (Fanatical Offering) --
+    exercising Map's OWN wiring through the real drl_env action-table gate:
+    its real {1}+sac cost (paid through the generic cost_key machinery,
+    same as every other Activate action), the creature-choice step, and
+    the Speed.SORCERY timing gate. explore()'s own land/nonland branching
+    logic is already tested generically via direct calls elsewhere -- not
+    duplicated here."""
+    state = GameState(on_the_play=True)
+    creature = Permanent(CardDef("My Creature", CardType.CREATURE, None, EffectId.FILLER, power=1, toughness=1))
+    map_token = Permanent(MAP_TOKEN_CARD_DEF)
+    swamp = Permanent(CardDef("Swamp", CardType.LAND, None, EffectId.SWAMP))
+    state.battlefield = [creature, map_token, swamp]
+    state.library = [CardDef("Fetched Land", CardType.LAND, None, EffectId.FOREST, basic=True)]
+    state.phase = Phase.MAIN1
+
+    actions = drl_env.build_action_table([], registry.EFFECT_REGISTRY, token_card_defs=(MAP_TOKEN_CARD_DEF,))
+    _, legal, execute = next((nm, lg, ex) for nm, lg, ex in actions if nm == "Activate Map (explore)")
+
+    state.stack.append({})  # mid-resolution of ANYTHING -- Speed.SORCERY requires an empty stack
+    assert not legal(state)
+    state.stack.clear()
+    assert not legal(state)  # empty stack now, but nothing floated yet -- still not payable
+    activate_mana_source(state, swamp)  # float {1}'s worth BEFORE activating (float-first)
+    assert legal(state)  # own MAIN1, empty stack, {1} now floating -- legal
+
+    execute(state)
+    assert state.pending_resolution["kind"] == "pay_cost"
+    execute_pool_spend(state, pool_spend_options(state)[0])  # pay the {1}
+    assert map_token not in state.battlefield  # sacrificed -- a cost
+    assert not any(c.name == "Map" for c in state.graveyard)  # a TOKEN -- ceases, never a graveyard trip
+    assert resolution.choose_permanent_options(state) == [("My Creature", 1)]  # the creature-choice step -- only the creature offered
+    resolution.execute_choose_permanent_option(state, "My Creature", 1)
+    assert len(state.stack) == 1  # explore is the effect, on the stack
+    resolve_top_of_stack(state)
+    assert [c.name for c in state.hand] == ["Fetched Land"]  # explore actually ran, against the chosen creature

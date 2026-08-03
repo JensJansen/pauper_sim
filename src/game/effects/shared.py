@@ -219,3 +219,14 @@ def any_creature_on_either_battlefield(state):
     report "no legal target" whenever the caster controls no creatures but
     the opponent does -- a real, if rarely useful, legal target."""
     return any(p.card_type == CardType.CREATURE for player in state.players for p in player.battlefield)
+
+
+def any_land_on_either_battlefield(state):
+    """Land-side counterpart to any_creature_on_either_battlefield: the
+    "is there a legal Aura/targeted-effect target at all" gate for an
+    "enchant/target land" effect that can target EITHER side (Abundant
+    Growth's real text is "Enchant land", no "you control" restriction).
+    Checking only the caster's OWN battlefield would wrongly report "no
+    legal target" whenever the caster is land-screwed but the opponent
+    controls a land -- a real, if rarely useful, legal target (601.2c)."""
+    return any(p.card_type == CardType.LAND for player in state.players for p in player.battlefield)

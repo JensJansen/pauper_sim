@@ -483,13 +483,20 @@ def blood_fountain_return(state, permanent):
     """{3}{B}, {T}, Sacrifice: Return up to two target creature cards from your
     graveyard to your hand. (Blood Fountain has no dies-trigger of its own.)
 
+    The {3}{B} is paid before this resolve fires (drl_env._activate_execute's
+    own begin_pay_cost call); {T} and Sacrifice are paid here, in that order,
+    same as any real activation -- tapping first, THEN sacrificing (tapping a
+    permanent that's about to leave the battlefield is otherwise inert, but
+    modeling both cost components keeps this faithful to the real cost).
+
     Faithful targeting (matching Rooftop Percher's own "up to two target
     cards from graveyards" shape): the up-to-2 targets are chosen NOW, as
     the ability is activated -- BEFORE it goes on the stack -- captured by
     object identity, and the return fizzles per-target at resolution:
     returning every still-present target, doing nothing only if ALL chosen
     targets have already left the graveyard by then (608.2c)."""
-    sacrifice_to_graveyard(state, permanent)  # cost
+    permanent.tapped = True  # cost ({T})
+    sacrifice_to_graveyard(state, permanent)  # cost (Sacrifice)
 
     def _on_targets(state, chosen):
         captured = list(chosen)  # exact graveyard instances, locked as the ability is put on the stack
@@ -655,6 +662,7 @@ BLACK_EFFECT_REGISTRY = {
         "etb_trigger": lambda state, permanent: mill_until_land(state, permanent),
         "etb_targets": True,  # target player chosen at promotion (never fizzles, but surfaces the choice early)
         "pending_kinds": {"choose_target_player"},
+        "keywords": {"flying"},  # real Balustrade Spy is 2/3 Flying (P/T is this file's own design choice per the module docstring; Flying is not)
     },
     EffectId.LOTLETH_GIANT: {
         "cast": {"resolve": lambda state, card_def: cast_permanent_from_hand(state, card_def)},
@@ -679,7 +687,7 @@ BLACK_EFFECT_REGISTRY = {
             "legal": lambda state: sum(1 for p in state.battlefield if p.card_type == CardType.CREATURE) >= 3,
             "resolve": lambda state, card_def: flashback_dread_return(state, card_def),
         },
-        "pending_kinds": {"choose_graveyard_card", "sacrifice"},
+        "pending_kinds": {"choose_graveyard_card", "choose_permanent"},
     },
     EffectId.KITCHEN_IMP: {
         # Real text: Flying, haste.
