@@ -1,15 +1,16 @@
 """Local web UI for this repo's training + game-review tooling:
 
-- Training ops: start/stop/monitor run_league.py and run_pretrain.py
-  sessions from a browser, with training_configs/*.json treated as optional
-  form-prefill preconfigurations (loaded into fields client-side, editable
-  after -- see static/index.html).
+- Landing page (/, static/landing.html): links to the two tools below.
+- Training ops (/train, static/index.html): start/stop/monitor run_league.py
+  and run_pretrain.py sessions from a browser, with training_configs/*.json
+  treated as optional form-prefill preconfigurations (loaded into fields
+  client-side, editable after).
 - Replay viewer (/replay, static/replay.html): pick a --log event-log JSON
   file from disk and step through a logged game's board state. The backend
   parses the raw log directly (replay_engine.py) -- no intermediate replay
   file format.
 
-Serves those two static pages plus a small JSON + Server-Sent-Events API.
+Serves those three static pages plus a small JSON + Server-Sent-Events API.
 Local single-user tool: no auth, binds to localhost only. See README's
 "Training-ops UI" section.
 
@@ -38,7 +39,12 @@ manager = RunManager()
 
 
 @app.get("/")
-def index():
+def landing():
+    return send_from_directory(app.static_folder, "landing.html")
+
+
+@app.get("/train")
+def train_page():
     return send_from_directory(app.static_folder, "index.html")
 
 

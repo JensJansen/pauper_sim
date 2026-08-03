@@ -76,12 +76,12 @@ def test_build_argv_league_never_emits_removed_flags():
 
 @pytest.mark.slow
 def test_build_argv_league_matchup_and_flags():
-    argv = build_argv("league", {"matchup": ["elves", "boggles"], "eval": True, "greedy": True, "games": "25"})
+    argv = build_argv("league", {"matchup": ["elves", "boggles"], "eval": True, "sampled": True, "games": "25"})
     assert _flag_value(argv, "--matchup") == "elves"
     idx = argv.index("--matchup")
     assert argv[idx + 1:idx + 3] == ["elves", "boggles"]
     assert "--eval" in argv
-    assert "--greedy" in argv
+    assert "--sampled" in argv
     assert _flag_value(argv, "--games") == "25"
 
 

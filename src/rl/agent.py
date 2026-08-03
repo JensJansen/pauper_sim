@@ -34,14 +34,21 @@ OPPONENT_HAND_SIZE_CAP = 12  # generous headroom over the 7-card cleanup limit f
 
 def _scalar_features(state, seat_idx, horizon):
     """Non-tokenized globals -- turn number, lands-played, mulligans, am-I-
-    turn-player, floating mana pool, phase one-hot, my/opponent life,
-    my/opponent library size, opponent's hand size, whether the stack
+    turn-player, my/opponent floating mana pool, phase one-hot, my/opponent
+    life, my/opponent library size, opponent's hand size, whether the stack
     currently targets me/the opponent AS A PLAYER. Same composition
     rl.deck.SCALAR_FEATURE_DIM documents (mana-pool cap of 8, matched here).
     state.mana_pool is a GameState property proxying to
     state.players[state.active_idx] (game/state.py's _active_player_property)
     -- read unconditionally, not gated, since _for_player below already
     guarantees active_idx == seat_idx for the whole duration of _read.
+    other.mana_pool reads straight off THAT PlayerState instead (game/
+    state.py: every PlayerState owns its own mana_pool dict; state.mana_pool
+    is just the active-player convenience proxy over the same dicts), so
+    it's correct regardless of active_idx too. Floating mana is public
+    information in real Magic (either player can see how much of each color
+    the other has floating) -- both pools belong here on that basis alone,
+    same reasoning library/hand SIZE below already follows.
 
     Library/hand SIZE (not contents) and a declared player-target are all
     public in real Magic (either player can count a library or a hand, and a
@@ -62,6 +69,8 @@ def _scalar_features(state, seat_idx, horizon):
         ]
         for color in game.POOL_COLORS:
             out.append(min(s.mana_pool.get(color, 0), 8) / 8)
+        for color in game.POOL_COLORS:
+            out.append(min(other.mana_pool.get(color, 0), 8) / 8)
         for phase in game.turn.Phase:
             out.append(1.0 if phase == s.phase else 0.0)
         out.append(max(me.life_total, 0) / game.state.STARTING_LIFE)

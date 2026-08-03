@@ -103,7 +103,7 @@ LEAGUE_MODES = [
         "help": "Play games with the CURRENT live agents, no updates, no checkpointing. "
                 "Round-robin over the decks below, or a specific pairing.",
         "implies": {"eval": True},
-        "dests": ["decks", "matchup", "games", "greedy"],
+        "dests": ["decks", "matchup", "games", "sampled"],
     },
 ]
 

@@ -394,8 +394,11 @@ def _run_eval(eval_decks, games_per_pairing, greedy, seed, game_logs, matchup=No
     no updates, no checkpointing) over the CURRENT live agents (deck net + its
     mulligan model -- so logged games use the same pregame policy training does).
     Pairing is a round-robin with mirrors (combinations_with_replacement) over
-    eval_decks, or a single A-vs-B pairing when `matchup` is given. Sampled by
-    default; greedy=True argmaxes. game_logs (a list) collects one engine
+    eval_decks, or a single A-vs-B pairing when `matchup` is given. Greedy
+    (argmax) by default, matching rl.agent/rl.mulligan's own "greedy=True is
+    for eval" contract -- eval logs should show the policy's actual best play,
+    not an exploration sample; pass greedy=False for the old sampled behavior.
+    game_logs (a list) collects one engine
     event_log per game. Returns (RESOLVED deck roster actually played, per-game
     (deck_a, deck_b) pairing list aligned 1:1 with game_logs, or None when
     game_logs is None) -- the roster falls back to the full roster when called
@@ -535,8 +538,10 @@ def build_arg_parser():
                          help="Eval / log-generation: play games with NO training over the current live agents "
                               "(round-robin with mirrors over --decks, or one A-vs-B pairing with --matchup). "
                               "--games games per pairing.")
-    parser.add_argument("--greedy", action="store_true",
-                         help="Eval: argmax the policy instead of sampling (default: sampled, matching trained behavior).")
+    parser.add_argument("--sampled", action="store_true",
+                         help="Eval: sample from the policy instead of argmaxing (default: greedy/argmax, so logged "
+                              "eval games show the policy's actual best play; pass this for the old exploratory-"
+                              "sampled behavior).")
     parser.add_argument("--seed", type=int, default=None,
                          help="Seed the rng (reproducible eval logs; also reproducible training sampling).")
     parser.add_argument("--log", type=str, default=None, metavar="PATH",
@@ -598,14 +603,14 @@ def main():
     league_dir = f"{CHECKPOINT_DIR}/{league_name}" if league_name else None
 
     if args.eval:  # no training: round-robin (or single matchup) over current live agents
-        resolved_decks, game_pairings = _run_eval(train_decks, args.games, args.greedy, args.seed, game_logs,
+        resolved_decks, game_pairings = _run_eval(train_decks, args.games, not args.sampled, args.seed, game_logs,
                                                     matchup=matchup, league_dir=league_dir)
         if args.log:
             # "decks" logs the RESOLVED roster _run_eval actually played, not the raw
             # --decks arg -- train_decks is None whenever --decks was omitted (the
             # common case), which is not the same as "no decks played."
             _write_event_log(args.log, game_logs, {"mode": "eval", "matchup": list(matchup) if matchup else None,
-                                                   "decks": resolved_decks, "greedy": args.greedy, "games_logged": len(game_logs)},
+                                                   "decks": resolved_decks, "greedy": not args.sampled, "games_logged": len(game_logs)},
                               game_pairings=game_pairings)
         return
 

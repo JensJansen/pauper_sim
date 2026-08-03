@@ -206,3 +206,130 @@ def test_opponent_owned_order_triggers_offers_only_their_own_names():
         registry.EFFECT_REGISTRY[EffectId.GENEROUS_ENT] = _ent_backup3
         registry.CARD_DEFS.clear()
         registry.CARD_DEFS.update(_card_defs_backup3)
+
+
+def test_cross_owner_single_targeting_etb_does_not_stomp_active_idx():
+    # Regression for a real crash: a NON-active player's lone queued
+    # targeting ETB (a real target existed, e.g. Masked Vandal) must keep
+    # active_idx pointed at its TRUE owner -- the actual decision-maker,
+    # and whose "opponent" choose_opponent_permanent's own predicate reads
+    # -- until that decision is genuinely answered by _place_trigger_groups'
+    # single-entry targeting branch, not get stomped back to
+    # original_active_idx the instant the hook opens it (begin_resolution
+    # is a flat, single-slot assignment -- state.pending_resolution's own
+    # docstring). Confirmed live: an all-False choose_opponent_permanent
+    # mask + a RuntimeError, in real cross-deck league play, because the
+    # stomp both reassigned who answers the decision AND (since state.
+    # opponent re-reads state.active_idx fresh) flipped whose board was
+    # being offered as "the opponent."
+    resolved = []
+    _filler_backup5 = registry.EFFECT_REGISTRY[EffectId.FILLER]
+    registry.EFFECT_REGISTRY[EffectId.FILLER] = {
+        "etb_trigger": lambda state, permanent: resolution.begin_choose_opponent_permanent(
+            state, lambda p: p.card_type == CardType.ARTIFACT, lambda s, choice: resolved.append(choice),
+        ),
+        "etb_targets": True,
+    }
+    _card_defs_backup4 = dict(registry.CARD_DEFS)
+    try:
+        vandal_def = CardDef("Fake Vandal", CardType.CREATURE, None, EffectId.FILLER, power=1, toughness=3)
+        art_def = CardDef("Their Relic", CardType.ARTIFACT, None, EffectId.FILLER)
+        registry.CARD_DEFS["Fake Vandal"] = vandal_def
+        registry.CARD_DEFS["Their Relic"] = art_def
+        vandal = Permanent(vandal_def)
+        art = Permanent(art_def)
+
+        state = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
+        state.active_idx = 0  # player 0 holds priority; player 1 (the OTHER player) owns the queued trigger
+        state.players[1].battlefield = [vandal]  # trigger owner's own board
+        state.players[0].battlefield = [art]  # the target pool: player 1's real opponent
+        state.players[1].trigger_queue = [{"type": "etb", "card_def": vandal_def, "permanent": vandal}]
+
+        promote_triggers_to_stack(state)
+
+        assert state.pending_resolution is not None and state.pending_resolution["kind"] == "choose_opponent_permanent"
+        assert state.active_idx == 1, "must stay on the trigger's TRUE owner, not stomp back to original_active_idx=0"
+        assert resolution.choose_opponent_permanent_options(state) == [("Their Relic", art.slot)], (
+            "state.opponent must still mean player 1's real opponent (player 0) -- an active_idx stomp would flip this"
+        )
+
+        resolution.execute_choose_opponent_permanent_option(state, "Their Relic", art.slot)
+
+        assert resolved == [("Their Relic", art.slot)]
+        assert state.pending_resolution is None
+        assert state.active_idx == 0  # restored to the true original active player once the decision (and the group) finishes
+    finally:
+        registry.EFFECT_REGISTRY[EffectId.FILLER] = _filler_backup5
+        registry.CARD_DEFS.clear()
+        registry.CARD_DEFS.update(_card_defs_backup4)
+
+
+def test_targeting_entry_inside_order_triggers_does_not_orphan_the_pick():
+    # Same root cause as test_cross_owner_single_targeting_etb_does_not_stomp_
+    # active_idx, but inside execute_order_triggers_option's own targeting
+    # branch (2+ simultaneous triggers for one owner): placing a targeting
+    # entry that opens a REAL nested decision replaces state.pending_
+    # resolution with that decision (begin_resolution is a flat, single-slot
+    # assignment), detaching the "order_triggers" dict this function's own
+    # `pending` local still references. Finishing this pick immediately
+    # afterward would either complete/clear the WRONG (freshly-opened)
+    # resolution or, if entries remain, silently strand them with nothing in
+    # state.pending_resolution ever pointing back to this order_triggers
+    # pick again. This drives BOTH remaining entries through to confirm
+    # neither one is lost.
+    resolved = []
+    _filler_backup6 = registry.EFFECT_REGISTRY[EffectId.FILLER]
+    _ent_backup4 = registry.EFFECT_REGISTRY[EffectId.GENEROUS_ENT]
+    registry.EFFECT_REGISTRY[EffectId.FILLER] = {
+        "etb_trigger": lambda state, permanent: resolution.begin_choose_opponent_permanent(
+            state, lambda p: p.card_type == CardType.ARTIFACT, lambda s, choice: resolved.append(choice),
+        ),
+        "etb_targets": True,
+    }
+    registry.EFFECT_REGISTRY[EffectId.GENEROUS_ENT] = {
+        "etb_trigger": lambda state, permanent: resolved.append("plain-placed"),
+    }
+    _card_defs_backup5 = dict(registry.CARD_DEFS)
+    try:
+        targeting_def = CardDef("Targeting Vandal", CardType.CREATURE, None, EffectId.FILLER)
+        plain_def = CardDef("Plain Trigger", CardType.CREATURE, None, EffectId.GENEROUS_ENT)
+        art_def = CardDef("Their Relic", CardType.ARTIFACT, None, EffectId.FILLER)
+        registry.CARD_DEFS["Targeting Vandal"] = targeting_def
+        registry.CARD_DEFS["Plain Trigger"] = plain_def
+        registry.CARD_DEFS["Their Relic"] = art_def
+        state = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
+        state.active_idx = 0
+        art = Permanent(art_def)
+        state.players[1].battlefield = [art]  # the active player's real opponent
+        state.trigger_queue = [
+            {"type": "etb", "card_def": targeting_def, "permanent": Permanent(targeting_def)},
+            {"type": "etb", "card_def": plain_def, "permanent": Permanent(plain_def)},
+        ]
+
+        promote_triggers_to_stack(state)
+        assert state.pending_resolution["kind"] == "order_triggers"
+
+        resolution.execute_order_triggers_option(state, "Targeting Vandal")  # placed FIRST -- opens its own nested decision
+        assert state.pending_resolution["kind"] == "choose_opponent_permanent", (
+            "the just-opened decision must be live, not immediately (and wrongly) completed by the order_triggers pick"
+        )
+        assert resolved == []  # the targeting hook opened its choice but hasn't fired on_complete yet
+
+        resolution.execute_choose_opponent_permanent_option(state, "Their Relic", art.slot)
+        assert resolved == [("Their Relic", art.slot)]
+        assert state.pending_resolution is not None and state.pending_resolution["kind"] == "order_triggers", (
+            "the order_triggers pick must be reinstalled/continued, not lost, once the nested decision completes"
+        )
+        assert resolution.order_triggers_options(state) == ["Plain Trigger"]  # the remaining entry is still there to place
+
+        resolution.execute_order_triggers_option(state, "Plain Trigger")  # a plain entry is only PUSHED at placement, not run
+        assert state.pending_resolution is None
+        assert state.active_idx == 0
+        assert len(state.stack) == 1  # the second entry made it onto the stack, not stranded
+        resolve_top_of_stack(state)
+        assert resolved == [("Their Relic", art.slot), "plain-placed"]  # its own hook only fires once its stack entry resolves
+    finally:
+        registry.EFFECT_REGISTRY[EffectId.FILLER] = _filler_backup6
+        registry.EFFECT_REGISTRY[EffectId.GENEROUS_ENT] = _ent_backup4
+        registry.CARD_DEFS.clear()
+        registry.CARD_DEFS.update(_card_defs_backup5)

@@ -559,14 +559,17 @@ def _run_turn_gen(state, combat_enabled=False):
         phases = FULL_PHASES if combat_enabled else MINIMAL_PHASES
         for phase in phases:
             from_phase = state.phase
-            state.phase = phase
-            state.log_event("phase_change", from_phase=from_phase.value if from_phase is not None else None)
             # Rule 500.4: unused mana empties at every step/phase boundary (both
             # players), EXCEPT between combat's own sub-phases (one mana window
-            # -- see _COMBAT_PHASES). This is the end-of-previous-phase empty,
-            # applied as the next phase begins.
+            # -- see _COMBAT_PHASES). Logged BEFORE state.phase/phase_change
+            # advance, tagged with from_phase (the phase actually ending) --
+            # matching real Magic's own "at the end of X" timing, and keeping
+            # the replay viewer from showing combat's floated mana as still
+            # present once Main Phase 2 (or any other next phase) has begun.
             if not (from_phase in _COMBAT_PHASES and phase in _COMBAT_PHASES):
                 _empty_mana_pools(state)
+            state.phase = phase
+            state.log_event("phase_change", from_phase=from_phase.value if from_phase is not None else None)
             auto_effect = _PHASE_AUTO_EFFECTS.get(phase)
             if auto_effect is not None:
                 auto_effect(state)

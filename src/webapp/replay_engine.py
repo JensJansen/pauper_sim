@@ -629,7 +629,12 @@ def list_games(doc):
     repeat games of the same pairing (a double round-robin plays each one
     twice) as "(game 1)"/"(game 2)" instead of two identical, unindexable
     labels. Falls back to the old file-level meta (matchup/deck_a, else a
-    bare "game N") for logs written before per-game pairing existed."""
+    bare "game N") for logs written before per-game pairing existed.
+
+    header/detail split the label into the two pieces the game-picker UI
+    renders on separate lines (participants as the prominent line, game
+    number + event count as the secondary one); label is header+detail
+    joined back into one string, kept for callers that just want text."""
     meta = doc.get("meta") or {}
     matchup = meta.get("matchup")
     if meta.get("config_name"):
@@ -649,10 +654,15 @@ def list_games(doc):
         deck_a, deck_b = g.get("deck_a"), g.get("deck_b")
         if deck_a and deck_b:
             pairing_occurrence[(deck_a, deck_b)] = pairing_occurrence.get((deck_a, deck_b), 0) + 1
-            label = f'{deck_a} vs {deck_b} (game {pairing_occurrence[(deck_a, deck_b)]}, {n} events)'
+            header = f'{deck_a} vs {deck_b}'
+            detail = f'game {pairing_occurrence[(deck_a, deck_b)]}, {n} events'
         else:
-            label = f'{base_label or "game"} — game {idx} ({n} events)'
-        games.append({"game_index": idx, "label": label, "num_events": n})
+            header = base_label or "game"
+            detail = f'game {idx}, {n} events'
+        games.append({
+            "game_index": idx, "header": header, "detail": detail,
+            "label": f'{header} ({detail})', "num_events": n,
+        })
     return {"meta": meta, "games": games}
 
 

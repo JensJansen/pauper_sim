@@ -109,9 +109,9 @@ src/
   benchmarking/            training_run.py (benchmarks the real league loop under
                            different collection configs) + _common.py (path/stdout
                            bootstrap it imports for its side effect).
-  webapp/                  Local Flask training-ops UI: app.py (routes) + runs.py
-                           (subprocess/registry logic) + static/index.html (the
-                           whole frontend, no build step). See its own section below.
+  webapp/                  Local Flask UI: app.py (routes) + runs.py (subprocess/
+                           registry logic) + static/*.html (landing, training-ops,
+                           replay viewer -- no build step). See its own section below.
 
 data/                      Decklists (*.txt) + league_decks.json roster.
 checkpoints/               Trained weights + vocab.json (gitignored; see below).
@@ -171,12 +171,13 @@ side flag).
 
 The second is a **scalar vector** (`rl/agent.py`'s `_scalar_features`) of
 non-tokenized globals: turn number, lands-played, mulligans taken, whose
-turn it is, floating mana pool, phase, life totals, each player's library
-size, the opponent's hand size, and whether anything on the stack currently
-targets either player directly (a burn spell to the face has no token to
-carry a bit on, so that one case is scalar-only). Library/hand size and a
-declared target are all public knowledge in real Magic, unlike hand/library
-*contents* — see "Hidden information is respected" above.
+turn it is, each player's floating mana pool (by color), phase, life
+totals, each player's library size, the opponent's hand size, and whether
+anything on the stack currently targets either player directly (a burn
+spell to the face has no token to carry a bit on, so that one case is
+scalar-only). Library/hand size, floating mana, and a declared target are
+all public knowledge in real Magic, unlike hand/library *contents* — see
+"Hidden information is respected" above.
 
 The network is split into a **shared** stack and a **per-deck** head:
 
@@ -319,6 +320,10 @@ cd src/webapp
 python app.py          # http://127.0.0.1:5000 -- localhost only, no auth
 ```
 
+`/` is a landing page linking to the two tools; the training-run panel
+described below lives at `/train`, the replay viewer (below) at `/replay`.
+Each page links back to `/` and to the other tool.
+
 - **Runs are plain subprocesses.** Starting one spawns `run_league.py` or
   `run_pretrain.py` with fully explicit CLI flags built from whatever's in
   the form — never a `--run-config`/`--league-config` *path*. The league
@@ -438,18 +443,25 @@ Step through a logged game's board state one event at a time. MVP scope per
   tracked as a single shared ordered list (top = last, matching
   `GameState.stack`); the pregame mulligan sequence is **not** netted into
   one summary step — see below.
-- **File selection is a native browser file picker.** Pick any `--log` JSON
-  file from disk (`logs/*.json`); the browser reads it and posts the content
-  to the backend, which returns that file's game list (one file can hold an
-  entire round-robin `--eval` run) before reducing any board state, then
-  reduces just the selected game. Each game in the list is labeled from its
-  own `deck_a`/`deck_b` fields (`run_league.py`'s `_write_event_log` stamps
+- **A hamburger button fixed at the top-left opens a drawer** (link home,
+  open-a-new-file, and the game list — replacing an earlier plain dropdown)
+  that overlays the board without disturbing the scrub position underneath.
+  **File selection is a native browser file picker**, reachable from the
+  drawer's "Open new file". Pick any `--log` JSON file from disk
+  (`logs/*.json`); the browser reads it and posts the content to the
+  backend, which returns that file's game list (one file can hold an entire
+  round-robin `--eval` run) before reducing any board state, then reduces
+  just the selected game. Each game in the list is labeled from its own
+  `deck_a`/`deck_b` fields (`run_league.py`'s `_write_event_log` stamps
   every game with which pairing it actually was) as `"deck A vs deck B (game
   N)"` — the `(game N)` disambiguates repeat games of the same pairing (a
   double round-robin plays each one twice) — rather than an unlabeled
   `"game 7"` a round-robin log's many different pairings can't otherwise be
   told apart by. Logs written before this field existed still work, falling
-  back to the old file-level `game — game N` label.
+  back to the old file-level `game — game N` label. The drawer's game list
+  is a client-side search box over the full per-file index (cheap even for a
+  multi-thousand-game log) paginated 50 at a time, rather than one giant
+  dropdown.
 - **Both hands are always fully visible**, and the stack is always visible —
   this is post-hoc review of a finished game, not live play, so there's no
   hidden-information concern.

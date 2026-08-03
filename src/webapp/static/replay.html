@@ -6,14 +6,10 @@
     margin: 0; font: 14px/1.4 -apple-system, Segoe UI, sans-serif;
     background: #14161a; color: #d8dbe0;
   }
-  header { position: relative; padding: 14px 20px; border-bottom: 1px solid #2a2d33; display: flex; align-items: baseline; gap: 16px; }
+  header { padding: 14px 20px 14px 64px; border-bottom: 1px solid #2a2d33; }
   header h1 { margin: 0; font-size: 18px; }
-  header p { margin: 0; color: #888; font-size: 12px; }
-  header a { color: #6a9dff; text-decoration: none; font-size: 12px; }
-  header a:hover { text-decoration: underline; }
-  #btn-menu { margin-left: auto; font-size: 16px; padding: 4px 10px; }
+  header p { margin: 2px 0 0; color: #888; font-size: 12px; }
   main { padding: 16px 20px 110px; }
-  section, .menu-panel { background: #1b1e24; border: 1px solid #2a2d33; border-radius: 8px; padding: 14px; margin-bottom: 16px; }
   h2 { margin: 0 0 10px; font-size: 13px; text-transform: uppercase; letter-spacing: .04em; color: #9aa0aa; }
   button {
     cursor: pointer; border: 1px solid #3a3f47; border-radius: 5px; background: #262a31;
@@ -21,12 +17,47 @@
   }
   button:hover { background: #2f343c; }
   button:disabled { opacity: .4; cursor: default; }
-  select { padding: 6px 8px; background: #0e1013; border: 1px solid #34383f; border-radius: 5px; color: #e8eaf0; font-size: 13px; }
   .hint { color: #666; font-size: 12px; }
 
-  .menu-panel { display: none; position: absolute; top: 100%; left: 20px; z-index: 60; width: 380px; box-shadow: 0 10px 30px #000a; }
-  .menu-panel.open { display: block; }
-  #file-row { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+  /* Hamburger stays fixed top-left regardless of scroll; drawer slides out
+     from under it. z-index: menu button (70) > drawer (60) > backdrop (55),
+     so the button stays clickable (to close) even with the drawer open. */
+  #btn-menu { position: fixed; top: 18px; left: 14px; z-index: 70; font-size: 16px; padding: 6px 11px; }
+  #drawer-backdrop {
+    display: none; position: fixed; inset: 0; background: #0008; z-index: 55;
+  }
+  #drawer-backdrop.open { display: block; }
+  #drawer {
+    position: fixed; top: 0; left: 0; bottom: 0; width: 300px; z-index: 60;
+    background: #1b1e24; border-right: 1px solid #2a2d33; box-shadow: 10px 0 30px #000a;
+    padding: 60px 16px 16px; display: flex; flex-direction: column; gap: 10px;
+    transform: translateX(-100%); transition: transform .18s ease; overflow-y: auto;
+  }
+  #drawer.open { transform: translateX(0); }
+  .drawer-link {
+    display: block; width: 100%; text-align: left; text-decoration: none; color: #d8dbe0;
+    background: #262a31; border: 1px solid #3a3f47; border-radius: 5px; padding: 8px 10px;
+    font-size: 13px; cursor: pointer; font-family: inherit;
+  }
+  .drawer-link:hover { background: #2f343c; }
+  .drawer-section { display: flex; flex-direction: column; gap: 6px; min-height: 0; flex: 1; margin-top: 4px; border-top: 1px solid #2a2d33; padding-top: 10px; }
+  #game-search {
+    padding: 6px 8px; background: #0e1013; border: 1px solid #34383f; border-radius: 5px;
+    color: #e8eaf0; font-size: 12px;
+  }
+  #game-list { flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 3px; }
+  .game-item {
+    display: block; text-align: left; background: #17191e; border: 1px solid #2a2d33;
+    border-radius: 5px; padding: 6px 8px; cursor: pointer; font-family: inherit;
+  }
+  .game-item:hover { background: #22262d; }
+  .game-item.selected { background: #22344f; border-color: #3a6df0; }
+  .game-item-header { font-size: 12px; font-weight: 600; color: #d8dbe0; }
+  .game-item.selected .game-item-header { color: #fff; }
+  .game-item-detail { font-size: 10px; font-weight: 400; color: #777; margin-top: 2px; }
+  .game-item.selected .game-item-detail { color: #a8bfe0; }
+  #game-pager { display: flex; align-items: center; justify-content: space-between; font-size: 11px; color: #8890a0; }
+  #game-pager button { padding: 3px 9px; }
 
   #scrub-panel {
     position: fixed; left: 0; right: 0; bottom: 0; z-index: 50;
@@ -149,20 +180,29 @@
   }
 </style>
 
+<button id="btn-menu" title="Menu">☰</button>
+<div id="drawer-backdrop"></div>
+<nav id="drawer">
+  <a class="drawer-link" href="/">🏠 Home</a>
+  <button class="drawer-link" id="btn-open-file">📂 Open new file</button>
+  <input type="file" id="file-input" accept=".json" hidden>
+  <p class="hint" id="file-hint"></p>
+
+  <div class="drawer-section">
+    <h2>Games</h2>
+    <input type="text" id="game-search" placeholder="Search games…" disabled>
+    <div id="game-list"><p class="hint">— load a log file first —</p></div>
+    <div id="game-pager" style="display:none">
+      <button id="btn-page-prev">◀</button>
+      <span id="page-info"></span>
+      <button id="btn-page-next">▶</button>
+    </div>
+  </div>
+</nav>
+
 <header>
   <h1>Game Replay</h1>
   <p>Step through a logged game's board state, event by event.</p>
-  <button id="btn-menu" title="Load / switch game">☰</button>
-  <a href="/">← Training Ops</a>
-
-  <div class="menu-panel open" id="menu-panel">
-    <h2>Load a game</h2>
-    <div id="file-row">
-      <input type="file" id="file-input" accept=".json">
-      <select id="game-picker" disabled><option value="">— load a log file first —</option></select>
-      <span class="hint" id="file-hint"></span>
-    </div>
-  </div>
 </header>
 
 <main>
@@ -252,6 +292,16 @@
 let fileContent = null;
 let currentSteps = null;
 let currentIndex = 0;
+
+// Drawer's game list: /api/replay/games returns every game in the file (cheap
+// even for a multi-thousand-game round-robin --eval log -- see app.py), so
+// filtering/paging is done client-side over the full list rather than another
+// round trip per keystroke/page.
+const GAMES_PAGE_SIZE = 50;
+let allGames = [];
+let filteredGames = [];
+let gamesPage = 0;
+let selectedGameIndex = null;
 
 function escapeHtml(s) {
   return String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -405,31 +455,84 @@ async function onFile(ev) {
   try {
     fileContent = await file.text();
     const data = await postJson('/api/replay/games', { content: fileContent });
-    const sel = document.getElementById('game-picker');
-    sel.innerHTML = '<option value="">— pick a game —</option>' +
-      data.games.map(g => `<option value="${g.game_index}">${escapeHtml(g.label)}</option>`).join('');
-    sel.disabled = data.games.length === 0;
-    document.getElementById('file-hint').textContent = `${file.name}: ${data.games.length} game(s)`;
+    allGames = data.games;
+    selectedGameIndex = null;
+    const search = document.getElementById('game-search');
+    search.disabled = allGames.length === 0;
+    search.value = '';
+    applyGameSearch('');
+    document.getElementById('file-hint').textContent = `${file.name}: ${allGames.length} game(s)`;
   } catch (err) {
     document.getElementById('file-hint').textContent = '';
     alert('Failed to load log: ' + err.message);
   }
 }
 
-async function onGameChange(ev) {
-  const gameIndex = Number(ev.target.value);
-  if (Number.isNaN(gameIndex) || ev.target.value === '') return;
+function applyGameSearch(query) {
+  const q = query.trim().toLowerCase();
+  filteredGames = q ? allGames.filter(g => g.label.toLowerCase().includes(q)) : allGames;
+  gamesPage = 0;
+  renderGameList();
+}
+
+function renderGameList() {
+  const listEl = document.getElementById('game-list');
+  const pagerEl = document.getElementById('game-pager');
+  if (!allGames.length) {
+    listEl.innerHTML = '<p class="hint">— load a log file first —</p>';
+    pagerEl.style.display = 'none';
+    return;
+  }
+  if (!filteredGames.length) {
+    listEl.innerHTML = '<p class="hint">no games match</p>';
+    pagerEl.style.display = 'none';
+    return;
+  }
+
+  const totalPages = Math.max(1, Math.ceil(filteredGames.length / GAMES_PAGE_SIZE));
+  gamesPage = Math.min(gamesPage, totalPages - 1);
+  const start = gamesPage * GAMES_PAGE_SIZE;
+  const pageItems = filteredGames.slice(start, start + GAMES_PAGE_SIZE);
+
+  listEl.innerHTML = pageItems.map(g => `
+    <button class="game-item${g.game_index === selectedGameIndex ? ' selected' : ''}" data-game-index="${g.game_index}">
+      <div class="game-item-header">${escapeHtml(g.header)}</div>
+      <div class="game-item-detail">${escapeHtml(g.detail)}</div>
+    </button>`).join('');
+
+  pagerEl.style.display = totalPages > 1 ? 'flex' : 'none';
+  document.getElementById('page-info').textContent =
+    `${start + 1}-${start + pageItems.length} of ${filteredGames.length}`;
+  document.getElementById('btn-page-prev').disabled = gamesPage === 0;
+  document.getElementById('btn-page-next').disabled = gamesPage >= totalPages - 1;
+}
+
+async function selectGame(gameIndex) {
   try {
     const data = await postJson('/api/replay/game', { content: fileContent, game_index: gameIndex });
     currentSteps = data.steps;
+    selectedGameIndex = gameIndex;
+    renderGameList();
     document.getElementById('scrubber').max = Math.max(0, currentSteps.length - 1);
     document.getElementById('scrub-panel').style.display = '';
     document.getElementById('board').style.display = '';
-    document.getElementById('menu-panel').classList.remove('open');
+    closeDrawer();
     renderStep(0);
   } catch (err) {
     alert('Failed to load game: ' + err.message);
   }
+}
+
+function openDrawer() {
+  document.getElementById('drawer').classList.add('open');
+  document.getElementById('drawer-backdrop').classList.add('open');
+}
+function closeDrawer() {
+  document.getElementById('drawer').classList.remove('open');
+  document.getElementById('drawer-backdrop').classList.remove('open');
+}
+function toggleDrawer() {
+  document.getElementById('drawer').classList.contains('open') ? closeDrawer() : openDrawer();
 }
 
 // Both .preview and .zone-flyout are position:fixed; clamp them inside the
@@ -474,12 +577,21 @@ document.addEventListener('mouseout', e => {
 });
 
 document.getElementById('file-input').addEventListener('change', onFile);
-document.getElementById('game-picker').addEventListener('change', onGameChange);
-document.getElementById('btn-menu').addEventListener('click', () => document.getElementById('menu-panel').classList.toggle('open'));
+document.getElementById('btn-open-file').addEventListener('click', () => document.getElementById('file-input').click());
+document.getElementById('game-search').addEventListener('input', e => applyGameSearch(e.target.value));
+document.getElementById('game-list').addEventListener('click', e => {
+  const btn = e.target.closest('.game-item');
+  if (btn) selectGame(Number(btn.dataset.gameIndex));
+});
+document.getElementById('btn-page-prev').addEventListener('click', () => { gamesPage--; renderGameList(); });
+document.getElementById('btn-page-next').addEventListener('click', () => { gamesPage++; renderGameList(); });
+document.getElementById('btn-menu').addEventListener('click', toggleDrawer);
+document.getElementById('drawer-backdrop').addEventListener('click', closeDrawer);
 document.getElementById('scrubber').addEventListener('input', e => renderStep(Number(e.target.value)));
 document.getElementById('btn-prev').addEventListener('click', () => { if (currentIndex > 0) renderStep(currentIndex - 1); });
 document.getElementById('btn-next').addEventListener('click', () => { if (currentSteps && currentIndex < currentSteps.length - 1) renderStep(currentIndex + 1); });
 document.addEventListener('keydown', e => {
+  if (e.key === 'Escape') closeDrawer();
   if (!currentSteps) return;
   if (e.key === 'ArrowLeft' && currentIndex > 0) { e.preventDefault(); renderStep(currentIndex - 1); }
   if (e.key === 'ArrowRight' && currentIndex < currentSteps.length - 1) { e.preventDefault(); renderStep(currentIndex + 1); }

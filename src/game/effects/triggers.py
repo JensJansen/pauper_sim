@@ -258,7 +258,26 @@ def _place_trigger_groups(state, groups, original_active_idx):
     only ONE pending_resolution can be open at a time -- the next group's
     decision (if it needs one) must wait for this one to fully resolve, the
     same reason game.turn's own priority round only ever calls
-    promote_triggers_to_stack when state.pending_resolution is None."""
+    promote_triggers_to_stack when state.pending_resolution is None.
+
+    A single-entry group's own TARGETING placement needs that identical
+    wait: its hook (e.g. masked_vandal_etb) can itself open a fresh
+    pending_resolution (a real target existed) that's still unanswered when
+    the hook call returns -- begin_resolution is a flat, single-slot
+    assignment (state.pending_resolution's own docstring), so proceeding
+    straight to `rest`/restoring active_idx right then would stomp
+    state.active_idx out from under that still-open decision (whose owner
+    can be a DIFFERENT player than original_active_idx -- the entire reason
+    groups are per-owner), and, since choose_opponent_permanent's own
+    predicate re-reads state.opponent fresh from state.active_idx on every
+    call, silently reassign BOTH who answers it and whose board is being
+    offered. So this chains onto that resolution's own on_complete too,
+    exactly like the 2+-entries branch below already does -- confirmed live
+    via an all-False mask + wrong-seat/wrong-board crash in real cross-deck
+    league play (a non-active-player group's lone targeting ETB opened
+    choose_opponent_permanent, then active_idx got stomped back to
+    original_active_idx before the agent ever answered it, so the NEXT
+    query evaluated the wrong player's board as "the opponent")."""
     if not groups:
         state.active_idx = original_active_idx
         return
@@ -273,6 +292,21 @@ def _place_trigger_groups(state, groups, original_active_idx):
         entry = entries[0]
         if entry.get("targeting"):
             registry.EFFECT_REGISTRY[entry["card_def"].effect_id][entry["hook"]](state, entry["permanent"])
+            if state.pending_resolution is not None:
+                # A real target existed and the hook's own decision is still
+                # open (a target-less hook auto-completes synchronously via
+                # complete_resolution before returning here, leaving
+                # state.pending_resolution None -- see this function's own
+                # docstring). Defer `rest` until THAT decision genuinely
+                # finishes, chaining onto its own on_complete.
+                inner_on_complete = state.pending_resolution["on_complete"]
+
+                def _continue(s, *args):
+                    inner_on_complete(s, *args)
+                    _place_trigger_groups(s, rest, original_active_idx)
+
+                state.pending_resolution["on_complete"] = _continue
+                return
         else:
             push_to_stack(state, entry["card_def"], entry["resolve"], reserves_hand_card=False, is_spell=False)  # a triggered ability, not a spell
         _place_trigger_groups(state, rest, original_active_idx)
