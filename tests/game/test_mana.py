@@ -85,6 +85,7 @@ def test_utopia_sprawl_automatic_bonus_mana():
     mana.execute_pool_spend(state, "W")
     assert state.pending_resolution is None  # {W} paid from the pool
     assert state.mana_pool.get("G", 0) == 1  # the native G stays floating, unneeded here
+    assert state.cost_paid_this_phase is True  # dense mana-burn-penalty exemption signal
 
 
 def test_abundant_growth_competing_granted_ability():

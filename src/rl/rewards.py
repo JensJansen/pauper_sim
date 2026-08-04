@@ -9,15 +9,22 @@ action was applied. A sparse reward function returns 0.0 unless `done`;
 a dense one could return something every call. No base class -- any
 matching callable works.
 
-Only WIN/LOSS rewards live here (no dense shaping): a win is scaled by how
-efficiently it was reached, minus a "sloppiness" penalty shared with the loss
-band (see _badness); a loss/timeout is 0.0 minus that same penalty
-(action_count_win_reward has no such penalty -- it's the plain, pretrain-only
-predecessor). Pretraining uses action_count_win_reward_200_floor02; league
-self-play uses deploy_reward_v2 (= deploy_reward with win_floor=1.0 -> flat
-efficiency term; the v1 efficiency scaling caused an action-space-
-minimization pathology).
-"""
+Terminal WIN/LOSS scoring: a win is scaled by how efficiently it was reached,
+minus a "sloppiness" penalty for hoarded cards forced to cleanup discard (see
+_hill); a loss/timeout is 0.0 minus that same penalty (action_count_win_reward
+has no such penalty -- it's the plain, pretrain-only predecessor). Pretraining
+uses action_count_win_reward_200_floor02; league self-play uses
+deploy_reward_v2 (= with_mana_mistake_penalty wrapping deploy_reward with
+win_floor=1.0 -> flat efficiency term; the v1 efficiency scaling caused an
+action-space-minimization pathology).
+
+DENSE shaping: with_mana_mistake_penalty (below) wraps a base reward_fn with
+a per-transition penalty for mana burnt where the engine could find no
+justification for it (see game.turn._empty_mana_pools's three-way exemption).
+Deliberately NOT folded into the terminal badness score above -- the whole
+point is to attribute a mistake to roughly the transition that caused it,
+not blur it across the entire game the way a terminal-only signal already
+was shown to (Tolarian Terror-style credit misattribution)."""
 
 
 def _hill(x, c, p):
@@ -29,24 +36,6 @@ def _hill(x, c, p):
         return 0.0
     xp = x ** p
     return xp / (xp + c ** p)
-
-
-def _badness(mana_burnt, cleanup_discard_turns, mana_burn_c, mana_burn_p, discard_c, discard_p):
-    """Combines two independent [0, 1)-saturating badness scores -- overtapped/
-    dissipated mana (rule 500.4 pool-empties, PlayerState.mana_burnt_total) and
-    hoarded cards forced to cleanup discard (PlayerState.cleanup_discard_turns)
-    -- into one [0, 1) score, via noisy-or (1 minus the product of each
-    factor's "goodness" complement): 0 only when BOTH inputs are 0, saturates
-    toward 1 if EITHER input alone saturates, and -- unlike a plain sum --
-    can never exceed 1 without clamping. Deliberately owner-specified default
-    curves (mana_burn_c=5, mana_burn_p=3, discard_c=4, discard_p=2): a couple
-    of stray burnt mana or one cleanup discard is nearly free, ~10 cumulative
-    burnt mana is already a severe penalty, and it keeps growing (slower)
-    past that -- see the design discussion that produced this shape for the
-    exact target numbers."""
-    h_burn = _hill(mana_burnt, mana_burn_c, mana_burn_p)
-    h_discard = _hill(cleanup_discard_turns, discard_c, discard_p)
-    return 1.0 - (1.0 - h_burn) * (1.0 - h_discard)
 
 
 def action_count_win_reward(plateau_actions=80, max_actions=200, min_reward=0.25):
@@ -87,16 +76,17 @@ def action_count_win_reward(plateau_actions=80, max_actions=200, min_reward=0.25
 
 
 def deploy_reward(plateau_actions=80, max_actions=200, win_floor=0.5,
-                   mana_burn_c=5.0, mana_burn_p=3.0, discard_c=4.0, discard_p=2.0):
+                   discard_c=4.0, discard_p=2.0):
     """Two-band terminal reward. Scored PER SEAT: rl.train._reward_for flips
     state.active_idx to the seat being scored (via drl_env._for_player) and no
     longer zeroes the loser first, so this callable decides win vs loss itself.
 
-    Both bands subtract the SAME sloppiness penalty, q = _badness(...) in
-    [0, 1) -- combining PlayerState.mana_burnt_total (mana tapped and left to
-    dissipate, rule 500.4) and .cleanup_discard_turns (cards hoarded past hand
-    size) -- so a win with a lot of overtapped mana or hoarded cards scores
-    barely above a clean loss, not barely below a clean win.
+    Both bands subtract the SAME sloppiness penalty, q = _hill(...) in
+    [0, 1) -- PlayerState.cleanup_discard_turns (cards hoarded past hand
+    size) -- so a win with a lot of hoarded cards scores barely above a clean
+    loss, not barely below a clean win. Mana burn no longer feeds this
+    terminal penalty at all -- see with_mana_mistake_penalty below for its
+    (dense, per-transition) replacement.
 
     WIN (state.winner == this seat): win_floor (0.5) -> 1.0 - q, scaled by the
     winner's own GAMEPLAY efficiency -- actions_taken MINUS pregame_actions (the
@@ -133,12 +123,65 @@ def deploy_reward(plateau_actions=80, max_actions=200, win_floor=0.5,
             return 0.0
         seat = state.active_idx  # the seat being scored (rl.train._reward_for flipped it here)
         p = state.players[seat]
-        q = _badness(p.mana_burnt_total, p.cleanup_discard_turns, mana_burn_c, mana_burn_p, discard_c, discard_p)
+        q = _hill(p.cleanup_discard_turns, discard_c, discard_p)
         if state.winner == seat:
             gameplay_actions = p.actions_taken - p.pregame_actions
             over = min(max(0, gameplay_actions - plateau_actions), span)
             return win_floor + win_span * (1.0 - over / span) - q
         return -q
+    return reward_fn
+
+
+def with_mana_mistake_penalty(base_reward_fn, penalty_per_pip=0.01, per_event_cap=0.05):
+    """Wraps a base reward_fn with a DENSE, per-transition penalty for mana
+    burnt that game.turn._empty_mana_pools could find no justification for
+    (PlayerState.mana_mistake_burn -- see that function's own docstring for
+    the three-way exemption: paid for something, triggered something, or
+    nothing was legally castable anyway all avoid this counter). Drains
+    (reads then zeroes) the counter on every call, done or not, so the same
+    burnt pip is never counted twice and none are ever skipped regardless of
+    how many -- or how few -- transitions separate one burn from the next.
+    This is the one place in this module that mutates state as a side effect
+    of scoring it, deliberately: it's a shaping-reward mailbox, not a pure
+    read. Applied on the terminal call too -- a mistake on the game's final
+    phase still has to be paid for, exactly like any other, or the policy
+    would learn burning is free in the last few actions of a game.
+
+    penalty_per_pip is linear, not the terminal band's Hill curve -- at the
+    scale a single drain actually produces (usually 0, occasionally a small
+    handful of pips from one phase's mana sources), a Hill curve calibrated
+    for whole-game totals is indistinguishable from linear anyway, so the
+    extra machinery isn't buying anything here.
+
+    per_event_cap bounds what a single drain can cost, independent of
+    penalty_per_pip: an uncapped additive dense term is not guaranteed
+    policy-invariant (unlike formal potential-based shaping), and
+    deploy_reward's own "every win outscores every loss" guarantee already
+    has zero margin in its worst case (a maximally-sloppy win's badness
+    approaches, but never reaches, a clean loss's 0) -- summed dense
+    penalties across an episode could in principle erode that further. The
+    cap bounds the worst SINGLE event; it does not bound the aggregate
+    across many separate events in one game, which would need an
+    episode-level budget (tracked on PlayerState, reset for free every game)
+    instead -- deliberately not built until real training data shows the
+    aggregate case actually matters, rather than guessing at a second
+    constant with no grounding.
+
+    Both constants are conservative placeholders, not derived from data --
+    there's no training run yet under this rule to measure how often a
+    genuine (non-exempted) mistake actually fires. Revisit both once one
+    exists (compare mean dense penalty per game against deploy_reward_v2's
+    own terminal range)."""
+    def reward_fn(state, done, horizon):
+        p = state.players[state.active_idx]
+        mistake, p.mana_mistake_burn = p.mana_mistake_burn, 0
+        penalty = min(penalty_per_pip * mistake, per_event_cap)
+        return base_reward_fn(state, done, horizon) - penalty
+    # Lets rl.train.collect_rollout skip building/wiring game.turn's
+    # on_mana_burn hook (and the per-phase legal_action_mask sweep it costs)
+    # for a pairing where no seat's reward_fn would ever drain
+    # mana_mistake_burn anyway -- e.g. pretraining's action_count_win_reward.
+    reward_fn.consumes_mana_mistake = True
     return reward_fn
 
 
@@ -152,14 +195,16 @@ action_count_win_reward_200_floor02 = action_count_win_reward(min_reward=0.2)
 # deploy_reward_v2. Win band 0.5->1.0 by gameplay efficiency; loss band
 # shares whatever deploy_reward's own current default computes (see its
 # docstring) -- v1 and v2 only ever differ in win_floor, both sharing the
-# one factory.
+# one factory. Deliberately left unwrapped by with_mana_mistake_penalty --
+# it's unused by training, so there's no reason to change its behavior beyond
+# what dropping mana burn from deploy_reward's own badness already implies.
 deploy_reward_v1 = deploy_reward()
 
 
 # League self-play's reward (run_league.py): deploy_reward with win_floor=1.0,
 # which collapses the win band's EFFICIENCY term to a flat 1.0 (win_span = 0,
 # gameplay-action-count no longer moves the score) -- while still subtracting
-# the mana-burn/cleanup-discard sloppiness penalty q from both bands. v1's
+# the cleanup-discard sloppiness penalty q from both bands. v1's
 # efficiency scaling induces an action-space-minimization pathology (the policy
 # generalizes "win in fewer actions -> more reward" into "shrink your own
 # board"); flat win removes that gradient. Float-first means no undo action
@@ -167,5 +212,8 @@ deploy_reward_v1 = deploy_reward()
 # PPO entropy alone bounds pointless actions without capping them. Because q
 # never reaches 1, every win here still strictly outscores every loss no
 # matter how sloppy either was -- see deploy_reward's own docstring for the
-# exact guarantee and its win_floor=1.0 precondition.
-deploy_reward_v2 = deploy_reward(win_floor=1.0)
+# exact guarantee and its win_floor=1.0 precondition. with_mana_mistake_penalty
+# (above) wraps this with a dense per-transition term on top; see its own
+# docstring for why that guarantee's margin, already thin by construction, is
+# a real (if deliberately bounded) tradeoff of adding it.
+deploy_reward_v2 = with_mana_mistake_penalty(deploy_reward(win_floor=1.0))

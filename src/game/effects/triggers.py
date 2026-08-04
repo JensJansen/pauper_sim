@@ -242,6 +242,13 @@ def promote_triggers_to_stack(state):
         queue = state.players[player_idx].trigger_queue
         if not queue:
             continue
+        # Dense mana-burn-penalty exemption signal (PlayerState.
+        # triggers_fired_this_phase, read by game.turn._empty_mana_pools):
+        # a real trigger is about to hit the stack for this player this
+        # phase, so any mana they float this same phase can't be "for
+        # nothing" even if it goes unspent (Writhing Chrysalis/Gixian
+        # Infiltrator sacrificing a mana source purely for this trigger).
+        state.players[player_idx].triggers_fired_this_phase = True
         groups.append((player_idx, [_entry_for(e) for e in queue]))
         queue.clear()
 

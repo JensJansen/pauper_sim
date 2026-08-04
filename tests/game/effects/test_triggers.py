@@ -34,6 +34,7 @@ def test_draw_counter_and_automatic_return():
         # 2 simultaneous triggers -- a real placement-order choice, not fixed
         # queue order.
         promote_triggers_to_stack(state)
+        assert state.players[0].triggers_fired_this_phase is True  # dense mana-burn-penalty exemption signal
         assert state.pending_resolution["kind"] == "order_triggers"
         assert resolution.order_triggers_options(state) == ["Fake Snacker"]
         resolution.execute_order_triggers_option(state, "Fake Snacker")

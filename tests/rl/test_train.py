@@ -24,6 +24,8 @@ import torch
 import pytest
 
 import game
+from game import mana, registry, resolution
+from game.effects.casting import play_land_from_hand
 from rl.action_bridge import build_fixed_action_table
 from rl.agent import AlwaysKeep, SeatAgent
 from rl.arch import SetTransformer
@@ -31,10 +33,12 @@ from rl.deck import DeckNetwork
 from rl.features import CardVocab
 from rl.league import LeaguePool
 from rl.pool import build_pool
-from rl.rewards import action_count_win_reward_200_floor02
+from rl.rewards import action_count_win_reward_200_floor02, with_mana_mistake_penalty
 from rl.train import (
     RolloutBuffer,
     _constant_pairing,
+    _make_on_mana_burn,
+    _wants_mana_mistake,
     collect_rollout,
     collect_rollout_league,
     collect_rollout_league_parallel,
@@ -329,3 +333,74 @@ def test_collect_rollout_league_parallel_smoke():
     )
     assert all(np.isfinite(v) for v in buffers_by_deck["mono_red_madness"].value)
     print(f"rl.train collect_rollout_league_parallel smoke test: OK ({time.time() - t0:.1f}s)")
+
+
+def test_wants_mana_mistake_gates_on_reward_fn_tag():
+    # _wants_mana_mistake: collect_rollout's own gate for whether to build/
+    # wire the on_mana_burn hook at all. True only once a TRACKED seat's
+    # reward_fn is one with_mana_mistake_penalty actually tagged (see its own
+    # consumes_mana_mistake attribute) -- lets pretraining's
+    # action_count_win_reward_* (never tagged) skip the extra
+    # legal_action_mask sweep entirely.
+    base = action_count_win_reward_200_floor02
+    tagged = with_mana_mistake_penalty(base)
+    assert not _wants_mana_mistake([base, base], ["m", "m"]), "neither reward_fn is tagged"
+    assert _wants_mana_mistake([tagged, base], ["m", None]), "seat 0 is tracked AND tagged"
+    assert not _wants_mana_mistake([tagged, base], [None, "m"]), "the tagged seat isn't tracked; the tracked seat isn't tagged"
+    assert not _wants_mana_mistake([tagged, base], [None, None]), "no tracked seat at all"
+
+
+def test_on_mana_burn_closure_flags_wasted_tap():
+    # The REAL production on_mana_burn closure (rl.train._make_on_mana_burn),
+    # not a hand-rolled stand-in -- exercises the exact deck_ctx indexing,
+    # legal_action_mask call, and mask/fixed_table zip alignment that shipped
+    # with a bug once (a "Tap X" row was mistaken for proof the floated mana
+    # had a use -- see game.turn._tally_mana_mistake's own docstring for the
+    # three-way exemption this hook completes). Only a minimal fake agent
+    # (a real deck_ctx, no network) is needed -- SeatAgent.decide is never
+    # called here.
+    #
+    # Mono-Mountain deck, no spells at all -- same board-control trick as
+    # tests/game/test_turn.py::test_on_mana_burn_hook_wired_through_run_multiplayer_game,
+    # but wired to the REAL closure instead of a hand-rolled lambda: play a
+    # land, tap it once in MAIN1, then always Pass. Nothing is EVER castable
+    # with this deck, so a correct closure must report "no, nothing was
+    # legally castable" (False) for the float to register as a mistake.
+    class _FakeAgent:
+        def __init__(self, deck_ctx):
+            self.deck_ctx = deck_ctx
+
+    decklist = [("Mountain", 20)]
+    token_defs = (game.BLOOD_TOKEN_CARD_DEF, game.ROBOT_TOKEN_CARD_DEF)
+    vocab = CardVocab([decklist, decklist], token_card_defs=token_defs)
+    fixed_table = build_fixed_action_table(decklist, token_card_defs=token_defs)
+    deck_ctx = (vocab, fixed_table)
+    agents = [_FakeAgent(deck_ctx), _FakeAgent(deck_ctx)]
+    on_mana_burn = _make_on_mana_burn(agents, record=True, record_as=["m", "m"])
+
+    tapped_once = []
+
+    def _play_then_tap_then_pass(state):
+        if state.pending_resolution is not None and state.pending_resolution["kind"] == "mulligan_decision":
+            return lambda: resolution.execute_mulligan_keep(state)  # both players always keep
+        if state.active_idx != 0:
+            return None
+        if state.lands_played_this_turn == 0 and any(c.name == "Mountain" for c in state.hand):
+            return lambda: play_land_from_hand(state, registry.CARD_DEFS["Mountain"])
+        if not tapped_once:
+            mtn = next((p for p in state.battlefield if p.card_def.name == "Mountain" and not p.tapped), None)
+            if mtn is not None:
+                tapped_once.append(True)
+                return lambda: mana.activate_mana_source(state, mtn)
+        return None
+
+    state = game.run_multiplayer_game(
+        decklists=[decklist, decklist],
+        rng=_random.Random(0), starting_player_idx=0,
+        choose_action=_play_then_tap_then_pass, horizon=1, on_mana_burn=on_mana_burn,
+    )
+    assert tapped_once  # the tap actually happened
+    assert state.players[0].mana_mistake_burn == 1, (
+        "the real closure must recognize a mono-land deck's Tap/Play-land rows as NOT "
+        "proof anything was castable, so the wasted tap is correctly tallied as a mistake"
+    )

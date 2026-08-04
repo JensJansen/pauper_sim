@@ -212,6 +212,20 @@ class PlayerState:
         # card's own resolve function.
         self.trigger_queue = []
 
+        # Phase-scoped mistake-detection flags for the dense mana-burn
+        # penalty (rl.rewards.with_mana_mistake_penalty) -- both read then
+        # reset every phase boundary by game.turn._empty_mana_pools.
+        # cost_paid_this_phase: a real cast/ability payment happened
+        # (game.mana.execute_pool_spend). triggers_fired_this_phase: a
+        # trigger was promoted to the stack from this player's own queue
+        # (game.effects.triggers.promote_triggers_to_stack) -- covers the
+        # Writhing Chrysalis/Gixian Infiltrator case, sacrificing a mana
+        # source as a combat trick, where the mana is an incidental
+        # byproduct of an action taken for its trigger, not for the mana.
+        # Either flag alone exempts a burn from counting as a mistake.
+        self.cost_paid_this_phase = False
+        self.triggers_fired_this_phase = False
+
         self.lands_played_this_turn = 0
         # Reset each turn this player takes (turn._run_turn_gen), incremented
         # once per card actually drawn (see draw() below).
@@ -304,10 +318,22 @@ class PlayerState:
         # Total mana LOST to rule 500.4's automatic pool-empty (game.turn.
         # _empty_mana_pools) over the whole game -- summed across every
         # non-empty clear, all colors combined (a {"R": 2} clear adds 2, not
-        # 1). A proxy for overtapping/mis-sequencing mana it never spent;
-        # read by rl.rewards.deploy_reward. Never reset once the game is
-        # underway.
+        # 1). Unconditional (every burnt pip, justified or not) -- a raw
+        # diagnostic for logging/viz, no longer read by any reward function
+        # (see mana_mistake_burn below for the reward-facing, conditional
+        # signal). Never reset once the game is underway.
         self.mana_burnt_total = 0
+
+        # DENSE reward mailbox -- rl.rewards.with_mana_mistake_penalty drains
+        # it (reads then zeroes) on every transition. A narrower subset of
+        # mana_burnt_total above: game.turn._empty_mana_pools only adds to
+        # this one once cost_paid_this_phase, triggers_fired_this_phase, AND
+        # "was anything legally castable with the floating pool" (the
+        # optional GameState.on_mana_burn hook -- see its own docstring for
+        # why that check can't live in this module) have all failed to
+        # justify the burn. Never reset by the engine itself -- only ever
+        # drained by the reward wrapper reading it.
+        self.mana_mistake_burn = 0
 
     def draw(self, n=1):
         """Real Magic: attempting to draw from an empty library is an
@@ -387,6 +413,19 @@ class GameState:
         # reconstructible afterward (see log_event's own docstring for the
         # shared envelope every event gets).
         self.event_log = event_log
+
+        # Optional (state, player_idx) -> bool hook, consulted by game.turn.
+        # _empty_mana_pools right before a genuinely-unattributed pool clear
+        # (nothing paid, nothing triggered this phase) -- answers "was
+        # anything legally castable with this floating mana," which needs
+        # the action table this module deliberately has no knowledge of.
+        # None (the default -- every plain rules-engine/test caller) means
+        # "don't know, don't tally a mistake." Stamped onto state directly by
+        # game.turn.run_multiplayer_game's own on_mana_burn param (the DRL
+        # layer wires one in via rl.train.collect_rollout) -- not threaded
+        # through game_coroutine/_run_turn_gen's own signatures, since
+        # nothing in that call chain besides _empty_mana_pools needs it.
+        self.on_mana_burn = None
 
         # Whose turn it structurally is -- distinct from active_idx (see
         # this class's own docstring) the instant a priority consult flips
@@ -501,6 +540,16 @@ class GameState:
     trigger_queue = _active_player_property("trigger_queue")
     lands_played_this_turn = _active_player_property("lands_played_this_turn")
     cards_drawn_this_turn = _active_player_property("cards_drawn_this_turn")
+    # cost_paid_this_phase is proxied like the above -- game.mana.
+    # execute_pool_spend always pays out of whichever player currently holds
+    # priority (state.active_idx), same as state.mana_pool itself.
+    # triggers_fired_this_phase is deliberately NOT proxied: promote_
+    # triggers_to_stack writes it for a player who may not be active_idx
+    # (the non-turn player's own queue) -- trigger_queue IS proxied above,
+    # but promote_triggers_to_stack writes state.players[player_idx].
+    # trigger_queue directly rather than through that proxy, for the same
+    # reason -- see that function's own docstring.
+    cost_paid_this_phase = _active_player_property("cost_paid_this_phase")
     mana_pool = _active_player_property("mana_pool")
     decked_out = _active_player_property("decked_out")
     life_total = _active_player_property("life_total")

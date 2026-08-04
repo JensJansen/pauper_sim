@@ -86,6 +86,54 @@ def _reward_for(state, seat, reward_fn, horizon, done):
 # _reward_for stays here: it's ATTRIBUTION (a rollout concern), not decision.
 
 
+def _make_on_mana_burn(agents, record, record_as):
+    """Builds the on_mana_burn hook game.run_multiplayer_game consults from
+    game.turn._empty_mana_pools -- a top-level function (not a closure inline
+    in collect_rollout's per-game loop) so it's unit-testable against a real
+    deck_ctx/legal_action_mask without needing a full stochastic game (see
+    tests/rl/test_train.py::test_on_mana_burn_closure_*)."""
+    def on_mana_burn(state, seat):
+        """Answers "was anything legally castable with the floating pool" --
+        only consulted once neither cost_paid_this_phase nor
+        triggers_fired_this_phase already exempted the burn. Checks only rows
+        that could actually have spent state.mana_pool: the FIXED half of
+        that seat's action table minus its "Play land:" rows (never touch
+        the pool, gated on hand membership) and "Tap " mana-ability rows
+        (ADD to the pool, gated on source availability -- never spend it) --
+        only Cast/Activate rows there are pool-gated via game.mana.
+        plan_payment. The pointer half is targeting-only and never itself
+        consumes pool mana, so it can't change this answer. Pass is excluded
+        explicitly since it's always legal and would make the check vacuous.
+        Skips the sweep entirely for an untracked seat (frozen snapshot
+        opponent, eval) -- nobody will ever read that seat's
+        mana_mistake_burn, so True (no mistake tallied) costs nothing and
+        saves the legal_action_mask call."""
+        if not record or record_as[seat] is None:
+            return True
+        fixed_table = agents[seat].deck_ctx[1]
+        mask = drl_env._for_player(state, seat, lambda s: drl_env.legal_action_mask(s, fixed_table))
+        return any(
+            legal and name != "Pass"
+            and not name.startswith("Play land:") and not name.startswith("Tap ")
+            for legal, (name, _l, _e) in zip(mask, fixed_table)
+        )
+    return on_mana_burn
+
+
+def _wants_mana_mistake(reward_fns, record_as):
+    """True when at least one TRACKED seat's reward_fn would actually drain
+    PlayerState.mana_mistake_burn (rl.rewards.with_mana_mistake_penalty tags
+    its own returned closure -- see consumes_mana_mistake there). Lets
+    collect_rollout skip building/wiring the on_mana_burn hook -- and the
+    legal_action_mask sweep it costs per un-exempted phase boundary -- for a
+    pairing where nothing would ever read the signal, e.g. pretraining's
+    action_count_win_reward_*."""
+    return any(
+        record_as[s] is not None and getattr(reward_fns[s], "consumes_mana_mistake", False)
+        for s in (0, 1)
+    )
+
+
 def _constant_pairing(agents, decklists, reward_fns, record_as):
     """A pairing that yields the SAME layout every game -- mirror, cross-matchup,
     or a fixed A-vs-B matchup. (League resampling is _make_league_pairing.)"""
@@ -158,11 +206,15 @@ def collect_rollout(pairing, n_games, horizon, rng, device="cpu", record=True, g
                         pending[seat] = dr.ppo_entry
                 return None if dr.is_pass else dr.executor
 
+            on_mana_burn = _make_on_mana_burn(agents, record, record_as)
+            wants_mana_mistake = _wants_mana_mistake(reward_fns, record_as)
+
             starting_idx = rng.randint(0, 1)
             event_log = [] if game_logs is not None else None
             state = game.run_multiplayer_game(
                 decklists=decklists, rng=rng, starting_player_idx=starting_idx,
                 choose_action=choose_action, horizon=horizon, combat_enabled=True, event_log=event_log,
+                on_mana_burn=on_mana_burn if wants_mana_mistake else None,
             )
             if game_logs is not None:
                 game_logs.append(event_log)

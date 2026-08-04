@@ -294,6 +294,10 @@ def execute_pool_spend(state, color):
     pool[color] -= 1
     if pool[color] <= 0:
         del pool[color]
+    # Marks this phase as having paid for SOMETHING -- one of the three
+    # exemptions game.turn._empty_mana_pools checks before ever counting a
+    # later burn as a mistake (see PlayerState.cost_paid_this_phase).
+    state.cost_paid_this_phase = True
 
     remaining = pending["remaining"]
     need = remaining.get(color, 0)

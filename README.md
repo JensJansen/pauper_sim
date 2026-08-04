@@ -294,15 +294,26 @@ wired only through `--matchup` mode.)
   scaling — the earlier `deploy_reward_v1`'s efficiency band induced an
   action-space-minimization pathology where policies learned to shrink their
   own board to "win in fewer actions"), and exactly `-q` on a loss. `q` is a
-  single "sloppiness" penalty shared by both bands: a noisy-or of two
-  saturating (Hill-function) curves over `PlayerState.mana_burnt_total`
-  (mana tapped and left to dissipate at a phase boundary, rule 500.4) and
-  `.cleanup_discard_turns` (cards hoarded past hand size) — near-zero for a
-  couple of stray points, severe by ~10 cumulative, asymptoting toward but
-  never reaching `1.0`, so every win still strictly outscores every loss no
-  matter how sloppy either was. The **mulligan model** trains on its own
-  reward (`rl/mulligan.py`): win payout minus a convex (quadratic)
-  per-mulligan penalty.
+  terminal "sloppiness" penalty shared by both bands: a saturating
+  (Hill-function) curve over `PlayerState.cleanup_discard_turns` (cards
+  hoarded past hand size) — near-zero for a couple of stray discards, severe
+  by ~6 cumulative, asymptoting toward but never reaching `1.0`, so every win
+  still strictly outscores every loss no matter how sloppy either was.
+  `deploy_reward_v2` additionally wraps that terminal score with
+  `with_mana_mistake_penalty`: a *dense*, per-transition penalty (not folded
+  into `q`, deliberately — a terminal-only signal blurs blame for a mistake
+  across the whole game, e.g. across every subsequent cast of a card whose
+  cost the policy simply mis-tapped for once) for mana burnt at a phase
+  boundary (rule 500.4) that `game.turn._empty_mana_pools` could find no
+  justification for: nothing was paid toward a cast/ability that phase,
+  nothing triggered as a result of the mana-producing action itself (e.g.
+  sacrificing a mana source purely for its own combat-trick trigger), and
+  nothing was legally castable with the floating pool at the moment it was
+  lost (`PlayerState.mana_mistake_burn`, `GameState.on_mana_burn`).
+  `PlayerState.mana_burnt_total` (the *unconditional* pips-lost tally) no
+  longer feeds any reward — it remains a raw diagnostic for logging/viz. The
+  **mulligan model** trains on its own reward (`rl/mulligan.py`): win payout
+  minus a convex (quadratic) per-mulligan penalty.
 - **Win condition**: the engine's real one — an opponent's life total hitting
   0, or a player decking out. There is no separate termination heuristic.
 

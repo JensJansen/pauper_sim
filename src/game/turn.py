@@ -93,6 +93,36 @@ SORCERY_SPEED_PHASES = {Phase.MAIN1, Phase.MAIN2}
 _COMBAT_PHASES = {Phase.DECLARE_ATTACKERS, Phase.DECLARE_BLOCKERS, Phase.COMBAT_DAMAGE}
 
 
+def _tally_mana_mistake(state, idx, player, burnt):
+    """DENSE, narrower reward-facing signal for PlayerState.mana_mistake_burn
+    (rl.rewards.with_mana_mistake_penalty drains it) -- called once per
+    non-empty pool clear from _empty_mana_pools, only counting a burn as a
+    genuine mistake once THREE exemptions have all failed: nothing was paid
+    toward a cast/ability this phase (cost_paid_this_phase), no trigger was
+    queued for this player this phase at all -- regardless of whether that
+    trigger was itself caused by the mana-producing action (triggers_fired_
+    this_phase -- see effects.triggers.promote_triggers_to_stack; every
+    entry it queues traces back to a specific card ability or game event --
+    upkeep, ETB, LTB, draw-count, sacrifice, cast, venture, madness -- never
+    a bare phase-transition artifact, so this can't be exempted just because
+    a phase boundary was crossed) -- and, checked only in that narrow
+    residual case via the optional state.on_mana_burn hook (None in plain
+    rules-engine/test use; the DRL layer wires one in via
+    run_multiplayer_game's own on_mana_burn param, since "legally available"
+    needs the action table this module deliberately doesn't know about) --
+    nothing was legally castable with the floating pool at the moment it's
+    about to be lost. Exempting on either of the first two conditions alone,
+    before ever consulting the hook, is deliberate: a real payment or a real
+    trigger already proves this phase was busy enough not to be simple idle
+    mana-tapping, even when that trigger and the float are otherwise
+    unrelated -- so the hook's own legality sweep only runs when it's still
+    genuinely ambiguous."""
+    if not player.cost_paid_this_phase and not player.triggers_fired_this_phase:
+        hook = state.on_mana_burn
+        if hook is not None and not hook(state, idx):
+            player.mana_mistake_burn += burnt
+
+
 def _empty_mana_pools(state):
     """Rule 500.4: at the end of each step/phase, all unused mana empties --
     for BOTH players (the non-active player can float mana to cast an instant
@@ -102,14 +132,23 @@ def _empty_mana_pools(state):
     undo. Replaces the old once-per-turn clear (untap_step) -- and, since it
     now owns every mana clear, logs each non-empty emptying (keyed by player
     index) so the event log stays a faithful record of when mana was lost, and
-    tallies each player's own PlayerState.mana_burnt_total (rl.rewards reads
-    it) by the total pips lost, not just whether anything was."""
+    tallies each player's own PlayerState.mana_burnt_total (raw diagnostic,
+    logging/viz only) by the total pips lost, not just whether anything was.
+
+    Also drives PlayerState.mana_mistake_burn, the RL reward-facing signal,
+    via _tally_mana_mistake (see its own docstring) -- and resets
+    cost_paid_this_phase/triggers_fired_this_phase to False for every player
+    once tallied, for the next phase."""
     emptied = {}
     for idx, player in enumerate(state.players):
         if player.mana_pool:
             emptied[idx] = dict(player.mana_pool)
-            player.mana_burnt_total += sum(player.mana_pool.values())
+            burnt = sum(player.mana_pool.values())
+            player.mana_burnt_total += burnt
+            _tally_mana_mistake(state, idx, player, burnt)
             player.mana_pool.clear()
+        player.cost_paid_this_phase = False
+        player.triggers_fired_this_phase = False
     if emptied:
         state.log_event("mana_emptied", pools=emptied)
 
@@ -717,7 +756,7 @@ def game_coroutine(state, horizon=None, combat_enabled=False):
 
 
 def run_multiplayer_game(decklists, rng, starting_player_idx, choose_action,
-                          horizon=None, combat_enabled=False, event_log=None):
+                          horizon=None, combat_enabled=False, event_log=None, on_mana_burn=None):
     """N-player entry point. Full
     sequential turns -- one player's whole turn runs to completion (the
     same run_turn/choose_action(state) contract run_turn itself uses; a
@@ -738,8 +777,14 @@ def run_multiplayer_game(decklists, rng, starting_player_idx, choose_action,
     whoever just played once this function returns, including on a
     horizon-capped exit (an eager flip would leave it pointing at a player
     who never actually got a turn, misattributing every state.hand/
-    state.decked_out/etc. read a caller does on the returned state)."""
+    state.decked_out/etc. read a caller does on the returned state).
+
+    on_mana_burn: optional (state, player_idx) -> bool, stamped straight onto
+    state.on_mana_burn (see GameState's own docstring on it) rather than
+    threaded through game_coroutine/_run_turn_gen -- only _empty_mana_pools
+    ever reads it."""
     state = new_multiplayer_game_state(decklists, starting_player_idx, rng, event_log=event_log)
+    state.on_mana_burn = on_mana_burn
     # Drive the game as a coroutine (game_coroutine) -- choose_action(state)
     # is called for EVERY decision regardless of whose it is. The loop
     # lives in game_coroutine (single source of truth) so the batched

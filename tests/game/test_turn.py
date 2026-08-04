@@ -381,6 +381,119 @@ def test_rule_500_4_mana_pool_clears_at_phase_boundaries_except_combat():
     assert floated_at == {"main1", "declare_attackers"}  # both floats actually happened, not skipped
     # mana_burnt_total tallies pips lost, not clear-events: player 0 lost the
     # MAIN1 "R":1 AND the DECLARE_ATTACKERS "R":1 (two separate clears) -> 2;
-    # player 1 lost only its MAIN1 "W":1 -> 1. rl.rewards.deploy_reward reads this.
+    # player 1 lost only its MAIN1 "W":1 -> 1. Diagnostic-only (logging/viz) --
+    # no reward function reads mana_burnt_total; see PlayerState.mana_mistake_burn
+    # for the reward-facing, conditional signal.
     assert state.players[0].mana_burnt_total == 2
     assert state.players[1].mana_burnt_total == 1
+
+
+def test_mana_mistake_burn_three_way_exemption():
+    # _empty_mana_pools's dense reward-facing tally (PlayerState.
+    # mana_mistake_burn, rl.rewards.with_mana_mistake_penalty): only counts a
+    # burn once cost_paid_this_phase, triggers_fired_this_phase, AND the
+    # on_mana_burn hook (if any) have all failed to justify it. Called
+    # directly (not driven through a real turn) since this is pure
+    # conditional bookkeeping over already-set flags -- see
+    # test_rule_500_4_mana_pool_clears_at_phase_boundaries_except_combat
+    # above for the phase-boundary-timing side of the same function.
+    from game.turn import _empty_mana_pools
+
+    def fresh_state(on_mana_burn=None):
+        state = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
+        state.on_mana_burn = on_mana_burn
+        return state
+
+    # 1) Paid for something this phase -> exempt, even if the hook (were it
+    # consulted) would say nothing else was legal. Hook deliberately raises
+    # if called, so this also proves the hook is skipped entirely here.
+    state = fresh_state(on_mana_burn=lambda s, idx: (_ for _ in ()).throw(AssertionError("hook should not run")))
+    state.players[0].mana_pool = {"R": 2}
+    state.players[0].cost_paid_this_phase = True
+    _empty_mana_pools(state)
+    assert state.players[0].mana_mistake_burn == 0
+    assert state.players[0].mana_burnt_total == 2  # unconditional diagnostic still tallies regardless
+    assert state.players[0].cost_paid_this_phase is False  # reset for the next phase
+
+    # 2) A trigger fired this phase (Writhing Chrysalis-style combat trick)
+    # -> exempt, same hook-skipped guarantee as above.
+    state = fresh_state(on_mana_burn=lambda s, idx: (_ for _ in ()).throw(AssertionError("hook should not run")))
+    state.players[0].mana_pool = {"C": 1}
+    state.players[0].triggers_fired_this_phase = True
+    _empty_mana_pools(state)
+    assert state.players[0].mana_mistake_burn == 0
+    assert state.players[0].triggers_fired_this_phase is False  # reset for the next phase
+
+    # 3) Nothing paid, nothing triggered, hook says something WAS legally
+    # castable (e.g. declining a legal-but-suboptimal card) -> exempt.
+    state = fresh_state(on_mana_burn=lambda s, idx: True)
+    state.players[0].mana_pool = {"B": 1}
+    _empty_mana_pools(state)
+    assert state.players[0].mana_mistake_burn == 0
+
+    # 4) Nothing paid, nothing triggered, hook says nothing was legally
+    # castable -> genuine mistake, tallied.
+    state = fresh_state(on_mana_burn=lambda s, idx: False)
+    state.players[0].mana_pool = {"B": 2}
+    _empty_mana_pools(state)
+    assert state.players[0].mana_mistake_burn == 2
+
+    # 5) No hook at all (plain rules-engine/test use, e.g. every other test in
+    # this file) -> never tallies a mistake, regardless of anything else.
+    state = fresh_state(on_mana_burn=None)
+    state.players[0].mana_pool = {"G": 3}
+    _empty_mana_pools(state)
+    assert state.players[0].mana_mistake_burn == 0
+
+    # The hook receives the RIGHT player_idx even when it's the non-active
+    # player's pool being cleared, and state.mana_pool (the active-player
+    # proxy) still resolves correctly if the hook flips active_idx itself
+    # (the real rl.train hook does this via drl_env._for_player).
+    seen = []
+    def hook(s, idx):
+        seen.append((idx, dict(s.players[idx].mana_pool)))
+        return False
+    state = fresh_state(on_mana_burn=hook)
+    state.active_idx = 0
+    state.players[1].mana_pool = {"U": 1}  # the NON-active player's own pool
+    _empty_mana_pools(state)
+    assert seen == [(1, {"U": 1})]
+    assert state.players[1].mana_mistake_burn == 1
+
+
+def test_on_mana_burn_hook_wired_through_run_multiplayer_game():
+    # Integration check that run_multiplayer_game's on_mana_burn kwarg really
+    # reaches _empty_mana_pools -- test_mana_mistake_burn_three_way_exemption
+    # above only exercises the conditional logic directly, not this wiring.
+    # Mono-Mountain deck, no spells at all: play a land, tap it once in
+    # MAIN1, then always Pass -- nothing is ever paid for or triggered, so
+    # the float is a live candidate mistake the moment it clears.
+    tapped_once = []
+    calls = []
+
+    def _play_then_tap_then_pass(state):
+        if state.pending_resolution is not None and state.pending_resolution["kind"] == "mulligan_decision":
+            return lambda: resolution.execute_mulligan_keep(state)  # both players always keep
+        if state.active_idx != 0:
+            return None
+        if state.lands_played_this_turn == 0 and any(c.name == "Mountain" for c in state.hand):
+            return lambda: play_land_from_hand(state, registry.CARD_DEFS["Mountain"])
+        if not tapped_once:
+            mtn = next((p for p in state.battlefield if p.card_def.name == "Mountain" and not p.tapped), None)
+            if mtn is not None:
+                tapped_once.append(True)
+                return lambda: mana.activate_mana_source(state, mtn)
+        return None
+
+    def _hook(state, player_idx):
+        calls.append(player_idx)
+        return False  # a mono-land deck has nothing to cast, ever
+
+    state = run_multiplayer_game(
+        decklists=[[("Mountain", 20)], [("Mountain", 20)]],
+        rng=random.Random(0), starting_player_idx=0,
+        choose_action=_play_then_tap_then_pass, horizon=1, on_mana_burn=_hook,
+    )
+    assert tapped_once  # the tap actually happened
+    assert 0 in calls  # the hook was actually consulted for player 0's own burn
+    assert state.players[0].mana_mistake_burn == 1
