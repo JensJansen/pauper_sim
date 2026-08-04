@@ -29,7 +29,14 @@ fires for the same damage with the total already computed, trigger_fired,
 pump/explore/animated -- the log entry doesn't carry enough to render
 unambiguously, undercity/initiative/goad/ward status, ...) still produce a
 step (so the scrubber timeline never silently skips an event) but don't
-mutate board state.
+mutate board state. A creature's resulting power/toughness from any of
+those (a pump, a +1/+1 counter, an attached/orphaned Aura, an animate
+threshold) DOES show up, one step later: stats_changed (game.effects.
+state_based._log_stat_changes) recomputes every creature's effective stats
+before each priority round and logs the delta, which _handle_stats_changed
+below applies to the battlefield entry's live power/toughness (kept
+alongside its base_power/base_toughness from zone-entry, so the viewer can
+tell buffed/debuffed apart from printed).
 
 "pass" is the one exception, owner-authorized (2026-08-02): a priority pass
 carries no information the viewer doesn't already show via whatever happens
@@ -114,6 +121,7 @@ class _Player:
                 {
                     "name": entry["name"], "slot": slot, "tapped": entry["tapped"],
                     "power": entry.get("power"), "toughness": entry.get("toughness"),
+                    "base_power": entry.get("base_power"), "base_toughness": entry.get("base_toughness"),
                     "is_token": entry.get("is_token", False), "card_type": entry.get("card_type"),
                     "attacking": entry.get("attacking", False), "blocking": entry.get("blocking"),
                     "enchanting": entry.get("enchanting"),
@@ -422,8 +430,25 @@ class GameReducer:
             if e.get("power") is not None:
                 entry["power"] = e.get("power")
                 entry["toughness"] = e.get("toughness")
+                entry["base_power"] = e.get("power")  # new face's own printed stats
+                entry["base_toughness"] = e.get("toughness")
             p.battlefield[(to_card, slot)] = entry
         self._emit(e, "transform", f"{from_name} transforms into {to_card or '?'}")
+
+    def _handle_stats_changed(self, e):
+        """game.effects.state_based._log_stat_changes: a creature's effective
+        power/toughness (counters, until-EOT pump, Auras, animate/transform,
+        static-self boosts -- see that function's docstring) moved off
+        whatever was last shown. Updates the LIVE power/toughness only --
+        base_power/base_toughness (set at zone-entry/transform) stay put, so
+        the viewer can tell buffed/debuffed apart from printed."""
+        p, key = self._find_perm(e["permanent"])
+        name = key[0] if key is not None else e["permanent"][0]
+        if key is not None:
+            entry = p.battlefield[key]
+            entry["power"] = e.get("power")
+            entry["toughness"] = e.get("toughness")
+        self._emit(e, "stats_changed", f"{name} is now {e.get('power')}/{e.get('toughness')}")
 
     def _handle_reveal(self, e):
         p = self.players[e["active_idx"]]
@@ -511,6 +536,11 @@ class GameReducer:
             entry = {
                 "name": name, "tapped": bool(e.get("tapped")),
                 "power": e.get("power"), "toughness": e.get("toughness"),
+                # Printed stats at zone-entry, kept alongside the live
+                # "power"/"toughness" (which stats_changed updates as counters/
+                # Auras/pump come and go) so the viewer can highlight a
+                # creature that's currently buffed/debuffed off its base.
+                "base_power": e.get("power"), "base_toughness": e.get("toughness"),
                 "is_token": is_token, "card_type": e.get("card_type"),
                 "attacking": False, "blocking": None, "front_name": None,
             }
@@ -612,6 +642,7 @@ class GameReducer:
         "tap_or_untap": _handle_tap_or_untap,
         "tuck": _handle_tuck,
         "transform": _handle_transform,
+        "stats_changed": _handle_stats_changed,
         "reveal": _handle_reveal,
         "decision_weights": _handle_decision_weights,
     }

@@ -141,6 +141,10 @@
     position: absolute; right: 1px; bottom: 1px; background: #0009; color: #fff;
     font-size: 9px; padding: 0 3px; border-radius: 3px;
   }
+  /* Off its printed stats (a +1/+1 counter, Rancor, Agony Warp, ...) -- see
+     cardThumb's base_power/base_toughness diff. */
+  .card-thumb .pt.pt-up { background: #1f7a3d; font-weight: 700; }
+  .card-thumb .pt.pt-down { background: #8a2323; font-weight: 700; }
   .card-thumb .token-badge {
     position: absolute; left: 1px; top: 1px; background: #3a6df0; color: #fff;
     font-size: 8px; padding: 0 3px; border-radius: 3px;
@@ -317,7 +321,17 @@ function scryfallImgUrl(name, version) {
 function cardThumb(name, opts) {
   opts = opts || {};
   const cls = ['card-thumb', opts.attacking && 'attacking', opts.blocking && 'blocking'].filter(Boolean).join(' ');
-  const pt = (opts.power != null && opts.toughness != null) ? `<div class="pt">${opts.power}/${opts.toughness}</div>` : '';
+  let pt = '';
+  if (opts.power != null && opts.toughness != null) {
+    // base_power/base_toughness (printed stats, set at zone-entry) vs the
+    // live power/toughness (stats_changed keeps these current through
+    // counters/Auras/pump/animate) -- diff the two to flag a charged creature.
+    let ptCls = '';
+    if (opts.base_power != null && (opts.power !== opts.base_power || opts.toughness !== opts.base_toughness)) {
+      ptCls = ` pt-${(opts.power - opts.base_power) + (opts.toughness - opts.base_toughness) >= 0 ? 'up' : 'down'}`;
+    }
+    pt = `<div class="pt${ptCls}">${opts.power}/${opts.toughness}</div>`;
+  }
   const tokenBadge = opts.is_token ? '<div class="token-badge">T</div>' : '';
   // opts.noPreview: the .zone-pile face thumb skips its own .preview -- the
   // pile already sits inside a .zone-pile, whose delegated hover shows the

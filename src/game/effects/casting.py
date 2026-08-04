@@ -333,6 +333,15 @@ def enters_battlefield(state, card_def, force_tapped=False, from_zone=None):
         to_zone="battlefield", tapped=tapped, card_type=permanent.card_type.name,
         power=card_def.extra.get("power"), toughness=card_def.extra.get("toughness"),
     )
+    # Seeded to the same printed power/toughness just logged above, so
+    # state_based._log_stat_changes's first pass over this permanent doesn't
+    # immediately re-log an unchanged value as a redundant stats_changed step
+    # (0 for a non-creature too -- harmless, never read, same convention as
+    # damage_marked's own default). If a conditional static-self boost is
+    # ALREADY true the instant this permanent enters (e.g. Goblin Tomb Raider
+    # entering while an artifact is already out), the seed still mismatches
+    # the true computed value, so that first SBA pass correctly fires anyway.
+    permanent.flags["_logged_pt"] = (card_def.extra.get("power"), card_def.extra.get("toughness"))
 
     # The permanent has now physically entered (above) -- but its ETB
     # triggered ability, faithfully (real Magic 603.3), does NOT resolve

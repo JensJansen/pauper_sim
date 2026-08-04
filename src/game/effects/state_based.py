@@ -33,11 +33,17 @@ def check_state_based_actions(state):
     (stats.enchanting_by_target) instead of stats.permanent_toughness
     re-scanning per creature -- same fetch-once-reuse pattern as combat.
     combat_damage_step's own creature_facts; see that shared helper's own
-    docstring for why this snapshot is safe today."""
+    docstring for why this snapshot is safe today.
+
+    Also the single choke point (every candidate, every priority round) that
+    logs "stats_changed" events for the replay viewer when logging is on --
+    see _log_stat_changes below."""
     candidates = [
         p for player in state.players for p in player.battlefield if p.card_type == CardType.CREATURE
     ]
     enchanting_by_target = stats.enchanting_by_target(state) if candidates else {}
+    if state.event_log is not None:
+        _log_stat_changes(state, candidates, enchanting_by_target)
     # flags["deathtouched"] (set by combat only on a real deathtouch hit)
     # implies damage was dealt (704.5h); toughness <= 0 is caught too (0 >= 0).
     dead = [
@@ -47,6 +53,28 @@ def check_state_based_actions(state):
     ]
     for permanent in dead:
         _destroy_creature(state, permanent)
+
+
+def _log_stat_changes(state, candidates, enchanting_by_target):
+    """Emits a "stats_changed" event for any creature whose effective power/
+    toughness (stats.permanent_power/permanent_toughness -- the single source
+    of truth already folding in counters, until-EOT pump, Auras, animate/
+    transform, and conditional static-self boosts) differs from what was last
+    logged for it, so the replay viewer can show a creature's CURRENT stats
+    instead of just its printed ones frozen at zone-entry (game.effects.
+    casting.enters_battlefield only ever logs the printed base). The last-
+    logged value is cached on the permanent itself (flags["_logged_pt"]) so
+    this only fires on a real change, not every priority round. Gated by the
+    caller on state.event_log being on -- this runs before every priority
+    round, so it would otherwise cost two stats.py calls per creature on
+    every bulk-training rollout for a value nothing ever reads."""
+    for p in candidates:
+        auras = enchanting_by_target.get(id(p), ())
+        pt = (stats.permanent_power(state, p, enchanting_auras=auras),
+              stats.permanent_toughness(state, p, enchanting_auras=auras))
+        if p.flags.get("_logged_pt") != pt:
+            p.flags["_logged_pt"] = pt
+            state.log_event("stats_changed", permanent=(p.card_def.name, p.slot), power=pt[0], toughness=pt[1])
 
 
 def _queue_leave_triggers(state, permanent, owner_idx):

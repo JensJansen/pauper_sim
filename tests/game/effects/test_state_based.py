@@ -4,6 +4,7 @@ handoff exercised together with combat.py in
 tests/game/effects/test_integration_check.py."""
 from game import registry, resolution
 from game.cards import CardDef, CardType, EffectId
+from game.effects.casting import enters_battlefield
 from game.effects.stack import resolve_top_of_stack
 from game.effects.state_based import check_state_based_actions, cleanup_step, destroy_permanent, sacrifice_to_graveyard
 from game.effects.tokens import WARRIOR_TOKEN_CARD_DEF
@@ -60,6 +61,43 @@ def test_aura_orphaning_and_cleanup():
     finally:
         registry.CARD_DEFS.clear()
         registry.CARD_DEFS.update(_card_defs_backup)
+
+
+def test_stats_changed_logged_on_counter_change_only_when_it_actually_changes():
+    # A +1/+1 counter moves effective power/toughness off the printed base --
+    # check_state_based_actions should log exactly one stats_changed event for
+    # it (see _log_stat_changes), and NOT re-log on a later call where nothing
+    # about this creature's stats moved.
+    state = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)], event_log=[])
+    bear = Permanent(CardDef("Bear", CardType.CREATURE, None, EffectId.FILLER, power=2, toughness=2))
+    bear.slot = 1
+    state.players[0].battlefield = [bear]
+
+    check_state_based_actions(state)  # first pass logs the printed base once (no prior cached value)
+    changed = [e for e in state.event_log if e["kind"] == "stats_changed"]
+    assert len(changed) == 1
+    assert changed[0]["power"] == 2 and changed[0]["toughness"] == 2
+
+    bear.counters["+1/+1"] = 1
+    check_state_based_actions(state)
+    changed = [e for e in state.event_log if e["kind"] == "stats_changed"]
+    assert len(changed) == 2
+    assert changed[-1]["permanent"] == ["Bear", 1]  # log_event's own _safe() turns tuples into lists
+    assert changed[-1]["power"] == 3 and changed[-1]["toughness"] == 3
+
+    check_state_based_actions(state)  # unchanged since -- no duplicate
+    assert len([e for e in state.event_log if e["kind"] == "stats_changed"]) == 2
+
+
+def test_entering_via_enters_battlefield_does_not_log_a_redundant_stats_changed():
+    # enters_battlefield seeds flags["_logged_pt"] to the printed stats it just
+    # logged in its own zone_move event, so a plain ETB with no counters/Auras/
+    # pump active yet produces no immediately-redundant stats_changed step.
+    state = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)], event_log=[])
+    bear_def = CardDef("Bear", CardType.CREATURE, None, EffectId.FILLER, power=2, toughness=2)
+    enters_battlefield(state, bear_def, from_zone="hand")
+    check_state_based_actions(state)
+    assert [e for e in state.event_log if e["kind"] == "stats_changed"] == []
 
 
 def test_token_creature_death_ceases_to_exist():

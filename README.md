@@ -534,9 +534,20 @@ Step through a logged game's board state one event at a time. MVP scope per
   scry-to-graveyard, non-mulligan put-backs) isn't counted — fine for
   "roughly how many cards are left," not a source of truth.
 - Event kinds with no board-visible effect (`priority_flip`,
-  `resolution_begin`/`complete`, `pump`/`explore`/`animated` — the log entry
+  `resolution_begin`/`complete`, `explore`/`animated` — the log entry
   doesn't carry enough to render unambiguously, etc.) still advance the
   scrubber with a plain label so the timeline never silently skips a step.
+- **A creature's power/toughness badge tracks its CURRENT effective stats,
+  not just what it printed on entry.** `game.effects.state_based`'s
+  `check_state_based_actions` (already scanning every creature each priority
+  round) recomputes each one's `permanent_power`/`permanent_toughness` —
+  folding in `+1/+1`/`-0/-1` counters, until-EOT pump, attached Auras,
+  animate/transform, and conditional static-self boosts — and logs a
+  `stats_changed` event whenever it moved off what was last logged. The
+  viewer keeps the entering, printed stats alongside as `base_power`/
+  `base_toughness` and colors the badge green/red when the live value is
+  above/below it, so a charged-up (or shrunk) creature is visible at a
+  glance instead of stuck showing its zone-entry numbers.
 - **`pass` is dropped entirely, not just given a no-op step** (owner-authorized
   simplification): a priority pass carries no information beyond what already
   gets its own step — the stack's top item resolving or the phase advancing —

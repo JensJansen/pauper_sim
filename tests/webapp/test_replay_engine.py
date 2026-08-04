@@ -54,9 +54,23 @@ def test_cast_and_resolve_to_battlefield():
     assert steps[-1]["stack"] == []
     assert p0["battlefield"] == [
         {"name": "Grizzly Bears", "slot": 0, "tapped": False, "power": 2, "toughness": 2,
+         "base_power": 2, "base_toughness": 2,
          "is_token": False, "card_type": "CREATURE", "attacking": False, "blocking": None,
          "enchanting": None}
     ]
+
+
+def test_stats_changed_updates_live_pt_but_not_base():
+    events = [
+        _ev("turn_start", phase=None),
+        _ev("zone_move", phase="main1", permanent=["Grizzly Bears", 0], from_zone="hand", to_zone="battlefield",
+            tapped=False, card_type="CREATURE", power=2, toughness=2),
+        _ev("stats_changed", phase="main1", permanent=["Grizzly Bears", 0], power=3, toughness=3),
+    ]
+    steps = GameReducer(events).run()
+    bear = steps[-1]["players"][0]["battlefield"][0]
+    assert bear["power"] == 3 and bear["toughness"] == 3
+    assert bear["base_power"] == 2 and bear["base_toughness"] == 2
 
 
 def test_mana_tap_and_spend():
