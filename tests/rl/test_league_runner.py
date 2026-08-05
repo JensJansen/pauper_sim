@@ -1,28 +1,28 @@
-"""Self-check for run_league.py's auto-sizing doubling ladder
+"""Self-check for rl.league_runner's auto-sizing doubling ladder
 (_next_batch_games), which lost its max_batch_size cap 2026-07-31 -- see its
-own docstring for why. Marked slow: importing run_league pulls in torch/rl.*.
+own docstring for why. Marked slow: importing rl.league_runner pulls in torch/rl.*.
 """
 import json
 from pathlib import Path
 
 import pytest
 
-import run_league
+from rl import league_runner
 from rl.pool import build_pool as _real_build_pool
 
-_SRC_DIR = Path(__file__).resolve().parent.parent / "src"
+_SRC_DIR = Path(__file__).resolve().parent.parent.parent / "src"
 
 
 @pytest.mark.slow
 def test_next_batch_games_fresh_league_starts_at_one(tmp_path):
-    assert run_league._next_batch_games(str(tmp_path), total_games=100) == 1
+    assert league_runner._next_batch_games(str(tmp_path), total_games=100) == 1
 
 
 @pytest.mark.slow
 def test_next_batch_games_doubles_from_the_last_real_batch(tmp_path):
     (tmp_path / "progress.json").write_text(json.dumps(
         {"last_batch_size": 8, "cumulative_games_per_deck": 15}))
-    assert run_league._next_batch_games(str(tmp_path), total_games=1000) == 16
+    assert league_runner._next_batch_games(str(tmp_path), total_games=1000) == 16
 
 
 @pytest.mark.slow
@@ -34,14 +34,14 @@ def test_next_batch_games_never_overshoots_the_remaining_target():
         with open(f"{d}/progress.json", "w") as f:
             json.dump({"last_batch_size": 512, "cumulative_games_per_deck": 900}, f)
         # doubling would want 1024, but only 100 remain (total_games=1000)
-        assert run_league._next_batch_games(d, total_games=1000) == 100
+        assert league_runner._next_batch_games(d, total_games=1000) == 100
 
 
 @pytest.mark.slow
 def test_next_batch_games_returns_none_once_target_already_met(tmp_path):
     (tmp_path / "progress.json").write_text(json.dumps(
         {"last_batch_size": 500, "cumulative_games_per_deck": 1000}))
-    assert run_league._next_batch_games(str(tmp_path), total_games=1000) is None
+    assert league_runner._next_batch_games(str(tmp_path), total_games=1000) is None
 
 
 @pytest.mark.slow
@@ -58,12 +58,12 @@ def test_run_eval_labels_each_game_with_its_real_pairing(tmp_path, monkeypatch):
     this test from writing to the repo's own real checkpoints/vocab.json."""
     monkeypatch.chdir(_SRC_DIR)  # league_decks.json/data/*.txt are loaded via "../data/..." (rl.pool's own convention)
     monkeypatch.setattr(
-        run_league, "build_pool",
+        league_runner, "build_pool",
         lambda: _real_build_pool(vocab_path=str(tmp_path / "vocab.json")),
     )
 
     game_logs = []
-    eval_decks, game_pairings = run_league._run_eval(
+    eval_decks, game_pairings = league_runner._run_eval(
         ["rakdos_madness", "dmir_terror"], games_per_pairing=2, greedy=False, seed=0,
         game_logs=game_logs, fresh_stack=True, league_dir=str(tmp_path / "league"),
     )
@@ -76,7 +76,7 @@ def test_run_eval_labels_each_game_with_its_real_pairing(tmp_path, monkeypatch):
     )
 
     log_path = str(tmp_path / "eval_log.json")
-    run_league._write_event_log(log_path, game_logs, {"mode": "eval"}, game_pairings=game_pairings)
+    league_runner._write_event_log(log_path, game_logs, {"mode": "eval"}, game_pairings=game_pairings)
     with open(log_path) as f:
         doc = json.load(f)
     assert [(g["deck_a"], g["deck_b"]) for g in doc["games"]] == game_pairings
@@ -92,7 +92,7 @@ def test_run_eval_vs_history_finds_archived_and_active_milestones(tmp_path, monk
     past the window (rl.league's own archive/, not deletion)."""
     monkeypatch.chdir(_SRC_DIR)
     monkeypatch.setattr(
-        run_league, "build_pool",
+        league_runner, "build_pool",
         lambda: _real_build_pool(vocab_path=str(tmp_path / "vocab.json")),
     )
     from rl.league import LeaguePool
@@ -101,13 +101,13 @@ def test_run_eval_vs_history_finds_archived_and_active_milestones(tmp_path, monk
     league_dir = str(tmp_path / "league")
     decklists, vocab, deck_ctxs, fixed_tables = _real_build_pool(vocab_path=str(tmp_path / "vocab.json"))
     deck_name = "rakdos_madness"
-    shared = run_league.build_fresh_stack(vocab.size)
-    net = run_league.DeckNetwork(shared, film_condition_dim=run_league.D_MODEL,
-                                  non_targeting_n_actions=len(fixed_tables[deck_name]))
+    shared = league_runner.build_fresh_stack(vocab.size)
+    net = league_runner.DeckNetwork(shared, film_condition_dim=league_runner.D_MODEL,
+                                     non_targeting_n_actions=len(fixed_tables[deck_name]))
     mnet = MulliganNet(shared)
 
     # No snapshots at all yet -- nothing to compare against.
-    assert run_league._run_eval_vs_history(
+    assert league_runner._run_eval_vs_history(
         deck_name, net, mnet, deck_ctxs[deck_name], decklists[deck_name], shared, league_dir, horizon=20,
     ) == []
 
@@ -115,7 +115,7 @@ def test_run_eval_vs_history_finds_archived_and_active_milestones(tmp_path, monk
     for _ in range(3):  # 3rd registration evicts snapshot_0 into archive/ (cap=2)
         pool.register_snapshot(deck_name, net, mnet)
 
-    results = run_league._run_eval_vs_history(
+    results = league_runner._run_eval_vs_history(
         deck_name, net, mnet, deck_ctxs[deck_name], decklists[deck_name], shared, league_dir,
         horizon=20, games_per_snapshot=2, seed=0,
     )
@@ -136,25 +136,25 @@ def test_run_eval_vs_gauntlet_plays_the_independent_twin_and_handles_missing_dec
     result once one exists."""
     monkeypatch.chdir(_SRC_DIR)
     monkeypatch.setattr(
-        run_league, "build_pool",
+        league_runner, "build_pool",
         lambda: _real_build_pool(vocab_path=str(tmp_path / "vocab.json")),
     )
     deck_name = "rakdos_madness"
     decklists, vocab, deck_ctxs, fixed_tables = _real_build_pool(vocab_path=str(tmp_path / "vocab.json"))
-    shared = run_league.build_fresh_stack(vocab.size)
-    live_net = run_league.DeckNetwork(shared, film_condition_dim=run_league.D_MODEL,
-                                       non_targeting_n_actions=len(fixed_tables[deck_name]))
+    shared = league_runner.build_fresh_stack(vocab.size)
+    live_net = league_runner.DeckNetwork(shared, film_condition_dim=league_runner.D_MODEL,
+                                          non_targeting_n_actions=len(fixed_tables[deck_name]))
     from rl.mulligan import MulliganNet
     mulligan_net = MulliganNet(shared)
 
     gauntlet_dir = str(tmp_path / "gauntlet")
     # No gauntlet checkpoint for this deck yet -- must return None, not crash or return an empty dict.
-    assert run_league._run_eval_vs_gauntlet(
+    assert league_runner._run_eval_vs_gauntlet(
         deck_name, live_net, mulligan_net, deck_ctxs[deck_name], decklists[deck_name], shared,
         gauntlet_dir, horizon=20,
     ) is None
     # gauntlet_league_dir=None entirely (the common case -- most leagues have no gauntlet) must also return None.
-    assert run_league._run_eval_vs_gauntlet(
+    assert league_runner._run_eval_vs_gauntlet(
         deck_name, live_net, mulligan_net, deck_ctxs[deck_name], decklists[deck_name], shared,
         None, horizon=20,
     ) is None
@@ -166,7 +166,7 @@ def test_run_eval_vs_gauntlet_plays_the_independent_twin_and_handles_missing_dec
     os.makedirs(deck_dir, exist_ok=True)
     torch.save({"net": live_net.state_dict()}, os.path.join(deck_dir, "live.pt"))
 
-    result = run_league._run_eval_vs_gauntlet(
+    result = league_runner._run_eval_vs_gauntlet(
         deck_name, live_net, mulligan_net, deck_ctxs[deck_name], decklists[deck_name], shared,
         gauntlet_dir, horizon=20, games=2, seed=0,
     )
@@ -182,18 +182,18 @@ def test_run_eval_vs_heuristic_plays_real_games(tmp_path, monkeypatch):
     deck the owner scoped it to (mono_red_rally)."""
     monkeypatch.chdir(_SRC_DIR)
     monkeypatch.setattr(
-        run_league, "build_pool",
+        league_runner, "build_pool",
         lambda: _real_build_pool(vocab_path=str(tmp_path / "vocab.json")),
     )
     deck_name = "mono_red_rally"
     decklists, vocab, deck_ctxs, fixed_tables = _real_build_pool(vocab_path=str(tmp_path / "vocab.json"))
-    shared = run_league.build_fresh_stack(vocab.size)
-    live_net = run_league.DeckNetwork(shared, film_condition_dim=run_league.D_MODEL,
-                                       non_targeting_n_actions=len(fixed_tables[deck_name]))
+    shared = league_runner.build_fresh_stack(vocab.size)
+    live_net = league_runner.DeckNetwork(shared, film_condition_dim=league_runner.D_MODEL,
+                                          non_targeting_n_actions=len(fixed_tables[deck_name]))
     from rl.mulligan import MulliganNet
     mulligan_net = MulliganNet(shared)
 
-    result = run_league._run_eval_vs_heuristic(
+    result = league_runner._run_eval_vs_heuristic(
         deck_name, live_net, mulligan_net, deck_ctxs[deck_name], decklists[deck_name],
         horizon=20, games=3, seed=0,
     )

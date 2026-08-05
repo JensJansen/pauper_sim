@@ -108,7 +108,7 @@ class LeaguePool:
     def save_opponent_stats(self):
         """Persists every deck's running PFSP win/loss tallies to disk (JSON,
         one file per deck alongside its live.pt/snapshot_*.pt) -- called by
-        run_league._run_session on the SAME cadence as its other checkpoints
+        rl.league_runner._run_session on the SAME cadence as its other checkpoints
         (snapshot points + session end), not on every game: each real
         training run is many SEPARATE short-lived process invocations (no
         long-running daemon), so without this the PFSP weighting would
@@ -159,7 +159,7 @@ class LeaguePool:
             # window (max_snapshots_per_deck) stays small on purpose (a stale
             # snapshot is a weak training opponent), but permanently discarding
             # it left no way to ever measure a deck's win rate against its own
-            # older selves once they aged out -- see run_league._run_eval_vs_history,
+            # older selves once they aged out -- see rl.league_runner._run_eval_vs_history,
             # the reason this archive exists. Cheap: ~1MB/snapshot (checked on
             # disk), so archiving every eviction for a whole run is a few GB at most.
             archive_dir = os.path.join(deck_dir, "archive")

@@ -318,7 +318,7 @@ class AlwaysKeep:
     train nothing. Used wherever mulligan training is not wanted (pretrain,
     self-checks, an eval before a trained mulligan model exists). mulligan_bottom
     is UNREACHABLE under keep-always -- keeping with 0 mulligans taken never opens
-    a bottom (game.resolution.handlers: n = min(mulligans_taken, ...)) -- so it
+    a bottom (game.resolution.handlers_mulligan: n = min(mulligans_taken, ...)) -- so it
     asserts rather than guess if ever asked."""
 
     def decide(self, state):

@@ -196,7 +196,7 @@ def escape_sleep_of_the_dead(state, inst):
     whose predicate is `c is not exclude`, so a SECOND Sleep copy in the
     graveyard stays a legal choice to exile as part of the cost (faithful --
     it genuinely is "another card") while the escaping copy itself never is,
-    handed down directly by the caller (drl_env._actions._graveyard_instance)."""
+    handed down directly by the caller (drl_env._actions_cast_altzone._graveyard_instance)."""
     sleep_inst = inst
 
     def _after_exile(state):

@@ -1,6 +1,6 @@
 """Summarizes checkpoints/<league>/metrics.jsonl -- the per-iteration "ppo" /
 "mulligan" / "vs_history" / "vs_gauntlet" / "vs_heuristic" records
-run_league.py's _run_session appends during every training run (see
+rl.league_runner's _run_session appends during every training run (see
 _append_metric). Plain-text report, stdlib only (no plotting library in
 requirements.txt) -- enough to see whether entropy is collapsing, loss has
 actually moved, a deck's win rate against its own archived past self has

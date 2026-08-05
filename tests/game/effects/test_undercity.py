@@ -5,7 +5,16 @@ from game.cards import CardDef, CardType, EffectId
 from game.effects.stack import resolve_top_of_stack
 from game.effects.stats import creature_keywords, permanent_power
 from game.effects.triggers import promote_triggers_to_stack
-from game.effects.undercity import apply_goad, expire_until_next_turn, take_initiative, venture, _room_throne
+from game.effects.undercity import (
+    apply_goad,
+    choose_room_options,
+    execute_choose_room_option,
+    execute_throne_reveal_option,
+    expire_until_next_turn,
+    take_initiative,
+    venture,
+    _room_throne,
+)
 from game.state import GameState, Permanent, PlayerState
 
 
@@ -52,8 +61,8 @@ def test_branch_choice_forge_puts_counters_on_creature():
     state.players[0].battlefield = [creature]
     venture(state, 0)
     assert state.pending_resolution["kind"] == "choose_room"
-    assert set(resolution.choose_room_options(state)) == {"Forge", "Lost Well"}
-    resolution.execute_choose_room_option(state, "Forge")
+    assert set(choose_room_options(state)) == {"Forge", "Lost Well"}
+    execute_choose_room_option(state, "Forge")
     assert state.players[0].dungeon_room == "Forge"
     assert state.pending_resolution["kind"] == "choose_any_target"
     resolution.execute_choose_any_target_creature(state, 0, "Bear", 1)
@@ -90,7 +99,7 @@ def test_throne_places_creature_with_counters_and_hexproof():
     state.players[0].library = [lib_creature] + [CardDef(f"L{i}", CardType.LAND, None, EffectId.FILLER) for i in range(9)]
     _room_throne(state, 0)
     assert state.pending_resolution["kind"] == "throne_reveal"
-    resolution.execute_throne_reveal_option(state, "Giant")
+    execute_throne_reveal_option(state, "Giant")
     giant = next(p for p in state.players[0].battlefield if p.card_def.name == "Giant")
     assert giant.counters["+1/+1"] == 3 and permanent_power(state, giant) == 6  # 3 base + 3
     assert "hexproof" in creature_keywords(state, giant)

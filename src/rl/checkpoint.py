@@ -1,7 +1,7 @@
 """Centralizes checkpoint save/load for the ~4 distinct on-disk schemas that
 used to be hand-rolled (build net, torch.load, load_state_dict, optional
 optimizer-migration guard) at every call site across rl/league.py,
-run_league.py, and run_pretrain.py. Pure reorganization: no schema (key
+rl/league_runner.py, and run_pretrain.py. Pure reorganization: no schema (key
 names, tensor shapes, what gets stored) changed by moving the code here --
 every existing checkpoint on disk remains loadable byte-for-byte.
 
@@ -9,7 +9,7 @@ Four schemas, four helper pairs (deliberately NOT unified into one signature
 -- the shapes are genuinely different):
 
   - deck checkpoint (save/load_deck_checkpoint): one file per net,
-    {"net": state_dict[, "optimizer": state_dict]} -- run_league.py's
+    {"net": state_dict[, "optimizer": state_dict]} -- rl.league_runner's
     per-deck live.pt (DeckNetwork+Adam) and mulligan.pt (MulliganNet+Adam)
     share this exact shape.
   - snapshot (save/load_snapshot): rl.league.LeaguePool's frozen historical
@@ -17,7 +17,7 @@ Four schemas, four helper pairs (deliberately NOT unified into one signature
     optional "mulligan_hidden":}.
   - shared/frozen stack (save/load_frozen_stack): {"shared": state_dict,
     "vocab_size":, "d_model":} -- shared_stack_frozen.pt, written once by
-    run_pretrain.py --freeze and read back by run_league.py's own
+    run_pretrain.py --freeze and read back by rl.league_runner's own
     (higher-level, net-building) load_frozen_stack function.
   - pretrain checkpoint (save/load_pretrain_checkpoint): run_pretrain.py's
     own single combined file for the WHOLE roster's throwaway heads plus the
@@ -110,7 +110,7 @@ def save_frozen_stack(path, shared, vocab_size, d_model):
 def load_frozen_stack(path):
     """Returns the raw saved dict (shared state_dict, vocab_size, d_model) --
     does NOT build the SetTransformer itself: the caller needs vocab_size/
-    d_model to validate compatibility (see run_league.py's own
+    d_model to validate compatibility (see rl.league_runner's own
     load_frozen_stack, which wraps this) before constructing one of the
     right shape."""
     return torch.load(path, weights_only=True)

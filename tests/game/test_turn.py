@@ -193,7 +193,7 @@ def test_real_two_player_game_through_actual_cards():
 
 def test_declare_blockers_gen_flips_active_idx_to_defender_and_restores():
     # _declare_blockers_gen: the defender's own consult, active_idx flip.
-    # test_handlers.py already covers begin_declare_blockers/
+    # test_handlers_combat.py already covers begin_declare_blockers/
     # declare_blocker_assignment directly; this one is specifically about
     # the flip-drive-restore shape unique to this generator, driven via
     # the generator's own yield protocol -- the same nested-on_complete

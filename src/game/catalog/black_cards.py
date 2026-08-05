@@ -317,7 +317,7 @@ def flashback_dread_return(state, inst):
     own text), so its resolve makes no further zone move for itself.
 
     inst: the exact graveyard CardInstance being flashed back (resolved once at
-    the action boundary, drl_env._actions._graveyard_instance) -- removed by
+    the action boundary, drl_env._actions_cast_altzone._graveyard_instance) -- removed by
     object identity, never by a name re-lookup."""
     state.graveyard.remove(inst)  # leaves the graveyard the moment Flashback is chosen; exiled after (untracked)
     resolution.begin_sacrifice(

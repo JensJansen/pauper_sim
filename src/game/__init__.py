@@ -63,7 +63,20 @@ from .catalog.green_cards import (
 from .decklist import parse_decklist_file, parse_decklist_text
 from .effects.casting import bounce_land_etb, cast_aura, cast_permanent_from_hand, enters_battlefield, play_land_from_hand
 from .effects.combat import combat_damage_step, creature_attack_eligible, creature_block_eligible, declare_attacker, declare_attackers_step, enforce_menace, has_unfulfilled_goad, menace_block_incomplete
-from .effects.undercity import INITIATIVE_MARKER_CARD, ROOM_NAMES, apply_goad, expire_until_next_turn, take_initiative, venture
+from .effects.undercity import (
+    INITIATIVE_MARKER_CARD,
+    ROOM_NAMES,
+    apply_goad,
+    begin_choose_room,
+    begin_throne_reveal,
+    choose_room_options,
+    execute_choose_room_option,
+    execute_throne_reveal_option,
+    expire_until_next_turn,
+    take_initiative,
+    throne_reveal_options,
+    venture,
+)
 from .effects.madness_and_plot import execute_madness_cast, plot_to_exile
 from .effects.shared import find_and_remove_by_name
 from .effects.stack import counter_spell, on_cast_trigger, push_ability_to_stack, push_to_stack, resolve_top_of_stack
@@ -119,9 +132,7 @@ from .resolution import (
     begin_choose_opponent_permanent,
     begin_choose_mana_color,
     begin_choose_permanent,
-    begin_choose_room,
     begin_choose_stack_target,
-    begin_throne_reveal,
     begin_choose_target_player,
     begin_declare_blockers,
     begin_exile_n_from_graveyard,
@@ -154,7 +165,6 @@ from .resolution import (
     choose_opponent_permanent_options,
     choose_mana_color_options,
     choose_permanent_options,
-    choose_room_options,
     choose_stack_target_options,
     complete_resolution,
     declare_blocker_assignment,
@@ -174,7 +184,6 @@ from .resolution import (
     execute_choose_opponent_permanent_option,
     execute_choose_mana_color,
     execute_choose_permanent_option,
-    execute_choose_room_option,
     execute_mana_subdecision_color,
     execute_mana_subdecision_target,
     execute_choose_stack_target_option,
@@ -197,7 +206,6 @@ from .resolution import (
     execute_may_cast,
     execute_may_copy,
     execute_may_transform,
-    execute_throne_reveal_option,
     execute_tuck_position,
     explore,
     execute_search_fetch_decline,
@@ -213,7 +221,6 @@ from .resolution import (
     scry_surveil_options,
     search_fetch_options,
     surveil,
-    throne_reveal_options,
 )
 from .state import GameState, Permanent, build_shuffled_library, new_multiplayer_game_state
 from .turn import Phase, Speed, draw_step, game_coroutine, run_multiplayer_game, run_turn, untap_step

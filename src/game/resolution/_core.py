@@ -1,7 +1,9 @@
 """The pending-resolution state machine core: begin_resolution starts a
 multi-action decision, complete_resolution finishes it and fires the
-on_complete callback. A leaf -- every concrete handler in handlers.py builds
-on these; they never build on the handlers."""
+on_complete callback. A leaf -- every concrete handler in the handlers_<category>
+modules (handlers_targeting, handlers_combat, handlers_casting, handlers_library,
+handlers_mulligan, handlers_triggers) builds on these; they never build on the
+handlers."""
 
 from ..cards import CardDef
 
@@ -26,8 +28,8 @@ def _loggable(value):
     directly -- e.g. execute_discard_option's own discarded_cards list
     (appends the real card, never just its name, since _discard_one and
     the madness trigger queue both need the actual object) -- and a
-    CardDef isn't JSON-serializable, which run_league.py's own event-log
-    write requires. Converts a CardDef (or a list of them) to its own .name;
+    CardDef isn't JSON-serializable, which rl.league_runner's own event-log
+    write (_write_event_log) requires. Converts a CardDef (or a list of them) to its own .name;
     every other args shape already used elsewhere (strings, (name, slot)
     tuples, bools, ints, None, plain lists of those) passes through
     unchanged -- this only ever touches the LOGGED copy, never what

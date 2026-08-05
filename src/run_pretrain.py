@@ -55,7 +55,7 @@ def main():
     # unique params. NOT one Adam per net over net.parameters() -- that
     # would give the shared stack's identical parameter tensors N
     # independent Adam instances with unsynchronized momentum/variance
-    # state, stepping on them in alternation (see rl.train.ppo_update's own
+    # state, stepping on them in alternation (see rl.ppo.ppo_update's own
     # docstring).
     opt_shared = torch.optim.Adam(shared.parameters(), lr=3e-4)
     nets, head_opts = {}, {}

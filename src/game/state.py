@@ -481,7 +481,7 @@ class GameState:
         # then the ability's own color-choice effect), and a mana filter's
         # "pay the activation cost [fixed table row], then choose the
         # output color" (the cost half is a flat action, not a stage of
-        # this dict at all -- see drl_env._actions._filter_mana_execute).
+        # this dict at all -- see drl_env._actions_mana._filter_mana_execute).
         # Deliberately a SEPARATE field from pending_resolution, not a
         # nested/stacked use of it: pending_resolution is a single slot,
         # and a gate-free mana ability (605.1a/605.3b -- legal in ANY
@@ -660,8 +660,8 @@ class GameState:
             return
         # Sanitize field values AT THE SOURCE so no event ever carries a raw
         # engine object -- a CardDef, or a card-effect closure/lambda -- which
-        # would break the JSON write (run_league._json_default) or an MP worker's
-        # pickle (rl.train._sanitize_events). Those two remain only as backstops.
+        # would break the JSON write (rl.league_runner._json_default) or an MP worker's
+        # pickle (rl.rollout_parallel._sanitize_events). Those two remain only as backstops.
         # Runs only when logging is ON (the early-return above), so the default
         # training path pays nothing. Primitives pass through; an object becomes
         # its string .name if it has one, else a short repr; containers recurse.

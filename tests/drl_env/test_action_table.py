@@ -1,13 +1,20 @@
-"""Tests for drl_env's action table (drl_env._actions): build_action_table,
-legal_action_mask, and the Plot/on-cast-trigger/token/targeting/combat
-mechanics they wire together, end to end through the REAL production
-functions -- never a parallel reimplementation."""
+"""Tests for drl_env's action table (drl_env._actions_table and its sibling
+category modules): build_action_table, legal_action_mask, and the Plot/
+on-cast-trigger/token/targeting/combat mechanics they wire together, end to
+end through the REAL production functions -- never a parallel
+reimplementation."""
 
 from pathlib import Path
 
 import game
-from drl_env import _actions
-from drl_env._actions import *
+from drl_env import _actions_mana, _actions_table
+from drl_env._actions_common import *
+from drl_env._actions_cast import *
+from drl_env._actions_cast_altzone import *
+from drl_env._actions_combat import *
+from drl_env._actions_resolution import *
+from drl_env._actions_mana import *
+from drl_env._actions_table import *
 from game.cards import CardDef, CardType, EffectId
 from game.state import CardInstance, GameState, Permanent, PlayerState
 
@@ -542,7 +549,7 @@ def test_mana_ability_options_cache_no_stale_leak():
     perf_mtn = Permanent(game.CARD_DEFS["Mountain"])
     perf_state.battlefield = [perf_mtn]
     assert legal_action_mask(perf_state, perf_actions)[perf_tap_mountain]
-    assert _actions._mana_ability_options_cache is None  # cleared again once the sweep itself returns
+    assert _actions_mana._mana_ability_options_cache is None  # cleared again once the sweep itself returns
     game.activate_mana_source(perf_state, perf_mtn)  # taps the only Mountain -- 0 untapped sources left
     assert ("Mountain", None) not in game.mana_ability_options(perf_state)  # ground truth: nothing left to tap
     assert not legal_action_mask(perf_state, perf_actions)[perf_tap_mountain]  # would be wrongly True if the first sweep's stale cache leaked through
@@ -691,12 +698,12 @@ def test_mana_subdecision_rows_cache_stays_bounded():
     # looked up over a process's lifetime (e.g. a multiprocessing worker
     # rebuilding a fresh table per task instead of reusing one per deck).
     tron_decklist = game.parse_decklist_file(str(DATA_DIR / "monster_tron.txt"))
-    _actions._mana_subdecision_rows_cache.clear()
-    for _ in range(_actions._MANA_SUBDECISION_ROWS_CACHE_CAP + 10):
+    _actions_table._mana_subdecision_rows_cache.clear()
+    for _ in range(_actions_table._MANA_SUBDECISION_ROWS_CACHE_CAP + 10):
         fresh_actions = build_action_table(tron_decklist, game.EFFECT_REGISTRY)
-        _actions._mana_subdecision_rows(fresh_actions)
-        assert len(_actions._mana_subdecision_rows_cache) <= _actions._MANA_SUBDECISION_ROWS_CACHE_CAP
-    _actions._mana_subdecision_rows_cache.clear()
+        _actions_table._mana_subdecision_rows(fresh_actions)
+        assert len(_actions_table._mana_subdecision_rows_cache) <= _actions_table._MANA_SUBDECISION_ROWS_CACHE_CAP
+    _actions_table._mana_subdecision_rows_cache.clear()
 
 
 def test_mana_filter_mid_pay_cost_completes_without_disturbing_original_payment():

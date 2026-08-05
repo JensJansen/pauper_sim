@@ -25,7 +25,7 @@ silently go ungrouped.
 
 Auto-sizing escalation: when a League-mode submission leaves --n-iterations
 blank and gives --total-games, a single run_league.py invocation only ever
-plays ONE batch of its own internal doubling ladder (run_league._next_batch_games)
+plays ONE batch of its own internal doubling ladder (rl.league_runner._next_batch_games)
 -- exactly the "start tiny, verify, double" behavior the `/train` skill drives
 by hand across many separate invocations. _escalating_loop automates that same
 loop: after each batch, check it was actually healthy (see _batch_healthy's own

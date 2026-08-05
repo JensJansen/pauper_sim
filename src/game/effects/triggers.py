@@ -208,7 +208,7 @@ def promote_triggers_to_stack(state):
     triggers, never an opponent's (this is what keeps order_triggers a
     plain by-name resolution: every candidate it can ever offer is
     guaranteed to be a card from the deciding player's own deck, the same
-    guarantee drl_env._actions._CHOOSE_NAME_PENDING_KINDS documents and
+    guarantee drl_env._actions_resolution._CHOOSE_NAME_PENDING_KINDS documents and
     enforces). state.active_idx is set to each group's owner for the
     duration of its placement (push_to_stack's own "controller" stamp reads
     active_idx, same convention resolve_top_of_stack's controller-restore
@@ -292,10 +292,11 @@ def _place_trigger_groups(state, groups, original_active_idx):
     state.active_idx = owner_idx
     if len(entries) == 1:
         # Same two-way placement branch execute_order_triggers_option (in
-        # resolution/handlers.py) uses for the 2+ case below -- inlined here,
-        # not shared, because triggers.py already imports resolution at
-        # module level (this file's own top import), so handlers.py importing
-        # a shared helper back out of effects.triggers would cycle.
+        # resolution/handlers_triggers.py) uses for the 2+ case below --
+        # inlined here, not shared, because triggers.py already imports
+        # resolution at module level (this file's own top import), so
+        # handlers_triggers.py importing a shared helper back out of
+        # effects.triggers would cycle.
         entry = entries[0]
         if entry.get("targeting"):
             registry.EFFECT_REGISTRY[entry["card_def"].effect_id][entry["hook"]](state, entry["permanent"])

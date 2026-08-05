@@ -1,6 +1,9 @@
-"""Self-play rollout collection + PPO update for the token/attention
-architecture (rl.features + rl.arch + rl.deck +
-rl.action_bridge) -- the piece that actually trains a DeckNetwork.
+"""Self-play rollout collection for the token/attention architecture
+(rl.features + rl.arch + rl.deck + rl.action_bridge) -- the piece that
+actually trains a DeckNetwork. The GAE/PPO-update math lives in rl.ppo, and
+the ProcessPoolExecutor multiprocessing plumbing for league collection lives
+in rl.rollout_parallel; both build on the game loop (collect_rollout) and
+buffer type (RolloutBuffer) defined here.
 
 One orchestration primitive, train_selfplay, covers both training regimes
 this architecture needs:
@@ -23,16 +26,14 @@ of whatever reward_fn already decides, which would silently diverge from the
 game loop's own semantics for any reward function that isn't already
 win/loss-gated."""
 
-import random
-
 import numpy as np
 import torch
 
 import drl_env
 import game
-from rl.arch import pad_token_batch
 from rl import mulligan as mulligan_mod
 from rl.agent import SeatAgent, AlwaysKeep
+from rl.ppo import ppo_update
 
 
 class RolloutBuffer:
@@ -274,13 +275,13 @@ def collect_rollout_league(training_deck_name, live_nets, mulligan_nets, deck_ct
     tuple per game played that reached a winner, for the CALLER to feed into
     pool.record_outcome -- a horizon-timeout game (state.winner is None) is
     excluded entirely rather than counted as a loss, matching the no_winner
-    bucketing run_league._run_eval_vs_history/_run_eval_vs_gauntlet already
+    bucketing rl.league_runner._run_eval_vs_history/_run_eval_vs_gauntlet already
     use elsewhere for the same "nobody actually won" case.
     this function and _league_rollout_worker (its parallel-worker twin) never
     write to `pool` themselves (pool.sample_opponent-only here; a worker's own
     pool copy is a separate-process, read-only replica per its own docstring),
     only ever return what happened so the ONE authoritative pool object (living
-    in run_league._run_session) gets updated once, after collection, regardless
+    in rl.league_runner._run_session) gets updated once, after collection, regardless
     of which path collected the games.
 
     live_nets / mulligan_nets / deck_ctxs / decklists_by_name: dicts keyed by
@@ -378,364 +379,6 @@ def _make_league_pairing(training_deck_name, live_nets, mulligan_nets, deck_ctxs
         return agents, decklists, reward_fns, record_as
 
     return pairing
-
-
-def _strip_identities(token_list):
-    """Drops each token's Permanent-object identity before it crosses a
-    process boundary -- ppo_update already discards identities entirely
-    (pad_token_batch's own _identities return value, never read again once
-    a transition is buffered; identity only matters live, during
-    collection, for pointer_legal_mask/execute_pointer_choice), so there is
-    nothing to lose, and no need to find out the hard way whether a live
-    Permanent (embedded in a real GameState object graph) is even safely
-    picklable at all."""
-    return [(idx, row, None) for idx, row, _identity in token_list]
-
-
-def _buffer_to_entries(buf):
-    """Serialize a RolloutBuffer to plain (picklable) tuples for the process
-    boundary -- identities stripped (see _strip_identities). Shared by the
-    worker for both its training-deck buffer and each salvaged live-opponent
-    buffer (Path A)."""
-    return [
-        (_strip_identities(buf.token_lists[i]), buf.scalar[i], buf.mask[i], buf.action[i],
-         buf.logp[i], buf.value[i], buf.reward[i], buf.done[i])
-        for i in range(len(buf))
-    ]
-
-
-def _extend_buffer_from_entries(buf, entries):
-    for entry in entries:
-        buf.add(*entry)
-    return buf
-
-
-def _sanitize_events(game_logs):
-    """Deep-convert event-log values to picklable primitives before they cross a
-    process boundary -- a few log_event fields can hold a card closure/lambda (the
-    same non-serializable case run_league._json_default guards at JSON-write time),
-    which pickle can't ship from an MP worker. Converts an unknown object to its
-    string .name if it has one, else repr(); leaves primitives/containers intact."""
-    def conv(v):
-        if isinstance(v, (str, int, float, bool)) or v is None:
-            return v
-        if isinstance(v, dict):
-            return {k: conv(x) for k, x in v.items()}
-        if isinstance(v, (list, tuple)):
-            return [conv(x) for x in v]
-        name = getattr(v, "name", None)
-        return name if isinstance(name, str) else repr(v)
-    return [[conv(event) for event in one_game] for one_game in game_logs]
-
-
-def _league_rollout_worker(training_deck_name, all_state_dicts, all_trunk_hidden, shared_state_dict,
-                            shared_hparams, reward_fn_name, league_root_dir, horizon, n_games, seed,
-                            mulligan_state_dicts=None, collect_logs=False, checkpoint_rate=0.0, pfsp=True):
-    """Runs in a SEPARATE PROCESS (spawned fresh -- Windows only supports
-    the "spawn" start method, no fork, so this re-imports the whole module
-    graph from scratch rather than inheriting any parent-process memory).
-    Must be a module-level function: ProcessPoolExecutor on spawn needs to
-    locate it by import path (rl.train._league_rollout_worker), not a
-    closure or lambda.
-
-    Rebuilds decklists/vocab/deck_ctxs/fixed_tables locally via
-    build_pool() rather than receiving them from the parent -- fixed_table
-    entries hold legal_fn/execute_fn closures (drl_env.build_action_table's
-    own _attack_execute/_choose_permanent_execute/... each return a nested
-    `def execute(state): ...`), which the standard pickle module cannot
-    serialize at all. Only plain tensors (state_dicts), scalars, and
-    strings actually cross the process boundary; reward_fn is passed BY
-    NAME for the identical reason (rl.rewards's own named instances, e.g.
-    action_count_win_reward_200_floor02, are themselves closures returned
-    by action_count_win_reward(...)). league_root_dir is passed explicitly
-    rather than imported from run_league.py to avoid a circular import
-    (run_league.py already imports FROM this module at module scope)."""
-    torch.set_num_threads(1)  # this worker IS the unit of parallelism -- it must not also spawn its own intra-op thread pool and oversubscribe the physical cores every other worker is also competing for
-    import rl.rewards as rewards_module
-    from rl.arch import SetTransformer
-    from rl.deck import DeckNetwork
-    from rl.league import LeaguePool
-    from rl.pool import build_pool
-
-    reward_fn = getattr(rewards_module, reward_fn_name)
-    decklists, vocab, deck_ctxs, fixed_tables = build_pool()
-
-    shared = SetTransformer(vocab.size, **shared_hparams)
-    shared.load_state_dict(shared_state_dict)
-    shared.eval()
-    for p in shared.parameters():
-        p.requires_grad = False
-
-    live_nets = {}
-    for name, state_dict in all_state_dicts.items():
-        net = DeckNetwork(shared, film_condition_dim=shared.d_model, non_targeting_n_actions=len(fixed_tables[name]),
-                           trunk_hidden=all_trunk_hidden[name])
-        net.load_state_dict(state_dict)
-        net.eval()
-        live_nets[name] = net
-
-    # Deck names come from all_state_dicts' own keys, NOT list(decklists) (this
-    # worker's fresh build_pool() call always returns the FULL roster, regardless of
-    # any roster= restriction the orchestrating _run_session applied) -- live_nets
-    # above already reflects exactly the (possibly narrowed) roster the orchestrator
-    # built, so mirroring its keys here is what keeps this worker's own opponent
-    # pool scoped the same way, without needing a separate parameter to carry the
-    # restriction across the process boundary redundantly.
-    pool = LeaguePool(league_root_dir, list(all_state_dicts.keys()))  # read-only here -- this worker never calls register_snapshot
-    rng = random.Random(seed)
-
-    mulligan_nets = None
-    if mulligan_state_dicts is not None:
-        from rl.mulligan import MulliganNet
-        mulligan_nets = {}
-        for name, sd in mulligan_state_dicts.items():
-            mn = MulliganNet(shared)  # reuses the same frozen shared stack built above
-            mn.load_state_dict(sd)
-            mn.eval()
-            mulligan_nets[name] = mn
-
-    worker_logs = [] if collect_logs else None  # engine event logs are plain dicts -> picklable, cross the boundary as-is
-    buffers_by_deck, mull_by_deck, played, outcomes = collect_rollout_league(
-        training_deck_name, live_nets, mulligan_nets, deck_ctxs, decklists, pool, reward_fn,
-        horizon, n_games, rng, device="cpu", game_logs=worker_logs, checkpoint_rate=checkpoint_rate, pfsp=pfsp,
-    )
-    # Serialize each deck's buffer to picklable entries (identities stripped);
-    # mulligan transitions and event logs are already plain data. outcomes is
-    # already plain (str, int-or-None, bool) tuples -- picklable as-is. This
-    # worker's own `pool` above is read-only (per its own comment); outcomes
-    # is how what it observed gets back to the MAIN process's real pool
-    # (collect_rollout_league_parallel aggregates it; _run_session applies it).
-    entries_by_deck = {name: _buffer_to_entries(buf) for name, buf in buffers_by_deck.items()}
-    if worker_logs:
-        worker_logs = _sanitize_events(worker_logs)  # strip unpicklable closures before crossing the boundary
-    return entries_by_deck, mull_by_deck, worker_logs, played, outcomes
-
-
-def collect_rollout_league_parallel(training_deck_name, live_nets, reward_fn_name, league_root_dir, horizon, n_games,
-                                     executor, n_workers, shared_hparams, shared_state_dict, all_trunk_hidden,
-                                     mulligan_state_dicts=None, game_logs=None, checkpoint_rate=0.0, pfsp=True):
-    """Orchestrator (runs in the MAIN process): splits n_games across
-    n_workers, submits one _league_rollout_worker task per worker via the
-    given (already-created, reused-across-calls) ProcessPoolExecutor --
-    reused rather than created fresh per call so process-spawn/import
-    overhead (re-importing torch/the game engine in every worker) is paid
-    ONCE, not once per collection round. Every deck's live net crosses the
-    boundary (not just training_deck_name's own), since a worker needs the
-    SAME opponent-sampling capability collect_rollout_league already has
-    in-process -- including sampling some OTHER deck's current live net,
-    not just training_deck_name's own or frozen snapshots.
-
-    shared_state_dict, all_trunk_hidden: the FROZEN shared stack's weights and
-    every live net's trunk widths -- both fixed for the whole session (the
-    shared stack never trains, trunk widths never resize), so the caller
-    computes them ONCE (run_league._run_session, right after live_nets is
-    built) instead of this function re-deriving them from live_nets on every
-    one of the n_iterations * len(train_decks) calls it gets per session.
-
-    checkpoint_rate, pfsp: forwarded to every worker's own pool.sample_opponent
-    call verbatim -- see rl.league.LeaguePool.sample_opponent's docstring.
-
-    Returns (buffers_by_deck, mull_by_deck, games_played, outcomes) -- outcomes
-    merges every worker's own collect_rollout_league outcomes list (see its
-    docstring); the caller applies these to the real pool via record_outcome,
-    since every worker's pool here is a separate-process, read-only replica."""
-    all_state_dicts = {name: net.state_dict() for name, net in live_nets.items()}
-
-    base = n_games // n_workers
-    remainder = n_games % n_workers
-    chunks = [base + (1 if i < remainder else 0) for i in range(n_workers)]
-
-    collect_logs = game_logs is not None
-    futures = [
-        executor.submit(_league_rollout_worker, training_deck_name, all_state_dicts, all_trunk_hidden,
-                         shared_state_dict, shared_hparams, reward_fn_name, league_root_dir, horizon, chunk,
-                         random.randrange(2 ** 31), mulligan_state_dicts, collect_logs, checkpoint_rate, pfsp)
-        for chunk in chunks if chunk > 0
-    ]
-    buffers_by_deck = {}   # deck name -> merged RolloutBuffer across workers
-    mull_by_deck = {}      # deck name -> merged mulligan transitions across workers
-    outcomes = []          # (opponent_deck_name, snapshot_id_or_None, training_deck_won), merged across workers --
-                            # see collect_rollout_league's own docstring: the caller (_run_session) applies these
-                            # to its ONE authoritative pool object, since every worker's own pool is a read-only replica.
-    games_played = 0
-    for future in futures:
-        entries_by_deck, worker_mull_by_deck, worker_logs, played, worker_outcomes = future.result()
-        games_played += played
-        for name, entries in entries_by_deck.items():
-            _extend_buffer_from_entries(buffers_by_deck.setdefault(name, RolloutBuffer()), entries)
-        for name, tr in worker_mull_by_deck.items():
-            mull_by_deck.setdefault(name, []).extend(tr)
-        if game_logs is not None and worker_logs:  # one event_log per game, merged across workers
-            game_logs.extend(worker_logs)
-        outcomes.extend(worker_outcomes)
-    return buffers_by_deck, mull_by_deck, games_played, outcomes
-
-
-def _compute_gae(rewards_, values_, dones_, gamma, gae_lambda):
-    """Standard GAE. Concatenating multiple games' worth of a buffer is safe:
-    every game's own end is flushed with done=True, so a reverse GAE pass
-    never bootstraps across a game boundary."""
-    n = len(rewards_)
-    adv = np.zeros(n, dtype=np.float32)
-    last_gae = 0.0
-    for t in reversed(range(n)):
-        next_value = 0.0 if dones_[t] or t + 1 >= n else values_[t + 1]
-        next_nonterminal = 0.0 if dones_[t] else 1.0
-        delta = rewards_[t] + gamma * next_value * next_nonterminal - values_[t]
-        last_gae = delta + gamma * gae_lambda * next_nonterminal * last_gae
-        adv[t] = last_gae
-    return adv
-
-
-def _precompute_frozen_shared(net, token_lists, device, chunk_size=256):
-    """Run the FROZEN shared stack over every transition ONCE, returning
-    per-transition (mine[i], theirs[i], token_reps[i]) so ppo_update can reuse
-    them across all epochs instead of recomputing the SetTransformer n_epochs
-    times per minibatch. token_reps[i] is trimmed to that transition's real
-    token count (min 1, matching pad_token_batch's 0->1 dummy padding), so it
-    can be re-padded to each minibatch's own max later.
-
-    Uses no_grad, NOT inference_mode: the cached tensors are fed back into the
-    trainable head's forward, and inference-mode tensors cannot participate in
-    an autograd graph (it raises) -- no_grad tensors become plain constant
-    leaves, which is exactly what a frozen stack's output is.
-    # ponytail: caches the whole buffer's token_reps at once; chunk the reuse
-    # too if a huge buffer ever OOMs on GPU."""
-    mine_all, theirs_all, reps_all = [], [], []
-    with torch.no_grad():
-        for start in range(0, len(token_lists), chunk_size):
-            chunk = token_lists[start:start + chunk_size]
-            vocab_idx, features, key_padding_mask, _identities = pad_token_batch(chunk, device=device)
-            side_flag = features[:, :, -1]
-            mine, theirs, token_reps = net.shared_stack(vocab_idx, features, key_padding_mask, side_flag)
-            for j, toks in enumerate(chunk):
-                n_tok = max(len(toks), 1)  # a 0-token board pads to ONE dummy slot, same as pad_token_batch
-                mine_all.append(mine[j])
-                theirs_all.append(theirs[j])
-                reps_all.append(token_reps[j, :n_tok])
-    return mine_all, theirs_all, reps_all
-
-
-def ppo_update(net, optimizers, buf, device, n_epochs=4, batch_size=64, gamma=0.99, gae_lambda=0.95,
-                clip_range=0.2, ent_coef=0.01, vf_coef=0.5, max_grad_norm=0.5):
-    # ent_coef default 0.01: with no entropy bonus the main policy collapses
-    # onto a narrow low-branching behavior (pass, shrink its own board) -- the
-    # action-space-minimization pathology; see rl.rewards.deploy_reward_v2. The
-    # mulligan model has its own ENTROPY_COEF; this is the DeckNetwork policy's.
-    """PPO update over a buffer of variable-length token lists -- pads ONCE
-    per minibatch (not once for the whole buffer up front), since a buffer
-    spanning many games can have wildly different token counts across
-    entries and padding the WHOLE buffer to its own global max would waste
-    memory/compute proportional to the single largest board state seen.
-
-    optimizers: a LIST of optimizers, all zero_grad'd before and step'd
-    after the SAME backward() call -- never one optimizer per net.
-    Needed because a DeckNetwork's shared_stack is a REFERENCE to a module
-    shared across multiple nets (pretraining's per-deck throwaway heads all
-    point at the same SetTransformer+FiLM instance); giving each net's
-    call site its own single optimizer over net.parameters() would create
-    TWO independent Adam instances tracking separate, unsynchronized
-    momentum/variance state for the identical shared_stack tensors, stepping
-    on them in alternation. Passing a single-net-only optimizer as [optimizer]
-    (league training, where the shared stack is frozen and only one optimizer
-    ever touches this net's own params) still works unchanged."""
-    values = np.array(buf.value, dtype=np.float32)
-    rewards_ = np.array(buf.reward, dtype=np.float32)
-    dones = np.array(buf.done, dtype=np.float32)
-    adv = _compute_gae(rewards_, values, dones, gamma, gae_lambda)
-    ret = adv + values
-    adv = (adv - adv.mean()) / (adv.std() + 1e-8)
-
-    # A FROZEN shared stack (league) produces the SAME per-transition outputs
-    # every epoch, so precompute them ONCE and reuse -- skipping n_epochs-1
-    # redundant SetTransformer forwards per minibatch (the bulk of the update's
-    # forward cost, and ~46% of a real training iteration is the update). A
-    # TRAINABLE shared stack (pretrain) must recompute so gradients reach it, so
-    # this is gated on requires_grad and needs no caller change. Fidelity is
-    # exact: the SetTransformer masks padding in attention/pooling, so a
-    # transition's cached reps equal what a fresh per-minibatch forward would
-    # produce.
-    cache_shared = not any(p.requires_grad for p in net.shared_stack.parameters())
-    if cache_shared:
-        cached_mine, cached_theirs, cached_reps = _precompute_frozen_shared(net, buf.token_lists, device)
-
-    total = len(buf)
-    indices = np.arange(total)
-    last_policy_loss = last_value_loss = last_entropy = 0.0
-    # net's parameter set is fixed for this whole call -- listing it once
-    # avoids re-walking the module tree (net.parameters() -> named_modules())
-    # on every one of the n_epochs * n_minibatches clip_grad_norm_ calls below.
-    all_params = list(net.parameters())
-    for _epoch in range(n_epochs):
-        np.random.shuffle(indices)
-        for start in range(0, total, batch_size):
-            mb = indices[start:start + batch_size]
-            scalar_mb = torch.as_tensor(np.array([buf.scalar[i] for i in mb]), dtype=torch.float32, device=device)
-            act_mb = torch.as_tensor(np.array([buf.action[i] for i in mb]), dtype=torch.int64, device=device)
-            old_logp_mb = torch.as_tensor(np.array([buf.logp[i] for i in mb]), dtype=torch.float32, device=device)
-            adv_mb = torch.as_tensor(adv[mb], dtype=torch.float32, device=device)
-            ret_mb = torch.as_tensor(ret[mb], dtype=torch.float32, device=device)
-
-            n_fixed = net.non_targeting_head.out_features
-            if cache_shared:
-                # Reuse the frozen shared stack's precomputed per-transition
-                # outputs -- no SetTransformer forward this epoch. Re-pad
-                # token_reps to THIS minibatch's own max token count, exactly as
-                # pad_token_batch would have (real tokens first, dummy/pad after).
-                mine_summary = torch.stack([cached_mine[i] for i in mb])
-                theirs_summary = torch.stack([cached_theirs[i] for i in mb])
-                reps_list = [cached_reps[i] for i in mb]
-                max_tokens = max(r.shape[0] for r in reps_list)
-                token_reps = torch.zeros((len(mb), max_tokens, mine_summary.shape[-1]),
-                                         dtype=mine_summary.dtype, device=device)
-                for row, r in enumerate(reps_list):
-                    token_reps[row, :r.shape[0]] = r
-            else:
-                # Trainable shared stack (pretrain): recompute so gradients flow into it.
-                vocab_idx, features, key_padding_mask, _identities = pad_token_batch(
-                    [buf.token_lists[i] for i in mb], device=device)
-                side_flag = features[:, :, -1]
-                max_tokens = vocab_idx.shape[1]
-                mine_summary, theirs_summary, token_reps = net.shared_stack(vocab_idx, features, key_padding_mask, side_flag)
-
-            # Full action mask per minibatch entry -- padded to max_tokens (this
-            # batch's own max token count, matching the token_reps padding
-            # above). n_fixed read directly off the net (never inferred from
-            # mask_length - token_count): pad_token_batch pads a ZERO-token entry
-            # (a legitimate empty-board state, e.g. before either seat has played
-            # a land) to ONE dummy slot, which would make that inference
-            # silently off-by-one.
-            full_mask_mb = torch.zeros((len(mb), n_fixed + max_tokens), dtype=torch.bool, device=device)
-            for row, i in enumerate(mb):
-                stored = buf.mask[i]
-                full_mask_mb[row, :n_fixed] = torch.as_tensor(stored[:n_fixed], dtype=torch.bool, device=device)
-                pointer_part = stored[n_fixed:]
-                full_mask_mb[row, n_fixed:n_fixed + len(pointer_part)] = torch.as_tensor(
-                    pointer_part, dtype=torch.bool, device=device,
-                )
-
-            pointer_mask_mb = full_mask_mb[:, n_fixed:]
-            logits, values_pred = net(mine_summary, theirs_summary, scalar_mb, token_reps, pointer_mask_mb)
-            masked_logits = logits.masked_fill(~full_mask_mb, -1e8)
-            dist = torch.distributions.Categorical(logits=masked_logits)
-            new_logp = dist.log_prob(act_mb)
-            entropy = dist.entropy().mean()
-
-            ratio = torch.exp(new_logp - old_logp_mb)
-            surr1 = ratio * adv_mb
-            surr2 = torch.clamp(ratio, 1 - clip_range, 1 + clip_range) * adv_mb
-            policy_loss = -torch.min(surr1, surr2).mean()
-            value_loss = ((values_pred - ret_mb) ** 2).mean()
-            loss = policy_loss + vf_coef * value_loss - ent_coef * entropy
-
-            for opt in optimizers:
-                opt.zero_grad()
-            loss.backward()
-            torch.nn.utils.clip_grad_norm_(all_params, max_grad_norm)
-            for opt in optimizers:
-                opt.step()
-            last_policy_loss, last_value_loss, last_entropy = policy_loss.item(), value_loss.item(), entropy.item()
-    return last_policy_loss, last_value_loss, last_entropy
 
 
 def batch_size_for_iteration(iteration, n_iterations, start=32, cap=2048, n_steps=6):

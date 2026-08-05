@@ -257,8 +257,8 @@ def test_deep_analysis_flashback():
 
     The graveyard is built from a real CardInstance -- what an actual game
     puts there (plans/object-identity-zone-model.md) -- and the instance is
-    what gets passed in, matching the contract drl_env._actions._flashback_
-    execute honors: state.graveyard.remove is matched by object identity,
+    what gets passed in, matching the contract drl_env._actions_cast_altzone.
+    _flashback_execute honors: state.graveyard.remove is matched by object identity,
     which only a CardInstance (never the interned CardDef) can satisfy."""
     state = GameState(on_the_play=True)
     da = CardInstance(CardDef("Deep Analysis", CardType.SORCERY, {"generic": 3, "U": 1}, EffectId.DEEP_ANALYSIS))

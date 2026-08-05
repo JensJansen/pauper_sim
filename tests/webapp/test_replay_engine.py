@@ -19,7 +19,7 @@ def test_mulligan_rounds_are_individually_visible():
     mulligan-round draw, reject, and bottom-card pick is its own step, real
     event shapes (mulligan_take rejects the whole hand at once, cards=[...];
     mulligan_bottom is logged once per bottomed card, card=<single name>,
-    per game/resolution/handlers.py)."""
+    per game/resolution/handlers_mulligan.py)."""
     events = [
         _ev("zone_move", phase=None, cards=["A", "B", "C", "D", "E", "F", "G"],
             from_zone="library", to_zone="hand", reason="draw"),

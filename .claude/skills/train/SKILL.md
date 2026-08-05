@@ -47,7 +47,7 @@ user in one line before starting.
 - **League needs a frozen stack.** If MODE = `league` and
   `../checkpoints/shared_stack_frozen.pt` does NOT exist, stop and tell the user:
   "No frozen shared stack — run `/train fresh start` (or pretrain) first." Do not try
-  to run the league without it (`run_league.load_frozen_stack` hard-asserts it).
+  to run the league without it (`rl.league_runner.load_frozen_stack` hard-asserts it).
 - **Which league/config — check BEFORE the first command, not after.** List
   `../training_configs/*.json` and check which checkpoint directories already have
   content (`../checkpoints/<name>/session.txt` or any `live.pt` under it). If the
@@ -234,7 +234,7 @@ assume `checkpoints/league/` when a config's own `league_name` pointed elsewhere
 - the double round-robin snapshot logs written by §5 step 4
   (`logs/<league_name>_double_round_robin_<per_deck_cumulative>games.json`) -- manual,
   triggered once per escalation step by this skill, for the replay viewer;
-- `<league_dir>/metrics.jsonl` -- automatic, appended by `run_league.py`'s own
+- `<league_dir>/metrics.jsonl` -- automatic, appended by `rl.league_runner`'s own
   `_run_session` on EVERY iteration of every session this skill ran (not just at
   escalation boundaries): per-iteration policy/value loss and entropy, and (once any
   deck has been through a snapshot cycle) a `vs_history` win-rate-vs-its-own-archived-

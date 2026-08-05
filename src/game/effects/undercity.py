@@ -14,7 +14,10 @@ owning player's next turn by expire_until_next_turn). The combat-facing
 pieces -- the menace block rule and goad's forced attack -- live in
 game.effects.combat (has_unfulfilled_goad / enforce_menace), which sits below
 this module. The venture triggered ability is queued here and resolved by
-game.effects.triggers' own "venture" branch.
+game.effects.triggers' own "venture" branch. Two pending-resolution kinds
+(begin_choose_room, begin_throne_reveal) live here rather than in
+game.resolution's shared handler pool -- both are Undercity-only, each with
+exactly one caller (venture / _room_throne, respectively) in this module.
 
 Real Undercity dungeon (Scryfall), branching room graph in _DUNGEON below."""
 
@@ -92,7 +95,7 @@ def venture(state, player_idx):
     if len(nexts) == 1:
         _enter_room(state, player_idx, nexts[0])
     else:
-        resolution.begin_choose_room(state, nexts, lambda s, room: _enter_room(s, player_idx, room))
+        begin_choose_room(state, nexts, lambda s, room: _enter_room(s, player_idx, room))
 
 
 def _enter_room(state, player_idx, room):
@@ -101,6 +104,23 @@ def _enter_room(state, player_idx, room):
     state.players[player_idx].dungeon_room = None if not _DUNGEON[room] else room
     state.log_event("undercity_enter_room", player_idx=player_idx, room=room)
     _ROOM_EFFECTS[room](state, player_idx)
+
+
+def begin_choose_room(state, options, on_complete):
+    """Undercity venture: the venturing player picks which of `options` (the
+    1 or 2 rooms the current room leads to) to enter next. on_complete(state,
+    room_name) fires with the chosen room. Undercity-only (venture above is
+    its one caller) -- lives here rather than in game.resolution's shared
+    handler pool."""
+    resolution.begin_resolution(state, "choose_room", on_complete, options=tuple(options))
+
+
+def choose_room_options(state):
+    return list(state.pending_resolution["options"])
+
+
+def execute_choose_room_option(state, name):
+    resolution.complete_resolution(state, name)
 
 
 # --- room effects (active_idx == the venturer throughout) ---
@@ -179,6 +199,40 @@ def _room_catacombs(state, player_idx):
     create_token(state, SKELETON_TOKEN_CARD_DEF)
 
 
+def begin_throne_reveal(state, n, on_complete):
+    """Undercity's Throne of the Dead Three: reveal the top `n` library cards;
+    the venturer picks one CREATURE card from among them
+    (throne_reveal_options). Every exit path (a pick, or the empty-reveal
+    auto-complete when no creature is revealed) returns the unchosen revealed
+    cards to the library and shuffles it -- done here so the library is always
+    left consistent; on_complete(state, chosen_card_def | None) then only has
+    to place the chosen creature (battlefield + counters + hexproof, in
+    _room_throne below). Undercity-only (_room_throne is its one caller) --
+    lives here rather than in game.resolution's shared handler pool."""
+    revealed = state.library[:n]
+    del state.library[:n]
+    resolution.begin_resolution(state, "throne_reveal", on_complete, revealed=revealed)
+    if not throne_reveal_options(state):
+        _finish_throne(state, None)  # no creature among the revealed cards
+
+
+def throne_reveal_options(state):
+    return sorted({c.name for c in state.pending_resolution["revealed"] if c.card_type == CardType.CREATURE})
+
+
+def execute_throne_reveal_option(state, name):
+    chosen = next(c for c in state.pending_resolution["revealed"] if c.name == name and c.card_type == CardType.CREATURE)
+    _finish_throne(state, chosen)
+
+
+def _finish_throne(state, chosen):
+    revealed = state.pending_resolution["revealed"]
+    rest = [c for c in revealed if c is not chosen] if chosen is not None else list(revealed)
+    state.library.extend(rest)
+    state.rng.shuffle(state.library)
+    resolution.complete_resolution(state, chosen)
+
+
 def _room_throne(state, player_idx):
     """Reveal the top ten cards; put a creature card from among them onto the
     battlefield with three +1/+1 counters and hexproof until your next turn;
@@ -192,7 +246,7 @@ def _room_throne(state, player_idx):
         perm.flags["throne_hexproof"] = True  # read as hexproof by stats.creature_keywords
         perm.flags["throne_hexproof_turn"] = state.turn_number  # expires at this player's NEXT turn
 
-    resolution.begin_throne_reveal(state, 10, _place)
+    begin_throne_reveal(state, 10, _place)
 
 
 _ROOM_EFFECTS = {

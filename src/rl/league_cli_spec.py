@@ -90,13 +90,13 @@ def build_arg_parser(description=None):
                               "all, matching the pre-config-file interface).")
     parser.add_argument("--gauntlet-league-name", type=str, default=None,
                          help="An INDEPENDENTLY-trained twin league (checkpoints/<name>/) to periodically measure "
-                              "this league's live nets against (run_league._run_eval_vs_gauntlet) -- a genuinely "
+                              "this league's live nets against (rl.league_runner._run_eval_vs_gauntlet) -- a genuinely "
                               "external reference, unlike this league's own historical snapshots. Optional; most "
                               "leagues won't have one. Prefer --league-config's own gauntlet_league_name field (see "
                               "training_configs/run_gauntlet.json's _note); this flag is the lower-level override.")
     parser.add_argument("--heuristic-decks", type=str, default=None, metavar="A,B,...",
                          help="Deck(s) to ALSO periodically measure against rl.agent.HeuristicAgent -- the "
-                              "gauntlet's hand-authored, non-learned tier-1 member (run_league._run_eval_vs_heuristic). "
+                              "gauntlet's hand-authored, non-learned tier-1 member (rl.league_runner._run_eval_vs_heuristic). "
                               "Default: none (most decks don't have an owner-authored heuristic opponent). Prefer "
                               "--league-config's own heuristic_decks field; this flag is the lower-level override.")
     parser.add_argument("--roster", type=str, default=None, metavar="A,B,...",

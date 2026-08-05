@@ -1,7 +1,7 @@
 """Benchmark: the REAL league training loop under different collection configs.
 
-Drives run_league._run_session directly -- the EXACT training sequence (all
-decks, collect + ppo_update, the batch-size schedule, session-end
+Drives rl.league_runner._run_session directly -- the EXACT training sequence
+(all decks, collect + ppo_update, the batch-size schedule, session-end
 checkpointing) -- with the ONLY difference being a fresh, UNTRAINED shared stack
 of identical config (fresh_stack=True) instead of the loaded trained one. So
 every number here is a true training session's per-iteration cost, not an
@@ -25,8 +25,8 @@ import shutil
 import time
 from concurrent.futures import ProcessPoolExecutor
 
-import _common as bench  # noqa: F401 -- sets sys.path + chdir so `import run_league` resolves like the real script
-import run_league
+import _common as bench  # noqa: F401 -- sets sys.path + chdir so build_pool()'s relative paths resolve like the real script
+from rl import league_runner
 
 
 def _parse_config(name):
@@ -47,9 +47,9 @@ def _run_config(name, iters, gpi, snapshot_every, seed, roster):
     try:
         if workers and workers > 1:
             with ProcessPoolExecutor(max_workers=workers) as ex:
-                run_league._run_session(iters, gpi, snapshot_every, ex, workers, **kwargs)
+                league_runner._run_session(iters, gpi, snapshot_every, ex, workers, **kwargs)
         else:
-            run_league._run_session(iters, gpi, snapshot_every, None, 1, **kwargs)
+            league_runner._run_session(iters, gpi, snapshot_every, None, 1, **kwargs)
     finally:
         shutil.rmtree(league_dir, ignore_errors=True)
     return time.perf_counter() - t0

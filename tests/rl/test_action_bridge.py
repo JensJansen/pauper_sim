@@ -62,7 +62,7 @@ def test_build_fixed_action_table_basic():
     # triggers, sacrifice, discard, search_fetch, ...) can need to reference it.
     # Omitting it from choosable_names produces an all-False action mask the
     # moment a by-name resolution needs to reference the back face
-    # (drl_env._actions.build_action_table).
+    # (drl_env._actions_table.build_action_table).
     dfc_decklist = game.parse_decklist_file("../data/mono_blue_terror.txt")
     dfc_table = build_fixed_action_table(dfc_decklist)
     dfc_names = [name for name, _l, _e in dfc_table]
@@ -330,7 +330,7 @@ def test_stranded_payment_filter_regression():
     # already-begun payment still owes -- leaving remaining={'G': 1} with no
     # green source and, since float-first mana has no "Abandon payment"
     # action, no legal action at all (all-False mask).
-    # drl_env._actions._filter_would_strand_payment forbids exactly that.
+    # drl_env._actions_mana._filter_would_strand_payment forbids exactly that.
     tron_decklist = game.parse_decklist_file("../data/monster_tron.txt")
     tron_table = drl_env.build_action_table(tron_decklist, game.EFFECT_REGISTRY)
     # "Filter Barrels of Blasting Jelly, paying G" -- the exact action from the crash.
@@ -468,8 +468,8 @@ def test_choose_cast_copy_stranded_payment_regression():
     # choose_cast_copy itself -- 2 Bramble Wurms in the graveyard, activating
     # the {2}{G} graveyard ability (legal: the pool already covers it), then
     # filtering the floating {G} away WHILE still choosing which copy, before
-    # begin_pay_cost ever opens. game.resolution.handlers.
-    # begin_choose_cast_copy's reserved_cost + drl_env._actions.
+    # begin_pay_cost ever opens. game.resolution.handlers_casting.
+    # begin_choose_cast_copy's reserved_cost + drl_env._actions_mana.
     # _filter_would_strand_payment's own choose_cast_copy branch forbid it.
     bw_def = game.CARD_DEFS["Bramble Wurm"]
     bw_a, bw_b = CardInstance(bw_def), CardInstance(bw_def)
@@ -526,7 +526,7 @@ def test_universal_cross_player_decision_rows():
     # Cascade's own may-cast, madness always triggers off your own discarded
     # card, Lead the Stampede/Highway Robbery/Ancient Stirrings/Malevolent
     # Rumble/Chromatic Star are each one specific card's own effect) -- see
-    # test_self_only_decision_rows_gated_per_deck below, and drl_env._actions.
+    # test_self_only_decision_rows_gated_per_deck below, and drl_env._actions_table.
     # build_action_table's own "UNIVERSAL DECISION ROWS" header comment.
     universal_decision_rows = (
         "Pay (unless)", "Don't pay (unless)",

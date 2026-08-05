@@ -169,7 +169,7 @@ def test_opponent_owned_order_triggers_offers_only_their_own_names():
     # must be answered by THAT player (active_idx
     # set to them), offering ONLY their own card names, never the active
     # player's -- this is what keeps order_triggers a safe by-name resolution
-    # (drl_env._actions._CHOOSE_NAME_PENDING_KINDS's own guaranteed invariant:
+    # (drl_env._actions_resolution._CHOOSE_NAME_PENDING_KINDS's own guaranteed invariant:
     # every candidate it can ever offer is confined to the deciding player's
     # own deck).
     _filler_backup4 = registry.EFFECT_REGISTRY[EffectId.FILLER]

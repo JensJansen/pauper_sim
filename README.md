@@ -74,14 +74,42 @@ src/
     effects/                 Generic effect plumbing (each card catalog calls in):
                              casting, combat, stack + triggers, state_based (SBAs +
                              cleanup), stats (Aura/keyword/P/T), tokens, win_check,
-                             madness_and_plot, undercity (initiative), shared.
-    resolution/              Multi-step decisions the MODEL makes one action at a time
-                             (mulligan, scry/surveil, search/fetch, discard, targeting,
-                             trigger ordering, ...): _core (begin/complete state machine)
-                             + handlers (every concrete resolution kind).
+                             madness_and_plot, undercity (initiative + its two
+                             Undercity-only resolution kinds, see resolution/ below),
+                             shared.
+    resolution/              Multi-step decisions the MODEL makes one action at a time:
+                             _core (begin/complete state machine) + one handlers_<kind>
+                             module per resolution category -- handlers_mulligan,
+                             handlers_targeting (incl. stack targeting), handlers_combat
+                             (declare-blockers/damage-assignment), handlers_casting
+                             (cast-copy/mode/X/Delve/mana subdecisions/Madness),
+                             handlers_library (search/graveyard/scry/surveil/ponder/
+                             discard/sacrifice/explore), handlers_triggers (placement
+                             ordering) -- all re-exported flat via resolution/__init__.py.
+                             Two Undercity-only kinds (choose_room, throne_reveal) live in
+                             effects/undercity.py instead, not here (single-caller, no
+                             reason to sit in the shared pool).
 
-  drl_env/                 Action-table / legal-mask machinery (a package, not a gym Env):
-    _actions.py              build_action_table + per-action legal/execute predicates.
+  drl_env/                 Action-table / legal-mask machinery (a package, not a gym Env),
+                           split by category, all re-exported flat via __init__.py:
+    _actions_common.py       Shared _GATE_NO_PENDING sentinel + _hand_count_available.
+    _actions_cast.py         Play land / plain Cast (incl. modal/X-cost/Delve) /
+                             Activate / Forestcycle / impulse ("play from exile")
+                             legal/execute pairs.
+    _actions_cast_altzone.py Casting from a non-hand zone or non-default cost:
+                             alt-cost/Flashback/Escape/Plot/Omen/Prototype.
+    _actions_combat.py       Attack / Assign Blocker / Done blocking / trample
+                             damage-to-player legal/execute pairs.
+    _actions_resolution.py   Generic pending-resolution dispatch: Pass, the shared
+                             "Choose: X" by-name dispatch, exact-(name, slot)
+                             permanent targeting, pool-mana spend, and every small
+                             universal decision row (pay_unless, tuck_position,
+                             may_transform/copy/cast, choose_room, target player/
+                             any-target, madness, discard-or-sacrifice, Declines).
+    _actions_mana.py         Mana-ability/extra-cost/filter legal/execute pairs +
+                             Chromatic Star's choose_mana_color.
+    _actions_table.py        build_action_table + legal_action_mask (kept together --
+                             the table-builder touches every category above).
     _seat.py                 Per-seat helpers (_for_player, _lost).
 
   rl/                      The token/attention DRL system:
@@ -98,16 +126,27 @@ src/
                              opponent (see README's Gauntlet section).
     action_bridge.py         Maps the network's combined (fixed + pointer) action space
                              back to real engine calls.
-    train.py                 Rollout collection + PPO update; mirror & cross self-play;
-                             parallel and in-process-batched rollout collection.
+    train.py                 Rollout collection game loop (collect_rollout) + mirror &
+                             cross self-play orchestration (train_selfplay); the
+                             RolloutBuffer type rl.ppo/rl.rollout_parallel build on.
+    ppo.py                   GAE + the PPO update itself (ppo_update), incl. the frozen-
+                             shared-stack precompute-and-reuse cache.
+    rollout_parallel.py      ProcessPoolExecutor multiprocessing plumbing for league
+                             collection (collect_rollout_league_parallel + its worker).
     pool.py                  Builds the shared vocab + per-deck action tables from the
                              league roster (data/league_decks.json).
     league.py                LeaguePool: historical opponent snapshots, PFSP-weighted
                              sampling, eviction/archival, disk persistence.
+    league_runner.py         run_league.py's reusable core: _run_session, the eval-mode
+                             functions (_run_eval/_run_eval_vs_history/_vs_gauntlet/
+                             _vs_heuristic), checkpoint/progress helpers, shared/frozen-
+                             stack loaders. Imported directly by benchmarking/
+                             training_run.py instead of importing run_league.py itself.
     rewards.py               Reward functions (win/loss with a speed tiebreaker).
 
   run_pretrain.py          Pretrain + freeze the shared stack.
-  run_league.py            League driver (and a --matchup direct-pairing mode).
+  run_league.py            Thin CLI wrapper (arg resolution + main()) around
+                           rl/league_runner.py.
   report_metrics.py        Plain-text summary of a league's metrics.jsonl (entropy/loss
                            trends, win rate vs. archived past selves).
   benchmarking/            training_run.py (benchmarks the real league loop under
@@ -209,12 +248,13 @@ The network is split into a **shared** stack and a **per-deck** head:
   direct whole-game reward, decoupled from the main PPO update — a mulligan is a
   near-bandit: one pregame choice, the game's outcome as its number.
 
-Training is **PPO self-play** (`rl/train.py`). Mirror matches pool both seats
-into one buffer/update; cross-matchups give each net its own buffer, both
-learning from every game. Rollout collection parallelizes across worker
-processes (~3.2–3.5× on 6 physical cores).
+Training is **PPO self-play** (`rl/train.py`'s rollout game loop, `rl/ppo.py`'s
+update math). Mirror matches pool both seats into one buffer/update;
+cross-matchups give each net its own buffer, both learning from every game.
+Rollout collection parallelizes across worker processes (`rl/rollout_parallel.py`,
+~3.2–3.5× on 6 physical cores).
 
-The **league** (`rl/league.py`, `run_league.py`) keeps a rolling window of
+The **league** (`rl/league.py`, `rl/league_runner.py`) keeps a rolling window of
 historical snapshots per deck. Each game resamples an opponent two-level: pick
 a deck (including the training deck itself, for mirror play), then pick one of
 its snapshots (or its current live weights). No hardcoded Stage-1/Stage-2
@@ -301,8 +341,8 @@ Key flags:
 (one game per worker; a smaller value used to silently starve some worker
 processes of any work at all). The PPO minibatch ramp (32 → 2048 over 6 steps)
 and the old `--max-batch-size` auto-sizing cap are likewise no longer
-parameters — see `run_league.py`'s own comments at each removal site
-(`_next_batch_games`, `main()`) for why.
+parameters — see `rl/league_runner.py`'s (`_next_batch_games`) and
+`run_league.py`'s (`main()`) own comments at each removal site for why.
 
 Training runs on **CPU** by design — the model is small (~200–250K params) and
 a batch-size sweep found no GPU crossover at this size.
@@ -359,7 +399,7 @@ reference points, outside that history entirely:
   population shares (the risk PFSP and `vs_history` can't rule out) is far
   more likely to show up against a genuinely independent opponent than
   against anything drawn from the league's own history. Wired via a config's
-  `gauntlet_league_name` field (`run_league._run_eval_vs_gauntlet`, once per
+  `gauntlet_league_name` field (`rl.league_runner._run_eval_vs_gauntlet`, once per
   session per deck, only once the twin population has a checkpoint for that
   deck).
 - **Tier 1 — `rl.agent.HeuristicAgent`**: a hand-authored, non-learned
@@ -477,7 +517,7 @@ Each page links back to `/` and to the other tool.
   which (by design) only ever plays ONE batch of its own doubling ladder per
   invocation — the same "start tiny, verify, double" behavior the `/train`
   skill drives by hand across many separate invocations
-  (`run_league._next_batch_games`). The webapp automates that loop itself
+  (`rl.league_runner._next_batch_games`). The webapp automates that loop itself
   (`RunManager._escalating_loop`): after each batch it re-invokes the same
   command until this league's cumulative games/deck reaches the target, a
   batch comes back unhealthy, or Stop is clicked. Health is judged from log
@@ -576,7 +616,7 @@ Step through a logged game's board state one event at a time. MVP scope per
   backend, which returns that file's game list (one file can hold an entire
   round-robin `--eval` run) before reducing any board state, then reduces
   just the selected game. Each game in the list is labeled from its own
-  `deck_a`/`deck_b` fields (`run_league.py`'s `_write_event_log` stamps
+  `deck_a`/`deck_b` fields (`rl.league_runner`'s `_write_event_log` stamps
   every game with which pairing it actually was) as `"deck A vs deck B (game
   N)"` — the `(game N)` disambiguates repeat games of the same pairing (a
   double round-robin plays each one twice) — rather than an unlabeled

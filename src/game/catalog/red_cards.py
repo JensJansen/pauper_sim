@@ -479,7 +479,7 @@ def cast_faithless_looting(state, card_def):
 def flashback_faithless_looting(state, inst):
     """Real Flashback cost is {2}{R} (unlike Dread Return/Lava Dart's free
     sacrifice-only Flashback) -- the mana is already paid by the generic
-    flashback cost path (drl_env._actions._flashback_execute) before this
+    flashback cost path (drl_env._actions_cast_altzone._flashback_execute) before this
     resolve ever runs, so by the time we get here it's "fully paid for" and
     pushes onto the stack immediately, not gated behind any further
     resolution.
