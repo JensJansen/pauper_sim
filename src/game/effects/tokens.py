@@ -5,8 +5,9 @@ permanent; only its creation (no prior hand/library removal) differs."""
 
 from . import casting
 from .stack import push_ability_to_stack
+from .state_based import is_token, sacrifice_to_graveyard
 from .win_check import gain_life
-from .. import registry, resolution
+from .. import resolution
 from ..cards import CardDef, CardType, EffectId
 
 TOKEN_LIMIT = 20  # shared across every token name, not per-name
@@ -27,7 +28,7 @@ def create_token(state, card_def, tapped=False):
     trigger, as if it was never attempted at all. No real deck comes
     remotely close today; this exists for whatever degenerate future
     token engine might."""
-    token_count = sum(1 for p in state.battlefield if p.card_def.name not in registry.CARD_DEFS)
+    token_count = sum(1 for p in state.battlefield if is_token(p.card_def.name))
     if token_count >= TOKEN_LIMIT:
         return None
     return casting.enters_battlefield(state, card_def, force_tapped=tapped)
@@ -53,13 +54,7 @@ def activate_blood_sac(state, permanent):
     resolves, and a same-name copy still discarded to pay this cost is
     reserved correctly (push_ability_to_stack passes reserves_hand_card=
     False; the discard already left hand at cost time)."""
-    state.battlefield.remove(permanent)
-    state.log_event(
-        "zone_move", permanent=(permanent.card_def.name, permanent.slot), from_zone="battlefield",
-        to_zone="ceases_to_exist", reason="sacrifice",
-    )
-    from .shared import fire_sacrifice_triggers
-    fire_sacrifice_triggers(state, state.active_idx, permanent.card_def)  # Gixian Infiltrator
+    sacrifice_to_graveyard(state, permanent)  # ceases to exist; queues the dies-trigger (Gixian Infiltrator)
     resolution.begin_discard(
         state, 1, optional=False,
         on_complete=lambda s, _cards: push_ability_to_stack(s, permanent.card_def, lambda st: st.draw(1)),
@@ -77,15 +72,13 @@ def activate_eldrazi_spawn_sac(state, permanent):
     existing "produced now, spent later via a separate action" mechanism
     unchanged, since a sacrifice isn't a tap this engine's interactive
     pay_cost loop has any other way to represent."""
-    state.battlefield.remove(permanent)
-    state.log_event(
-        "zone_move", permanent=(permanent.card_def.name, permanent.slot), from_zone="battlefield",
-        to_zone="ceases_to_exist", reason="sacrifice",
-    )
+    # Mana is floated (and logged) BEFORE the sacrifice so it's on the pool
+    # ahead of the dies-trigger's queueing -- sacrifice_to_graveyard bundles
+    # the zone-move log and the trigger fire into one call, with no seam to
+    # insert this between them the way the old hand-rolled body could.
     state.mana_pool["C"] = state.mana_pool.get("C", 0) + 1
     state.log_event("mana_tap", permanent=(permanent.card_def.name, permanent.slot), mode="sac_ability", produced=["C"])
-    from .shared import fire_sacrifice_triggers
-    fire_sacrifice_triggers(state, state.active_idx, permanent.card_def)  # Writhing Chrysalis: "whenever you sacrifice another Eldrazi"
+    sacrifice_to_graveyard(state, permanent)  # ceases to exist; queues the dies-trigger (Writhing Chrysalis: "whenever you sacrifice another Eldrazi")
 
 
 def activate_clue_sac(state, permanent):
@@ -96,13 +89,7 @@ def activate_clue_sac(state, permanent):
     check is harmless. Sacrifice a TOKEN (ceases to exist, never a graveyard
     trip), then the draw is the effect and goes on the stack, resolving after
     a priority window."""
-    state.battlefield.remove(permanent)
-    state.log_event(
-        "zone_move", permanent=(permanent.card_def.name, permanent.slot), from_zone="battlefield",
-        to_zone="ceases_to_exist", reason="sacrifice",
-    )
-    from .shared import fire_sacrifice_triggers
-    fire_sacrifice_triggers(state, state.active_idx, permanent.card_def)  # Gixian Infiltrator
+    sacrifice_to_graveyard(state, permanent)  # ceases to exist; queues the dies-trigger (Gixian Infiltrator)
     push_ability_to_stack(state, permanent.card_def, lambda st: st.draw(1))
 
 
@@ -114,13 +101,7 @@ def activate_food_sac(state, permanent):
     to exist, never a graveyard trip -- unlike Candy Trail, a real card), then
     the gain-3 is the effect and goes on the stack (push_ability_to_stack),
     resolving after a priority window."""
-    state.battlefield.remove(permanent)
-    state.log_event(
-        "zone_move", permanent=(permanent.card_def.name, permanent.slot), from_zone="battlefield",
-        to_zone="ceases_to_exist", reason="sacrifice",
-    )
-    from .shared import fire_sacrifice_triggers
-    fire_sacrifice_triggers(state, state.active_idx, permanent.card_def)  # Gixian Infiltrator
+    sacrifice_to_graveyard(state, permanent)  # ceases to exist; queues the dies-trigger (Gixian Infiltrator)
     push_ability_to_stack(state, permanent.card_def, lambda st: gain_life(st, 3))
 
 
@@ -158,13 +139,7 @@ def activate_map_sac(state, permanent):
     the Map (a token -- ceases) as a cost, choose the target creature at
     activation, and the explore waits on the stack (a priority window), then
     resolves -- fizzling if that creature has since left."""
-    state.battlefield.remove(permanent)
-    state.log_event(
-        "zone_move", permanent=(permanent.card_def.name, permanent.slot), from_zone="battlefield",
-        to_zone="ceases_to_exist", reason="sacrifice",
-    )
-    from .shared import fire_sacrifice_triggers
-    fire_sacrifice_triggers(state, state.active_idx, permanent.card_def)  # Gixian Infiltrator
+    sacrifice_to_graveyard(state, permanent)  # ceases to exist; queues the dies-trigger (Gixian Infiltrator)
 
     def _on_chosen(state, choice):
         if choice is None:

@@ -8,13 +8,13 @@ graveyard ability, Sagu Wildling's Omen, the defender flag -- are documented at
 their own registry entries below)."""
 
 from .. import resolution
-from ..cards import CardDef, CardType, EffectId
+from ..cards import CardDef, CardType, EffectId, card_subtypes
 from ..effects.casting import (
     _log_target_fizzle, capture_any_target, cast_aura, cast_permanent_from_hand, enters_battlefield,
     target_still_legal,
 )
 from ..effects.shared import (
-    any_creature_on_either_battlefield, any_land_on_either_battlefield, card_subtypes, discard_from_hand_to_graveyard,
+    any_creature_on_either_battlefield, any_land_on_either_battlefield, discard_from_hand_to_graveyard,
     find_and_remove_by_name, find_to_hand,
 )
 from ..effects.stack import push_ability_to_stack, push_to_stack

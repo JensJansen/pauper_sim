@@ -9,6 +9,13 @@ from ..cards import CardType
 HAND_SIZE_LIMIT = 7  # real Magic's own rule -- not a per-config tunable, no card in this pool ever modifies it
 
 
+def is_token(name):
+    """True iff `name` isn't a real card in the decklist registry -- the
+    engine's only way to recognize a token, since tokens are never added to
+    registry.CARD_DEFS."""
+    return name not in registry.CARD_DEFS
+
+
 def departing_card_def(permanent):
     """The CardDef that actually goes to another zone when `permanent` leaves the
     battlefield. For a transformed double-faced permanent (Insectile Aberration)
@@ -136,8 +143,9 @@ def _destroy_creature(state, permanent):
     first, mutually exclusive with the zone moves; Rancor
     ("returns_to_hand_when_orphaned") returns to hand; every other Aura goes to
     its controller's graveyard (the default)."""
-    owner = next(player for player in state.players if permanent in player.battlefield)
-    owner_idx = state.players.index(owner)
+    owner_idx = stats.controller_idx(state, permanent)
+    assert owner_idx is not None, "_destroy_creature: permanent not found on any battlefield"
+    owner = state.players[owner_idx]
     # Stashed so an ltb_trigger resolving LATER (after a priority window, by
     # which point state.active_idx may no longer be this permanent's owner --
     # see Nihil Spellbomb's dies-trigger) can still recover its true
@@ -145,8 +153,8 @@ def _destroy_creature(state, permanent):
     permanent.flags["owner_idx"] = owner_idx
     owner.battlefield.remove(permanent)
     departing = departing_card_def(permanent)  # front face for a DFC leaving the battlefield
-    is_token = departing.name not in registry.CARD_DEFS
-    if not is_token:
+    departed_is_token = is_token(departing.name)
+    if not departed_is_token:
         # 400.7 linked-ability tracking: stash the freshly minted graveyard
         # instance on the dying permanent's own flags, so an ltb_trigger that
         # needs to reference the EXACT card that died (Lembas: "shuffles it
@@ -154,7 +162,7 @@ def _destroy_creature(state, permanent):
         permanent.flags["graveyard_instance"] = state.move_card(departing, owner.graveyard)
     state.log_event(
         "state_based_death", permanent=(permanent.card_def.name, permanent.slot), owner_idx=owner_idx,
-        to_zone=("ceases_to_exist" if is_token else "graveyard"),
+        to_zone=("ceases_to_exist" if departed_is_token else "graveyard"),
     )
     _queue_leave_triggers(state, permanent, owner_idx)
     orphaned = [p for p in owner.battlefield if p.flags.get("enchanting") is permanent]
@@ -199,17 +207,18 @@ def destroy_permanent(state, permanent):
     if permanent.card_type == CardType.CREATURE:
         _destroy_creature(state, permanent)
         return True
-    owner = next(player for player in state.players if permanent in player.battlefield)
-    owner_idx = state.players.index(owner)
+    owner_idx = stats.controller_idx(state, permanent)
+    assert owner_idx is not None, "destroy_permanent: permanent not found on any battlefield"
+    owner = state.players[owner_idx]
     owner.battlefield.remove(permanent)
-    is_token = permanent.card_def.name not in registry.CARD_DEFS
-    if not is_token:
+    permanent_is_token = is_token(permanent.card_def.name)
+    if not permanent_is_token:
         state.move_card(permanent.card_def, owner.graveyard)
     state.log_event(
         "destroy", permanent=(permanent.card_def.name, permanent.slot), owner_idx=owner_idx,
-        to_zone=("ceases_to_exist" if is_token else "graveyard"),
+        to_zone=("ceases_to_exist" if permanent_is_token else "graveyard"),
     )
-    if not is_token:
+    if not permanent_is_token:
         _queue_leave_triggers(state, permanent, owner_idx)  # a "put into a graveyard from the battlefield" (dies) trigger, if any
     return True
 
@@ -228,22 +237,23 @@ def sacrifice_to_graveyard(state, permanent):
     them."""
     from .shared import fire_sacrifice_triggers
 
-    owner = next(player for player in state.players if permanent in player.battlefield)
-    owner_idx = state.players.index(owner)
+    owner_idx = stats.controller_idx(state, permanent)
+    assert owner_idx is not None, "sacrifice_to_graveyard: permanent not found on any battlefield"
+    owner = state.players[owner_idx]
     permanent.flags["owner_idx"] = owner_idx  # see _destroy_creature's own comment -- true controller for a later-resolving ltb_trigger
     owner.battlefield.remove(permanent)
     departing = departing_card_def(permanent)  # front face for a DFC leaving the battlefield
-    is_token = departing.name not in registry.CARD_DEFS
-    if not is_token:
+    departed_is_token = is_token(departing.name)
+    if not departed_is_token:
         # 400.7 linked-ability tracking: see _destroy_creature's own comment --
         # stash the fresh graveyard instance so an ltb_trigger needing the
         # EXACT card that left (Lembas) can reference it, not bridge by name.
         permanent.flags["graveyard_instance"] = state.move_card(departing, owner.graveyard)
     state.log_event(
         "zone_move", permanent=(permanent.card_def.name, permanent.slot), from_zone="battlefield",
-        to_zone=("ceases_to_exist" if is_token else "graveyard"), reason="sacrifice",
+        to_zone=("ceases_to_exist" if departed_is_token else "graveyard"), reason="sacrifice",
     )
-    if not is_token:
+    if not departed_is_token:
         _queue_leave_triggers(state, permanent, owner_idx)
     fire_sacrifice_triggers(state, owner_idx, permanent.card_def)  # Gixian Infiltrator / Writhing Chrysalis
 

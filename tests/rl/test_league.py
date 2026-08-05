@@ -57,13 +57,17 @@ def test_sample_opponent_with_no_snapshots_is_always_live(tmp_path):
 @pytest.mark.slow
 def test_register_snapshot_evicts_oldest_past_cap(tmp_path):
     pool, _shared, _fake_net, _fake_mull = _registered_pool(tmp_path)
-    # Register more snapshots than the cap -- oldest must be evicted, cache invalidated with it.
+    # Register more snapshots than the cap -- oldest must be evicted (out of
+    # the ACTIVE sampling pool), cache invalidated with it.
     assert len(pool.snapshots["deck_a"]) == 3, "eviction window must cap at max_snapshots_per_deck"
     remaining_ids = [i for i, _p in pool.snapshots["deck_a"]]
     assert remaining_ids == [2, 3, 4], f"oldest snapshots (0, 1) must be evicted first, got ids {remaining_ids}"
     for i in (0, 1):
         assert not os.path.exists(os.path.join(str(tmp_path), "deck_a", f"snapshot_{i}.pt")), \
-            "evicted snapshot file must be deleted from disk"
+            "an evicted snapshot must no longer be in the active pool directory"
+        archived_path = os.path.join(str(tmp_path), "deck_a", "archive", f"snapshot_{i}.pt")
+        assert os.path.exists(archived_path), \
+            "an evicted snapshot must be ARCHIVED, not deleted -- see register_snapshot's own comment on why"
 
 
 @pytest.mark.slow
@@ -164,3 +168,106 @@ def test_fresh_pool_rediscovers_snapshots_from_disk(tmp_path):
     # A fresh LeaguePool pointed at the same root_dir must rediscover existing snapshots from disk.
     pool2 = LeaguePool(str(tmp_path), DECK_NAMES, max_snapshots_per_deck=3)
     assert pool2.snapshots["deck_a"] == pool.snapshots["deck_a"], "snapshot discovery from disk must match what's actually there"
+
+
+@pytest.mark.slow
+def test_pfsp_cold_start_is_uniform_like_the_old_behavior(tmp_path):
+    # No recorded games anywhere -- every candidate gets the SAME weight
+    # (neutral 0.5 win-rate prior), so this must reproduce the old uniform
+    # distribution's statistical shape even though the sampling ALGORITHM
+    # changed (rng.choices, not rng.choice) -- same guarantee every pre-PFSP
+    # test in this file already relies on without being rewritten for it.
+    pool = _fresh_pool(tmp_path)
+    rng = random.Random(0)
+    counts = {"deck_a": 0, "deck_b": 0}
+    for _ in range(4000):
+        name, _path = pool.sample_opponent("deck_a", rng)
+        counts[name] += 1
+    frac_a = counts["deck_a"] / 4000
+    assert abs(frac_a - 0.5) < 0.05, f"cold start (no data) must sample both decks ~uniformly, got deck_a={frac_a:.3f}"
+
+
+@pytest.mark.slow
+def test_pfsp_weights_toward_the_deck_currently_beating_it(tmp_path):
+    pool = _fresh_pool(tmp_path)
+    rng = random.Random(0)
+    # deck_a training seat has recorded losing ALL 20 games it's played
+    # against deck_b, and winning all 20 against itself -- PFSP should now
+    # strongly favor deck_b (currently beating it) over deck_a (mirror,
+    # currently a lock).
+    for _ in range(20):
+        pool.record_outcome("deck_a", ("deck", "deck_b"), won=False)
+        pool.record_outcome("deck_a", ("deck", "deck_a"), won=True)
+    counts = {"deck_a": 0, "deck_b": 0}
+    for _ in range(4000):
+        name, _path = pool.sample_opponent("deck_a", rng)
+        counts[name] += 1
+    frac_b = counts["deck_b"] / 4000
+    # weight(deck_b) = 0.1 + (1-0)**1 = 1.1; weight(deck_a) = 0.1 + (1-1)**1 = 0.1
+    # -> expected P(deck_b) = 1.1 / 1.2 ≈ 0.917
+    assert frac_b > 0.8, f"a deck currently beating training_deck_name must be heavily favored, got P(deck_b)={frac_b:.3f}"
+
+
+@pytest.mark.slow
+def test_pfsp_never_starves_an_opponent_entirely(tmp_path):
+    # Even a deck the training deck has NEVER lost to keeps a nonzero floor
+    # weight (PFSP_FLOOR) -- driving it to exactly 0 would silently reintroduce
+    # catastrophic forgetting, the exact failure this pool's history exists to
+    # prevent (see this module's own docstring).
+    pool = _fresh_pool(tmp_path)
+    rng = random.Random(1)
+    for _ in range(50):
+        pool.record_outcome("deck_a", ("deck", "deck_b"), won=True)  # deck_a beats deck_b every single time
+    saw_deck_b = any(pool.sample_opponent("deck_a", rng)[0] == "deck_b" for _ in range(2000))
+    assert saw_deck_b, "an opponent the training deck always beats must still be sampled occasionally, never starved to zero"
+
+
+@pytest.mark.slow
+def test_pfsp_weights_snapshot_choice_within_a_deck_too(tmp_path):
+    pool, _shared, _fake_net, _fake_mull = _registered_pool(tmp_path)  # deck_a has 3 snapshots: ids 2, 3, 4
+    rng = random.Random(0)
+    ids = [sid for sid, _path in pool.snapshots["deck_a"]]
+    # deck_b training seat loses to snapshot ids[0] every time, beats the other two every time.
+    for _ in range(20):
+        pool.record_outcome("deck_b", ("snapshot", "deck_a", ids[0]), won=False)
+        pool.record_outcome("deck_b", ("snapshot", "deck_a", ids[1]), won=True)
+        pool.record_outcome("deck_b", ("snapshot", "deck_a", ids[2]), won=True)
+    chosen_ids = []
+    for _ in range(3000):
+        name, path = pool.sample_opponent("deck_b", rng, checkpoint_rate=1.0)
+        if name == "deck_a":
+            chosen_ids.append(next(sid for sid, p in pool.snapshots["deck_a"] if p == path))
+    frac_hardest = chosen_ids.count(ids[0]) / len(chosen_ids)
+    assert frac_hardest > 0.7, (
+        f"within one deck's own snapshot window, the specific snapshot currently winning "
+        f"most often must be favored, got P(hardest snapshot)={frac_hardest:.3f}"
+    )
+
+
+@pytest.mark.slow
+def test_opponent_stats_persist_and_reload_and_eviction_drops_stale_entries(tmp_path):
+    pool = _fresh_pool(tmp_path)
+    pool.record_outcome("deck_a", ("deck", "deck_b"), won=True)
+    pool.record_outcome("deck_a", ("deck", "deck_b"), won=False)
+    pool.save_opponent_stats()
+
+    pool2 = LeaguePool(str(tmp_path), DECK_NAMES, max_snapshots_per_deck=3)
+    assert pool2.opponent_stats["deck_a"][("deck", "deck_b")] == (1, 2), \
+        "opponent_stats must round-trip through save/load exactly (1 win, 2 games)"
+
+    # Fill deck_b's snapshot window to exactly its cap (nothing evicted yet),
+    # inject a stat against the one about to age out, then push it out with one
+    # more registration -- the stale snapshot-level stat must be dropped, not
+    # because it was measured wrong, but because it's no longer sample-able by
+    # ANYONE and would otherwise be permanent dead weight.
+    shared = SetTransformer(vocab_size=5, d_model=8, n_heads=2, n_layers=1, dim_feedforward=16)
+    fake_net = DeckNetwork(shared, film_condition_dim=8, non_targeting_n_actions=4)
+    for _ in range(3):  # cap=3 -- fills the window exactly, no eviction yet
+        pool2.register_snapshot("deck_b", fake_net)
+    oldest_id = pool2.snapshots["deck_b"][0][0]
+    pool2.opponent_stats["deck_a"][("snapshot", "deck_b", oldest_id)] = (5, 5)
+    assert ("snapshot", "deck_b", oldest_id) in pool2.opponent_stats["deck_a"]
+
+    pool2.register_snapshot("deck_b", fake_net)  # 4th registration -> evicts oldest_id now
+    assert ("snapshot", "deck_b", oldest_id) not in pool2.opponent_stats["deck_a"], \
+        "an evicted snapshot's stats must be dropped from every training deck's opponent_stats"

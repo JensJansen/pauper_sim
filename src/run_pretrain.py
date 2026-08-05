@@ -22,7 +22,6 @@ Usage: python run_pretrain.py [n_iterations] [games_per_iteration] [--freeze]
 ../checkpoints/shared_stack_frozen.pt for league training to load -- run
 this only once satisfied pretraining is done, not on every intermediate batch.
 """
-import os
 import random
 import sys
 import time
@@ -34,10 +33,11 @@ from rl.arch import SetTransformer
 from rl.deck import DeckNetwork
 from rl.pool import build_pool
 from rl.train import train_selfplay
+from rl import checkpoint as ckpt_io
+from repo_paths import CHECKPOINTS_DIR
 
-CHECKPOINT_DIR = "../checkpoints"
-CHECKPOINT = f"{CHECKPOINT_DIR}/pretrain_shared_stack.pt"
-FROZEN_STACK = f"{CHECKPOINT_DIR}/shared_stack_frozen.pt"
+CHECKPOINT = CHECKPOINTS_DIR / "pretrain_shared_stack.pt"
+FROZEN_STACK = CHECKPOINTS_DIR / "shared_stack_frozen.pt"
 D_MODEL = 64
 
 
@@ -67,8 +67,8 @@ def main():
         )
 
     session = 0
-    if os.path.exists(CHECKPOINT):
-        ckpt = torch.load(CHECKPOINT, weights_only=True)
+    ckpt = ckpt_io.load_pretrain_checkpoint(CHECKPOINT)
+    if ckpt is not None:
         assert ckpt["vocab_size"] == vocab.size, "vocab changed since last checkpoint -- would silently corrupt the embedding table"
         assert set(ckpt["nets"]) == set(deck_names), "roster changed since last checkpoint -- start a fresh pretrain"
         shared.load_state_dict(ckpt["shared"])
@@ -99,20 +99,14 @@ def main():
     elapsed = time.time() - t0
     print(f"session {session} done in {elapsed:.1f}s ({elapsed / total_games:.2f}s/game)")
 
-    os.makedirs(CHECKPOINT_DIR, exist_ok=True)
-    torch.save({
-        "shared": shared.state_dict(), "opt_shared": opt_shared.state_dict(),
-        "nets": {name: nets[name].state_dict() for name in deck_names},
-        "head_opts": {name: head_opts[name].state_dict() for name in deck_names},
-        "session": session, "vocab_size": vocab.size, "d_model": D_MODEL,
-    }, CHECKPOINT)
+    ckpt_io.save_pretrain_checkpoint(CHECKPOINT, shared, opt_shared, nets, head_opts, session, vocab.size, D_MODEL)
     print(f"checkpoint saved to {CHECKPOINT}")
 
     if do_freeze:
         for p in shared.parameters():
             p.requires_grad = False
         shared.eval()
-        torch.save({"shared": shared.state_dict(), "vocab_size": vocab.size, "d_model": D_MODEL}, FROZEN_STACK)
+        ckpt_io.save_frozen_stack(FROZEN_STACK, shared, vocab.size, D_MODEL)
         print(f"shared stack FROZEN and saved to {FROZEN_STACK}")
 
 

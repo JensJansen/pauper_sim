@@ -94,18 +94,22 @@ src/
     mulligan.py              Per-deck pregame mulligan model + its REINFORCE trainer.
     agent.py                 SeatAgent: per-seat decision dispatch (pregame ->
                              mulligan model, everything else -> DeckNetwork).
+                             HeuristicAgent: the gauntlet's hand-authored, non-learned
+                             opponent (see README's Gauntlet section).
     action_bridge.py         Maps the network's combined (fixed + pointer) action space
                              back to real engine calls.
     train.py                 Rollout collection + PPO update; mirror & cross self-play;
                              parallel and in-process-batched rollout collection.
     pool.py                  Builds the shared vocab + per-deck action tables from the
                              league roster (data/league_decks.json).
-    league.py                LeaguePool: historical opponent snapshots, sampling,
-                             eviction, disk persistence.
+    league.py                LeaguePool: historical opponent snapshots, PFSP-weighted
+                             sampling, eviction/archival, disk persistence.
     rewards.py               Reward functions (win/loss with a speed tiebreaker).
 
   run_pretrain.py          Pretrain + freeze the shared stack.
   run_league.py            League driver (and a --matchup direct-pairing mode).
+  report_metrics.py        Plain-text summary of a league's metrics.jsonl (entropy/loss
+                           trends, win rate vs. archived past selves).
   benchmarking/            training_run.py (benchmarks the real league loop under
                            different collection configs) + _common.py (path/stdout
                            bootstrap it imports for its side effect).
@@ -211,11 +215,33 @@ learning from every game. Rollout collection parallelizes across worker
 processes (~3.2–3.5× on 6 physical cores).
 
 The **league** (`rl/league.py`, `run_league.py`) keeps a rolling window of
-historical snapshots per deck. Each game resamples an opponent two-level
-uniformly: pick a deck (including the training deck itself, for mirror play),
-then pick one of its snapshots (or its current live weights). No hardcoded
-Stage-1/Stage-2 phases — cross-deck and cross-snapshot exposure grows as the
-pool fills.
+historical snapshots per deck. Each game resamples an opponent two-level: pick
+a deck (including the training deck itself, for mirror play), then pick one of
+its snapshots (or its current live weights). No hardcoded Stage-1/Stage-2
+phases — cross-deck and cross-snapshot exposure grows as the pool fills.
+
+Both levels are **PFSP-weighted** (`LeaguePool.sample_opponent`'s `pfsp=True`
+default), not uniform: a deck (or a specific one of its snapshots) the
+training deck is CURRENTLY losing to more often gets sampled more —
+`weight = PFSP_FLOOR + (1 - win_rate) ** PFSP_POWER`, a small floor so even a
+thoroughly-beaten opponent stays sampleable at a low rate (driving it to
+exactly zero would reintroduce the catastrophic-forgetting failure the
+snapshot history exists to prevent). A never-yet-played candidate gets a
+neutral 0.5 win-rate prior, so early in a run (or with `pfsp=False`) this is
+statistically indistinguishable from the old uniform behavior. Running
+win/loss tallies (`LeaguePool.record_outcome`, fed from every REAL training
+game via `collect_rollout`'s `on_game_end` hook — no separate eval pass) are
+what drive the weighting; they persist to `<league_dir>/<deck>/
+opponent_stats.json` on the same checkpoint cadence as everything else, since
+each training run is many separate short-lived process invocations, not one
+long-running daemon.
+
+A snapshot evicted from that rolling window is **archived, not deleted**
+(`checkpoints/<league>/<deck>/archive/`) — the active sampling window stays
+small deliberately (a stale snapshot is a weak opponent), but the archive
+keeps deep history around so a deck's win rate against its own much-older
+self stays measurable for the life of a run, not just its last ~1,600 games.
+See **Instrumentation** below.
 
 ---
 
@@ -262,6 +288,14 @@ Key flags:
 - `--checkpoint-opponent-rate` — probability a sampled opponent is a frozen
   historical snapshot instead of that deck's current live net (default 0.0:
   always live; the one value meant to be changed deliberately mid-training).
+- `--pfsp` / `--no-pfsp` — PFSP-weight opponent sampling toward whoever's
+  currently beating the training deck most, instead of uniform (default True;
+  see the **Continuous league training** section above and `rl.league.
+  LeaguePool.sample_opponent`'s own docstring).
+- `--gauntlet-league-name` — an independently-trained twin league
+  (`checkpoints/<name>/`) to periodically measure this league's live nets
+  against, a genuinely external reference unlike this league's own historical
+  snapshots (optional; most leagues won't have one — see **Gauntlet** below).
 
 `--games-per-iteration` isn't a flag — it's always derived as `max(1, n_workers)`
 (one game per worker; a smaller value used to silently starve some worker
@@ -272,6 +306,82 @@ parameters — see `run_league.py`'s own comments at each removal site
 
 Training runs on **CPU** by design — the model is small (~200–250K params) and
 a batch-size sweep found no GPU crossover at this size.
+
+### Instrumentation
+
+Every league session (`_run_session`, both league and `--matchup` modes)
+appends to `checkpoints/<league>/metrics.jsonl`, one JSON line per record:
+- `kind: "ppo"` — per deck per iteration: `policy_loss`, `value_loss`,
+  `entropy` (computed every call, previously never recorded past stdout),
+  `buffer_size` (transitions collected that iteration) and `batch_size` side
+  by side, so a saturated minibatch ramp (`batch_size >= buffer_size`, at
+  which point `ppo_update` stops sub-batching and just runs `n_epochs`
+  full-batch steps) is directly visible instead of assumed.
+- `kind: "mulligan"` — per deck per iteration REINFORCE loss/n.
+- `kind: "vs_history"` — once per session per deck (league mode only): the
+  live net played against its own oldest still-active snapshot and, once one
+  exists, its oldest **archived** snapshot (`rl.league`'s eviction archive,
+  see above) — a direct win-rate-vs-past-self measurement, not an inference
+  from loss curves. Skipped (empty) automatically until a deck has been
+  through at least one snapshot cycle, so it costs nothing during a run's
+  cheap early sessions.
+- `kind: "vs_gauntlet"` / `kind: "vs_heuristic"` — the gauntlet mechanism's
+  two tiers, both EXTERNAL to this league's own self-play history (unlike
+  `vs_history`'s snapshots). See **Gauntlet** below.
+
+Every game the engine plays (any collection path, since `collect_rollout` is
+the one game loop) also gets one `game_over` event appended to its own
+`event_log` (`winner`, `turn_won`) — the outcome was previously never written
+to the log stream at all, only reconstructible by replaying `life_change`
+deltas by hand.
+
+`python report_metrics.py <league_dir>` prints a plain-text summary (entropy
+trend, latest losses, vs-history win rates) read from `metrics.jsonl` — stdlib
+only, no plotting dependency.
+
+### Gauntlet
+
+`vs_history` (above) and PFSP-weighted sampling both only ever measure a
+league against **its own** self-play history — real signal, but it can't
+tell "genuinely improving" apart from "well-adapted to beating a closed
+population that co-evolved with itself." The gauntlet is two EXTERNAL
+reference points, outside that history entirely:
+
+- **Tier 2 — an independently-trained twin population** (`training_configs/
+  run_gauntlet.json`): the SAME roster, run mechanics, and frozen shared
+  stack as the main league, but its own checkpoint tree (`league_name:
+  "4_deck_subleague_gauntlet"`) that never plays against the main league's
+  live nets. Trained to a fixed depth (~8,000 games/deck) then left alone —
+  no code-level "freeze," just stop invoking further sessions against that
+  `league_name`. Two runs from an identical algorithm/config still diverge
+  into different regions of strategy space purely from a different
+  nondeterministic training trajectory — so a blind spot the WHOLE main
+  population shares (the risk PFSP and `vs_history` can't rule out) is far
+  more likely to show up against a genuinely independent opponent than
+  against anything drawn from the league's own history. Wired via a config's
+  `gauntlet_league_name` field (`run_league._run_eval_vs_gauntlet`, once per
+  session per deck, only once the twin population has a checkpoint for that
+  deck).
+- **Tier 1 — `rl.agent.HeuristicAgent`**: a hand-authored, non-learned
+  opponent, reusing the exact same legal-action machinery a trained
+  `SeatAgent` does (`_build_decision`, `_executor_for`) but scoring among
+  legal choices by fixed, general MTG principles instead of a policy: play a
+  land if possible; else cast the highest-cost thing affordable; attack a
+  creature only if it's safe (nothing can kill it) or a fair-or-better trade
+  (the cheapest creature that could profitably kill it costs at least as
+  much mana as the attacker); block to kill when possible; else pass.
+  Deliberately rough, not optimal-play — the point is catching whether the
+  population still does obviously-good, never-adapting things, not
+  benchmarking against a strong opponent. Currently scoped to
+  `mono_red_rally` only (`heuristic_decks` in a league config) — an
+  aggressive creature deck is the natural fit for a simple greedy heuristic;
+  not audited for every deck in a roster. Pregame (mulligan) delegates to
+  `AlwaysKeep`.
+
+Both report into `metrics.jsonl` (`kind: "vs_gauntlet"` / `"vs_heuristic"`,
+picked up by `report_metrics.py` the same way as everything else) and cost
+nothing when unconfigured — most leagues won't set `gauntlet_league_name` or
+`heuristic_decks` at all.
 
 ### Direct matchup (no league sampling)
 
@@ -338,12 +448,15 @@ Each page links back to `/` and to the other tool.
 - **Runs are plain subprocesses.** Starting one spawns `run_league.py` or
   `run_pretrain.py` with fully explicit CLI flags built from whatever's in
   the form — never a `--run-config`/`--league-config` *path*. The league
-  form is generated by introspecting `run_league.build_arg_parser()`
-  directly (`webapp/runs.py`'s `argspec_from_parser`), so it always matches
-  the script's real CLI with no hand-maintained duplicate field list to
-  drift out of sync as flags change.
+  form is generated by introspecting `rl.league_cli_spec.build_arg_parser()`
+  directly (`webapp/runs.py`'s `argspec_from_parser`) — a torch-free module
+  holding the same `build_arg_parser()` run_league.py's own CLI uses, so the
+  webapp never pays run_league.py's full torch/rl.* import cost just to read
+  its flag spec — so the form always matches the script's real CLI with no
+  hand-maintained duplicate field list to drift out of sync as flags change.
 - **Fields are grouped by run_league.py's real modes**, in collapsible
-  sections (`webapp/runs.py`'s `LEAGUE_GLOBAL` / `LEAGUE_MODES`), so a field
+  sections (`rl.league_cli_spec`'s `LEAGUE_GLOBAL` / `LEAGUE_MODES`,
+  re-exported from `webapp/runs.py`), so a field
   a mode doesn't read never shows up while configuring it — e.g. **League
   training** never shows `--matchup`, and **Matchup training**/**Eval** never
   show `--roster` or the auto-sizing fields. A few fields deliberately appear

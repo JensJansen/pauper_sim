@@ -4,20 +4,19 @@ justify its own module, and none of them depend on any other effects
 submodule). Zero registry/mana/resolution dependency -- pure state
 manipulation."""
 
-from ..cards import CardType
-
-
-_COLOR_PIPS = ("W", "U", "B", "R", "G")
+from ..cards import CardType, is_artifact
 
 
 def fire_sacrifice_triggers(state, sacrificer_idx, sacrificed_card_def):
     """Queue every "whenever you sacrifice [another permanent / another
     Eldrazi]" trigger (Gixian Infiltrator, Writhing Chrysalis) on the
     SACRIFICING player's own battlefield, for a permanent that was just
-    sacrificed. Called from every sacrifice path (sacrifice_to_graveyard --
-    itself the one path resolution.begin_sacrifice/Highway Robbery's own
-    discard-or-sacrifice both route through -- and the token sac
-    abilities). A real triggered
+    sacrificed. Called from every sacrifice path: most route through
+    sacrifice_to_graveyard (itself the one path resolution.begin_sacrifice/
+    Highway Robbery's own discard-or-sacrifice, the token sac abilities, and
+    Lotus Petal/Treasure's own consumed-on-tap sacrifice all go through), the
+    rest (e.g. Expedition Map, Candy Trail) still call this directly
+    alongside their own hand-rolled zone-move. A real triggered
     ability: queued onto the sacrificer's own trigger_queue (written directly,
     not through the state.trigger_queue active-player proxy, in case the
     sacrificer isn't the active player -- same reasoning state_based.
@@ -47,37 +46,6 @@ def graveyard_instant_sorcery_count(state):
     """"This spell costs {1} less for each instant and sorcery card in your
     graveyard" (Tolarian Terror, Cryptic Serpent) -- a cost_reduction spec."""
     return sum(1 for c in state.graveyard if c.card_type in (CardType.INSTANT, CardType.SORCERY))
-
-
-def is_artifact(card_def):
-    """Whether a card is an artifact -- a plain artifact (card_type ARTIFACT),
-    an artifact land (card_type LAND + extra["artifact"]), or an artifact
-    creature (card_type CREATURE + extra["artifact"], e.g. Myr Enforcer). The
-    single predicate every "artifacts you control" reader uses: Goblin Tomb
-    Raider's static boost, affinity, metalcraft, Krark-Clan/Makeshift's
-    artifact-sacrifice."""
-    return card_def.card_type == CardType.ARTIFACT or card_def.extra.get("artifact", False)
-
-
-def card_colors(card_def):
-    """The card's colors, from the colored pips in its mana cost. A Devoid
-    card (extra["devoid"], e.g. Writhing Chrysalis) is colorless regardless
-    of its cost's colored pips; a land / cost-less card (cast_cost None) is
-    colorless too. Used by "nonblack"/etc. targeting restrictions (Snuff
-    Out)."""
-    if card_def.extra.get("devoid") or card_def.cast_cost is None:
-        return set()
-    return {c for c in card_def.cast_cost if c in _COLOR_PIPS}
-
-
-def card_subtypes(card_def):
-    """A card's subtypes (extra["subtypes"], e.g. ("Island","Swamp") or
-    ("Elf",)), () if none declared. Only cards that need one for a rules
-    check carry it -- basic Island/Forest (for Islandcycling / Gingerbread
-    Cabin's Forest count), the U/B dual lands (Island subtype), the Elves
-    (tribal counts). Not a full Scryfall subtype line; just the ones the
-    engine actually reads."""
-    return card_def.extra.get("subtypes", ())
 
 
 def impulse_exile(state, n, until_next_turn=False):

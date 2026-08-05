@@ -14,11 +14,11 @@ illegal choice) at cast/activation or ETB-promotion time, same convention
 as Bojuka Bog's own "exile target player's graveyard"."""
 
 from .. import resolution
-from ..cards import CardDef, CardType, EffectId
+from ..cards import CardDef, CardType, EffectId, card_colors, card_subtypes, is_artifact
 from ..effects.casting import (
     _log_target_fizzle, cast_permanent_from_hand, cast_targeting_creature, enters_battlefield, has_creature_target,
 )
-from ..effects.shared import affinity_reduction, card_colors, card_subtypes, discard_from_hand_to_graveyard, is_artifact
+from ..effects.shared import affinity_reduction, discard_from_hand_to_graveyard
 from ..effects.stack import push_to_stack
 from ..effects.state_based import destroy_permanent, sacrifice_to_graveyard
 from ..effects.tokens import BLOOD_TOKEN_CARD_DEF, CLUE_TOKEN_CARD_DEF, MAP_TOKEN_CARD_DEF, create_token

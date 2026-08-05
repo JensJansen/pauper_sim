@@ -48,6 +48,26 @@ user in one line before starting.
   `../checkpoints/shared_stack_frozen.pt` does NOT exist, stop and tell the user:
   "No frozen shared stack — run `/train fresh start` (or pretrain) first." Do not try
   to run the league without it (`run_league.load_frozen_stack` hard-asserts it).
+- **Which league/config — check BEFORE the first command, not after.** List
+  `../training_configs/*.json` and check which checkpoint directories already have
+  content (`../checkpoints/<name>/session.txt` or any `live.pt` under it). If the
+  invocation names a league, or exactly one `training_configs/*.json` matches an
+  existing checkpoint tree, use that config explicitly:
+  `--run-config ../training_configs/<file>.json --league-config ../training_configs/<file>.json`
+  (both flags MAY point at the same file — a config can carry both run-mechanics
+  fields like `checkpoint_opponent_rate`/`snapshot_every_games`/`n_workers` and
+  league-identity fields like `league_name`/`roster`/`total_games` at once; check the
+  file's own contents, not its name or which flag you'd guess it belongs to).
+  **Never fall back to the bare, config-less command form** (`run_league.py
+  --n-iterations ... --n-workers ...` with no `--run-config`/`--league-config`) when a
+  config file exists that matches an already-populated checkpoint directory — the bare
+  form checkpoints to the hardcoded default `../checkpoints/league/` with hardcoded
+  defaults (`checkpoint_opponent_rate=0.0` among them), which silently trains a
+  DIFFERENT league under different settings instead of resuming the one that's
+  actually there. If more than one config could plausibly be meant and it isn't
+  obvious which, ASK — don't guess (same standing rule as everywhere else in this
+  repo for an uncertain call). Only use the bare config-less form for a genuinely new,
+  never-configured roster with no existing checkpoints.
 - A vocab change (e.g. new cards/tokens) makes old checkpoints dimensionally
   incompatible. If any run aborts with a `vocab_size` / roster-mismatch assert, that
   is the signal to do a `fresh start`.
@@ -61,13 +81,27 @@ user in one line before starting.
 
 ## 3. `fresh start`: wipe, then full pipeline
 
-Wipe (keep `checkpoints/archive_2deck/` — it is an unrelated archive):
+Wipe **the resolved league_dir** for this invocation (per the config precondition above
+— `checkpoints/league/` ONLY in the genuine config-less case; e.g.
+`checkpoints/4_deck_subleague_test/` for that config). Do not hardcode
+`checkpoints/league/` here without checking. Keep `checkpoints/archive_2deck/` — an
+unrelated top-level directory from an old experiment, NOT the same thing as the
+per-deck `<league_dir>/<deck>/archive/` this wipe DOES need to clear (evicted-snapshot
+history `rl.league.LeaguePool` now keeps instead of deleting — stale archived selves
+left behind after a wipe would make a post-reset `vs_history` check compare the fresh
+policy against pre-reset history, which is meaningless). Also wipe each deck's
+`opponent_stats.json` — the PFSP win/loss tallies `LeaguePool` persists there; leaving it
+would bias opponent sampling against a freshly reset, randomly-initialized policy using
+history from the policy that no longer exists:
 
 ```
 rm -f ../checkpoints/vocab.json ../checkpoints/pretrain_shared_stack.pt \
       ../checkpoints/shared_stack_frozen.pt
-rm -f ../checkpoints/league/*/live.pt ../checkpoints/league/*/snapshot_*.pt \
-      ../checkpoints/league/session.txt
+rm -f ../<league_dir>/*/live.pt ../<league_dir>/*/mulligan.pt \
+      ../<league_dir>/*/snapshot_*.pt ../<league_dir>/*/opponent_stats.json \
+      ../<league_dir>/session.txt ../<league_dir>/progress.json \
+      ../<league_dir>/metrics.jsonl
+rm -rf ../<league_dir>/*/archive/
 ```
 
 Then, in order:
@@ -103,7 +137,18 @@ For each batch:
      so `n_iter * gpi ≈ batch`. Shakeout / small: `n_iter = 1`, `gpi = batch`. Large:
      `n_iter = 4`, `gpi = max(1, round(batch / 4))` (spreads updates).
    - **league**: `python -u run_league.py --n-iterations <n_iter> --snapshot-every <snap>
-     --n-workers <W>`. `games_per_iteration` is no longer a flag (removed 2026-07-31) --
+     --n-workers <W>`, PLUS `--run-config <path> --league-config <path>` whenever a
+     matching `training_configs/*.json` exists (see the precondition above) -- a config's
+     own `checkpoint_opponent_rate` and `snapshot_every_games` then apply automatically;
+     do not also pass `--checkpoint-opponent-rate` yourself in that case (the config's
+     value IS the owner's already-made decision, baked in on purpose -- re-specifying it
+     here would just be a second, redundant source of truth to drift out of sync). Only
+     when there's genuinely no config for this league does `--checkpoint-opponent-rate`
+     default to 0.0 (no checkpoint opponents, every game real-model-vs-real-model) --
+     leave it unset in that config-less case unless the owner explicitly asks to
+     reintroduce checkpoint-opponent diversity; don't pass a nonzero rate on your own
+     initiative.
+     `games_per_iteration` is no longer a flag (removed 2026-07-31) --
      run_league.py's `main()` always derives it as `gpi = max(1, W)`, one game per worker,
      which is what avoids the `n_games // n_workers` worker-starvation footgun a too-small
      gpi used to risk (see run_league.py's own comment on the benchmark that grounded this
@@ -116,11 +161,8 @@ For each batch:
      the seam `n_iter` IS the ladder, not a derived value. `snap = max(1, 200 // gpi)`
      — a FIXED ~200 games/deck between snapshots, independent of batch size, so early
      small batches don't flood the opponent pool with near-random, barely-trained
-     early copies (gpi=1 -> snap=200; gpi=6 -> snap=33).
-     `--checkpoint-opponent-rate` defaults to 0.0 (no checkpoint opponents at all, every
-     game real-model-vs-real-model) — leave it unset unless the owner explicitly asks to
-     reintroduce checkpoint-opponent diversity; don't pass a nonzero rate on your own
-     initiative.
+     early copies (gpi=1 -> snap=200; gpi=6 -> snap=33) -- used only in the config-less
+     case; a config's own `snapshot_every_games` takes precedence when one applies.
      **Compute ramp**: `W = 1` (sequential CPU) for the shakeout and until one league
      batch giving each deck ≥ ~15 games has run clean; after that use `W = 6` (parallel
      collection) — the throughput sweet spot. **NEVER use the GPU** — do NOT pass
@@ -185,23 +227,40 @@ For each batch:
 
 When the phase(s) reach their target (or you stop on a blocking error), summarize:
 mode, N_DECKS, per-deck games trained per phase, number of sessions/batches, any errors
-found + fixed, `per_deck_cumulative` vs target, where the checkpoints live
-(`checkpoints/shared_stack_frozen.pt`, `checkpoints/league/<deck>/live.pt`), and (league
-phase) the list of double round-robin snapshot logs written by §5 step 4
-(`logs/<league_name>_double_round_robin_<per_deck_cumulative>games.json`) so the owner
-can jump straight to a specific checkpoint's games in the replay viewer. Never
-claim a run succeeded without having seen its "done" line and exit 0 in the log.
+found + fixed, `per_deck_cumulative` vs target, where the checkpoints live (the resolved
+league_dir -- `checkpoints/shared_stack_frozen.pt`, `<league_dir>/<deck>/live.pt`; do NOT
+assume `checkpoints/league/` when a config's own `league_name` pointed elsewhere), and
+(league phase) two DIFFERENT log sources, both worth reporting:
+- the double round-robin snapshot logs written by §5 step 4
+  (`logs/<league_name>_double_round_robin_<per_deck_cumulative>games.json`) -- manual,
+  triggered once per escalation step by this skill, for the replay viewer;
+- `<league_dir>/metrics.jsonl` -- automatic, appended by `run_league.py`'s own
+  `_run_session` on EVERY iteration of every session this skill ran (not just at
+  escalation boundaries): per-iteration policy/value loss and entropy, and (once any
+  deck has been through a snapshot cycle) a `vs_history` win-rate-vs-its-own-archived-
+  past-self check at the end of each session -- plus, only when the resolved config
+  carries a `gauntlet_league_name` (or `--gauntlet-league-name` was passed), a
+  `vs_gauntlet` win-rate-vs-an-independently-trained-twin-league check on the same
+  cadence, once that twin has a checkpoint for the deck. Run `python report_metrics.py
+  <league_dir>` for a plain-text summary of it -- mention this to the owner rather than
+  re-deriving trends from stdout scrollback by hand.
+
+Never claim a run succeeded without having seen its "done" line and exit 0 in the log.
 
 ## Notes
 
-- The deck roster is whatever `data/league_decks.json` lists (currently 5); the skill
-  reads `N_DECKS` at runtime, so more decks need no change here (only a `fresh start`,
-  since a new deck changes the vocab). There is no per-deck selection flag — training
-  always covers every deck in the roster. "Per-deck only" means the league DeckNetworks
-  vs. the pretrain shared stack, NOT a subset of decks.
-- Reward is pure win/loss (`action_count_win_reward_200_floor02`); a near-zero
-  mean_reward early is expected (sparse signal, barely-trained mirror policies) and is
-  NOT a failure — watch losses moving and games completing instead.
+- The deck roster is whatever `data/league_decks.json` lists, further narrowed by a
+  config's own `roster` (or `--roster`) when one is used -- the skill reads `N_DECKS` at
+  runtime, so a changed roster needs no change here (only a `fresh start` if it's the
+  FULL vocab-defining roster that changed, since that changes the vocab). There is no
+  per-deck selection flag beyond a config's `roster`/`train_decks` -- training always
+  covers every deck in whatever roster is in effect. "Per-deck only" means the league
+  DeckNetworks vs. the pretrain shared stack, NOT a subset of decks.
+- Reward is terminal (near-zero early is expected, not a failure — watch losses moving
+  and games completing instead): pretrain uses `action_count_win_reward_200_floor02`
+  (plain win/loss); league play uses `deploy_reward_v2` (win/loss plus a small dense
+  per-transition mana-mistake penalty — see `rl/rewards.py`). Different reward fns for
+  the two phases, not the same one throughout.
 - Each session checkpoints at its end and resumes on the next run, so escalating across
   many separate sessions accumulates training without loss (a mid-session crash loses
   only that session's uncheckpointed games).

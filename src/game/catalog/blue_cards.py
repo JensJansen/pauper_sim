@@ -10,13 +10,13 @@ land-drop path) but also an artifact (extra["artifact"]=True), so it
 counts for affinity/metalcraft and is a legal artifact-sacrifice."""
 
 from .. import registry
-from ..cards import CardDef, CardType, EffectId
+from ..cards import CardDef, CardType, EffectId, card_subtypes
 from ..effects.casting import (
     _log_target_fizzle, capture_any_target, cast_permanent_from_hand, cast_targeting_creature, has_creature_target,
     target_still_legal,
 )
 from ..effects.shared import (
-    affinity_reduction, card_subtypes, discard_from_hand_to_graveyard, find_to_hand, graveyard_instant_sorcery_count, mill,
+    affinity_reduction, discard_from_hand_to_graveyard, find_to_hand, graveyard_instant_sorcery_count, mill,
 )
 from ..effects.stack import counter_spell, push_ability_to_stack, push_to_stack
 from ..effects.state_based import departing_card_def, sacrifice_to_graveyard

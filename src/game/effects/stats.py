@@ -118,7 +118,9 @@ def enchantment_count(state, aura):
     two the instant a Blocker's own Ancestral Mask/Ethereal Armor is read
     during combat (attacker active, blocker's Auras on the defender's
     side)."""
-    owner = next(player for player in state.players if aura in player.battlefield)
+    owner_idx = controller_idx(state, aura)
+    assert owner_idx is not None, "enchantment_count: aura not found on any battlefield"
+    owner = state.players[owner_idx]
     return sum(1 for p in owner.battlefield if p.card_type == CardType.ENCHANTMENT)
 
 
@@ -303,6 +305,23 @@ def creature_keywords(state, permanent, enchanting_auras=None):
 
 def has_keyword(state, permanent, keyword):
     return keyword in creature_keywords(state, permanent)
+
+
+def has_haste(state, permanent):
+    """Haste from either representation a registry entry can use: a flat
+    "haste": True boolean (Kitchen Imp) or "haste" being a member of the
+    union creature_keywords computes (an intrinsic "keywords" entry, a
+    static-granted keyword like Goblin Tomb Raider's, or an until-EOT
+    temp_keywords grant like Rally at the Hornburg's/Goblin Bushwhacker's
+    team haste). THE canonical haste check -- both mana.py's
+    tap_summoning_locked and combat.py's creature_attack_eligible must call
+    this rather than reimplementing it, or they silently diverge again (as
+    combat.py did until 2026-08: checking only the flat boolean meant a
+    plain intrinsic-keyword haste creature like Reckless Lackey could never
+    attack the turn it was cast)."""
+    if registry.EFFECT_REGISTRY.get(permanent.card_def.effect_id, {}).get("haste", False):
+        return True
+    return "haste" in creature_keywords(state, permanent)
 
 
 def controller_idx(state, permanent):

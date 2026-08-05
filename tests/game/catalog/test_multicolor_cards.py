@@ -3,12 +3,12 @@ the card-implementation rationale (real-rules citations, etc.) each test
 below guards."""
 
 from game import mana, registry, resolution
-from game.cards import CardDef, CardType, EffectId
+from game.cards import CardDef, CardType, EffectId, card_colors, is_artifact
 from game.catalog.blue_cards import islandcycle_lorien_revealed
 from game.catalog.multicolor_cards import cast_agony_warp, cast_terminate, cast_writhing_chrysalis
 from game.effects.casting import enters_battlefield
 from game.effects.combat import can_block
-from game.effects.shared import affinity_reduction, card_colors, is_artifact
+from game.effects.shared import affinity_reduction
 from game.effects.stack import push_to_stack, resolve_top_of_stack
 from game.effects.stats import can_be_targeted, permanent_power, permanent_toughness
 from game.effects.triggers import promote_triggers_to_stack
@@ -223,7 +223,7 @@ def test_drossforge_bridge_taps_for_b_or_r():
 def test_drossforge_bridge_counts_for_affinity_and_metalcraft():
     """Drossforge Bridge is BOTH a land and an artifact (extra["artifact"])
     -- counts toward "artifacts you control" for affinity (Myr Enforcer,
-    tested via this same shared.affinity_reduction/is_artifact predicate in
+    tested via this same affinity_reduction/is_artifact predicate in
     test_colorless_cards.py) and metalcraft (Galvanic Blast, tested via
     Great Furnace in test_red_cards.py)."""
     assert is_artifact(registry.CARD_DEFS["Drossforge Bridge"])

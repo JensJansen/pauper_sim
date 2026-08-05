@@ -81,3 +81,121 @@ def test_run_eval_labels_each_game_with_its_real_pairing(tmp_path, monkeypatch):
         doc = json.load(f)
     assert [(g["deck_a"], g["deck_b"]) for g in doc["games"]] == game_pairings
     assert [g["game_index"] for g in doc["games"]] == list(range(6))
+
+
+@pytest.mark.slow
+def test_run_eval_vs_history_finds_archived_and_active_milestones(tmp_path, monkeypatch):
+    """_run_eval_vs_history is the direct measurement of "does the live net
+    beat its own past selves" -- confirms it (a) returns [] with no history
+    yet, (b) finds the active pool's oldest snapshot once one exists, and (c)
+    finds an ARCHIVED one too once LeaguePool.register_snapshot has evicted
+    past the window (rl.league's own archive/, not deletion)."""
+    monkeypatch.chdir(_SRC_DIR)
+    monkeypatch.setattr(
+        run_league, "build_pool",
+        lambda: _real_build_pool(vocab_path=str(tmp_path / "vocab.json")),
+    )
+    from rl.league import LeaguePool
+    from rl.mulligan import MulliganNet
+
+    league_dir = str(tmp_path / "league")
+    decklists, vocab, deck_ctxs, fixed_tables = _real_build_pool(vocab_path=str(tmp_path / "vocab.json"))
+    deck_name = "rakdos_madness"
+    shared = run_league.build_fresh_stack(vocab.size)
+    net = run_league.DeckNetwork(shared, film_condition_dim=run_league.D_MODEL,
+                                  non_targeting_n_actions=len(fixed_tables[deck_name]))
+    mnet = MulliganNet(shared)
+
+    # No snapshots at all yet -- nothing to compare against.
+    assert run_league._run_eval_vs_history(
+        deck_name, net, mnet, deck_ctxs[deck_name], decklists[deck_name], shared, league_dir, horizon=20,
+    ) == []
+
+    pool = LeaguePool(league_dir, [deck_name], max_snapshots_per_deck=2)
+    for _ in range(3):  # 3rd registration evicts snapshot_0 into archive/ (cap=2)
+        pool.register_snapshot(deck_name, net, mnet)
+
+    results = run_league._run_eval_vs_history(
+        deck_name, net, mnet, deck_ctxs[deck_name], decklists[deck_name], shared, league_dir,
+        horizon=20, games_per_snapshot=2, seed=0,
+    )
+    labels = {r["label"] for r in results}
+    assert labels == {"archive_oldest", "active_oldest"}, f"expected both milestones, got {labels}"
+    for r in results:
+        assert r["games"] == 2
+        assert r["live_wins"] + r["snapshot_wins"] + r["no_winner"] == r["games"]
+
+
+@pytest.mark.slow
+def test_run_eval_vs_gauntlet_plays_the_independent_twin_and_handles_missing_deck(tmp_path, monkeypatch):
+    """_run_eval_vs_gauntlet is the EXTERNAL reference check (an independently
+    trained twin league, not this league's own history) -- confirms it (a)
+    returns None when the gauntlet league has no checkpoint for this deck yet
+    (its training hasn't reached it, or it doesn't exist), and (b) actually
+    plays real games against the gauntlet's live net and tallies a real
+    result once one exists."""
+    monkeypatch.chdir(_SRC_DIR)
+    monkeypatch.setattr(
+        run_league, "build_pool",
+        lambda: _real_build_pool(vocab_path=str(tmp_path / "vocab.json")),
+    )
+    deck_name = "rakdos_madness"
+    decklists, vocab, deck_ctxs, fixed_tables = _real_build_pool(vocab_path=str(tmp_path / "vocab.json"))
+    shared = run_league.build_fresh_stack(vocab.size)
+    live_net = run_league.DeckNetwork(shared, film_condition_dim=run_league.D_MODEL,
+                                       non_targeting_n_actions=len(fixed_tables[deck_name]))
+    from rl.mulligan import MulliganNet
+    mulligan_net = MulliganNet(shared)
+
+    gauntlet_dir = str(tmp_path / "gauntlet")
+    # No gauntlet checkpoint for this deck yet -- must return None, not crash or return an empty dict.
+    assert run_league._run_eval_vs_gauntlet(
+        deck_name, live_net, mulligan_net, deck_ctxs[deck_name], decklists[deck_name], shared,
+        gauntlet_dir, horizon=20,
+    ) is None
+    # gauntlet_league_dir=None entirely (the common case -- most leagues have no gauntlet) must also return None.
+    assert run_league._run_eval_vs_gauntlet(
+        deck_name, live_net, mulligan_net, deck_ctxs[deck_name], decklists[deck_name], shared,
+        None, horizon=20,
+    ) is None
+
+    # Write a real (untrained but structurally valid) gauntlet checkpoint for this deck.
+    import os
+    import torch
+    deck_dir = os.path.join(gauntlet_dir, deck_name)
+    os.makedirs(deck_dir, exist_ok=True)
+    torch.save({"net": live_net.state_dict()}, os.path.join(deck_dir, "live.pt"))
+
+    result = run_league._run_eval_vs_gauntlet(
+        deck_name, live_net, mulligan_net, deck_ctxs[deck_name], decklists[deck_name], shared,
+        gauntlet_dir, horizon=20, games=2, seed=0,
+    )
+    assert result["games"] == 2
+    assert result["live_wins"] + result["gauntlet_wins"] + result["no_winner"] == 2
+
+
+@pytest.mark.slow
+def test_run_eval_vs_heuristic_plays_real_games(tmp_path, monkeypatch):
+    """_run_eval_vs_heuristic is the gauntlet's tier-1 (hand-authored,
+    non-learned) member -- confirms it actually plays real games between a
+    live net and rl.agent.HeuristicAgent and returns a real tally, using the
+    deck the owner scoped it to (mono_red_rally)."""
+    monkeypatch.chdir(_SRC_DIR)
+    monkeypatch.setattr(
+        run_league, "build_pool",
+        lambda: _real_build_pool(vocab_path=str(tmp_path / "vocab.json")),
+    )
+    deck_name = "mono_red_rally"
+    decklists, vocab, deck_ctxs, fixed_tables = _real_build_pool(vocab_path=str(tmp_path / "vocab.json"))
+    shared = run_league.build_fresh_stack(vocab.size)
+    live_net = run_league.DeckNetwork(shared, film_condition_dim=run_league.D_MODEL,
+                                       non_targeting_n_actions=len(fixed_tables[deck_name]))
+    from rl.mulligan import MulliganNet
+    mulligan_net = MulliganNet(shared)
+
+    result = run_league._run_eval_vs_heuristic(
+        deck_name, live_net, mulligan_net, deck_ctxs[deck_name], decklists[deck_name],
+        horizon=20, games=3, seed=0,
+    )
+    assert result["games"] == 3
+    assert result["live_wins"] + result["heuristic_wins"] + result["no_winner"] == 3

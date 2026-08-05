@@ -142,7 +142,8 @@ def _constant_pairing(agents, decklists, reward_fns, record_as):
     return pairing
 
 
-def collect_rollout(pairing, n_games, horizon, rng, device="cpu", record=True, greedy=False, game_logs=None):
+def collect_rollout(pairing, n_games, horizon, rng, device="cpu", record=True, greedy=False, game_logs=None,
+                     on_game_end=None):
     """The ONE game loop. Plays n_games real self-play games
     (game.run_multiplayer_game); a per-game `pairing(rng)` supplies that game's
     layout, and the SeatAgents it returns own the mulligan-vs-policy dispatch
@@ -160,7 +161,12 @@ def collect_rollout(pairing, n_games, horizon, rng, device="cpu", record=True, g
     record=False -> pure play (eval / log generation), buffers nothing;
     reward_fns may be None. greedy=True -> deterministic argmax (eval). game_logs:
     optional list, one engine event_log appended per game (game/state.py's
-    log_event -- already instrumented; zero-cost when None).
+    log_event -- already instrumented; zero-cost when None). on_game_end:
+    optional on_game_end(state) callback fired once per game, right after it
+    ends -- zero-cost when None, same as game_logs. Generic on purpose (this
+    function stays pairing-agnostic, no knowledge of leagues/pools): the
+    league-specific use (rl.league.LeaguePool PFSP stat updates, see
+    collect_rollout_league) is wired in by the CALLER, not here.
 
     Returns (buffers_by_deck, mull_by_deck, games_played): dicts keyed by the
     deck-name buckets from record_as. A mirror routes BOTH seats to one bucket
@@ -216,6 +222,19 @@ def collect_rollout(pairing, n_games, horizon, rng, device="cpu", record=True, g
                 choose_action=choose_action, horizon=horizon, combat_enabled=True, event_log=event_log,
                 on_mana_burn=on_mana_burn if wants_mana_mistake else None,
             )
+            # The engine's own win-check (game/effects/win_check.py) sets
+            # state.winner/state.turn_won as plain attributes with no log_event
+            # call of its own -- nothing in the event stream otherwise records
+            # who won (or that the game timed out with no winner). One more
+            # state.log_event call here, through the SAME choke point every
+            # other instrumented state change already uses, so a consumer of
+            # game_logs (win-rate aggregation, the vs-history eval below) never
+            # has to reconstruct the outcome by replaying life_change deltas.
+            # No-ops (state.event_log is None) when logging is off, same as
+            # every other log_event call site.
+            state.log_event("game_over", winner=state.winner, turn_won=state.turn_won)
+            if on_game_end is not None:
+                on_game_end(state)
             if game_logs is not None:
                 game_logs.append(event_log)
             if record:
@@ -241,29 +260,59 @@ def collect_rollout(pairing, n_games, horizon, rng, device="cpu", record=True, g
 
 def collect_rollout_league(training_deck_name, live_nets, mulligan_nets, deck_ctxs, decklists_by_name,
                             pool, reward_fn, horizon, n_games, rng, device="cpu", record=True, game_logs=None,
-                            checkpoint_rate=0.0):
+                            checkpoint_rate=0.0, pfsp=True):
     """League collection: builds a pairing that RESAMPLES the opponent from
     `pool` before every game (true mirror / another deck's live net / a frozen
     snapshot), then runs the ONE loop (collect_rollout). Returns
-    (buffers_by_deck, mull_by_deck, games_played) keyed by deck name -- the
-    training deck's bucket (training seat always; BOTH seats on a mirror) plus,
-    for any game whose opponent was another deck's CURRENT live net, that deck's
-    own bucket (on-policy for it). A frozen-snapshot opponent is off-policy and
-    records nothing.
+    (buffers_by_deck, mull_by_deck, games_played, outcomes) keyed by deck name --
+    the training deck's bucket (training seat always; BOTH seats on a mirror)
+    plus, for any game whose opponent was another deck's CURRENT live net, that
+    deck's own bucket (on-policy for it). A frozen-snapshot opponent is
+    off-policy and records nothing.
+
+    outcomes: one (opponent_deck_name, snapshot_id_or_None, training_deck_won)
+    tuple per game played that reached a winner, for the CALLER to feed into
+    pool.record_outcome -- a horizon-timeout game (state.winner is None) is
+    excluded entirely rather than counted as a loss, matching the no_winner
+    bucketing run_league._run_eval_vs_history/_run_eval_vs_gauntlet already
+    use elsewhere for the same "nobody actually won" case.
+    this function and _league_rollout_worker (its parallel-worker twin) never
+    write to `pool` themselves (pool.sample_opponent-only here; a worker's own
+    pool copy is a separate-process, read-only replica per its own docstring),
+    only ever return what happened so the ONE authoritative pool object (living
+    in run_league._run_session) gets updated once, after collection, regardless
+    of which path collected the games.
 
     live_nets / mulligan_nets / deck_ctxs / decklists_by_name: dicts keyed by
     deck name over the WHOLE roster (an opponent may be any other deck's live
     net). mulligan_nets=None -> every seat uses AlwaysKeep (no mulligan dispatch/
-    training), e.g. a matchup or deck-only collection. checkpoint_rate: forwarded
-    to _make_league_pairing/pool.sample_opponent verbatim -- see rl.league.
-    LeaguePool.sample_opponent's own docstring."""
+    training), e.g. a matchup or deck-only collection. checkpoint_rate, pfsp:
+    forwarded to _make_league_pairing/pool.sample_opponent verbatim -- see
+    rl.league.LeaguePool.sample_opponent's own docstring."""
+    choice_sink = {}
+    outcomes = []
     pairing = _make_league_pairing(training_deck_name, live_nets, mulligan_nets, deck_ctxs,
-                                    decklists_by_name, pool, reward_fn, checkpoint_rate=checkpoint_rate)
-    return collect_rollout(pairing, n_games, horizon, rng, device=device, record=record, game_logs=game_logs)
+                                    decklists_by_name, pool, reward_fn, checkpoint_rate=checkpoint_rate,
+                                    choice_sink=choice_sink, pfsp=pfsp)
+
+    def on_game_end(state):
+        if state.winner is None:  # horizon timeout, nobody won -- exclude, don't count as a loss
+            return
+        opp_name = choice_sink["opponent_deck_name"]
+        snapshot_path = choice_sink["snapshot_path"]
+        training_seat = choice_sink["training_seat"]
+        snap_id = None
+        if snapshot_path is not None:
+            snap_id = next((sid for sid, path in pool.snapshots[opp_name] if path == snapshot_path), None)
+        outcomes.append((opp_name, snap_id, state.winner == training_seat))
+
+    buffers_by_deck, mull_by_deck, played = collect_rollout(
+        pairing, n_games, horizon, rng, device=device, record=record, game_logs=game_logs, on_game_end=on_game_end)
+    return buffers_by_deck, mull_by_deck, played, outcomes
 
 
 def _make_league_pairing(training_deck_name, live_nets, mulligan_nets, deck_ctxs, decklists_by_name, pool, reward_fn,
-                          checkpoint_rate=0.0):
+                          checkpoint_rate=0.0, choice_sink=None, pfsp=True):
     """Builds a pairing closure: samples one opponent per game, randomizes which
     seat the training deck takes, wraps each side as a SeatAgent (its live/loaded
     DeckNetwork + its mulligan decider), and sets record_as -- the training
@@ -272,9 +321,18 @@ def _make_league_pairing(training_deck_name, live_nets, mulligan_nets, deck_ctxs
     bucket -- salvage); None for a frozen snapshot (off-policy). Opponent-sampling
     and which-seat-to-record rules live here, in one place.
 
-    checkpoint_rate: forwarded to pool.sample_opponent verbatim (see its own
-    docstring) -- the live/checkpoint split, independent of snapshot-window
-    occupancy. Default 0.0: every game is real-model-vs-real-model."""
+    checkpoint_rate, pfsp: forwarded to pool.sample_opponent verbatim (see its
+    own docstring) -- checkpoint_rate is the live/checkpoint split (default 0.0:
+    every game is real-model-vs-real-model), pfsp is whether that split's deck/
+    snapshot choice is weighted toward whoever's currently winning against
+    training_deck_name (default True) or plain uniform.
+
+    choice_sink: optional mutable dict this closure overwrites every call with
+    {'opponent_deck_name', 'snapshot_path', 'training_seat'} -- lets a caller
+    (collect_rollout_league's on_game_end) recover which specific opponent THIS
+    game was against, after collect_rollout's own game loop finishes it.
+    collect_rollout stays pairing-agnostic (no knowledge of leagues/pools), so
+    this can't be threaded through its return contract instead."""
     training_net = live_nets[training_deck_name]
     training_ctx = deck_ctxs[training_deck_name]
     training_decklist = decklists_by_name[training_deck_name]
@@ -283,7 +341,7 @@ def _make_league_pairing(training_deck_name, live_nets, mulligan_nets, deck_ctxs
         return mulligan_nets[name] if mulligan_nets is not None else AlwaysKeep()
 
     def pairing(rng):
-        opp_name, snapshot_path = pool.sample_opponent(training_deck_name, rng, checkpoint_rate=checkpoint_rate)
+        opp_name, snapshot_path = pool.sample_opponent(training_deck_name, rng, checkpoint_rate=checkpoint_rate, pfsp=pfsp)
         is_self = snapshot_path is None and opp_name == training_deck_name
         opp_is_live = snapshot_path is None and not is_self  # another deck's current net -> salvageable
 
@@ -313,6 +371,10 @@ def _make_league_pairing(training_deck_name, live_nets, mulligan_nets, deck_ctxs
         elif opp_is_live:
             record_as[opp_seat] = opp_name             # another deck's live net -> salvage under its own name
         # else: frozen snapshot -> record_as[opp_seat] stays None (off-policy)
+        if choice_sink is not None:
+            choice_sink["opponent_deck_name"] = opp_name
+            choice_sink["snapshot_path"] = snapshot_path
+            choice_sink["training_seat"] = training_seat
         return agents, decklists, reward_fns, record_as
 
     return pairing
@@ -368,7 +430,7 @@ def _sanitize_events(game_logs):
 
 def _league_rollout_worker(training_deck_name, all_state_dicts, all_trunk_hidden, shared_state_dict,
                             shared_hparams, reward_fn_name, league_root_dir, horizon, n_games, seed,
-                            mulligan_state_dicts=None, collect_logs=False, checkpoint_rate=0.0):
+                            mulligan_state_dicts=None, collect_logs=False, checkpoint_rate=0.0, pfsp=True):
     """Runs in a SEPARATE PROCESS (spawned fresh -- Windows only supports
     the "spawn" start method, no fork, so this re-imports the whole module
     graph from scratch rather than inheriting any parent-process memory).
@@ -433,21 +495,25 @@ def _league_rollout_worker(training_deck_name, all_state_dicts, all_trunk_hidden
             mulligan_nets[name] = mn
 
     worker_logs = [] if collect_logs else None  # engine event logs are plain dicts -> picklable, cross the boundary as-is
-    buffers_by_deck, mull_by_deck, played = collect_rollout_league(
+    buffers_by_deck, mull_by_deck, played, outcomes = collect_rollout_league(
         training_deck_name, live_nets, mulligan_nets, deck_ctxs, decklists, pool, reward_fn,
-        horizon, n_games, rng, device="cpu", game_logs=worker_logs, checkpoint_rate=checkpoint_rate,
+        horizon, n_games, rng, device="cpu", game_logs=worker_logs, checkpoint_rate=checkpoint_rate, pfsp=pfsp,
     )
     # Serialize each deck's buffer to picklable entries (identities stripped);
-    # mulligan transitions and event logs are already plain data.
+    # mulligan transitions and event logs are already plain data. outcomes is
+    # already plain (str, int-or-None, bool) tuples -- picklable as-is. This
+    # worker's own `pool` above is read-only (per its own comment); outcomes
+    # is how what it observed gets back to the MAIN process's real pool
+    # (collect_rollout_league_parallel aggregates it; _run_session applies it).
     entries_by_deck = {name: _buffer_to_entries(buf) for name, buf in buffers_by_deck.items()}
     if worker_logs:
         worker_logs = _sanitize_events(worker_logs)  # strip unpicklable closures before crossing the boundary
-    return entries_by_deck, mull_by_deck, worker_logs, played
+    return entries_by_deck, mull_by_deck, worker_logs, played, outcomes
 
 
 def collect_rollout_league_parallel(training_deck_name, live_nets, reward_fn_name, league_root_dir, horizon, n_games,
                                      executor, n_workers, shared_hparams, shared_state_dict, all_trunk_hidden,
-                                     mulligan_state_dicts=None, game_logs=None, checkpoint_rate=0.0):
+                                     mulligan_state_dicts=None, game_logs=None, checkpoint_rate=0.0, pfsp=True):
     """Orchestrator (runs in the MAIN process): splits n_games across
     n_workers, submits one _league_rollout_worker task per worker via the
     given (already-created, reused-across-calls) ProcessPoolExecutor --
@@ -466,8 +532,13 @@ def collect_rollout_league_parallel(training_deck_name, live_nets, reward_fn_nam
     built) instead of this function re-deriving them from live_nets on every
     one of the n_iterations * len(train_decks) calls it gets per session.
 
-    checkpoint_rate: forwarded to every worker's own pool.sample_opponent
-    call verbatim -- see rl.league.LeaguePool.sample_opponent's docstring."""
+    checkpoint_rate, pfsp: forwarded to every worker's own pool.sample_opponent
+    call verbatim -- see rl.league.LeaguePool.sample_opponent's docstring.
+
+    Returns (buffers_by_deck, mull_by_deck, games_played, outcomes) -- outcomes
+    merges every worker's own collect_rollout_league outcomes list (see its
+    docstring); the caller applies these to the real pool via record_outcome,
+    since every worker's pool here is a separate-process, read-only replica."""
     all_state_dicts = {name: net.state_dict() for name, net in live_nets.items()}
 
     base = n_games // n_workers
@@ -478,14 +549,17 @@ def collect_rollout_league_parallel(training_deck_name, live_nets, reward_fn_nam
     futures = [
         executor.submit(_league_rollout_worker, training_deck_name, all_state_dicts, all_trunk_hidden,
                          shared_state_dict, shared_hparams, reward_fn_name, league_root_dir, horizon, chunk,
-                         random.randrange(2 ** 31), mulligan_state_dicts, collect_logs, checkpoint_rate)
+                         random.randrange(2 ** 31), mulligan_state_dicts, collect_logs, checkpoint_rate, pfsp)
         for chunk in chunks if chunk > 0
     ]
     buffers_by_deck = {}   # deck name -> merged RolloutBuffer across workers
     mull_by_deck = {}      # deck name -> merged mulligan transitions across workers
+    outcomes = []          # (opponent_deck_name, snapshot_id_or_None, training_deck_won), merged across workers --
+                            # see collect_rollout_league's own docstring: the caller (_run_session) applies these
+                            # to its ONE authoritative pool object, since every worker's own pool is a read-only replica.
     games_played = 0
     for future in futures:
-        entries_by_deck, worker_mull_by_deck, worker_logs, played = future.result()
+        entries_by_deck, worker_mull_by_deck, worker_logs, played, worker_outcomes = future.result()
         games_played += played
         for name, entries in entries_by_deck.items():
             _extend_buffer_from_entries(buffers_by_deck.setdefault(name, RolloutBuffer()), entries)
@@ -493,7 +567,8 @@ def collect_rollout_league_parallel(training_deck_name, live_nets, reward_fn_nam
             mull_by_deck.setdefault(name, []).extend(tr)
         if game_logs is not None and worker_logs:  # one event_log per game, merged across workers
             game_logs.extend(worker_logs)
-    return buffers_by_deck, mull_by_deck, games_played
+        outcomes.extend(worker_outcomes)
+    return buffers_by_deck, mull_by_deck, games_played, outcomes
 
 
 def _compute_gae(rewards_, values_, dones_, gamma, gae_lambda):

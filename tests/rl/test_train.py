@@ -143,6 +143,11 @@ def test_game_logs_smoke():
             assert "kind" in event and "turn" in event and "phase" in event, "every event must carry log_event's own envelope"
     kinds_seen = {event["kind"] for one_game_events in game_logs for event in one_game_events}
     assert "turn_start" in kinds_seen, "a multi-turn game must log at least one turn_start event"
+    assert "game_over" in kinds_seen, "collect_rollout must log the outcome itself, not leave it to be inferred"
+    for one_game_events in game_logs:
+        game_over_events = [e for e in one_game_events if e["kind"] == "game_over"]
+        assert len(game_over_events) == 1, "exactly one game_over event per game"
+        assert game_over_events[0]["winner"] in (0, 1, None), "winner must be a seat index or None (timeout)"
     print(f"rl.train game_logs smoke test: OK ({sum(len(g) for g in game_logs)} events across {played} games, "
           f"kinds={sorted(kinds_seen)})")
 
@@ -217,27 +222,36 @@ def test_league_smoke_and_frozen_cache_ppo_update():
         pool.register_snapshot("a", net_a)  # gives the "frozen snapshot of self" path something real to load
         snapshot_path = pool.snapshots["a"][0][1]
 
-        pool.sample_opponent = lambda training_deck_name, rng, checkpoint_rate=0.0: ("a", None)  # true mirror
-        bufs_self, _mull, played = collect_rollout_league("a", live_nets, None, ctxs_by_name, decklists_by_name,
+        pool.sample_opponent = lambda training_deck_name, rng, checkpoint_rate=0.0, pfsp=True: ("a", None)  # true mirror
+        bufs_self, _mull, played, outcomes_self = collect_rollout_league("a", live_nets, None, ctxs_by_name, decklists_by_name,
                                                           pool, reward_fn, HORIZON, n_games=1, rng=rng, device=DEVICE)
         assert played == 1 and len(bufs_self.get("a", RolloutBuffer())) > 0, "true mirror must record a non-empty 'a' bucket"
         assert set(bufs_self) == {"a"}, "a true mirror records ONLY the training bucket (both seats pooled into it)"
+        # 0 entries iff that single game hit a horizon timeout (no winner) -- excluded
+        # entirely rather than recorded as a loss, see collect_rollout_league's own docstring.
+        assert len(outcomes_self) <= 1 and all(o == ("a", None, o[2]) for o in outcomes_self), \
+            "a mirror's outcome, when present, is keyed by ('a', None, <won>)"
         buf_self = bufs_self["a"]
 
-        pool.sample_opponent = lambda training_deck_name, rng, checkpoint_rate=0.0: ("b", None)  # another deck's live net
-        bufs_cross, _mull, played = collect_rollout_league("a", live_nets, None, ctxs_by_name, decklists_by_name,
+        pool.sample_opponent = lambda training_deck_name, rng, checkpoint_rate=0.0, pfsp=True: ("b", None)  # another deck's live net
+        bufs_cross, _mull, played, outcomes_cross = collect_rollout_league("a", live_nets, None, ctxs_by_name, decklists_by_name,
                                                            pool, reward_fn, HORIZON, n_games=1, rng=rng, device=DEVICE)
         assert played == 1 and len(bufs_cross.get("a", RolloutBuffer())) > 0, "cross-deck opponent must record the training bucket"
         # A LIVE-net opponent's transitions are salvaged under its own deck name ('b').
         assert "b" in bufs_cross and len(bufs_cross["b"]) > 0, "a live-net opponent must salvage its own bucket 'b'"
         assert all(np.isfinite(v) for v in bufs_cross["b"].value) and all(np.isfinite(r) for r in bufs_cross["b"].reward)
+        assert len(outcomes_cross) <= 1 and all(o == ("b", None, o[2]) for o in outcomes_cross), \
+            "a live cross-deck outcome, when present, is keyed by ('b', None, <won>)"
 
-        pool.sample_opponent = lambda training_deck_name, rng, checkpoint_rate=0.0: ("a", snapshot_path)  # frozen snapshot of self
-        bufs_snap, _mull, played = collect_rollout_league("a", live_nets, None, ctxs_by_name, decklists_by_name,
+        pool.sample_opponent = lambda training_deck_name, rng, checkpoint_rate=0.0, pfsp=True: ("a", snapshot_path)  # frozen snapshot of self
+        bufs_snap, _mull, played, outcomes_snap = collect_rollout_league("a", live_nets, None, ctxs_by_name, decklists_by_name,
                                                           pool, reward_fn, HORIZON, n_games=1, rng=rng, device=DEVICE)
         assert played == 1 and len(bufs_snap.get("a", RolloutBuffer())) > 0, "a frozen snapshot opponent still records the training bucket"
         assert set(bufs_snap) == {"a"}, "a frozen snapshot opponent is off-policy -- only the training bucket, nothing salvaged"
         assert snapshot_path in pool._net_cache, "load_snapshot_net must have populated the cache"
+        snap_id = pool.snapshots["a"][0][0]
+        assert len(outcomes_snap) <= 1 and all(o == ("a", snap_id, o[2]) for o in outcomes_snap), \
+            "a frozen-snapshot outcome, when present, must resolve the snapshot PATH back to its id, keyed by ('a', <id>, <won>)"
 
         for buf in (bufs_self["a"], bufs_cross["a"], bufs_snap["a"]):
             assert all(np.isfinite(v) for v in buf.value)
@@ -318,7 +332,7 @@ def test_collect_rollout_league_parallel_smoke():
     try:
         t0 = time.time()
         with ThreadPoolExecutor(max_workers=1) as executor:
-            buffers_by_deck, _mull_by_deck, games_played = collect_rollout_league_parallel(
+            buffers_by_deck, _mull_by_deck, games_played, outcomes = collect_rollout_league_parallel(
                 "mono_red_madness", live_nets, "action_count_win_reward_200_floor02", tmp_dir, HORIZON,
                 n_games=1, executor=executor, n_workers=1, shared_hparams=shared_hparams,
                 shared_state_dict=shared_state_dict, all_trunk_hidden=all_trunk_hidden,
@@ -332,6 +346,12 @@ def test_collect_rollout_league_parallel_smoke():
         "the DeckNetwork rebuilt with all_trunk_hidden's trunk widths must together produce a real rollout"
     )
     assert all(np.isfinite(v) for v in buffers_by_deck["mono_red_madness"].value)
+    # 0 entries iff that single game hit a horizon timeout (no winner) -- excluded
+    # entirely rather than recorded as a loss, see collect_rollout_league's own docstring.
+    assert len(outcomes) <= 1 and all(o[2] in (True, False) for o in outcomes), (
+        "the worker's own outcome (opponent, snapshot_id, won), when present, must cross the process boundary "
+        "intact -- this is what feeds PFSP's record_outcome back in the MAIN process, not the worker's own read-only pool"
+    )
     print(f"rl.train collect_rollout_league_parallel smoke test: OK ({time.time() - t0:.1f}s)")
 
 

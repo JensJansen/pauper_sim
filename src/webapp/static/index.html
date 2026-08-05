@@ -162,6 +162,19 @@ function buildFieldEl(field, scope) {
   const wrap = document.createElement('div');
   if (field.type === 'store_true') {
     wrap.innerHTML = `<label class="checkbox"><input type="checkbox" id="${id}" title="${field.help || ''}"> ${field.flags[0] || field.dest}</label>`;
+  } else if (field.type === 'tri_bool') {
+    // Unlike store_true, "off" here must be a distinct, submittable state
+    // (--no-X), not just "checkbox left unchecked" -- a plain checkbox can
+    // only ever omit the flag, which for a default-True flag (e.g. --pfsp)
+    // would silently mean "on" regardless of what the user picked. A 3-way
+    // select keeps "(default)" (omit the flag entirely), On, and Off distinct.
+    wrap.innerHTML = `
+      <label title="${field.help || ''}">${field.flags[0] || field.dest}</label>
+      <select id="${id}">
+        <option value="">(default)</option>
+        <option value="true">On (${field.flags[0]})</option>
+        <option value="false">Off (${field.flags[1] || '--no-' + field.dest})</option>
+      </select>`;
   } else if (field.nargs === 2) {
     wrap.innerHTML = `
       <label title="${field.help || ''}">${field.flags[0] || field.dest}</label>
@@ -276,6 +289,10 @@ function readFieldValue(field, scope, values) {
   if (field.type === 'store_true') {
     const el = document.getElementById(`f-${scope}-${field.dest}`);
     values[field.dest] = el ? el.checked : false;
+  } else if (field.type === 'tri_bool') {
+    const el = document.getElementById(`f-${scope}-${field.dest}`);
+    const v = el ? el.value : '';
+    values[field.dest] = v === '' ? null : v === 'true';
   } else if (field.nargs === 2) {
     const a = getFieldValue(scope, field.dest).trim();
     const bEl = document.getElementById(`f-${scope}-${field.dest}-2`);

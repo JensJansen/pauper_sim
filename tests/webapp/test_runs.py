@@ -49,6 +49,9 @@ def test_argspec_from_parser_excludes_config_paths_and_help():
     assert matchup["nargs"] == 2
     eval_flag = next(f for f in spec if f["dest"] == "eval")
     assert eval_flag["type"] == "store_true"
+    pfsp_flag = next(f for f in spec if f["dest"] == "pfsp")
+    assert pfsp_flag["type"] == "tri_bool", "a BooleanOptionalAction (--pfsp/--no-pfsp) must not collapse into store_true"
+    assert pfsp_flag["flags"] == ["--pfsp", "--no-pfsp"]
 
 
 @pytest.mark.slow
@@ -57,6 +60,20 @@ def test_build_argv_league_omits_blank_fields():
     assert _flag_value(argv, "--n-workers") == "6"
     assert "--snapshot-every" not in argv  # blank -> omitted, script's own default applies
     assert "--eval" not in argv  # falsy store_true -> omitted
+
+
+@pytest.mark.slow
+def test_build_argv_league_tri_bool_can_explicitly_disable_a_default_true_flag():
+    # The bug this guards against: --pfsp defaults to True, so a plain
+    # store_true-style "omit unless truthy" can never express "explicitly
+    # off" -- unchecking it in the UI would silently do nothing and PFSP
+    # would stay on. tri_bool must be able to emit --no-pfsp, not just omit.
+    assert "--no-pfsp" in build_argv("league", {"pfsp": False})
+    assert "--pfsp" not in build_argv("league", {"pfsp": False})
+    assert "--pfsp" in build_argv("league", {"pfsp": True})
+    assert "--no-pfsp" not in build_argv("league", {"pfsp": True})
+    argv_unset = build_argv("league", {"pfsp": None})
+    assert "--pfsp" not in argv_unset and "--no-pfsp" not in argv_unset
 
 
 @pytest.mark.slow

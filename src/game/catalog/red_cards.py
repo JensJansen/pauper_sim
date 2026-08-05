@@ -6,15 +6,14 @@ filter is enforced against green's Avenging Hunter (a Dragon), so
 cast_breath_weapon is NOT a purely symmetric wipe -- Dragons are excluded."""
 
 from .. import resolution
-from ..cards import CardDef, CardType, EffectId
+from ..cards import CardDef, CardType, EffectId, card_subtypes, is_artifact
 from ..effects.casting import (
     _log_target_fizzle, capture_any_target, cast_permanent_from_hand, enters_battlefield,
     target_still_legal,
 )
 from ..effects.madness_and_plot import plot_to_exile
 from ..effects.shared import (
-    card_subtypes, discard_from_hand_to_graveyard, find_and_remove_by_name, fire_sacrifice_triggers, impulse_exile,
-    is_artifact,
+    discard_from_hand_to_graveyard, find_and_remove_by_name, fire_sacrifice_triggers, impulse_exile,
 )
 from ..effects.stack import push_ability_to_stack, push_to_stack
 from ..effects.state_based import check_state_based_actions, destroy_permanent, sacrifice_to_graveyard

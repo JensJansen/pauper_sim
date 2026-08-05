@@ -53,14 +53,38 @@ def test_creature_attack_eligibility_and_damage():
 
 
 def test_haste_registry_spec():
-    # Haste (Kitchen Imp): a "haste": True registry spec lets a summoning-
-    # sick creature be attack-eligible anyway -- the only place that spec
-    # is ever read.
+    # Haste (Kitchen Imp): a flat "haste": True registry spec lets a
+    # summoning-sick creature be attack-eligible anyway, via stats.has_haste
+    # (the one canonical haste check creature_attack_eligible and mana.py's
+    # tap_summoning_locked both share).
     state = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
     _filler_backup = registry.EFFECT_REGISTRY[EffectId.FILLER]
     registry.EFFECT_REGISTRY[EffectId.FILLER] = {"haste": True}
     try:
         hasty = Permanent(CardDef("Hasty", CardType.CREATURE, None, EffectId.FILLER, power=2))
+        assert hasty.summoning_sick
+        state.battlefield = [hasty]
+        declare_attackers_step(state)
+        assert creature_attack_eligible(state, hasty)
+        declare_attacker(state, hasty)
+        combat_damage_step(state)
+        assert state.players[1].life_total == 18 and hasty.tapped  # 20 - hasty's power (2)
+    finally:
+        registry.EFFECT_REGISTRY[EffectId.FILLER] = _filler_backup
+
+
+def test_haste_intrinsic_keyword_spec_regression():
+    # Regression (2026-08): creature_attack_eligible used to check ONLY the
+    # flat "haste": True boolean, missing haste granted via the "keywords"
+    # set (Reckless Lackey, Clockwork Percussionist both use this form) --
+    # such a creature could never attack the turn it was cast. Confirms
+    # stats.has_haste's other branch (creature_keywords) now gates
+    # attack-eligibility too, not just mana.py's tap_summoning_locked.
+    state = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
+    _filler_backup = registry.EFFECT_REGISTRY[EffectId.FILLER]
+    registry.EFFECT_REGISTRY[EffectId.FILLER] = {"keywords": {"haste"}}
+    try:
+        hasty = Permanent(CardDef("Hasty Keyword", CardType.CREATURE, None, EffectId.FILLER, power=2))
         assert hasty.summoning_sick
         state.battlefield = [hasty]
         declare_attackers_step(state)

@@ -2,8 +2,11 @@
   "_note": "Run mechanics -- how a batch actually executes, independent of which league/decks. checkpoint_opponent_rate is the one field expected to be overridden per-invocation on purpose (e.g. a sub-league's planned 0.0 -> 0.20 switch at ~10k games/deck) rather than edited here. games_per_iteration, the PPO batch-size ramp (batch_size_start/cap/steps), and max_batch_size (league_*.json) used to live here too -- removed 2026-07-31: games_per_iteration is now always derived as max(1, n_workers) (one game per worker; see run_league.py main()'s own comment for the benchmark that grounded it), the PPO ramp is hardcoded in rl.train.batch_size_for_iteration (nobody had ever overridden it), and max_batch_size's safety role is now covered by the escalation loop (webapp / the /train skill) health-checking between every batch.",
   "snapshot_every_games": 200,
   "n_workers": 6,
-  "checkpoint_opponent_rate": 0.3,
+  "checkpoint_opponent_rate": 0.5,
+  "pfsp": true,
   "league_name": "4_deck_subleague_test",
   "roster": ["rakdos_madness", "dmir_terror", "elves", "mono_red_rally"],
-  "total_games": 500000
+  "total_games": 500000,
+  "gauntlet_league_name": "4_deck_subleague_gauntlet",
+  "heuristic_decks": ["mono_red_rally"]
 }

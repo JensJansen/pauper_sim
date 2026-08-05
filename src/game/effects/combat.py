@@ -5,7 +5,6 @@ opponent-facing damage effect (and, for "lifelink", the life-gaining one)."""
 
 from . import stats, state_based
 from .win_check import deal_damage_to_opponent, gain_life
-from .. import registry
 from ..cards import CardType
 
 
@@ -13,12 +12,14 @@ def creature_attack_eligible(state, permanent):
     """Untapped, not a Defender (Wall of Roots/Overgrown Battlement/Saruli
     Caretaker/Gatecreeper Vine -- real Magic's own rule: a Defender can
     never attack, full stop, regardless of tapped/summoning-sick status),
-    and not summoning sick unless it has a registry "haste": True spec
-    (Kitchen Imp) -- the only other place that flag is ever read, so this
-    is the only place haste needs to matter. Checked per creature (drl_env's
-    "Attack: <name>" actions) so a model can declare SOME eligible
-    creatures as attackers and hold others back (as blockers once those
-    exist, or as mana sources).
+    and not summoning sick unless it has haste (stats.has_haste -- the same
+    canonical check mana.py's tap_summoning_locked uses, covering a flat
+    registry "haste": True spec (Kitchen Imp), an intrinsic/static-granted
+    "haste" keyword (Goblin Tomb Raider), and an until-EOT temp_keywords
+    grant (Rally at the Hornburg, Goblin Bushwhacker)). Checked per creature
+    (drl_env's "Attack: <name>" actions) so a model can declare SOME
+    eligible creatures as attackers and hold others back (as blockers once
+    those exist, or as mana sources).
 
     Also excludes anything already in state.attackers -- ordinarily
     redundant with the tapped check above (declare_attacker taps its
@@ -34,7 +35,7 @@ def creature_attack_eligible(state, permanent):
         permanent.card_type == CardType.CREATURE and not permanent.tapped
         and not permanent.card_def.extra.get("defender", False)
         and permanent not in state.attackers
-        and (not permanent.summoning_sick or registry.EFFECT_REGISTRY.get(permanent.card_def.effect_id, {}).get("haste", False))
+        and (not permanent.summoning_sick or stats.has_haste(state, permanent))
     )
 
 

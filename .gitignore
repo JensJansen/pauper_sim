@@ -8,6 +8,7 @@ __pycache__/
 *.pyc
 
 graphify-out/
+archive/
 
 # Per-deck league checkpoint churn -- historical snapshots and session/progress
 # bookkeeping change every training iteration. live.pt/mulligan.pt (a deck's current

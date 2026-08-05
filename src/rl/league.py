@@ -2,38 +2,76 @@
 per deck (not latest-only, so a deck can't quietly drift away from skills it
 needed against an opponent's earlier self).
 
-Sampling is two-level: pick a deck uniformly from the whole roster
-(including the training deck itself, for mirror play), THEN decide live vs.
-checkpoint for that deck via `checkpoint_rate` (a live/checkpoint coin flip
-with a caller-set probability, default 0.0 -- always live), and if a
-checkpoint is drawn, pick uniformly among that deck's currently-held
-snapshots. checkpoint_rate makes the live/checkpoint split an explicit,
-stable number, deliberately independent of how many snapshots a deck happens
-to have banked -- deriving that ratio from snapshot-window occupancy instead
-(e.g. uniformly among {live} union {every snapshot}) would let the live-net
-probability silently shrink as the window filled (1/(N+1), so 80% checkpoint
-odds once a deck had 4 snapshots), a side effect of window size rather than a
-deliberate choice.
+Sampling is two-level: pick a deck from the whole roster (including the
+training deck itself, for mirror play), THEN decide live vs. checkpoint for
+that deck via `checkpoint_rate` (a live/checkpoint coin flip with a
+caller-set probability, default 0.0 -- always live), and if a checkpoint is
+drawn, pick among that deck's currently-held snapshots. checkpoint_rate makes
+the live/checkpoint split an explicit, stable number, deliberately
+independent of how many snapshots a deck happens to have banked -- deriving
+that ratio from snapshot-window occupancy instead (e.g. uniformly among
+{live} union {every snapshot}) would let the live-net probability silently
+shrink as the window filled (1/(N+1), so 80% checkpoint odds once a deck had
+4 snapshots), a side effect of window size rather than a deliberate choice.
 
 Early training uses NO checkpoint opponents at all (checkpoint_rate=0.0, the
 default): an early snapshot is barely-trained and teaches little as an
 opponent, so paying collection cost against one is close to wasted relative
 to a live opponent that's also improving. Reintroducing checkpoint diversity
 later is an explicit, deliberate choice (a nonzero rate), not an automatic
-side effect of the pool filling up."""
+side effect of the pool filling up.
 
+BOTH levels are PFSP-weighted by default (pfsp=True), not uniform: within
+each level, a candidate opponent (a deck, or one of its snapshots) the
+training deck currently loses to more often is sampled MORE, per
+`_pfsp_weight`'s (1 - win_rate) weighting -- "compete against whoever's most
+likely to beat you right now" (AlphaStar's PFSP), rather than every
+opponent getting equal airtime regardless of whether the training deck has
+already solved it. A PFSP_FLOOR keeps even a thoroughly-beaten opponent
+sampleable at a low rate -- driving its weight to exactly zero would starve
+it and reintroduce the catastrophic-forgetting failure this pool's snapshot
+history exists to prevent in the first place. A never-yet-played candidate
+(0 recorded games) gets a neutral 0.5 win-rate prior, which is why every
+existing test that never calls record_outcome still observes effectively
+uniform sampling: every untried candidate carries the same weight."""
+
+import json
 import os
-
-import torch
 
 from rl.deck import DeckNetwork
 from rl.agent import AlwaysKeep, SeatAgent
 from rl.mulligan import MulliganNet
+from rl import checkpoint as ckpt_io
 
-# ponytail: fixed rolling window per deck, oldest evicted first. Revisit
-# (e.g. keep-most-diverse instead of keep-most-recent) if a shallow window
-# turns out to lose opponent diversity that actually mattered.
+# ponytail: fixed rolling window per deck, oldest evicted (archived, see
+# register_snapshot) first. Revisit (e.g. keep-most-diverse instead of
+# keep-most-recent) if a shallow ACTIVE sampling window turns out to lose
+# opponent diversity that actually mattered -- eviction no longer discards
+# history, only narrows what training actually samples from.
 DEFAULT_MAX_SNAPSHOTS_PER_DECK = 8
+
+# PFSP weighting: weight(win_rate) = PFSP_FLOOR + (1 - win_rate) ** PFSP_POWER.
+# POWER=1 (linear "how far below 100% am I") is the simplest curve that satisfies
+# "harder opponents get sampled more"; never tuned against real data, so not
+# exposed as a CLI knob yet -- promote to one if a specific value is ever
+# actually overridden, same reasoning run_league.py's own comments give for
+# every other constant that's never been touched in practice.
+PFSP_FLOOR = 0.1
+PFSP_POWER = 1.0
+
+
+def _format_opponent_key(key):
+    """opponent_stats keys are ("deck", name) or ("snapshot", name, id) tuples
+    -- JSON object keys must be strings, so join with ":" (deck names can't
+    contain ":", so this round-trips exactly)."""
+    return ":".join(str(part) for part in key)
+
+
+def _parse_opponent_key(key_str):
+    parts = key_str.split(":")
+    if parts[0] == "deck":
+        return ("deck", parts[1])
+    return ("snapshot", parts[1], int(parts[2]))
 
 
 class LeaguePool:
@@ -43,6 +81,9 @@ class LeaguePool:
         self.max_snapshots_per_deck = max_snapshots_per_deck
         self.snapshots = {name: [] for name in self.deck_names}  # per deck: [(id, path), ...] oldest first
         self._net_cache = {}  # snapshot path -> loaded, frozen DeckNetwork
+        # opponent_stats[training_deck][opponent_key] = (wins, games), opponent_key
+        # ("deck", name) or ("snapshot", name, id) -- see sample_opponent/_pfsp_weight.
+        self.opponent_stats = {name: {} for name in self.deck_names}
 
         for name in self.deck_names:
             deck_dir = os.path.join(root_dir, name)
@@ -52,6 +93,48 @@ class LeaguePool:
                 if fn.startswith("snapshot_") and fn.endswith(".pt")
             )
             self.snapshots[name] = [(i, os.path.join(deck_dir, f"snapshot_{i}.pt")) for i in ids]
+            self.opponent_stats[name] = self._load_opponent_stats(name)
+
+    def _stats_path(self, deck_name):
+        return os.path.join(self.root_dir, deck_name, "opponent_stats.json")
+
+    def _load_opponent_stats(self, deck_name):
+        path = self._stats_path(deck_name)
+        if not os.path.exists(path):
+            return {}
+        raw = json.load(open(path))
+        return {_parse_opponent_key(k): tuple(v) for k, v in raw.items()}
+
+    def save_opponent_stats(self):
+        """Persists every deck's running PFSP win/loss tallies to disk (JSON,
+        one file per deck alongside its live.pt/snapshot_*.pt) -- called by
+        run_league._run_session on the SAME cadence as its other checkpoints
+        (snapshot points + session end), not on every game: each real
+        training run is many SEPARATE short-lived process invocations (no
+        long-running daemon), so without this the PFSP weighting would
+        silently reset to its cold-start uniform prior every single session
+        instead of accumulating across a run."""
+        for name in self.deck_names:
+            path = self._stats_path(name)
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            raw = {_format_opponent_key(k): list(v) for k, v in self.opponent_stats[name].items()}
+            with open(path, "w") as f:
+                json.dump(raw, f)
+
+    def record_outcome(self, training_deck_name, opponent_key, won):
+        """Updates training_deck_name's running (wins, games) tally against
+        opponent_key. Called once per REAL training game (never a separate
+        eval pass) via the on_game_end hook threaded through
+        rl.train.collect_rollout(_league(_parallel)) -- rides along with
+        normal rollout collection at zero extra compute cost."""
+        stats = self.opponent_stats.setdefault(training_deck_name, {})
+        wins, games = stats.get(opponent_key, (0, 0))
+        stats[opponent_key] = (wins + int(won), games + 1)
+
+    def _pfsp_weight(self, training_deck_name, opponent_key):
+        wins, games = self.opponent_stats.get(training_deck_name, {}).get(opponent_key, (0, 0))
+        win_rate = wins / games if games else 0.5  # cold start: neutral prior, not "beats everyone" or "loses to everyone"
+        return PFSP_FLOOR + (1.0 - win_rate) ** PFSP_POWER
 
     def register_snapshot(self, deck_name, net, mulligan_net=None):
         """Freezes net's CURRENT weights as a new historical opponent for
@@ -68,19 +151,30 @@ class LeaguePool:
         os.makedirs(deck_dir, exist_ok=True)
         next_id = (self.snapshots[deck_name][-1][0] + 1) if self.snapshots[deck_name] else 0
         path = os.path.join(deck_dir, f"snapshot_{next_id}.pt")
-        trunk_hidden = tuple(layer.out_features for layer in net.trunk_layers)
-        saved = {"state_dict": net.state_dict(), "trunk_hidden": trunk_hidden}
-        if mulligan_net is not None:
-            saved["mulligan_state_dict"] = mulligan_net.state_dict()
-            saved["mulligan_hidden"] = mulligan_net.trunk[0].out_features  # restore the exact hidden width on load
-        torch.save(saved, path)
+        ckpt_io.save_snapshot(path, net, mulligan_net)
         self.snapshots[deck_name].append((next_id, path))
         while len(self.snapshots[deck_name]) > self.max_snapshots_per_deck:
-            _evicted_id, evicted_path = self.snapshots[deck_name].pop(0)
-            os.remove(evicted_path)
+            evicted_id, evicted_path = self.snapshots[deck_name].pop(0)
+            # Moved into deck_dir/archive/, not deleted: the active sampling
+            # window (max_snapshots_per_deck) stays small on purpose (a stale
+            # snapshot is a weak training opponent), but permanently discarding
+            # it left no way to ever measure a deck's win rate against its own
+            # older selves once they aged out -- see run_league._run_eval_vs_history,
+            # the reason this archive exists. Cheap: ~1MB/snapshot (checked on
+            # disk), so archiving every eviction for a whole run is a few GB at most.
+            archive_dir = os.path.join(deck_dir, "archive")
+            os.makedirs(archive_dir, exist_ok=True)
+            os.replace(evicted_path, os.path.join(archive_dir, f"snapshot_{evicted_id}.pt"))
             self._net_cache.pop(evicted_path, None)
+            # An evicted snapshot is no longer sample-able by ANYONE, so its
+            # per-training-deck PFSP stats are dead weight -- drop them from
+            # every deck's opponent_stats (not just deck_name's own), bounded
+            # cost (at most len(deck_names) small-dict pops).
+            evicted_key = ("snapshot", deck_name, evicted_id)
+            for stats in self.opponent_stats.values():
+                stats.pop(evicted_key, None)
 
-    def sample_opponent(self, training_deck_name, rng, checkpoint_rate=0.0):
+    def sample_opponent(self, training_deck_name, rng, checkpoint_rate=0.0, pfsp=True):
         """Returns (opponent_deck_name, snapshot_path_or_None). None means
         "use that deck's current live net" (the caller already holds every
         deck's live net; when opponent_deck_name == training_deck_name AND
@@ -94,10 +188,24 @@ class LeaguePool:
         comparison never happen, so this is exact, not "very unlikely," even
         before any snapshots exist. A deck with an EMPTY snapshot list always
         resolves to live regardless of checkpoint_rate (nothing to draw
-        yet)."""
-        opponent_deck_name = rng.choice(self.deck_names)
+        yet).
+
+        pfsp: weight BOTH the deck choice and (if a checkpoint is drawn) the
+        snapshot choice by _pfsp_weight instead of drawing uniformly -- see
+        this module's own docstring. True by default; pfsp=False restores
+        the plain-uniform behavior this replaced, kept as an escape hatch."""
+        if pfsp:
+            weights = [self._pfsp_weight(training_deck_name, ("deck", name)) for name in self.deck_names]
+            opponent_deck_name = rng.choices(self.deck_names, weights=weights, k=1)[0]
+        else:
+            opponent_deck_name = rng.choice(self.deck_names)
         snaps = self.snapshots[opponent_deck_name]
         if snaps and rng.random() < checkpoint_rate:
+            if pfsp:
+                weights = [self._pfsp_weight(training_deck_name, ("snapshot", opponent_deck_name, sid))
+                           for sid, _path in snaps]
+                _sid, chosen_path = rng.choices(snaps, weights=weights, k=1)[0]
+                return opponent_deck_name, chosen_path
             return opponent_deck_name, rng.choice([path for _id, path in snaps])
         return opponent_deck_name, None
 
@@ -113,7 +221,7 @@ class LeaguePool:
         if snapshot_path in self._net_cache:
             return self._net_cache[snapshot_path]
         _vocab, fixed_table = deck_ctx
-        saved = torch.load(snapshot_path, weights_only=True)
+        saved = ckpt_io.load_snapshot(snapshot_path)
         net = DeckNetwork(shared_stack, film_condition_dim=shared_stack.d_model, non_targeting_n_actions=len(fixed_table),
                            trunk_hidden=saved["trunk_hidden"])
         net.load_state_dict(saved["state_dict"])

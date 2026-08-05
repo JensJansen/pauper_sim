@@ -21,12 +21,12 @@ same authorized deviation covers Abandon Attachments' {1}{U/R}->{1}{U}
 that plays it (real costs verified via Scryfall)."""
 
 from .. import resolution
-from ..cards import CardDef, CardType, EffectId
+from ..cards import CardDef, CardType, EffectId, card_subtypes
 from ..effects.casting import (
     bounce_land_etb, capture_any_target, cast_aura, cast_permanent_from_hand,
     cast_targeting_creature, has_creature_target, target_still_legal,
 )
-from ..effects.shared import any_creature_on_either_battlefield, card_subtypes, discard_from_hand_to_graveyard
+from ..effects.shared import any_creature_on_either_battlefield, discard_from_hand_to_graveyard
 from ..effects.stack import push_to_stack
 from ..effects.state_based import check_state_based_actions, destroy_permanent
 from ..effects.stats import can_be_targeted

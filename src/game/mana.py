@@ -13,13 +13,12 @@ from .resolution import begin_resolution, complete_resolution
 
 
 def _has_haste(state, permanent):
-    """Haste from either source: a registry "haste": True (Kitchen Imp) or a
-    granted/static "haste" keyword (Goblin Tomb Raider). Lazy stats import --
-    stats has no need for mana, but keep the load-order convention."""
-    if registry.EFFECT_REGISTRY.get(permanent.card_def.effect_id, {}).get("haste", False):
-        return True
-    from .effects.stats import creature_keywords
-    return "haste" in creature_keywords(state, permanent)
+    """Delegates to stats.has_haste, the one canonical haste check shared
+    with combat.py's creature_attack_eligible -- see its docstring. Lazy
+    stats import: stats has no need for mana, but keep the load-order
+    convention."""
+    from .effects.stats import has_haste
+    return has_haste(state, permanent)
 
 
 def tap_summoning_locked(state, permanent):

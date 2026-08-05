@@ -12,8 +12,11 @@ import sys
 
 _SRC = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # .../src
 if _SRC not in sys.path:
-    sys.path.insert(0, _SRC)
-os.chdir(_SRC)  # so build_pool()'s ../data and ../checkpoints resolve like run_league.py's
+    sys.path.insert(0, _SRC)  # also makes `import repo_paths` (lives in src/) work below
+
+from repo_paths import SRC_DIR  # noqa: E402
+
+os.chdir(SRC_DIR)  # so build_pool()'s ../data and ../checkpoints resolve like run_league.py's
 
 # Line-buffer stdout so every print() flushes at its newline even when output is
 # redirected to a file (block-buffered by default off a TTY -- benchmark progress

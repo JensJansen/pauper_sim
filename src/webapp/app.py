@@ -23,6 +23,9 @@ from pathlib import Path
 
 from flask import Flask, Response, jsonify, request, send_from_directory
 
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))  # src/, for `repo_paths`
+from repo_paths import REPO_ROOT  # noqa: E402
+
 sys.path.insert(0, str(Path(__file__).resolve().parent))  # sibling modules `runs`, `replay_engine`
 from runs import (  # noqa: E402
     LEAGUE_GLOBAL, LEAGUE_MODES, PRETRAIN_GLOBAL, PRETRAIN_SPEC,
@@ -30,7 +33,6 @@ from runs import (  # noqa: E402
 )
 from replay_engine import list_games, reduce_game  # noqa: E402
 
-REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 TRAINING_CONFIGS_DIR = REPO_ROOT / "training_configs"
 LEAGUE_DECKS_PATH = REPO_ROOT / "data" / "league_decks.json"
 

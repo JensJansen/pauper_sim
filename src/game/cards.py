@@ -4,6 +4,10 @@ A CardDef is the definition shared by every physical copy of a named card;
 quantity is handled separately, at deck-construction time, by parsing a
 plain decklist file (see game.decklist) against the shared catalog each
 logic module contributes to game.registry.CARD_DEFS.
+
+Also the home of the pure CardDef predicates every catalog reads (is_artifact,
+card_colors, card_subtypes) -- they take only a card_def, so they live next to
+the class they inspect rather than in effects.shared (state manipulation).
 """
 
 from enum import Enum, auto
@@ -237,3 +241,37 @@ class CardDef:
 
     def __repr__(self):
         return f"CardDef({self.name!r})"
+
+
+_COLOR_PIPS = ("W", "U", "B", "R", "G")
+
+
+def is_artifact(card_def):
+    """Whether a card is an artifact -- a plain artifact (card_type ARTIFACT),
+    an artifact land (card_type LAND + extra["artifact"]), or an artifact
+    creature (card_type CREATURE + extra["artifact"], e.g. Myr Enforcer). The
+    single predicate every "artifacts you control" reader uses: Goblin Tomb
+    Raider's static boost, affinity, metalcraft, Krark-Clan/Makeshift's
+    artifact-sacrifice."""
+    return card_def.card_type == CardType.ARTIFACT or card_def.extra.get("artifact", False)
+
+
+def card_colors(card_def):
+    """The card's colors, from the colored pips in its mana cost. A Devoid
+    card (extra["devoid"], e.g. Writhing Chrysalis) is colorless regardless
+    of its cost's colored pips; a land / cost-less card (cast_cost None) is
+    colorless too. Used by "nonblack"/etc. targeting restrictions (Snuff
+    Out)."""
+    if card_def.extra.get("devoid") or card_def.cast_cost is None:
+        return set()
+    return {c for c in card_def.cast_cost if c in _COLOR_PIPS}
+
+
+def card_subtypes(card_def):
+    """A card's subtypes (extra["subtypes"], e.g. ("Island","Swamp") or
+    ("Elf",)), () if none declared. Only cards that need one for a rules
+    check carry it -- basic Island/Forest (for Islandcycling / Gingerbread
+    Cabin's Forest count), the U/B dual lands (Island subtype), the Elves
+    (tribal counts). Not a full Scryfall subtype line; just the ones the
+    engine actually reads."""
+    return card_def.extra.get("subtypes", ())

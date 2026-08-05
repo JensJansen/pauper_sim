@@ -24,6 +24,9 @@ probability mass."""
 import torch
 import torch.nn as nn
 
+import game
+from rl.arch import FiLM
+
 
 class DeckNetwork(nn.Module):
     def __init__(self, shared_stack, film_condition_dim, non_targeting_n_actions, trunk_hidden=(128, 128)):
@@ -93,9 +96,7 @@ class DeckNetwork(nn.Module):
 # targets-me/stack-targets-opponent -- genuinely scalar/global facts,
 # deliberately NOT re-derived via tokens since they aren't per-card ones
 # (rl.agent._scalar_features is the one place that builds this vector).
-import game  # noqa: E402
-from rl.arch import FiLM  # noqa: E402
-
+#
 # 4 = turn/lands/mulligans/am-i-turn-player, +2 = my/opponent life totals,
 # +5 = my/opponent library size, opponent hand size, stack-targets-me/opponent
 SCALAR_FEATURE_DIM = 4 + 2 * len(game.POOL_COLORS) + len(game.turn.Phase) + 2 + 5

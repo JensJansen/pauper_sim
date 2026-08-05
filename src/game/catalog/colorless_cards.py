@@ -418,14 +418,10 @@ def activate_relic_of_progenitus_exile(state, permanent):
 
 def _lotus_petal_on_tap(state, permanent):
     """{T}, Sacrifice: add one mana of any color -- consumed, not just
-    tapped, unlike every other mana source in this engine."""
-    state.battlefield.remove(permanent)
-    state.move_card(permanent.card_def, state.graveyard)
-    state.log_event(
-        "zone_move", permanent=(permanent.card_def.name, permanent.slot), from_zone="battlefield",
-        to_zone="graveyard", reason="sacrifice",
-    )
-    fire_sacrifice_triggers(state, state.active_idx, permanent.card_def)  # Gixian Infiltrator
+    tapped, unlike every other mana source in this engine. A real card (not
+    a token), so sacrifice_to_graveyard's non-token branch sends it to its
+    owner's graveyard (to_zone="graveyard") -- same destination as before."""
+    sacrifice_to_graveyard(state, permanent)  # queues the dies-trigger (Gixian Infiltrator); Lotus Petal has no ltb_trigger of its own
 
 
 def _treasure_on_tap(state, permanent):
@@ -433,12 +429,7 @@ def _treasure_on_tap(state, permanent):
     consumed on tap like Lotus Petal, but a TOKEN, so it ceases to exist
     (never a graveyard trip). The flexible-color output + untapped-{T}
     precondition come from the registry "mana" spec, same as Lotus Petal."""
-    state.battlefield.remove(permanent)
-    state.log_event(
-        "zone_move", permanent=(permanent.card_def.name, permanent.slot), from_zone="battlefield",
-        to_zone="ceases_to_exist", reason="sacrifice",
-    )
-    fire_sacrifice_triggers(state, state.active_idx, permanent.card_def)  # Gixian Infiltrator
+    sacrifice_to_graveyard(state, permanent)  # ceases to exist; queues the dies-trigger (Gixian Infiltrator)
 
 
 def _basic_land(card_def):

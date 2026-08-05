@@ -15,12 +15,13 @@ that doesn't need extra dependencies. A JSON registry on disk
 log access, but a run started before a restart can no longer be stopped
 through the UI -- it just keeps running to completion untouched.
 
-League mode field grouping (LEAGUE_GLOBAL / LEAGUE_MODES) is hand-authored
-domain knowledge about which flags matter for which of run_league.py's three
-real run modes (see its own module docstring's Usage section + main()'s
---eval / --matchup branches) -- argparse has no way to introspect that, only
-flag names/types/help. test_runs.py cross-checks it against the real parser
-so a future flag addition can't silently go ungrouped.
+League mode field grouping (LEAGUE_GLOBAL / LEAGUE_MODES, imported from
+rl.league_cli_spec) is hand-authored domain knowledge about which flags
+matter for which of run_league.py's three real run modes (see its own module
+docstring's Usage section + main()'s --eval / --matchup branches) -- argparse
+has no way to introspect that, only flag names/types/help. test_runs.py
+cross-checks it against the real parser so a future flag addition can't
+silently go ungrouped.
 
 Auto-sizing escalation: when a League-mode submission leaves --n-iterations
 blank and gives --total-games, a single run_league.py invocation only ever
@@ -33,6 +34,7 @@ identical command again (run_league resumes from its own progress.json/session.t
 until this league's cumulative games/deck reaches the target, a batch comes back
 unhealthy, or the user hits Stop.
 """
+import argparse
 import json
 import os
 import re
@@ -43,9 +45,10 @@ import time
 import uuid
 from pathlib import Path
 
-REPO_ROOT = Path(__file__).resolve().parent.parent.parent
-SRC_DIR = REPO_ROOT / "src"
-CHECKPOINTS_DIR = REPO_ROOT / "checkpoints"
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))  # src/, for `repo_paths` / `rl.league_cli_spec`
+from repo_paths import REPO_ROOT, SRC_DIR, CHECKPOINTS_DIR  # noqa: E402
+from rl.league_cli_spec import build_arg_parser, LEAGUE_GLOBAL, LEAGUE_MODES  # noqa: E402 -- torch-free, safe on every league-run start
+
 LOG_DIR = REPO_ROOT / "logs" / "webapp_runs"
 REGISTRY_PATH = LOG_DIR / "registry.json"
 
@@ -67,45 +70,9 @@ PRETRAIN_GLOBAL = [f["dest"] for f in PRETRAIN_SPEC]
 # are always started with fully-resolved explicit flags (see module docstring).
 _SKIP_DESTS = {"help", "run_config", "league_config"}
 
-# Applies identically no matter which of the three modes below is active.
-LEAGUE_GLOBAL = ["league_name", "seed", "log"]
-
-# One entry per real run_league.py mode (see its module docstring's Usage
-# section and main()'s --eval / --matchup branches). A dest may appear in
-# more than one mode -- duplicated deliberately rather than forced into one
-# shared "misc" bucket, so each mode only ever shows what IT reads.
-#
-# games_per_iteration, the PPO batch-size ramp (batch_size_start/cap/steps),
-# and max_batch_size used to be fields here too -- removed 2026-07-31 along
-# with their CLI flags (see run_league.py's own comments at each removal
-# site): games_per_iteration is now always derived from n_workers, the PPO
-# ramp is hardcoded (nobody had ever overridden it), and max_batch_size's
-# safety role is now covered by this webapp's own auto-escalation loop
-# health-checking between every batch.
-LEAGUE_MODES = [
-    {
-        "key": "league", "label": "League training",
-        "help": "The continuous loop: every deck in --roster trains against opponents "
-                "resampled from its history. Leave n-iterations blank to auto-size batches "
-                "toward total-games (see below); set it to force one exact debug-sized run instead.",
-        "dests": ["roster", "decks", "total_games", "n_iterations",
-                  "n_workers", "snapshot_every", "checkpoint_opponent_rate",
-                  "train_deck_only", "train_mulligan_only"],
-    },
-    {
-        "key": "matchup_train", "label": "Matchup training",
-        "help": "Fixed A-vs-B pairing, no opponent sampling -- still trains and checkpoints "
-                "both decks, for exactly --games total games in one run (no auto-sizing).",
-        "dests": ["matchup", "games", "train_deck_only", "train_mulligan_only"],
-    },
-    {
-        "key": "eval", "label": "Eval (no training)",
-        "help": "Play games with the CURRENT live agents, no updates, no checkpointing. "
-                "Round-robin over the decks below, or a specific pairing.",
-        "implies": {"eval": True},
-        "dests": ["decks", "matchup", "games", "sampled"],
-    },
-]
+# LEAGUE_GLOBAL / LEAGUE_MODES themselves now live in rl.league_cli_spec (see
+# its own module docstring), imported above -- re-exported here unchanged so
+# app.py's `from runs import LEAGUE_GLOBAL, LEAGUE_MODES, ...` keeps working.
 
 
 def argspec_from_parser(parser):
@@ -117,7 +84,16 @@ def argspec_from_parser(parser):
     for action in parser._actions:  # argparse has no public introspection API
         if action.dest in _SKIP_DESTS:
             continue
-        if action.nargs == 0:  # store_true
+        if isinstance(action, argparse.BooleanOptionalAction):
+            # Also nargs==0 like store_true, but has a SECOND --no-X option
+            # string for "explicitly off" -- store_true's kind can only ever
+            # omit the flag (Python bool "False" -> "don't pass it"), which
+            # would silently collapse "explicitly off" into "unspecified,
+            # use the script's own default" for a flag whose default may be
+            # True (e.g. --pfsp). Needs its own kind so build_argv can emit
+            # --no-X, not just decide whether to emit --X.
+            kind = "tri_bool"
+        elif action.nargs == 0:  # store_true
             kind = "store_true"
         elif action.type is int:
             kind = "int"
@@ -138,9 +114,7 @@ def argspec_from_parser(parser):
 
 
 def _league_parser():
-    sys.path.insert(0, str(SRC_DIR))  # run_league imports rl.* / game by bare name, needs src/ on sys.path
-    import run_league  # heavy import (torch + rl.*) -- paid once per process, only needed here
-    return run_league.build_arg_parser()
+    return build_arg_parser()  # rl.league_cli_spec -- torch-free, no run_league.py import needed
 
 
 def build_argv(script, values):
@@ -166,6 +140,12 @@ def build_argv(script, values):
         if field["type"] == "store_true":
             if val:
                 argv.append(flag)
+        elif field["type"] == "tri_bool":
+            # val is never None/""/[] here (skipped above) -- an explicit
+            # True/False, so emit the matching --X / --no-X flag rather than
+            # store_true's "omit unless truthy" (which could never express
+            # "explicitly off" for a default-True flag like --pfsp).
+            argv.append(field["flags"][0] if val else field["flags"][1])
         elif field["nargs"] == 2:
             a, b = val
             argv += [flag, str(a), str(b)]
