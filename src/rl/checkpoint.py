@@ -30,8 +30,31 @@ building the net themselves: both callers need a value FROM the dict
 load_state_dict can run, so net-building stays with the caller.
 """
 import os
+import time
 
 import torch
+
+# ponytail: this repo lives inside a OneDrive-synced folder, and OneDrive's
+# sync daemon transiently locks a file mid-write on Windows (torch.save's
+# _open_zipfile_writer failing with "open file failed with error code: 1224"
+# -- ERROR_USER_MAPPED_FILE), observed for real during a multi-hour unattended
+# training campaign (2026-08). Every checkpoint write below retries through
+# that specific transient window with backoff before giving up -- a real,
+# non-transient failure (disk full, bad path, permissions) still raises after
+# _SAVE_RETRY_ATTEMPTS, it just isn't mistaken for one on the first collision.
+_SAVE_RETRY_ATTEMPTS = 5
+_SAVE_RETRY_BASE_DELAY = 0.5
+
+
+def _save_with_retry(obj, path):
+    for attempt in range(_SAVE_RETRY_ATTEMPTS):
+        try:
+            torch.save(obj, path)
+            return
+        except (RuntimeError, OSError):
+            if attempt == _SAVE_RETRY_ATTEMPTS - 1:
+                raise
+            time.sleep(_SAVE_RETRY_BASE_DELAY * (2 ** attempt))
 
 
 def load_optimizer_if_present(optimizer, ckpt, key="optimizer"):
@@ -52,7 +75,7 @@ def save_deck_checkpoint(path, net, optimizer=None):
     saved = {"net": net.state_dict()}
     if optimizer is not None:
         saved["optimizer"] = optimizer.state_dict()
-    torch.save(saved, path)
+    _save_with_retry(saved, path)
 
 
 def load_deck_checkpoint(path, net, optimizer=None):
@@ -88,7 +111,7 @@ def save_snapshot(path, net, mulligan_net=None):
     if mulligan_net is not None:
         saved["mulligan_state_dict"] = mulligan_net.state_dict()
         saved["mulligan_hidden"] = mulligan_net.trunk[0].out_features  # restore the exact hidden width on load
-    torch.save(saved, path)
+    _save_with_retry(saved, path)
 
 
 def load_snapshot(path):
@@ -104,7 +127,7 @@ def save_frozen_stack(path, shared, vocab_size, d_model):
     """Writes the shared perception stack's frozen weights to path as
     {"shared": state_dict, "vocab_size":, "d_model":} -- shared_stack_frozen.pt's
     schema, written once by run_pretrain.py --freeze."""
-    torch.save({"shared": shared.state_dict(), "vocab_size": vocab_size, "d_model": d_model}, path)
+    _save_with_retry({"shared": shared.state_dict(), "vocab_size": vocab_size, "d_model": d_model}, path)
 
 
 def load_frozen_stack(path):
@@ -124,7 +147,7 @@ def save_pretrain_checkpoint(path, shared, opt_shared, nets, head_opts, session,
     that one. nets/head_opts are {deck_name: net/optimizer} dicts, one entry
     per pool deck."""
     os.makedirs(os.path.dirname(path), exist_ok=True)
-    torch.save({
+    _save_with_retry({
         "shared": shared.state_dict(), "opt_shared": opt_shared.state_dict(),
         "nets": {name: net.state_dict() for name, net in nets.items()},
         "head_opts": {name: opt.state_dict() for name, opt in head_opts.items()},

@@ -189,10 +189,12 @@ and play out matches on its own. Highlights:
   Robot, Warrior, Eldrazi Spawn, Food, Clue, Treasure, and more), affinity/
   delve/escape cost reductions, state-based actions, decking out, and
   life-total win checks.
-- **Hidden information is respected.** Hand and library CONTENTS stay hidden;
-  only public zones (battlefield/graveyard/stack/exile) are ever tokenized.
-  Their SIZE isn't hidden in real Magic (either player can count a library or
-  a hand), so it's surfaced to the agent separately, as a scalar.
+- **Hidden information is respected.** The OPPONENT's hand and both players'
+  library CONTENTS stay hidden; only public zones (battlefield/graveyard/
+  stack/exile) plus the agent's OWN hand are ever tokenized (own hand isn't
+  hidden information from yourself). Opponent hand/library SIZE isn't hidden
+  in real Magic either (either player can count a library or a hand), so
+  it's surfaced to the agent separately, as a scalar.
 
 The engine's effect functions defensively handle a no-opponent (1-player)
 configuration — useful for a card-level unit test that doesn't need a second
@@ -204,13 +206,16 @@ seat — but the active surface, and everything the DRL system drives, is
 ## The DRL system (`src/rl/`)
 
 The observation has two parts. The first is a **variable-length set of card
-tokens**, one per public-zone card for both players. Each token = a learned
-**identity embedding** (via `CardVocab`) concatenated with a deterministic
-**static feature vector** (mana cost, type, base P/T, keywords) plus
-**dynamic per-instance state** (tapped, effective P/T, combat commitments,
-whether currently targeted by a spell/ability on the stack — mine or the
-opponent's, including a spell targeting another spell — zone, mine/theirs
-side flag).
+tokens**, one per public-zone card for both players plus every card in the
+agent's own hand (own hand is never hidden from the agent itself; the
+opponent's hand stays hidden). Each token = a learned **identity embedding**
+(via `CardVocab`) concatenated with a deterministic **static feature vector**
+(mana cost, type, base P/T, keywords) plus **dynamic per-instance state**
+(a `cost_reduction_delta` — own-hand tokens only, how much cheaper this card
+currently is than its printed cost, e.g. affinity/Tolarian Terror — tapped,
+effective P/T, combat commitments, whether currently targeted by a
+spell/ability on the stack — mine or the opponent's, including a spell
+targeting another spell — zone, mine/theirs side flag).
 
 The second is a **scalar vector** (`rl/agent.py`'s `_scalar_features`) of
 non-tokenized globals: turn number, lands-played, mulligans taken, whose
@@ -220,7 +225,8 @@ anything on the stack currently targets either player directly (a burn
 spell to the face has no token to carry a bit on, so that one case is
 scalar-only). Library/hand size, floating mana, and a declared target are
 all public knowledge in real Magic, unlike hand/library *contents* — see
-"Hidden information is respected" above.
+"Hidden information is respected" above. The agent's own hand size isn't
+included here (redundant with counting its own hand tokens above).
 
 The network is split into a **shared** stack and a **per-deck** head:
 
@@ -387,21 +393,30 @@ tell "genuinely improving" apart from "well-adapted to beating a closed
 population that co-evolved with itself." The gauntlet is two EXTERNAL
 reference points, outside that history entirely:
 
-- **Tier 2 — an independently-trained twin population** (`training_configs/
-  run_gauntlet.json`): the SAME roster, run mechanics, and frozen shared
-  stack as the main league, but its own checkpoint tree (`league_name:
-  "4_deck_subleague_gauntlet"`) that never plays against the main league's
-  live nets. Trained to a fixed depth (~8,000 games/deck) then left alone —
-  no code-level "freeze," just stop invoking further sessions against that
-  `league_name`. Two runs from an identical algorithm/config still diverge
-  into different regions of strategy space purely from a different
-  nondeterministic training trajectory — so a blind spot the WHOLE main
-  population shares (the risk PFSP and `vs_history` can't rule out) is far
-  more likely to show up against a genuinely independent opponent than
-  against anything drawn from the league's own history. Wired via a config's
-  `gauntlet_league_name` field (`rl.league_runner._run_eval_vs_gauntlet`, once per
-  session per deck, only once the twin population has a checkpoint for that
-  deck).
+- **Tier 2 — an independently-trained twin population**: the actively-trained
+  league (`training_configs/run_default.json`, `league_name:
+  "4_deck_subleague_test"`) is measured each session against a SEPARATE
+  checkpoint tree (`gauntlet_league_name: "4_deck_subleague_gauntlet"`) that
+  never plays against its live nets during training — a genuinely external
+  reference. Two runs from an identical algorithm/config still diverge into
+  different regions of strategy space purely from a different nondeterministic
+  training trajectory, so a blind spot the WHOLE active population shares (the
+  risk PFSP and `vs_history` can't rule out) is far more likely to show up
+  against a genuinely independent opponent than against anything drawn from
+  the league's own history. Wired via a config's `gauntlet_league_name` field
+  (`rl.league_runner._run_eval_vs_gauntlet`, once per session per deck, only
+  once the twin population has a checkpoint for that deck).
+
+  These two checkpoint trees swapped roles on 2026-08-05: `4_deck_subleague_test`
+  had trained ~55,000 games/deck (its first ~10,000 without PFSP at all) and
+  plateaued flat against its gauntlet twin; the twin (PFSP from game 1, stopped
+  at a fixed ~8,000 games/deck) took over as the actively-trained population
+  instead, and the checkpoint directories were renamed to match their new
+  roles — so `4_deck_subleague_test` is, and remains, whichever population is
+  actively training, `4_deck_subleague_gauntlet` the frozen reference. See
+  `SWAP_EXPERIMENT.md` at the repo root for the full writeup and
+  `training_configs/run_gauntlet.json`'s own note for why that config is
+  retired rather than reused to train the (now frozen) other side.
 - **Tier 1 — `rl.agent.HeuristicAgent`**: a hand-authored, non-learned
   opponent, reusing the exact same legal-action machinery a trained
   `SeatAgent` does (`_build_decision`, `_executor_for`) but scoring among

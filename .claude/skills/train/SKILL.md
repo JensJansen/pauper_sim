@@ -71,12 +71,16 @@ user in one line before starting.
 - A vocab change (e.g. new cards/tokens) makes old checkpoints dimensionally
   incompatible. If any run aborts with a `vocab_size` / roster-mismatch assert, that
   is the signal to do a `fresh start`.
-- **Feature-dim check (catches new cards even before they join the pool).** Adding a
-  card with a NEW keyword/type grows `STATIC_FEATURE_DIM` → the per-card feature vector →
-  the frozen stack's `input_proj.weight` — but leaves `vocab_size` unchanged, so the
-  vocab assert does NOT catch it and league crashes at startup with
-  `size mismatch for input_proj.weight`. If a league run aborts that way, the catalog
-  changed since the freeze → a `fresh start` is required (re-pretrain rebuilds the stack
+- **Feature-dim check (catches new cards even before they join the pool, or a change
+  to `rl/features.py` itself).** Adding a card with a NEW keyword/type grows
+  `STATIC_FEATURE_DIM`; a code change to the per-token dynamic layout (e.g. the
+  own-hand-tokenization + `cost_reduction_delta` feature added 2026-08) grows
+  `DYNAMIC_FEATURE_DIM` instead — either way `TOKEN_FEATURE_DIM` → the per-card
+  feature vector → the frozen stack's `input_proj.weight` changes shape, but
+  `vocab_size` stays unchanged, so the vocab assert does NOT catch it and league
+  crashes at startup with `size mismatch for input_proj.weight`. If a league run
+  aborts that way, either the catalog changed since the freeze or `rl/features.py`'s
+  own feature dim did → a `fresh start` is required (re-pretrain rebuilds the stack
   at the new feature dim).
 
 ## 3. `fresh start`: wipe, then full pipeline

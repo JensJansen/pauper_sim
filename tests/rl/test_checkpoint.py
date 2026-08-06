@@ -23,6 +23,35 @@ def _tiny_shared():
     return SetTransformer(vocab_size=5, d_model=8, n_heads=2, n_layers=1, dim_feedforward=16)
 
 
+def test_save_with_retry_recovers_from_transient_lock_then_gives_up_if_it_never_clears(monkeypatch):
+    """Regression (2026-08): this repo lives inside a OneDrive-synced folder,
+    and a real multi-hour training run hit torch.save failing mid-write with
+    Windows error 1224 (ERROR_USER_MAPPED_FILE) -- OneDrive transiently
+    locking the file. _save_with_retry must ride out a transient failure
+    (succeed once the lock clears) but still raise if the failure never
+    clears (a real problem -- disk full, bad path -- must not be silently
+    swallowed forever)."""
+    monkeypatch.setattr(ckpt_io.time, "sleep", lambda seconds: None)  # don't actually wait in a test
+
+    calls = []
+
+    def flaky_twice(obj, path):
+        calls.append(1)
+        if len(calls) < 3:
+            raise RuntimeError("open file failed with error code: 1224")
+
+    monkeypatch.setattr(ckpt_io.torch, "save", flaky_twice)
+    ckpt_io._save_with_retry({"x": 1}, "irrelevant.pt")
+    assert len(calls) == 3  # failed twice, succeeded on the 3rd attempt
+
+    def always_fails(obj, path):
+        raise RuntimeError("open file failed with error code: 1224")
+
+    monkeypatch.setattr(ckpt_io.torch, "save", always_fails)
+    with pytest.raises(RuntimeError):
+        ckpt_io._save_with_retry({"x": 1}, "irrelevant.pt")  # never clears -- must still raise, not hang or swallow
+
+
 @pytest.mark.slow
 def test_load_deck_checkpoint_round_trips_net_and_optimizer(tmp_path):
     shared = _tiny_shared()

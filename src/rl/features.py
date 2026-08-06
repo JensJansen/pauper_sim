@@ -156,19 +156,22 @@ def cached_static_card_features(name, vocab):
 
 # ---------------------------------------------------------------------------
 # Tokenization: turn each PUBLIC zone (battlefield/graveyard/stack/exile,
-# both seats) into a variable-length list of per-token feature rows.
-# Deliberately does NOT touch hand or library -- those stay hidden (aggregate
-# count only), preserving the existing hidden-information guarantee. See this
-# module's own docstring for the static/dynamic split; DYNAMIC_FEATURE_DIM
-# below is this function's own per-instance half.
+# both seats) PLUS my own hand into a variable-length list of per-token
+# feature rows. Own hand is not hidden information from myself, so
+# tokenizing it doesn't violate the hidden-information guarantee -- the
+# OPPONENT's hand and both libraries still stay hidden (aggregate count
+# only). See this module's own docstring for the static/dynamic split;
+# DYNAMIC_FEATURE_DIM below is this function's own per-instance half.
 # ---------------------------------------------------------------------------
 
-ZONES = ("battlefield", "graveyard", "stack", "exile")
-# untapped, tapped, effective_power, effective_toughness, blocked_as_attacker,
+ZONES = ("battlefield", "graveyard", "stack", "exile", "hand")
+# cost_reduction_delta (1, own-hand tokens only -- see _token_row), untapped,
+# tapped, effective_power, effective_toughness, blocked_as_attacker,
 # committed_as_blocker, targeted_by_mine, targeted_by_theirs, zone one-hot
-# (4), side flag (1) -- see _token_row's own inline comments for what each
+# (5), side flag (1) -- see _token_row's own inline comments for what each
 # slot means and why.
-DYNAMIC_FEATURE_DIM = 8 + len(ZONES) + 1
+HAND_FEATURE_DIM = 1
+DYNAMIC_FEATURE_DIM = HAND_FEATURE_DIM + 8 + len(ZONES) + 1
 TOKEN_FEATURE_DIM = STATIC_FEATURE_DIM + DYNAMIC_FEATURE_DIM
 
 PER_CREATURE_POWER_CAP = 20  # clamp before normalizing to [0,1]; 20 covers this card subset's creatures
@@ -176,7 +179,7 @@ PER_CREATURE_TOUGHNESS_CAP = 20
 
 
 def _token_row(name, zone, is_mine, vocab, permanent=None, owner_idx=None, enchanting_auras=None, state=None,
-                targeted_by_mine=False, targeted_by_theirs=False):
+                targeted_by_mine=False, targeted_by_theirs=False, cost_reduction_delta=0.0):
     """One token's full feature row: static card identity/stats (always
     present) + dynamic per-instance state (mostly zero outside battlefield,
     since graveyard/stack/exile cards aren't permanents with tapped/combat
@@ -198,8 +201,19 @@ def _token_row(name, zone, is_mine, vocab, permanent=None, owner_idx=None, encha
     stack entries themselves (a spell can target another spell on the stack,
     e.g. Counterspell) -- any zone whose tokens carry a stable per-instance
     identity a captured target can reference. Defaults False for zones
-    nothing in this pool ever targets (exile, revealed hand)."""
+    nothing in this pool ever targets (exile, revealed hand).
+
+    cost_reduction_delta: (printed_generic - effective_generic) / MANA_PIP_CAP
+    for an own-hand token whose card has a live registry "cost_reduction"
+    spec (drl_env._effective_cast_cost, computed by the caller -- see
+    rl.agent._hand_cost_reduction_deltas) -- zero for every other token.
+    That helper reduces ONLY generic pips, never colored ones, so this one
+    number plus the static block's printed cost fully reconstructs a card's
+    TRUE current cost (affinity, Tolarian Terror's graveyard count, Deem
+    Inferior's cards-drawn count, ...) instead of always showing the
+    printed, possibly-stale one."""
     row = list(cached_static_card_features(name, vocab))
+    row.append(cost_reduction_delta)
     untapped = tapped = eff_power = eff_toughness = blocked_attacker = committed_blocker = 0.0
     if permanent is not None:
         untapped = 0.0 if permanent.tapped else 1.0
@@ -255,13 +269,13 @@ def _stack_target_map(state):
     return obj_controllers, player_controllers
 
 
-def build_token_set(state, my_seat_idx, vocab, include_rows=True):
-    """Every public-zone card for BOTH seats, as a flat list of (vocab_index,
-    feature_row, identity) triples -- one shared token set, side-flagged
-    rather than two separately-encoded halves, so a joint Set Transformer
-    can let tokens from both sides attend to each other (relative valuations
-    depend on cross-side context, e.g. an attacker's real threat level
-    depends on what can block it). Order within the
+def build_token_set(state, my_seat_idx, vocab, include_rows=True, hand_cost_reduction=None):
+    """Every public-zone card for BOTH seats, plus MY OWN hand, as a flat
+    list of (vocab_index, feature_row, identity) triples -- one shared token
+    set, side-flagged rather than two separately-encoded halves, so a joint
+    Set Transformer can let tokens from both sides attend to each other
+    (relative valuations depend on cross-side context, e.g. an attacker's
+    real threat level depends on what can block it). Order within the
     returned list is NOT meaningful (a permutation-invariant encoder
     consumes it) but IS deterministic given the same state, for
     reproducibility.
@@ -274,41 +288,59 @@ def build_token_set(state, my_seat_idx, vocab, include_rows=True):
     (pointer_legal_mask) and a forced decision never runs the network, so the
     feature rows would otherwise be computed and immediately discarded unused.
 
+    hand_cost_reduction: optional {card name: cost_reduction_delta} (see
+    _token_row) for MY hand only -- rl.agent._hand_cost_reduction_deltas
+    builds it, only when a forward pass will actually run (the cheap
+    include_rows=False pass never needs it, its hand rows are None anyway).
+    Defaults to 0.0 for every name absent from the dict, so a caller that
+    doesn't pass it at all (every existing non-agent caller, e.g. this
+    module's own tests) just gets a card's printed cost with no reduction.
+
     identity: the live Permanent for a battlefield token, the exact CardInstance
     for a graveyard card (Permanent subclasses CardInstance, so battlefield vs
     graveyard is told apart by isinstance(., Permanent) first), the raw stack-
-    entry dict for a stack token, the CardDef for a revealed hand card
-    (DEFERRED -- hand still holds CardDefs), else None (exile only). The
-    pointer-network action head (rl.deck) matches a legal target back to
-    "which row of this token batch is that" via this field -- a Permanent for
-    the four battlefield targeting kinds (Attack, Assign Blocker, Choose
-    target, Choose opponent's), the CardInstance/CardDef object for choose_
-    graveyard_card, and the stack-entry dict for choose_stack_target (matched
-    by OBJECT IDENTITY in every case -- id()-keyed for choose_graveyard_card/
+    entry dict for a stack token, the CardDef for a revealed OPPONENT hand
+    card (DEFERRED -- hand still holds CardDefs; see the hand-reveal block
+    below), else None (exile, and every one of MY OWN hand tokens -- nothing
+    legitimately targets my own hand through the pointer head, and a
+    CardDef's identity is shared/interned across both players, so giving my
+    hand tokens a real CardDef identity would risk a Mesmeric-Fiend-style
+    reveal of the OPPONENT's hand accidentally matching one of MY identically-
+    named hand cards by object identity in rl.action_bridge.pointer_legal_
+    mask's id()-keyed _ID_MATCHED_KINDS branch). The pointer-network action
+    head (rl.deck) matches a legal target back to "which row of this token
+    batch is that" via this field -- a Permanent for the four battlefield
+    targeting kinds (Attack, Assign Blocker, Choose target, Choose
+    opponent's), the CardInstance/CardDef object for choose_graveyard_card,
+    and the stack-entry dict for choose_stack_target (matched by OBJECT
+    IDENTITY in every case -- id()-keyed for choose_graveyard_card/
     choose_cast_copy/choose_stack_target specifically, since a stack entry is
     an unhashable dict, see rl.action_bridge -- so two same-named graveyard
     copies or simultaneous same-named spells are each individually
     addressable, and an opponent's graveyard/stack entry is reachable, which
     is why no per-name "Choose: X" fixed rows exist for either.
-    Exile cards have no pointer-addressable resolution, so None.
 
     Every token also carries two dynamic targeted-by-mine/targeted-by-theirs
     bits (see _token_row, _stack_target_map) reflecting whatever the CURRENT
     contents of state.stack declare as their targets -- a battlefield
     permanent, a graveyard card, or a stack entry itself (Counterspell
     targets a spell). A player-targeted burn spell has no token to carry that
-    bit on; rl.agent._scalar_features surfaces it as a scalar instead.
+    bit on; rl.agent._scalar_features surfaces it as a scalar instead. My own
+    hand tokens never carry either bit (True): nothing in this pool targets a
+    card sitting in hand.
 
-    Hand and library are deliberately excluded from THIS token set -- those
-    stay hidden here, per the "only hand/library CONTENTS are hidden" rule
-    (violating that would leak hidden information the rest of this engine
-    carefully protects). Their aggregate SIZE is not hidden in real Magic
-    (either player can count a library or a hand) and is surfaced instead as
-    a scalar, not a token -- rl.agent._scalar_features, not here. The ONE
-    faithful exception to the content-hiding rule is a hand a card's own
-    effect reveals (Mesmeric Fiend) -- tokenized only for the duration of
-    that choose_graveyard_card pick, exactly what the real reveal shows the
-    caster (see the hand-reveal block at the end of this function)."""
+    The OPPONENT's hand and BOTH libraries are deliberately excluded from
+    this token set -- those stay hidden here, per the "only hand/library
+    CONTENTS are hidden" rule (violating that would leak hidden information
+    the rest of this engine carefully protects). Their aggregate SIZE is not
+    hidden in real Magic (either player can count a library or a hand) and is
+    surfaced instead as a scalar, not a token -- rl.agent._scalar_features,
+    not here. Two faithful exceptions to the opponent-hand-hiding rule: a
+    hand a card's own effect reveals (Mesmeric Fiend) is tokenized only for
+    the duration of that choose_graveyard_card pick, exactly what the real
+    reveal shows the caster (see the hand-reveal block at the end of this
+    function); and MY OWN hand, tokenized unconditionally above, which was
+    never hidden information from myself to begin with."""
     opponent_seat_idx = 1 - my_seat_idx
     # Scan taken once and reused for every token built below -- see
     # game.enchanting_by_target's own docstring for the shared caution about
@@ -320,6 +352,17 @@ def build_token_set(state, my_seat_idx, vocab, include_rows=True):
     def _targeted(obj):
         controllers = obj_controllers.get(id(obj), ())
         return my_seat_idx in controllers, opponent_seat_idx in controllers
+
+    # The hand-reveal block below already tokenizes MY hand (with real,
+    # pointer-addressable CardDef identities) when a choose_graveyard_card
+    # pending is over it -- the own-hand loop below must skip in that one
+    # case, or my hand gets double-tokenized (once inert here, once
+    # addressable there).
+    pending_over_my_hand = (
+        state.pending_resolution is not None
+        and state.pending_resolution["kind"] == "choose_graveyard_card"
+        and state.pending_resolution["graveyard"] is state.players[my_seat_idx].hand
+    )
 
     tokens = []
     for seat_idx in (my_seat_idx, opponent_seat_idx):
@@ -349,6 +392,19 @@ def build_token_set(state, my_seat_idx, vocab, include_rows=True):
         for card_def, _plotted_turn in player.exile:
             row = _token_row(card_def.name, "exile", is_mine, vocab) if include_rows else None
             tokens.append((vocab.index(card_def.name), row, None))
+        if is_mine and not pending_over_my_hand:
+            # MY OWN hand: never hidden from myself, so tokenized
+            # unconditionally (unlike the opponent's, which stays hidden
+            # except the Mesmeric-Fiend reveal branch below). identity=None
+            # throughout -- see this function's own docstring for why (the
+            # shared/interned CardDef object risk).
+            for card_def in player.hand:
+                if not include_rows:
+                    tokens.append((vocab.index(card_def.name), None, None))
+                    continue
+                delta = (hand_cost_reduction or {}).get(card_def.name, 0.0)
+                row = _token_row(card_def.name, "hand", True, vocab, cost_reduction_delta=delta)
+                tokens.append((vocab.index(card_def.name), row, None))
     for entry in state.stack:
         is_mine = entry["controller"] == my_seat_idx
         if not include_rows:
@@ -363,12 +419,16 @@ def build_token_set(state, my_seat_idx, vocab, include_rows=True):
     # Mesmeric Fiend reuses it to exile a nonland card from the OPPONENT's hand
     # (black_cards.py passes graveyard=<a player's hand>). Real MTG reveals that
     # hand to the caster, so when the pick is over a player's hand, tokenize it
-    # (identity = the CardDef object -- hand is DEFERRED; zone "hand" -> all-zero
-    # zone one-hot since hand is not a public ZONE) so the pointer can address it
-    # -- which is what lets both the
+    # (identity = the CardDef object -- hand is DEFERRED; a real "hand" zone
+    # one-hot now that ZONES includes it) so the pointer can address it -- which
+    # is what lets both the
     # graveyard and the hand cross-player picks be pointer-scored with no
     # whole-league fixed "Choose: X" rows. Graveyard/combined-graveyard picks
     # (Relic, Pulse) add nothing here: their cards are already tokenized above.
+    # If the pick is over MY OWN hand, the own-hand loop above already skipped
+    # it (pending_over_my_hand) specifically so this is the only place it gets
+    # tokenized then -- with a real, pointer-addressable CardDef identity
+    # instead of the inert None the own-hand loop would have given it.
     pending = state.pending_resolution
     if pending is not None and pending["kind"] == "choose_graveyard_card":
         hand_owner = next((i for i, pl in enumerate(state.players) if pending["graveyard"] is pl.hand), None)

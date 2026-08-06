@@ -4,9 +4,10 @@
   "n_workers": 6,
   "checkpoint_opponent_rate": 0.5,
   "pfsp": true,
+  "_league_note": "ROLE SWAP + RENAME (2026-08-05): 4_deck_subleague_test trained to ~55,000 games/deck under PFSP for its last ~45,000 games but plateaued flat around 46-48% vs its gauntlet twin the whole stretch (see SWAP_EXPERIMENT.md at the repo root for the full writeup) -- its first ~10,000 games predate PFSP entirely, hypothesized as the cause. The OTHER population (PFSP from game 1, previously named 4_deck_subleague_gauntlet) took over as the actively-trained population instead; the two checkpoint directories were then RENAMED to match their current roles, so this config's own league_name/gauntlet_league_name fields below did not need to change -- 4_deck_subleague_test is now (and going forward) whichever population is actively training, 4_deck_subleague_gauntlet is the frozen reference. See training_configs/run_gauntlet.json for why it's retired rather than reused.",
   "league_name": "4_deck_subleague_test",
   "roster": ["rakdos_madness", "dmir_terror", "elves", "mono_red_rally"],
-  "total_games": 500000,
+  "total_games": 600000,
   "gauntlet_league_name": "4_deck_subleague_gauntlet",
   "heuristic_decks": ["mono_red_rally"]
 }

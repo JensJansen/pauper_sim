@@ -243,6 +243,124 @@ def test_build_token_set_both_seats_all_zones_and_targeting():
 
 
 @pytest.mark.slow
+def test_own_hand_tokenized_opponent_hidden():
+    # Own hand is tokenized (not hidden information from myself); the
+    # OPPONENT's hand stays hidden -- the hidden-information guarantee holds
+    # for the ONE zone that changed (rl.features.build_token_set's own
+    # docstring).
+    _decklist_a, _decklist_b, vocab = _base_vocab()
+    me = PlayerState(on_the_play=True)
+    opp = PlayerState(on_the_play=False)
+    me.hand = [game.CARD_DEFS["Lightning Bolt"], game.CARD_DEFS["Lightning Bolt"], game.CARD_DEFS["Mountain"]]
+    opp.hand = [game.CARD_DEFS["Mountain"], game.CARD_DEFS["Mountain"]]
+    state = GameState(on_the_play=True, players=[me, opp])
+
+    # "hand" is ZONES' own last entry, so its one-hot slot sits at row[-2]
+    # (the slot immediately before the side flag at row[-1]) -- same
+    # counted-from-the-end idiom this file's own big tokenization test uses.
+    assert ZONES[-1] == "hand"
+    for seat, hand_size in ((0, 3), (1, 2)):
+        tokens = build_token_set(state, seat, vocab)
+        hand_rows = [row for _idx, row, _ident in tokens if row[-2] == 1.0]
+        assert len(hand_rows) == hand_size, f"seat {seat} must see exactly its own {hand_size}-card hand, got {len(hand_rows)}"
+        assert all(row[-1] == 1.0 for row in hand_rows), "every hand token must carry the 'mine' side flag"
+
+
+@pytest.mark.slow
+def test_hand_tokens_identity_none():
+    # Own-hand tokens carry identity=None -- not pointer-addressable (see
+    # build_token_set's own docstring on the shared/interned CardDef risk).
+    _decklist_a, _decklist_b, vocab = _base_vocab()
+    me = PlayerState(on_the_play=True)
+    me.hand = [game.CARD_DEFS["Lightning Bolt"]]
+    state = GameState(on_the_play=True, players=[me, PlayerState(on_the_play=False)])
+    tokens = build_token_set(state, 0, vocab)
+    matches = [(idx, row, ident) for idx, row, ident in tokens if row[-2] == 1.0]  # row[-2] = "hand" zone slot
+    assert len(matches) == 1
+    assert matches[0][2] is None, "an own-hand token must carry identity=None"
+
+
+@pytest.mark.slow
+def test_hand_tokens_cheap_and_full_pass_match():
+    # The two build_token_set passes _build_decision runs (include_rows=False
+    # then True) must return the same token count in the same order --
+    # _padded_full_mask's pointer mask is positional (rl.agent's own
+    # docstring). Hand tokens must be emitted on BOTH passes; only the row is
+    # skipped on the cheap one.
+    _decklist_a, _decklist_b, vocab = _base_vocab()
+    me = PlayerState(on_the_play=True)
+    me.hand = [game.CARD_DEFS["Lightning Bolt"], game.CARD_DEFS["Mountain"]]
+    state = GameState(on_the_play=True, players=[me, PlayerState(on_the_play=False)])
+    cheap = build_token_set(state, 0, vocab, include_rows=False)
+    full = build_token_set(state, 0, vocab)
+    assert len(cheap) == len(full)
+    assert [ident for _i, _r, ident in cheap] == [ident for _i, _r, ident in full]
+    assert all(row is None for _i, row, _ident in cheap)
+    assert all(row is not None for _i, row, _ident in full)
+
+
+@pytest.mark.slow
+def test_choose_graveyard_card_over_own_hand_not_double_tokenized():
+    # When the choose_graveyard_card pick is over MY OWN hand (not the
+    # opponent's -- test_action_bridge.py's test_choose_graveyard_card_hand_
+    # reveal already covers that case), the always-on own-hand loop must
+    # yield to the reveal branch, which gives those cards a REAL,
+    # pointer-addressable identity -- not tokenize them a second time with
+    # identity=None.
+    from rl.action_bridge import pointer_legal_mask
+
+    me = PlayerState(on_the_play=True)
+    me.hand = [game.CARD_DEFS["Lightning Bolt"], game.CARD_DEFS["Mountain"]]
+    state = GameState(on_the_play=True, players=[me, PlayerState(on_the_play=False)])
+    picked = []
+    game.begin_choose_graveyard_card(
+        state, predicate=lambda c: c.card_type != game.CardType.LAND,
+        on_complete=lambda st, chosen: picked.append(chosen), graveyard=me.hand,
+    )
+    _decklist_a, _decklist_b, vocab = _base_vocab()
+    tokens = build_token_set(state, 0, vocab)
+    hand_tokens = [(idx, row, ident) for idx, row, ident in tokens if row[-2] == 1.0]  # row[-2] = "hand" zone slot
+    assert len(hand_tokens) == 2, "my hand must be tokenized exactly once (via the reveal branch), not twice"
+    assert {ident.name for _idx, _row, ident in hand_tokens} == {"Lightning Bolt", "Mountain"}, (
+        "the reveal branch's own real CardDef identity must be what's present, not an inert None duplicate"
+    )
+    ids = [ident for _i, _r, ident in tokens]
+    legal = [ref for ref, ok in zip(ids, pointer_legal_mask(state, ids)) if ok]
+    assert legal == [me.hand[0]], "only the nonland hand card must be a legal pointer target"
+
+
+@pytest.mark.slow
+def test_cost_reduction_delta_feature():
+    # cost_reduction_delta: nonzero for a hand card with a LIVE
+    # registry cost_reduction spec (Tolarian Terror, cheaper per instant/
+    # sorcery in the graveyard), zero for one with no such spec.
+    from rl.agent import _hand_cost_reduction_deltas
+
+    decklist = game.parse_decklist_file("../data/mono_blue_terror.txt")
+    vocab = CardVocab([decklist])
+    me = PlayerState(on_the_play=True)
+    me.hand = [game.CARD_DEFS["Tolarian Terror"], game.CARD_DEFS["Mental Note"]]
+    me.graveyard = [CardInstance(game.CARD_DEFS["Counterspell"]), CardInstance(game.CARD_DEFS["Brainstorm"])]
+    state = GameState(on_the_play=True, players=[me, PlayerState(on_the_play=False)])
+
+    hand_cost_reduction = _hand_cost_reduction_deltas(state, 0)
+    tokens = build_token_set(state, 0, vocab, hand_cost_reduction=hand_cost_reduction)
+    delta_idx = STATIC_FEATURE_DIM
+    terror_row = next(row for idx, row, _ident in tokens if idx == vocab.index("Tolarian Terror"))
+    note_row = next(row for idx, row, _ident in tokens if idx == vocab.index("Mental Note"))
+    assert terror_row[delta_idx] == pytest.approx(2 / MANA_PIP_CAP), (
+        "2 instants/sorceries in the graveyard must reduce Tolarian Terror's generic cost by 2"
+    )
+    assert note_row[delta_idx] == 0.0, "a card with no cost_reduction spec must show zero delta"
+
+    # No reduction at all when nothing's in the graveyard.
+    empty_state = GameState(on_the_play=True, players=[PlayerState(on_the_play=True), PlayerState(on_the_play=False)])
+    empty_state.players[0].hand = [game.CARD_DEFS["Tolarian Terror"]]
+    empty_deltas = _hand_cost_reduction_deltas(empty_state, 0)
+    assert empty_deltas == {}
+
+
+@pytest.mark.slow
 def test_card_vocab_persistence_append_only():
     # CardVocab persistence: append-only across separate construction calls
     # -- existing names must NEVER change index once a 3rd deck introduces

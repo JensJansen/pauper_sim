@@ -25,7 +25,7 @@ import drl_env
 import game
 from rl.action_bridge import any_pointer_legal, execute_pointer_choice, pointer_kind, pointer_legal_mask
 from rl.arch import pad_token_batch
-from rl.features import _stack_target_map, build_token_set
+from rl.features import MANA_PIP_CAP, _stack_target_map, build_token_set
 from rl import mulligan as mulligan_mod
 
 DECK_SIZE_CAP = 60  # every decklist in data/ is exactly 60 cards (see rl.features's own cap-then-normalize idiom)
@@ -53,10 +53,11 @@ def _scalar_features(state, seat_idx, horizon):
     Library/hand SIZE (not contents) and a declared player-target are all
     public in real Magic (either player can count a library or a hand, and a
     spell's targets are known the instant they're chosen) -- unlike the
-    per-card token set, which deliberately keeps hand/library CONTENTS
-    hidden (rl.features.build_token_set's own docstring). My own hand size
-    isn't included: it's not hidden information from myself, so there's
-    nothing to surface there."""
+    per-card token set, which deliberately keeps OPPONENT hand/library
+    CONTENTS hidden (rl.features.build_token_set's own docstring). My own
+    hand size isn't included here: build_token_set now tokenizes my own
+    hand card-by-card, so a redundant aggregate count here would add
+    nothing a sum over those tokens doesn't already give the network."""
     def _read(s):
         me = s.players[seat_idx]
         other = s.players[1 - seat_idx]
@@ -80,6 +81,38 @@ def _scalar_features(state, seat_idx, horizon):
         out.append(min(len(other.hand), OPPONENT_HAND_SIZE_CAP) / OPPONENT_HAND_SIZE_CAP)
         out.append(1.0 if player_controllers[seat_idx] else 0.0)
         out.append(1.0 if player_controllers[1 - seat_idx] else 0.0)
+        return out
+    return drl_env._for_player(state, seat_idx, _read)
+
+
+def _hand_cost_reduction_deltas(state, seat_idx):
+    """{card name: cost_reduction_delta} for every DISTINCT card currently in
+    seat_idx's own hand with a live registry "cost_reduction" spec
+    (drl_env._effective_cast_cost, which reduces ONLY generic pips -- its own
+    docstring) -- rl.features._token_row's cost_reduction_delta slot for a
+    hand token, letting the static block's printed cost plus this one number
+    reconstruct a card's TRUE current cost (Tolarian Terror's graveyard
+    count, affinity, Deem Inferior's cards-drawn count, ...) instead of
+    always showing the printed, possibly-stale one. Names with no reduction
+    right now (the overwhelming majority, including every card with no
+    cost_reduction spec at all) are simply absent, read back as 0.0 via
+    dict.get in build_token_set.
+
+    Deduped by CardDef object, which for hand cards (still game.CARD_DEFS's
+    shared/interned objects -- see rl.features.build_token_set's own
+    docstring on why hand tokens carry no real identity) is the same as
+    deduping by name: two copies of a reduced-cost card always compute to
+    the same delta this instant, so there's no reason to recompute it twice."""
+    def _read(s):
+        out = {}
+        for card_def in {c for c in s.players[seat_idx].hand}:
+            cost = card_def.cast_cost
+            if cost is None or game.EFFECT_REGISTRY.get(card_def.effect_id, {}).get("cost_reduction") is None:
+                continue
+            effective = drl_env._effective_cast_cost(s, card_def)
+            delta = cost.get("generic", 0) - effective.get("generic", 0)
+            if delta:
+                out[card_def.name] = delta / MANA_PIP_CAP
         return out
     return drl_env._for_player(state, seat_idx, _read)
 
@@ -170,10 +203,12 @@ def _build_decision(state, seat, deck_ctx, horizon):
     token's identity, not its full dynamic feature row (permanent_power/
     toughness, blocked-by sets -- build_token_set's expensive part). So the
     first pass asks for identities only (include_rows=False); the real
-    per-token rows + scalar features are only built once we know a forward
-    pass will actually consume them (sole is None). A forced decision never
-    reads dec.tokens/dec.scalar (_seat_step returns before touching either),
-    so those stay None for it rather than paying for values nobody reads."""
+    per-token rows + scalar features -- and the hand cost-reduction lookup
+    those rows need (_hand_cost_reduction_deltas) -- are only built once we
+    know a forward pass will actually consume them (sole is None). A forced
+    decision never reads dec.tokens/dec.scalar (_seat_step returns before
+    touching either), so those stay None for it rather than paying for
+    values nobody reads."""
     vocab, fixed_table = deck_ctx
     cheap_tokens = build_token_set(state, seat, vocab, include_rows=False)
     identities = [identity for _idx, _row, identity in cheap_tokens]
@@ -188,7 +223,8 @@ def _build_decision(state, seat, deck_ctx, horizon):
     sole = int(legal[0]) if legal.size == 1 else None
     if sole is not None:
         return _Decision(None, None, full_mask, identities, fixed_table, len(fixed_table), int(legal.size), sole)
-    tokens = build_token_set(state, seat, vocab)
+    hand_cost_reduction = _hand_cost_reduction_deltas(state, seat)
+    tokens = build_token_set(state, seat, vocab, hand_cost_reduction=hand_cost_reduction)
     scalar = _scalar_features(state, seat, horizon)
     return _Decision(tokens, scalar, full_mask, identities, fixed_table, len(fixed_table), int(legal.size), sole)
 
