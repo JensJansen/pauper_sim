@@ -2,6 +2,7 @@
 "until your next turn" expiry the Undercity subsystem introduces."""
 from game import resolution
 from game.cards import CardDef, CardType, EffectId
+from game.effects.combat import combat_damage_step, declare_attacker, declare_attackers_step
 from game.effects.stack import resolve_top_of_stack
 from game.effects.stats import creature_keywords, permanent_power
 from game.effects.triggers import promote_triggers_to_stack
@@ -50,6 +51,44 @@ def test_take_initiative_and_secret_entrance():
     assert state.pending_resolution["kind"] == "search_fetch"
     resolution.execute_search_fetch_option(state, "Forest")
     assert basic in state.players[0].hand
+
+
+def test_combat_damage_take_initiative_then_ventures_to_secret_entrance():
+    # End-to-end, through the real stack: combat damage to the current holder
+    # (game.effects.combat.combat_damage_step) queues a "take_initiative"
+    # triggered ability (CR 722.2's second) for the attacker, NOT an instant
+    # effect -- initiative_idx only flips once that trigger itself resolves,
+    # which is also the moment its own "you took the initiative -> venture"
+    # trigger (CR 722.2's third) gets queued. A brand-new holder (dungeon_room
+    # still None -- this player never held the initiative before) still
+    # correctly enters the FIRST room once THAT trigger resolves too, exactly
+    # like take_initiative() called directly (the test above).
+    state = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
+    state.active_idx = state.turn_player_idx = 0
+    state.initiative_idx = 1  # the DEFENDER holds it; player 0 has never held it
+    basic = CardDef("Forest", CardType.LAND, None, EffectId.FILLER, basic=True, subtypes=("Forest",))
+    state.players[0].library = [basic, CardDef("X", CardType.SORCERY, {}, EffectId.FILLER)]
+    hitter = Permanent(CardDef("Hitter", CardType.CREATURE, None, EffectId.FILLER, power=3, toughness=3))
+    hitter.summoning_sick = False
+    state.players[0].battlefield = [hitter]
+    declare_attackers_step(state)
+    declare_attacker(state, hitter)
+
+    combat_damage_step(state)
+    assert state.initiative_idx == 1  # not yet -- the take_initiative trigger hasn't resolved
+    assert any(e["type"] == "take_initiative" for e in state.players[0].trigger_queue)
+
+    promote_triggers_to_stack(state)
+    resolve_top_of_stack(state)  # take_initiative resolves: initiative_idx flips, venture queued
+    assert state.initiative_idx == 0
+    assert state.players[0].dungeon_room is None  # not yet -- venture hasn't resolved
+
+    promote_triggers_to_stack(state)
+    resolve_top_of_stack(state)  # venture resolves: first-time venturer -> Secret Entrance
+    assert state.players[0].dungeon_room == "Secret Entrance"
+    assert state.pending_resolution["kind"] == "search_fetch"
+    resolution.execute_search_fetch_option(state, "Forest")
+    assert basic in state.players[0].hand  # fetched
 
 
 def test_branch_choice_forge_puts_counters_on_creature():

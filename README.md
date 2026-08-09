@@ -284,9 +284,13 @@ long-running daemon.
 
 A snapshot evicted from that rolling window is **archived, not deleted**
 (`checkpoints/<league>/<deck>/archive/`) — the active sampling window stays
-small deliberately (a stale snapshot is a weak opponent), but the archive
+bounded deliberately (a stale snapshot is a weak opponent), but the archive
 keeps deep history around so a deck's win rate against its own much-older
-self stays measurable for the life of a run, not just its last ~1,600 games.
+self stays measurable for the life of a run, not just its last ~6,400 games
+(`DEFAULT_MAX_SNAPSHOTS_PER_DECK=32` × `snapshot_every_games=200`, raised
+2026-08-06 from 8/~1,600 after a real 34,579-games/deck run showed that
+window capping 95%+ of a deck's own history as permanently unreachable for
+training, only usable via the vs_history eval spot-check).
 See **Instrumentation** below.
 
 ---
@@ -410,13 +414,47 @@ reference points, outside that history entirely:
   These two checkpoint trees swapped roles on 2026-08-05: `4_deck_subleague_test`
   had trained ~55,000 games/deck (its first ~10,000 without PFSP at all) and
   plateaued flat against its gauntlet twin; the twin (PFSP from game 1, stopped
-  at a fixed ~8,000 games/deck) took over as the actively-trained population
+  at a fixed ~10,000 games/deck) took over as the actively-trained population
   instead, and the checkpoint directories were renamed to match their new
   roles — so `4_deck_subleague_test` is, and remains, whichever population is
-  actively training, `4_deck_subleague_gauntlet` the frozen reference. See
-  `SWAP_EXPERIMENT.md` at the repo root for the full writeup and
-  `training_configs/run_gauntlet.json`'s own note for why that config is
-  retired rather than reused to train the (now frozen) other side.
+  actively training, `4_deck_subleague_gauntlet` the frozen reference. (The
+  original writeup lived in `SWAP_EXPERIMENT.md` at the repo root; that file
+  no longer exists — `training_configs/run_default.json`'s own `_league_note`
+  is the surviving record.) See `training_configs/run_gauntlet.json`'s own
+  note for why that config is retired rather than reused to train the (now
+  frozen) other side.
+
+  **Currently DISABLED (2026-08-07, `gauntlet_league_name` unset in
+  `run_default.json`):** the 2026-08-06 restart (below) wiped and
+  re-pretrained the shared stack from scratch, but `4_deck_subleague_gauntlet`
+  was never retrained — `_run_eval_vs_gauntlet`'s own precondition ("two runs
+  from the SAME frozen shared stack") is now violated. The comparison code
+  loads gauntlet's saved per-deck weights (trained against the OLD, deleted
+  stack) onto a `DeckNetwork` built on the NEW stack's unrelated embedding
+  space — same tensor shapes, so it doesn't crash, but gauntlet's decisions
+  now run through representations its FiLM/pointer-query layers were never
+  trained on. Every `vs_gauntlet` number collected before this was caught is
+  confounded by that mismatch, not just a real skill gap. Re-enable once a new
+  twin population is grown from the SAME (new) frozen stack, mirroring how the
+  original gauntlet was created — `vs_history` and the PPO
+  `approx_kl`/`clip_fraction`/`epochs_run` diagnostics (`rl/ppo.py`, see the
+  reward/PPO sections below) remain valid in the meantime, since neither
+  depends on gauntlet.
+
+  **2026-08-06 comprehensive restart**: separately from the swap above, a
+  7-agent audit (`TRAINING_IMPROVEMENT_OPTIONS.md` at the repo root) found the
+  swapped-in population was still rising-then-regressing (peaked 61% vs its
+  gauntlet twin at 24,579 games/deck, fell to 26-36% by 24,877-27,649) rather
+  than genuinely plateaued — traced to a hard 1,600-game opponent-memory
+  ceiling, PFSP over-concentrating on one structurally-unwinnable matchup, and
+  PPO exploration entropy collapsing to a floor by ~250 games/deck and never
+  recovering. All three fixed (`rl/league.py`'s `DEFAULT_MAX_SNAPSHOTS_PER_DECK`
+  and `PFSP_POWER`; `rl/ppo.py`'s `target_kl` and `rl/train.py`'s
+  `ent_coef_schedule`), plus the dense mana-burn reward reverted (see the
+  rewards section above) and a substantially larger pretrain budget before the
+  refreeze. `4_deck_subleague_test` restarted from zero under all of it at
+  once; `4_deck_subleague_gauntlet` was left untouched as the (now
+  representation-mismatched, see above) stale reference.
 - **Tier 1 — `rl.agent.HeuristicAgent`**: a hand-authored, non-learned
   opponent, reusing the exact same legal-action machinery a trained
   `SeatAgent` does (`_build_decision`, `_executor_for`) but scoring among
@@ -463,22 +501,37 @@ wired only through `--matchup` mode.)
   (Hill-function) curve over `PlayerState.cleanup_discard_turns` (cards
   hoarded past hand size) — near-zero for a couple of stray discards, severe
   by ~6 cumulative, asymptoting toward but never reaching `1.0`, so every win
-  still strictly outscores every loss no matter how sloppy either was.
-  `deploy_reward_v2` additionally wraps that terminal score with
-  `with_mana_mistake_penalty`: a *dense*, per-transition penalty (not folded
-  into `q`, deliberately — a terminal-only signal blurs blame for a mistake
-  across the whole game, e.g. across every subsequent cast of a card whose
-  cost the policy simply mis-tapped for once) for mana burnt at a phase
-  boundary (rule 500.4) that `game.turn._empty_mana_pools` could find no
-  justification for: nothing was paid toward a cast/ability that phase,
-  nothing triggered as a result of the mana-producing action itself (e.g.
-  sacrificing a mana source purely for its own combat-trick trigger), and
-  nothing was legally castable with the floating pool at the moment it was
-  lost (`PlayerState.mana_mistake_burn`, `GameState.on_mana_burn`).
-  `PlayerState.mana_burnt_total` (the *unconditional* pips-lost tally) no
-  longer feeds any reward — it remains a raw diagnostic for logging/viz. The
-  **mulligan model** trains on its own reward (`rl/mulligan.py`): win payout
-  minus a convex (quadratic) per-mulligan penalty.
+  still strictly outscores every loss no matter how sloppy either was. `q` is
+  itself a live, unresolved risk flagged for a heavy-card-draw archetype
+  (`dmir_terror`) whose correct play is to hoard cards looking for the right
+  window — watch its aggregate trend once the 2026-08-06 restart (below) has
+  run for a while; see `TRAINING_IMPROVEMENT_OPTIONS.md` section 2.
+  `PlayerState.mana_burnt_total`/`mana_burnt_this_turn` feed no reward —
+  they remain raw diagnostics for logging/viz. The **mulligan model** trains
+  on its own reward (`rl/mulligan.py`): win payout minus a convex
+  (quadratic) per-mulligan penalty, on transitions accumulated across
+  several league iterations per REINFORCE update (not one iteration's worth
+  each time) since 2026-08-06 — see `rl.league_runner._run_session`'s
+  `MULLIGAN_UPDATE_EVERY`.
+
+  **Dense mana-burn shaping — tried, reverted (2026-08).** A per-transition
+  penalty for `PlayerState.mana_burnt_this_turn` (every pip burnt at a phase
+  boundary, rule 500.4, unconditionally — no exemption for whether the burn
+  was avoidable) was wired into `deploy_reward_v2` for part of 2026-08 as
+  `with_dense_mana_burn_penalty`, replacing an earlier, narrower,
+  exemption-aware version (`with_mana_mistake_penalty`). A real training
+  batch under it showed the `elves` deck regressing consistently across
+  every matchup in a cross-league benchmark — traced to Priest of Titania's
+  mana ability (`"count_all"`, `game/mana.py`, sums Elves on BOTH
+  battlefields with no partial-tap option): for that archetype, large
+  per-turn mana bursts are an intrinsic, unavoidable part of correct play,
+  not a mistake a dense curve on top of a fixed-cost card could distinguish
+  from real waste. The wrap also broke `q`'s own "every win outscores every
+  loss" guarantee in practice (its whole-game cap could still push a
+  sufficiently sloppy win below a clean loss). `deploy_reward_v2` reverted
+  to plain `deploy_reward(win_floor=1.0)`; both wrapper functions are kept
+  in `rl/rewards.py`, unused, for reference. Full writeup:
+  `TRAINING_IMPROVEMENT_OPTIONS.md` section 2.
 - **Win condition**: the engine's real one — an opponent's life total hitting
   0, or a player decking out. There is no separate termination heuristic.
 
@@ -587,7 +640,17 @@ Three were removed/derived, three were kept as-is:
   code's own prior comment on these flags admitted nobody had ever actually
   overridden them in practice. Follows the same pattern the codebase already
   uses for equally-important hyperparameters that were never exposed as
-  flags at all (`horizon=120`, the PPO/mulligan learning rates).
+  flags at all (`horizon=120`, the PPO/mulligan learning rates). Tracked
+  against cumulative games/deck since 2026-08-06 (`progress.json`), not the
+  session-local iteration count it used to reset against at the start of
+  every separate `run_league.py` invocation — see the function's own
+  docstring. The PPO entropy coefficient (`rl.train.ent_coef_schedule`, also
+  added 2026-08-06) follows the identical cumulative-games shape, annealing
+  0.02 → 0.005 instead of a single fixed `ent_coef=0.01` for a run's whole
+  life — see `TRAINING_IMPROVEMENT_OPTIONS.md` section 4 for the entropy-
+  collapse data that motivated it, and `rl.ppo.ppo_update`'s own `target_kl`
+  parameter (a per-epoch trust-region early stop, also new) for the other
+  half of that fix.
 - **`--max-batch-size` — removed entirely, no replacement cap.** Its job was
   protecting the auto-sizing doubling ladder's safety property (never jump
   from a small, verified-healthy batch straight to a huge one) — but that's
@@ -708,7 +771,10 @@ Step through a logged game's board state one event at a time. MVP scope per
 - **A creature's power/toughness badge tracks its CURRENT effective stats,
   not just what it printed on entry.** `game.effects.state_based`'s
   `check_state_based_actions` (already scanning every creature each priority
-  round) recomputes each one's `permanent_power`/`permanent_toughness` —
+  round, and also called once more from `cleanup_step` right after clearing
+  damage/until-EOT effects, so a pump wearing off at cleanup logs its own
+  drop immediately instead of appearing to last into the opponent's whole
+  next turn) recomputes each one's `permanent_power`/`permanent_toughness` —
   folding in `+1/+1`/`-0/-1` counters, until-EOT pump, attached Auras,
   animate/transform, and conditional static-self boosts — and logs a
   `stats_changed` event whenever it moved off what was last logged. The

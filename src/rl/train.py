@@ -381,7 +381,7 @@ def _make_league_pairing(training_deck_name, live_nets, mulligan_nets, deck_ctxs
     return pairing
 
 
-def batch_size_for_iteration(iteration, n_iterations, start=32, cap=2048, n_steps=6):
+def batch_size_for_iteration(cumulative_games, horizon_games=50_000, start=32, cap=2048, n_steps=6):
     """Small, granular minibatches early in training, doubling toward a
     larger cap as training progresses -- the "increase batch size instead
     of decaying the learning rate" schedule shape (Smith et al. 2017: more
@@ -389,12 +389,60 @@ def batch_size_for_iteration(iteration, n_iterations, start=32, cap=2048, n_step
     policy far from any optimum; larger, smoother steps later as it
     approaches convergence), not the reverse. n_steps doublings spread evenly
     across the run (a step schedule, not continuous growth -- simplest thing
-    that matches "incrementally increasing")."""
-    if n_iterations <= 1:
-        return start
-    progress = iteration / n_iterations
+    that matches "incrementally increasing").
+
+    Tracked against CUMULATIVE games/deck (progress.json's own
+    cumulative_games_per_deck, threaded in by the caller), not a session-
+    local iteration/n_iterations pair as this used to be -- a real training
+    run is many separate `run_league.py` process invocations (the
+    escalation-ladder methodology: start tiny, double each clean batch), and
+    the old session-local version reset all the way back to `start` at the
+    beginning of EVERY one of those invocations regardless of how far the
+    overall run had actually progressed, undermining the whole point of a
+    ramp meant to span one run's worth of convergence, not one batch's.
+    horizon_games=50,000 is a first estimate, not derived from an ablation --
+    picked because the observed entropy-collapse/plateau pattern this was
+    introduced to help with (TRAINING_IMPROVEMENT_OPTIONS.md section 4) was
+    already fully established well before 50,000 cumulative games/deck in
+    the run that motivated this change."""
+    if horizon_games <= 0:
+        return cap
+    progress = min(1.0, cumulative_games / horizon_games)
     doublings = int(progress * n_steps)
     return min(start * (2 ** doublings), cap)
+
+
+def ent_coef_schedule(cumulative_games, start=0.02, floor=0.005, horizon_games=50_000):
+    """PPO entropy-bonus coefficient, linearly annealed from `start` down to
+    `floor` over `horizon_games` cumulative games/deck, then held at
+    `floor` -- replaces a FIXED ent_coef=0.01 for the whole life of a run.
+
+    Motivation (TRAINING_IMPROVEMENT_OPTIONS.md section 4): on a real
+    34,579-games/deck run, PPO exploration entropy (masked-categorical, over
+    the combined fixed-action + pointer-target logits) collapsed from ~1.2
+    nats at session 0 to a floor of ~0.2-0.3 nats by session ~9 (roughly
+    250-300 cumulative games/deck) and never recovered for the remaining
+    30,000+ games, under the OLD fixed ent_coef=0.01. A near-deterministic
+    policy that locked in that early has no exploratory margin left to
+    adapt when the self-play opponent pool's mix later shifts (new
+    snapshots rotating in, PFSP re-weighting) -- a plausible mechanism for
+    the rise-then-regress cycling also observed in that run's vs_gauntlet
+    trend, independent of anything wrong with the reward or opponent pool
+    on their own.
+
+    start/floor/horizon_games are first estimates, not swept -- start
+    (0.02, double the old fixed value) and floor (0.005, half the old fixed
+    value) bracket the old constant on either side rather than assuming
+    which direction was wrong; horizon_games matches batch_size_for_
+    iteration's own (see its docstring for why 50,000). Deliberately a
+    SEPARATE function from batch_size_for_iteration, even though both take
+    the same cumulative_games/horizon_games shape, since the two schedules
+    have no reason to share a single curve -- callers pass cumulative_games
+    to both independently."""
+    if horizon_games <= 0:
+        return floor
+    progress = min(1.0, cumulative_games / horizon_games)
+    return start + (floor - start) * progress
 
 
 def train_selfplay(net_a, deck_ctx_a, decklist_a, reward_fn_a, net_b, deck_ctx_b, decklist_b, reward_fn_b,
@@ -423,11 +471,11 @@ def train_selfplay(net_a, deck_ctx_a, decklist_a, reward_fn_a, net_b, deck_ctx_b
             pairing, games_per_iteration, horizon, rng, device=device, game_logs=game_logs)
         buf_a = buffers_by_deck.get("a", RolloutBuffer())
         buf_b = buffers_by_deck.get("b", RolloutBuffer())
-        stats_a = ppo_update(net_a, optimizers_a, buf_a, device) if len(buf_a) else (0.0, 0.0, 0.0)
+        stats_a = ppo_update(net_a, optimizers_a, buf_a, device) if len(buf_a) else (0.0, 0.0, 0.0, 0.0, 0.0, 0)
         if mirror:
             stats_b = stats_a
         else:
-            stats_b = ppo_update(net_b, optimizers_b, buf_b, device) if len(buf_b) else (0.0, 0.0, 0.0)
+            stats_b = ppo_update(net_b, optimizers_b, buf_b, device) if len(buf_b) else (0.0, 0.0, 0.0, 0.0, 0.0, 0)
         mean_r_a = float(np.mean(buf_a.reward)) if len(buf_a) else 0.0
         mean_r_b = float(np.mean(buf_b.reward)) if len(buf_b) else 0.0
         print(f"  iter {iteration}: games={games_played} buf=({len(buf_a)},{len(buf_b)}) "

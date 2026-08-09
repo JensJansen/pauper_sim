@@ -93,8 +93,11 @@ def test_mirror_selfplay_smoke():
     assert all(np.isfinite(v) for v in buf.value), "collected values must be finite"
     assert all(np.isfinite(r) for r in buf.reward), "collected rewards must be finite"
     assert buf.done[-1] is True, "the bucket must end with a flushed terminal transition"
-    policy_loss, value_loss, entropy = ppo_update(net_a, [fx["opt_a"]], buf, DEVICE, n_epochs=2, batch_size=16)
+    policy_loss, value_loss, entropy, approx_kl, clip_fraction, epochs_run = ppo_update(
+        net_a, [fx["opt_a"]], buf, DEVICE, n_epochs=2, batch_size=16)
     assert np.isfinite(policy_loss) and np.isfinite(value_loss) and np.isfinite(entropy)
+    assert np.isfinite(approx_kl) and np.isfinite(clip_fraction)
+    assert 1 <= epochs_run <= 2
     for p in net_a.parameters():
         assert torch.isfinite(p).all(), "a parameter went non-finite after the mirror PPO update"
     print(f"rl.train mirror smoke test: OK ({games_played} games, buf_size={len(buf)}, "
@@ -254,8 +257,10 @@ def test_league_smoke_and_frozen_cache_ppo_update():
             assert all(np.isfinite(v) for v in buf.value)
             assert all(np.isfinite(r) for r in buf.reward)
 
-        policy_loss, value_loss, entropy = ppo_update(net_a, [opt_a], buf_self, DEVICE, n_epochs=1, batch_size=16)
+        policy_loss, value_loss, entropy, approx_kl, clip_fraction, epochs_run = ppo_update(
+            net_a, [opt_a], buf_self, DEVICE, n_epochs=1, batch_size=16)
         assert np.isfinite(policy_loss) and np.isfinite(value_loss)
+        assert np.isfinite(approx_kl) and np.isfinite(clip_fraction) and epochs_run == 1
         for p in net_a.parameters():
             assert torch.isfinite(p).all(), "a parameter went non-finite after a league-buffer PPO update"
     finally:
@@ -269,8 +274,9 @@ def test_league_smoke_and_frozen_cache_ppo_update():
     shared_before = [p.clone() for p in net_a.shared_stack.parameters()]
     head_before = [p.clone() for p in net_a.non_targeting_head.parameters()]
     opt_head = torch.optim.Adam([p for p in net_a.parameters() if p.requires_grad], lr=3e-4)
-    pl, vl, ent = ppo_update(net_a, [opt_head], buf_self, DEVICE, n_epochs=2, batch_size=16)
+    pl, vl, ent, akl, cf, ep = ppo_update(net_a, [opt_head], buf_self, DEVICE, n_epochs=2, batch_size=16)
     assert np.isfinite(pl) and np.isfinite(vl) and np.isfinite(ent)
+    assert np.isfinite(akl) and np.isfinite(cf) and 1 <= ep <= 2
     assert all(torch.equal(a, b) for a, b in zip(shared_before, net_a.shared_stack.parameters())), \
         "a FROZEN shared stack must be byte-for-byte unchanged after a cached ppo_update"
     assert any(not torch.equal(a, b) for a, b in zip(head_before, net_a.non_targeting_head.parameters())), \

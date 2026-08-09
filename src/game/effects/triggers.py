@@ -1,8 +1,9 @@
 """The trigger queue: moving a queued trigger (Sneaky Snacker's automatic
-return, a Madness decision, an ETB/LTB/upkeep/venture/Ward/cast/sacrifice
-ability) onto the priority stack. Sits ABOVE casting.py and stack.py -- _trigger_resolve's
-"automatic" branch needs casting.enters_battlefield, so it can't live under
-casting.py the way stack.py does (see casting.py's docstring)."""
+return, a Madness decision, an ETB/LTB/upkeep/take_initiative/venture/Ward/
+cast/sacrifice ability) onto the priority stack. Sits ABOVE casting.py and
+stack.py -- _trigger_resolve's "automatic" branch needs casting.
+enters_battlefield, so it can't live under casting.py the way stack.py does
+(see casting.py's docstring)."""
 
 from . import casting
 from .stack import counter_spell, push_to_stack
@@ -62,6 +63,25 @@ def _trigger_resolve(entry):
             upkeep = registry.EFFECT_REGISTRY.get(card_def.effect_id, {}).get("upkeep_trigger")
             if upkeep is not None:
                 upkeep(state, permanent)
+        return resolve
+    if entry["type"] == "take_initiative":
+        # The Initiative's own combat-damage-triggered ability (CR 722.2's
+        # second one, no source): queued by game.effects.combat.
+        # combat_damage_step, via undercity.queue_take_initiative, once one or
+        # more of a player's creatures actually dealt combat damage to the
+        # current initiative holder this step. Resolving it is what actually
+        # flips state.initiative_idx -- real Magic, the initiative doesn't
+        # change hands the instant the damage is dealt, only once this
+        # triggered ability resolves -- and, like every other take_initiative
+        # call, that also queues the taking player's own "you took the
+        # initiative -> venture into Undercity" trigger (CR 722.2's third
+        # one). Lazy import -- undercity pulls in casting/tokens, above this
+        # module.
+        player_idx = entry["player_idx"]
+
+        def resolve(state, card_def):
+            from . import undercity
+            undercity.take_initiative(state, player_idx)
         return resolve
     if entry["type"] == "venture":
         # "Venture into Undercity" (The Initiative / Avenging Hunter), queued by

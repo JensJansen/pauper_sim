@@ -44,20 +44,32 @@ from rl.mulligan import MulliganNet
 from rl import checkpoint as ckpt_io
 
 # ponytail: fixed rolling window per deck, oldest evicted (archived, see
-# register_snapshot) first. Revisit (e.g. keep-most-diverse instead of
-# keep-most-recent) if a shallow ACTIVE sampling window turns out to lose
-# opponent diversity that actually mattered -- eviction no longer discards
-# history, only narrows what training actually samples from.
-DEFAULT_MAX_SNAPSHOTS_PER_DECK = 8
+# register_snapshot) first. Raised 8->32 (2026-08-06): at snapshot_every_
+# games=200 (training_configs/run_default.json), 8 slots capped the ACTIVE
+# (actually-sampleable-as-a-training-opponent) window at 1,600 games no
+# matter how long a run continued -- confirmed on a real 34,579-games/deck
+# run to be 95.4% of that deck's own history permanently unreachable except
+# via the vs_history eval spot-check. 32 gives 6,400 games of reachable
+# memory instead -- still finite, still a real design tradeoff (an older
+# opponent is a weaker training signal per the module docstring above), but
+# a meaningfully deeper one. See TRAINING_IMPROVEMENT_OPTIONS.md section 3.
+DEFAULT_MAX_SNAPSHOTS_PER_DECK = 32
 
 # PFSP weighting: weight(win_rate) = PFSP_FLOOR + (1 - win_rate) ** PFSP_POWER.
-# POWER=1 (linear "how far below 100% am I") is the simplest curve that satisfies
-# "harder opponents get sampled more"; never tuned against real data, so not
-# exposed as a CLI knob yet -- promote to one if a specific value is ever
-# actually overridden, same reasoning run_league.py's own comments give for
-# every other constant that's never been touched in practice.
+# POWER raised 1.0->2.0 (2026-08-06): linear weighting, combined with a
+# small (4-deck) roster containing one deck (mono_red_rally) the other three
+# structurally cannot beat (a near-strict transitive hierarchy, not a
+# rock-paper-scissors cycle -- confirmed against opponent_stats.json, where
+# the linear formula's predicted ~44% opponent share for the losing decks'
+# training games matched the OBSERVED share almost exactly), was burning
+# ~40-44% of 3 of 4 decks' entire training budget on a single matchup they
+# can't win, crowding out exposure to matchups they might actually learn
+# from. A superlinear power still prioritizes the hardest matchup over
+# easier ones (PFSP's whole point), just less overwhelmingly -- re-tune
+# against opponent_stats.json's own share numbers if this over- or under-
+# corrects. See TRAINING_IMPROVEMENT_OPTIONS.md section 3.
 PFSP_FLOOR = 0.1
-PFSP_POWER = 1.0
+PFSP_POWER = 2.0
 
 
 def _format_opponent_key(key):

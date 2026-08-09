@@ -2,7 +2,7 @@
 import pytest
 
 from game.state import GameState, PlayerState
-from rl.rewards import action_count_win_reward, deploy_reward, with_mana_mistake_penalty
+from rl.rewards import action_count_win_reward, deploy_reward, with_dense_mana_burn_penalty, with_mana_mistake_penalty
 
 
 @pytest.mark.slow
@@ -174,3 +174,123 @@ def test_with_mana_mistake_penalty():
     s.players[1].mana_mistake_burn = 1
     assert abs(wrapped(s, done=False, horizon=99) - (0.25 - 0.01)) < 1e-9
     assert s.players[0].mana_mistake_burn == 0  # untouched -- seat 0 wasn't scored this call
+
+
+def _hill(x, c, p):
+    if x <= 0:
+        return 0.0
+    xp = x ** p
+    return xp / (xp + c ** p)
+
+
+@pytest.mark.slow
+def test_with_dense_mana_burn_penalty_telescopes():
+    # with_dense_mana_burn_penalty (2026-08, briefly wired into deploy_reward_v2
+    # in place of with_mana_mistake_penalty, reverted same month -- see
+    # rewards.py's own comment on deploy_reward_v2 for why; tested standalone
+    # here for reference/regression coverage, not as the active league reward):
+    # reads PlayerState.mana_burnt_this_turn (NEVER
+    # drained by this wrapper -- only reset by game.turn._run_turn_gen at
+    # turn boundaries) and charges only the MARGINAL increase in
+    # _hill(mana_burnt_this_turn, c, p) since the last call, tracked via
+    # PlayerState.mana_burn_penalty_credited.
+    s = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
+    s.active_idx = 0
+    base_calls = []
+    base = lambda state, done, horizon: base_calls.append((done, horizon)) or 0.25
+    wrapped = with_dense_mana_burn_penalty(base, mana_burn_c=3.3, mana_burn_p=4.0)
+
+    # Nothing burnt yet -> base's own value passes through unchanged.
+    assert wrapped(s, done=False, horizon=99) == 0.25
+    assert base_calls == [(False, 99)]  # base_reward_fn really was called, with the same args
+
+    # First pip burnt this turn: charged the FULL hill(1) (baseline was 0),
+    # and mana_burnt_this_turn itself is untouched (unlike mana_mistake_burn,
+    # this wrapper never drains its input -- only the engine resets it, at
+    # the next turn boundary).
+    s.players[0].mana_burnt_this_turn = 1
+    h1 = _hill(1, 3.3, 4.0)
+    assert h1 == pytest.approx(0.0084, abs=1e-3)  # matches the owner-specified "~0.008 on the first pip" anchor
+    assert abs(wrapped(s, done=False, horizon=99) - (0.25 - h1)) < 1e-9
+    assert s.players[0].mana_burnt_this_turn == 1  # NOT drained
+    assert s.players[0].mana_burn_penalty_credited == pytest.approx(h1)
+
+    # Same call again with NO new burn -> baseline already matches current
+    # cumulative, so the marginal charge is exactly 0 (no double-charging a
+    # pip that's already been paid for).
+    assert wrapped(s, done=False, horizon=99) == 0.25
+
+    # More mana burns later in the SAME turn: charged only the DELTA, not
+    # hill() of the new total from scratch -- this is what makes it
+    # genuinely dense (each transition pays for what IT added) while still
+    # summing to the same total a one-shot terminal charge would give.
+    s.players[0].mana_burnt_this_turn = 6
+    h6 = _hill(6, 3.3, 4.0)
+    assert h6 == pytest.approx(0.916, abs=1e-3)  # matches the owner-specified "~close to 1 by 6/7" anchor
+    assert abs(wrapped(s, done=False, horizon=99) - (0.25 - (h6 - h1))) < 1e-9
+    assert s.players[0].mana_burn_penalty_credited == pytest.approx(h6)
+
+    # Telescoping identity: the SUM of every marginal charge this turn must
+    # equal hill(final total) exactly, whether charged in one jump (as
+    # above) or many small steps -- verify the many-small-steps path lands
+    # on the identical total.
+    s2 = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
+    s2.active_idx = 0
+    wrapped2 = with_dense_mana_burn_penalty(lambda state, done, horizon: 0.0, mana_burn_c=3.3, mana_burn_p=4.0)
+    total_charged = 0.0
+    for cum in range(1, 8):  # 7 separate single-pip burns, one reward call after each
+        s2.players[0].mana_burnt_this_turn = cum
+        total_charged += -wrapped2(s2, done=False, horizon=99)
+    assert total_charged == pytest.approx(_hill(7, 3.3, 4.0))
+
+    # Reset (simulating a new turn, same as game.turn._run_turn_gen does)
+    # zeroes the baseline too -- the next turn's first burn is cheap again,
+    # not charged against the PREVIOUS turn's already-elevated baseline.
+    s.players[0].mana_burnt_this_turn = 0
+    s.players[0].mana_burn_penalty_credited = 0.0
+    assert abs(wrapped(s, done=False, horizon=99) - 0.25) < 1e-9  # nothing burnt yet this (new) turn
+    s.players[0].mana_burnt_this_turn = 1
+    assert abs(wrapped(s, done=False, horizon=99) - (0.25 - h1)) < 1e-9  # cheap again, not h1-relative-to-6
+
+    # Scored seat-relative, same convention as with_mana_mistake_penalty.
+    s.active_idx = 1
+    s.players[1].mana_burnt_this_turn = 1
+    assert abs(wrapped(s, done=False, horizon=99) - (0.25 - h1)) < 1e-9
+    assert s.players[0].mana_burn_penalty_credited == pytest.approx(h1)  # untouched -- seat 0 wasn't scored this call
+
+
+@pytest.mark.slow
+def test_with_dense_mana_burn_penalty_game_cap():
+    # game_penalty_cap: clamps PlayerState.mana_burn_penalty_charged_total
+    # (never reset -- whole GAME, unlike mana_burn_penalty_credited, which
+    # resets every turn) so many separate bad turns can't sum to a penalty
+    # that dwarfs the terminal win/loss signal. A small cap (0.05) makes this
+    # easy to actually hit within a test instead of needing dozens of turns.
+    s = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
+    s.active_idx = 0
+    base = lambda state, done, horizon: 0.0
+    wrapped = with_dense_mana_burn_penalty(base, mana_burn_c=3.3, mana_burn_p=4.0, game_penalty_cap=0.05)
+
+    # Turn 1: burn 6 (hill(6) ~= 0.916, far past the 0.05 cap on its own) --
+    # charged only up to the cap, not the full curve value.
+    s.players[0].mana_burnt_this_turn = 6
+    assert abs(wrapped(s, done=False, horizon=99) - (-0.05)) < 1e-9
+    assert s.players[0].mana_burn_penalty_charged_total == pytest.approx(0.05)
+
+    # Simulate the turn boundary (game.turn._run_turn_gen resets the PER-TURN
+    # fields; mana_burn_penalty_charged_total is NOT one of them).
+    s.players[0].mana_burnt_this_turn = 0
+    s.players[0].mana_burn_penalty_credited = 0.0
+
+    # Turn 2: even a single burnt pip would normally cost hill(1) > 0, but
+    # the whole-game budget is already fully spent -- charged exactly 0, not
+    # a bonus, not a further debt.
+    s.players[0].mana_burnt_this_turn = 1
+    assert wrapped(s, done=False, horizon=99) == 0.0
+    assert s.players[0].mana_burn_penalty_charged_total == pytest.approx(0.05)  # unchanged -- nothing left to spend
+
+    # A DIFFERENT player's own budget is untouched by the first player's cap.
+    s.active_idx = 1
+    s.players[1].mana_burnt_this_turn = 6
+    assert abs(wrapped(s, done=False, horizon=99) - (-0.05)) < 1e-9
+    assert s.players[1].mana_burn_penalty_charged_total == pytest.approx(0.05)

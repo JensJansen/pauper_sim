@@ -332,8 +332,50 @@ class PlayerState:
         # optional GameState.on_mana_burn hook -- see its own docstring for
         # why that check can't live in this module) have all failed to
         # justify the burn. Never reset by the engine itself -- only ever
-        # drained by the reward wrapper reading it.
+        # drained by the reward wrapper reading it. NOT what league self-play
+        # currently trains against -- see mana_burnt_this_turn below, which is
+        # (2026-08).
         self.mana_mistake_burn = 0
+
+        # Cumulative mana burnt THIS TURN (both players -- the non-active
+        # player can float mana too, see game.turn._empty_mana_pools's own
+        # docstring), reset by game.turn._run_turn_gen at the start of every
+        # new turn. Unconditional like mana_burnt_total above (every burnt
+        # pip counts, no cost-paid/trigger-fired/nothing-castable exemption)
+        # -- a deliberately blunter signal than mana_mistake_burn: the point
+        # is punishing floating more than you can spend WITHIN a turn, not
+        # just avoidable waste. Read by rl.rewards.with_dense_mana_burn_penalty.
+        self.mana_burnt_this_turn = 0
+
+        # The Hill-curve badness value (rl.rewards._hill) ALREADY charged
+        # against reward for this turn's mana_burnt_this_turn so far --
+        # with_dense_mana_burn_penalty's own running baseline, so each reward
+        # call charges only the MARGINAL increase in badness since the last
+        # call (a genuinely dense, per-transition credit whose sum across a
+        # turn still telescopes to exactly _hill(total_this_turn, c, p) by
+        # the turn's end -- same total a one-shot terminal score would have
+        # given, just attributed to the transitions that actually caused it).
+        # Reset alongside mana_burnt_this_turn.
+        self.mana_burn_penalty_credited = 0.0
+
+        # Running total of dense mana-burn penalty ACTUALLY charged against
+        # reward so far this GAME (not per-turn -- never reset by
+        # game.turn._run_turn_gen, same "whole game" lifetime as
+        # mana_burnt_total above). with_dense_mana_burn_penalty's own safety
+        # backstop: mana_burn_penalty_credited resetting every turn means the
+        # per-turn charges do NOT telescope to a bounded whole-game total the
+        # way a true potential function would (a turn boundary drops
+        # whatever was owed back instead of refunding it) -- so nothing
+        # otherwise stops a long run of bad turns from summing to a penalty
+        # that dwarfs the terminal win/loss signal entirely. This field lets
+        # the wrapper clamp each charge so the running total never exceeds
+        # its own configured ceiling -- a deliberately blunt cap, not
+        # principled shaping, chosen for PPO/GAE stability (an unbounded-
+        # with-episode-length reward term is real-world proven trouble here:
+        # see git history on cbd7379, which walked back an earlier, similarly
+        # unbounded mana-burn penalty specifically because of training
+        # problems it caused). Never reset once the game is underway.
+        self.mana_burn_penalty_charged_total = 0.0
 
     def draw(self, n=1):
         """Real Magic: attempting to draw from an empty library is an
@@ -459,10 +501,13 @@ class GameState:
         # Which player (index into state.players) currently has THE INITIATIVE
         # (Avenging Hunter / The Initiative), or None if no one does. A single
         # shared designation, like the monarch. game.effects.undercity.
-        # take_initiative sets it (and queues that player's venture); combat
-        # damage to the holder passes it (game.effects.combat); the holder
-        # ventures into Undercity at the start of each of their upkeeps
-        # (game.turn.upkeep_step).
+        # take_initiative sets it (and queues that player's venture) -- called
+        # directly from Avenging Hunter's own ETB, or from a queued
+        # "take_initiative" triggered ability when combat damage to the
+        # current holder resolves it (game.effects.combat queues that trigger,
+        # game.effects.triggers resolves it); the holder ventures into
+        # Undercity at the start of each of their upkeeps (game.turn.
+        # upkeep_step).
         self.initiative_idx = None
 
         # None, or a dict describing an in-progress multi-step decision

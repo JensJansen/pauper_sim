@@ -461,6 +461,69 @@ def test_mana_mistake_burn_three_way_exemption():
     assert state.players[1].mana_mistake_burn == 1
 
 
+def test_mana_burnt_this_turn_unconditional():
+    # PlayerState.mana_burnt_this_turn (rl.rewards.with_dense_mana_burn_penalty's
+    # input, 2026-08) is DELIBERATELY unconditional, unlike mana_mistake_burn
+    # -- it tallies every burnt pip even when cost_paid_this_phase or
+    # triggers_fired_this_phase would exempt mana_mistake_burn. Same
+    # direct-call style as test_mana_mistake_burn_three_way_exemption above
+    # (pure bookkeeping over already-set flags, no real turn needed).
+    from game.turn import _empty_mana_pools
+
+    state = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
+    state.players[0].mana_pool = {"R": 2}
+    state.players[0].cost_paid_this_phase = True  # would exempt mana_mistake_burn
+    _empty_mana_pools(state)
+    assert state.players[0].mana_mistake_burn == 0  # exempted, as before
+    assert state.players[0].mana_burnt_this_turn == 2  # NOT exempted -- unconditional like mana_burnt_total
+
+    # Accumulates across multiple phase-boundary clears within the same
+    # (simulated) turn -- _run_turn_gen resets it only at turn start, not
+    # per-phase, so several small burns in one turn compound.
+    state.players[0].mana_pool = {"U": 1}
+    _empty_mana_pools(state)
+    assert state.players[0].mana_burnt_this_turn == 3
+
+
+def test_mana_burnt_this_turn_resets_at_turn_boundary():
+    # _run_turn_gen resets mana_burnt_this_turn (and mana_burn_penalty_credited)
+    # for BOTH players at the start of every new turn. run_turn (not
+    # run_multiplayer_game) drives exactly ONE turn on an already-built state
+    # directly -- no pregame mulligan phase to drive, no second player's own
+    # turn to script -- so a plain "always pass" choose_action is safe for
+    # the whole turn (a fresh opening hand has nothing forcing a real
+    # decision: no lands played yet, nothing drawn beyond the norm, no
+    # cleanup discard). The accumulation side of this function is already
+    # covered directly above; this test is specifically about the RESET.
+    state = new_multiplayer_game_state(
+        decklists=[[("Mountain", 20)], [("Mountain", 20)]],
+        starting_player_idx=0, rng=random.Random(0),
+    )
+    # Fabricated leftover values (however they'd really accumulate is the
+    # OTHER test's job) -- the only question here is whether _run_turn_gen's
+    # own turn-start block zeroes them for BOTH players.
+    state.players[0].mana_burnt_this_turn = 5
+    state.players[0].mana_burn_penalty_credited = 0.3
+    state.players[1].mana_burnt_this_turn = 2
+    state.players[1].mana_burn_penalty_credited = 0.1
+
+    seen_at_first_yield = {}
+
+    def _pass_and_snoop(state):
+        if not seen_at_first_yield:
+            seen_at_first_yield["p0"] = state.players[0].mana_burnt_this_turn
+            seen_at_first_yield["p0_credited"] = state.players[0].mana_burn_penalty_credited
+            seen_at_first_yield["p1"] = state.players[1].mana_burnt_this_turn
+            seen_at_first_yield["p1_credited"] = state.players[1].mana_burn_penalty_credited
+        return None  # always pass -- nothing to play from a bare opening hand
+
+    run_turn(state, choose_action=_pass_and_snoop, combat_enabled=False)
+    assert seen_at_first_yield == {"p0": 0, "p0_credited": 0.0, "p1": 0, "p1_credited": 0.0}, (
+        "both players' per-turn mana-burn tracking must already be reset by the very first "
+        "decision point of the new turn, for both players, not just the turn owner"
+    )
+
+
 def test_on_mana_burn_hook_wired_through_run_multiplayer_game():
     # Integration check that run_multiplayer_game's on_mana_burn kwarg really
     # reaches _empty_mana_pools -- test_mana_mistake_burn_three_way_exemption

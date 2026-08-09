@@ -4,8 +4,13 @@ A player can hold THE INITIATIVE (state.initiative_idx), a shared designation
 like the monarch. Taking it, and the start of each of your upkeeps, makes you
 "venture into Undercity": enter the first room if you're not in the dungeon,
 else advance to the next room, applying that room's effect. Combat damage to
-the initiative-holder passes the initiative to the attacker
-(game.effects.combat.combat_damage_step).
+the initiative-holder queues a "you take the initiative" triggered ability
+for the attacker (game.effects.combat.combat_damage_step, CR 722.2's second
+triggered ability) -- initiative_idx only actually changes once that trigger
+resolves off the stack (game.effects.triggers' own "take_initiative" branch,
+which calls take_initiative below), same as Avenging Hunter's own ETB grant
+(its own etb_trigger calls take_initiative directly, already resolving from
+within its own stack entry).
 
 This module owns the pure logic: take_initiative, venture + the room effects,
 and the two "until your next turn" durations it introduces (Arena's Goad and
@@ -13,11 +18,12 @@ Throne's hexproof, both stamped with the turn they began and expired at the
 owning player's next turn by expire_until_next_turn). The combat-facing
 pieces -- the menace block rule and goad's forced attack -- live in
 game.effects.combat (has_unfulfilled_goad / enforce_menace), which sits below
-this module. The venture triggered ability is queued here and resolved by
-game.effects.triggers' own "venture" branch. Two pending-resolution kinds
-(begin_choose_room, begin_throne_reveal) live here rather than in
-game.resolution's shared handler pool -- both are Undercity-only, each with
-exactly one caller (venture / _room_throne, respectively) in this module.
+this module. The take_initiative and venture triggered abilities are queued
+here and resolved by game.effects.triggers' own "take_initiative"/"venture"
+branches. Two pending-resolution kinds (begin_choose_room, begin_throne_
+reveal) live here rather than in game.resolution's shared handler pool --
+both are Undercity-only, each with exactly one caller (venture / _room_throne,
+respectively) in this module.
 
 Real Undercity dungeon (Scryfall), branching room graph in _DUNGEON below."""
 
@@ -61,14 +67,37 @@ def take_initiative(state, player_idx):
     """Set the initiative on `player_idx` and queue their venture. The Initiative
     reads "Whenever you take the initiative ... venture into Undercity"; that
     venture is a triggered ability, so it's queued (not run inline) and goes on
-    the stack with a priority window like any other trigger. Always happens on
-    that player's own turn (Avenging Hunter's ETB, or the combat that stole it),
-    so promote_triggers_to_stack -- run with active_idx == player_idx -- picks
-    it up. "You can take the initiative even if you already have it": re-taking
-    still queues a fresh venture, which this does unconditionally."""
+    the stack with a priority window like any other trigger. Only ever called
+    with active_idx == player_idx already -- Avenging Hunter's own etb_trigger
+    (green_cards.py) calls this directly from within its OWN stack entry's
+    resolution (active_idx == that trigger's controller, the permanent's
+    controller); the combat-damage case instead queues a "take_initiative"
+    trigger of its own (queue_take_initiative below) and this only runs when
+    THAT resolves (game.effects.triggers' "take_initiative" branch), by which
+    point resolve_top_of_stack has already restored active_idx to that
+    trigger's own controller. Either way, queue_venture below always appends
+    into the right player's own trigger_queue. "You can take the initiative
+    even if you already have it": re-taking still queues a fresh venture,
+    which this does unconditionally."""
     state.initiative_idx = player_idx
     state.log_event("take_initiative", player_idx=player_idx)
     queue_venture(state, player_idx)
+
+
+def queue_take_initiative(state, player_idx):
+    """Queue The Initiative's own combat-damage-triggered ability -- CR 722.2's
+    second one, "whenever one or more creatures a player controls deal combat
+    damage to the player who has the initiative, the controller of those
+    creatures takes the initiative" -- for player_idx (game.effects.combat.
+    combat_damage_step, once it's determined player_idx's creatures actually
+    dealt combat damage to the current holder this step). A real triggered
+    ability like any other: it goes on the stack and only actually flips
+    state.initiative_idx once it resolves (game.effects.triggers._trigger_
+    resolve's "take_initiative" branch, which calls take_initiative() above),
+    not the instant the damage was dealt."""
+    state.players[player_idx].trigger_queue.append(
+        {"type": "take_initiative", "card_def": _INITIATIVE_CARD, "player_idx": player_idx}
+    )
 
 
 def queue_venture(state, player_idx):

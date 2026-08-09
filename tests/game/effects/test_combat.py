@@ -15,7 +15,9 @@ from game.effects.combat import (
     has_unfulfilled_goad,
     menace_block_incomplete,
 )
+from game.effects.stack import resolve_top_of_stack
 from game.effects.tokens import WARRIOR_TOKEN_CARD_DEF
+from game.effects.triggers import promote_triggers_to_stack
 from game.state import GameState, Permanent, PlayerState
 
 
@@ -151,6 +153,45 @@ def test_trample_spills_excess_to_defending_player():
         assert weak_blocker not in state.players[1].battlefield
         assert state.players[1].life_total == 15  # 20 - the 5 that trampled through
         assert trampler in state.players[0].battlefield and trampler.damage_marked == 1
+    finally:
+        registry.CARD_DEFS.clear()
+        registry.CARD_DEFS.update(_card_defs_backup)
+
+
+def test_trample_all_through_when_every_blocker_already_gone():
+    # A blocked trampler whose only blocker died BEFORE combat_damage_step
+    # ran (e.g. an instant-speed removal spell resolved in the real priority
+    # round game.turn gives both players right after blocks + damage
+    # assignment, still within Phase.DECLARE_BLOCKERS, before Phase.
+    # COMBAT_DAMAGE even starts) is still "blocked" -- 702.19e/510.1c: with
+    # no living blocker left to assign any lethal damage to, its FULL power
+    # tramples through to the defending player, not zero. Modeled directly
+    # here (state.blocked_by records the block; the blocker was simply never
+    # put on any battlefield, matching what "already gone by the time combat
+    # damage is dealt" looks like to combat_damage_step's own _is_alive checks).
+    _card_defs_backup = dict(registry.CARD_DEFS)
+    try:
+        state = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
+        trampler = Permanent(CardDef("Trampler2", CardType.CREATURE, None, EffectId.FILLER, power=5, toughness=3))
+        trampler.summoning_sick = False
+        registry.CARD_DEFS["Trampler2"] = trampler.card_def
+        rancor_on_trampler = Permanent(CardDef("Rancor", CardType.ENCHANTMENT, {"G": 1}, EffectId.RANCOR))
+        rancor_on_trampler.flags["enchanting"] = trampler
+        gone_blocker = Permanent(CardDef("Gone Blocker", CardType.CREATURE, None, EffectId.FILLER, power=1, toughness=2))
+        state.players[0].battlefield = [trampler, rancor_on_trampler]
+        # gone_blocker deliberately NOT added to either battlefield -- already
+        # dead by the time combat damage is dealt, same as _is_alive would see
+        # a real mid-combat removal target.
+
+        declare_attackers_step(state)
+        declare_attacker(state, trampler)
+        state.blocked_by[trampler] = [gone_blocker]
+        combat_damage_step(state)
+
+        # Effective power 7 (5 base + Rancor's +2), ALL of it through -- no
+        # living blocker left to assign any of it to.
+        assert state.players[1].life_total == 13  # 20 - 7
+        assert trampler.damage_marked == 0  # a dead blocker deals no damage back
     finally:
         registry.CARD_DEFS.clear()
         registry.CARD_DEFS.update(_card_defs_backup)
@@ -437,8 +478,10 @@ def test_goad_forces_declaration_and_excludes_non_turn_player():
 
 
 def test_initiative_transfer_on_combat_damage():
-    # Initiative transfer: the holder taking combat damage passes it to the
-    # attacker, who then has a venture queued.
+    # Initiative transfer: the holder taking combat damage queues the
+    # attacker's own "take_initiative" triggered ability (CR 722.2) -- a real
+    # trigger, not an instant effect, so it doesn't flip state.initiative_idx
+    # until IT resolves off the stack, which then queues the venture.
     state = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
     state.active_idx = state.turn_player_idx = 0
     state.initiative_idx = 1  # the DEFENDER holds it
@@ -448,5 +491,43 @@ def test_initiative_transfer_on_combat_damage():
     state.players[0].attackers = [hitter]
     combat_damage_step(state)
     assert state.players[1].life_total == 17  # 3 unblocked to the defender
-    assert state.initiative_idx == 0  # stolen by the attacker
+    assert state.initiative_idx == 1  # not yet -- the trigger hasn't resolved
+    assert any(e["type"] == "take_initiative" for e in state.players[0].trigger_queue)
+    promote_triggers_to_stack(state)
+    resolve_top_of_stack(state)  # the take_initiative trigger itself
+    assert state.initiative_idx == 0  # NOW stolen by the attacker
+    assert any(e["type"] == "venture" for e in state.players[0].trigger_queue)
+
+
+def test_initiative_transfer_not_masked_by_simultaneous_lifelink_gain():
+    # A lifelink blocker's life GAIN for the defender (routed to the
+    # defending player -- see test_lifelink_on_blocking_creature_credits_
+    # defender above) must not mask combat damage a separate unblocked
+    # attacker actually dealt to the initiative holder that same step. The
+    # transfer is keyed on damage dealt, not net life-total change (real
+    # Magic: "whenever one or more creatures a player controls deal combat
+    # damage to the player who has the initiative...").
+    state = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
+    state.active_idx = state.turn_player_idx = 0
+    state.initiative_idx = 1  # the DEFENDER holds it
+    hitter = Permanent(CardDef("Hitter", CardType.CREATURE, None, EffectId.FILLER, power=3, toughness=3))
+    hitter.summoning_sick = False
+    weakling = Permanent(CardDef("Weakling", CardType.CREATURE, None, EffectId.FILLER, power=1, toughness=1))
+    weakling.summoning_sick = False
+    state.players[0].battlefield = [hitter, weakling]
+    state.players[0].attackers = [hitter, weakling]
+    blocker = Permanent(CardDef("BlockerLifelinker", CardType.CREATURE, None, EffectId.FILLER, power=5, toughness=5))
+    blocker.counters["lifelink"] = 1
+    state.players[1].battlefield = [blocker]
+    state.players[0].blocked_by = {weakling: [blocker]}
+
+    combat_damage_step(state)
+
+    # Net life change is positive (+5 lifelink, -3 unblocked) -- a net-life
+    # check would wrongly conclude no combat damage reached the defender.
+    assert state.players[1].life_total == 22  # 20 - 3 (Hitter, unblocked) + 5 (blocker's lifelink)
+    assert any(e["type"] == "take_initiative" for e in state.players[0].trigger_queue)
+    promote_triggers_to_stack(state)
+    resolve_top_of_stack(state)  # the take_initiative trigger itself
+    assert state.initiative_idx == 0  # still stolen -- Hitter DID deal combat damage to the holder
     assert any(e["type"] == "venture" for e in state.players[0].trigger_queue)

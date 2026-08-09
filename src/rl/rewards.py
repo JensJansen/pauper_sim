@@ -14,17 +14,20 @@ minus a "sloppiness" penalty for hoarded cards forced to cleanup discard (see
 _hill); a loss/timeout is 0.0 minus that same penalty (action_count_win_reward
 has no such penalty -- it's the plain, pretrain-only predecessor). Pretraining
 uses action_count_win_reward_200_floor02; league self-play uses
-deploy_reward_v2 (= with_mana_mistake_penalty wrapping deploy_reward with
-win_floor=1.0 -> flat efficiency term; the v1 efficiency scaling caused an
-action-space-minimization pathology).
+deploy_reward_v2 (= deploy_reward with win_floor=1.0 -> flat efficiency term;
+the v1 efficiency scaling caused an action-space-minimization pathology).
 
-DENSE shaping: with_mana_mistake_penalty (below) wraps a base reward_fn with
-a per-transition penalty for mana burnt where the engine could find no
-justification for it (see game.turn._empty_mana_pools's three-way exemption).
-Deliberately NOT folded into the terminal badness score above -- the whole
-point is to attribute a mistake to roughly the transition that caused it,
-not blur it across the entire game the way a terminal-only signal already
-was shown to (Tolarian Terror-style credit misattribution)."""
+DENSE shaping (with_dense_mana_burn_penalty, below) is defined but NOT
+currently wired into deploy_reward_v2 -- see deploy_reward_v2's own comment
+for why it was reverted 2026-08 (archetype bias against Elves' Priest of
+Titania, and it broke the "every win outscores every loss" guarantee in
+practice). Kept for reference: it wraps a base reward_fn with a per-
+transition penalty for mana burnt (PlayerState.mana_burnt_this_turn,
+unconditional -- no exemption for whether the burn was avoidable, unlike the
+narrower with_mana_mistake_penalty it had itself replaced). The penalty
+telescopes a Hill curve (_hill) across a turn's transitions, so its sum by
+turn's end equals a single terminal charge for that turn's total burn, but
+attributed to the transitions that actually caused it."""
 
 
 def _hill(x, c, p):
@@ -133,7 +136,13 @@ def deploy_reward(plateau_actions=80, max_actions=200, win_floor=0.5,
 
 
 def with_mana_mistake_penalty(base_reward_fn, penalty_per_pip=0.01, per_event_cap=0.05):
-    """Wraps a base reward_fn with a DENSE, per-transition penalty for mana
+    """NOT wired into deploy_reward_v2 as of 2026-08 -- see
+    with_dense_mana_burn_penalty below, which replaced it (owner call: too
+    weak in practice, and the exemption logic here made it forgive floated
+    mana whenever nothing was castable, which is exactly the case the owner
+    wants punished). Kept for reference/comparison, same as deploy_reward_v1.
+
+    Wraps a base reward_fn with a DENSE, per-transition penalty for mana
     burnt that game.turn._empty_mana_pools could find no justification for
     (PlayerState.mana_mistake_burn -- see that function's own docstring for
     the three-way exemption: paid for something, triggered something, or
@@ -185,6 +194,103 @@ def with_mana_mistake_penalty(base_reward_fn, penalty_per_pip=0.01, per_event_ca
     return reward_fn
 
 
+def with_dense_mana_burn_penalty(base_reward_fn, mana_burn_c=3.3, mana_burn_p=4.0, game_penalty_cap=2.0):
+    """League self-play's current dense mana-burn shaping (2026-08, replacing
+    with_mana_mistake_penalty above -- see its own docstring for why).
+    Restores the PRE-cbd7379 mana-burn curve's shape and intent (a Hill
+    curve, asymptotically saturating, so a badly-sloppy game is barely worse
+    than a slightly-sloppy one rather than unboundedly worse) but keeps it
+    genuinely DENSE and per-transition rather than terminal, and switches
+    its input from that era's mana_burnt_total (unconditional, whole-GAME
+    cumulative) to PlayerState.mana_burnt_this_turn (unconditional, per-TURN
+    cumulative, reset by game.turn._run_turn_gen) -- deliberately still
+    unconditional, unlike mana_mistake_burn's cost-paid/trigger-fired/
+    nothing-castable exemptions: the point here is punishing floating more
+    mana in a turn than you spend, full stop, not just provably avoidable
+    waste (owner call, 2026-08 -- mana_mistake_burn's own exemptions were
+    forgiving exactly the cases meant to be punished).
+
+    TELESCOPING, not a flat per-event charge: each call charges only the
+    MARGINAL increase in _hill(mana_burnt_this_turn, c, p) since the last
+    call for this player this turn (PlayerState.mana_burn_penalty_credited
+    is the running baseline, reset alongside mana_burnt_this_turn each new
+    turn). Burning early in a turn is nearly free (the curve's shallow
+    start); each additional pip burnt LATER in the same turn costs more than
+    the last, because it's added to an already-elevated baseline -- a
+    natural, compounding "you should have planned this turn's mana better"
+    shape. Summed across a whole turn's worth of calls, the total charged is
+    EXACTLY _hill(total_burnt_this_turn, c, p) -- the same number a one-shot
+    terminal score would have given for that turn, just attributed to
+    whichever individual transitions actually caused it (proper credit
+    assignment, not blurred across the whole game the way this file's
+    original terminal mana-burn penalty was -- see git history on cbd7379).
+
+    c=3.3, p=4.0 (owner-specified anchors, 2026-08): _hill(1, 3.3, 4.0) ~=
+    0.008 (first burnt pip in a turn is nearly free) and _hill(6..7, 3.3,
+    4.0) ~= 0.92-0.95 (burning most of a turn's mana is close to the max
+    single-turn charge). Full curve: 1->0.008, 2->0.12, 3->0.41, 4->0.68,
+    5->0.84, 6->0.92, 7->0.95, 10->0.99. Placeholders in the same sense
+    deploy_reward's own discard curve is -- revisit once real training data
+    exists under this rule.
+
+    game_penalty_cap (2026-08 addition) bounds the WHOLE-GAME running total
+    this wrapper ever charges (PlayerState.mana_burn_penalty_charged_total,
+    never reset once the game is underway -- see its own docstring for why
+    a cap is needed at all: resetting mana_burn_penalty_credited every turn
+    means these per-turn charges do NOT telescope to a bounded total the way
+    a true potential function would -- Ng, Harada & Russell 1999's
+    F(s,a,s')=Φ(s')-Φ(s) invariance theorem needs Φ to be a function that
+    telescopes across the WHOLE trajectory with no artificial resets;
+    resetting the baseline every turn silently drops the "refund" a real
+    potential function would pay back at that exact transition, so nothing
+    otherwise stops a long run of bad turns from summing to a penalty that
+    dwarfs the terminal win/loss signal). Deliberately NOT "fixed" by making
+    this a true potential function instead (one Hill curve over the whole-
+    GAME cumulative burn, never reset): Ng et al.'s own guarantee is that
+    potential-based shaping does not change the optimal policy at all --
+    exactly the opposite of the point of adding this term, which is to
+    inject a real, lasting preference against wasting mana beyond whatever
+    plain win/loss already implies. A whole-game (non-reset) curve would
+    also let a policy "pay down" its mana-burn budget in one early bad turn
+    and burn near-free for the rest of the game, the opposite of the
+    turn-by-turn discipline this is meant to teach. So: real, accumulating,
+    non-potential-based pressure (deliberate), just capped in aggregate
+    (deliberate) -- a blunt safety backstop, not principled shaping, chosen
+    because a reward term whose magnitude scales with episode length with no
+    ceiling is a known source of PPO/GAE instability (noisier advantage
+    estimates, a value function fitting a heavier-tailed target), and this
+    repo has already hit that exact failure mode once for real: git history
+    on cbd7379 walked back an earlier, similarly unbounded mana-burn penalty
+    specifically because of training problems it caused (dmir_terror). 2.0
+    is a conservative placeholder (comparable order of magnitude to q's own
+    [0, 1) range, wide enough that a genuinely sloppy game can still land
+    well below a clean loss -- that outcome is fine, only the UNBOUNDED
+    magnitude was the problem) -- revisit once real training data exists
+    under this rule, same as mana_burn_c/mana_burn_p above.
+
+    No exemption checking means no need for game.turn's on_mana_burn hook at
+    all (unlike with_mana_mistake_penalty) -- mana_burnt_this_turn is always
+    tallied by game.turn._empty_mana_pools regardless of reward_fn, so this
+    wrapper needs no consumes_mana_mistake-style opt-in flag; it's pure,
+    already-available bookkeeping to read, not something rl.train needs to
+    wire up conditionally."""
+    def reward_fn(state, done, horizon):
+        p = state.players[state.active_idx]
+        current = _hill(p.mana_burnt_this_turn, mana_burn_c, mana_burn_p)
+        penalty = current - p.mana_burn_penalty_credited
+        p.mana_burn_penalty_credited = current
+        # Whole-game cap: clamp this charge so mana_burn_penalty_charged_total
+        # never exceeds game_penalty_cap, regardless of how many separate bad
+        # turns preceded it. remaining floored at 0 -- once the cap is fully
+        # spent, every further charge is exactly 0, never negative (this is a
+        # ceiling on badness, never a bonus for burning MORE).
+        remaining = max(0.0, game_penalty_cap - p.mana_burn_penalty_charged_total)
+        penalty = min(penalty, remaining)
+        p.mana_burn_penalty_charged_total += penalty
+        return base_reward_fn(state, done, horizon) - penalty
+    return reward_fn
+
+
 # Pre-baked named instance (callers reference reward_fns by plain name via
 # getattr off this module -- see rl.train's own reward_fn_name plumbing).
 # Floor lowered to 0.2 (vs. the default 0.25) per the "sliding scale from
@@ -212,8 +318,24 @@ deploy_reward_v1 = deploy_reward()
 # PPO entropy alone bounds pointless actions without capping them. Because q
 # never reaches 1, every win here still strictly outscores every loss no
 # matter how sloppy either was -- see deploy_reward's own docstring for the
-# exact guarantee and its win_floor=1.0 precondition. with_mana_mistake_penalty
-# (above) wraps this with a dense per-transition term on top; see its own
-# docstring for why that guarantee's margin, already thin by construction, is
-# a real (if deliberately bounded) tradeoff of adding it.
-deploy_reward_v2 = with_mana_mistake_penalty(deploy_reward(win_floor=1.0))
+# exact guarantee and its win_floor=1.0 precondition.
+#
+# NOT wrapped by with_dense_mana_burn_penalty (2026-08 addition, since
+# reverted same month): a 2026-08-06 cross-league benchmark (before/after a
+# +10,000-game/deck batch trained under the dense wrap) showed elves
+# regressing consistently across all 4 gauntlet matchups -- traced to Priest
+# of Titania's mana ability ("count_all", src/game/mana.py, sums Elves on
+# BOTH battlefields with no partial-tap option) making large, unavoidable
+# per-turn bursts an intrinsic, correct part of the archetype, not a mistake
+# the dense curve could distinguish from real waste. The wrap also broke this
+# function's own "every win outscores every loss" guarantee in practice (its
+# own game_penalty_cap could push a sloppy win below a clean loss). Reverted
+# to plain deploy_reward(win_floor=1.0) rather than patched (e.g. exemption-
+# gating) because Priest's burst is large enough that even a coarse "was
+# anything castable" exemption would rarely fire for it -- see
+# TRAINING_IMPROVEMENT_OPTIONS.md section 2 for the full option menu this
+# reverted, and the still-open q/dmir_terror risk it flags as worth watching
+# next. with_dense_mana_burn_penalty itself is left defined above, unused,
+# for reference/comparison, same status this comment block already gave
+# with_mana_mistake_penalty before it.
+deploy_reward_v2 = deploy_reward(win_floor=1.0)

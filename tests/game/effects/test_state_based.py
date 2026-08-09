@@ -89,6 +89,30 @@ def test_stats_changed_logged_on_counter_change_only_when_it_actually_changes():
     assert len([e for e in state.event_log if e["kind"] == "stats_changed"]) == 2
 
 
+def test_cleanup_step_logs_stats_changed_when_a_temp_pump_expires():
+    # An until-end-of-turn pump (Timberwatch Elf's +X/+X) wearing off at
+    # cleanup must log its own stats_changed event immediately, not wait for
+    # the next check_state_based_actions call (delayed until the following
+    # turn's first priority round, since Phase.UNTAP takes none at all) --
+    # otherwise the replay/event log keeps showing the expired, pumped
+    # stats through the whole opponent turn even though the real state
+    # (temp_power/temp_toughness) was already reset.
+    state = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)], event_log=[])
+    bear = Permanent(CardDef("Bear", CardType.CREATURE, None, EffectId.FILLER, power=2, toughness=2))
+    bear.slot = 1
+    bear.temp_power = 3
+    bear.temp_toughness = 3
+    state.players[0].battlefield = [bear]
+    bear.flags["_logged_pt"] = (5, 5)  # as if already logged pumped to 5/5 mid-turn
+
+    cleanup_step(state)
+
+    changed = [e for e in state.event_log if e["kind"] == "stats_changed"]
+    assert len(changed) == 1
+    assert changed[0]["permanent"] == ["Bear", 1]
+    assert changed[0]["power"] == 2 and changed[0]["toughness"] == 2  # back to printed base
+
+
 def test_entering_via_enters_battlefield_does_not_log_a_redundant_stats_changed():
     # enters_battlefield seeds flags["_logged_pt"] to the printed stats it just
     # logged in its own zone_move event, so a plain ETB with no counters/Auras/

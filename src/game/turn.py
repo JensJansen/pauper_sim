@@ -138,13 +138,16 @@ def _empty_mana_pools(state):
     Also drives PlayerState.mana_mistake_burn, the RL reward-facing signal,
     via _tally_mana_mistake (see its own docstring) -- and resets
     cost_paid_this_phase/triggers_fired_this_phase to False for every player
-    once tallied, for the next phase."""
+    once tallied, for the next phase. Unconditionally tallies
+    PlayerState.mana_burnt_this_turn too (rl.rewards.with_dense_mana_burn_
+    penalty's own input -- reset each new turn by _run_turn_gen, not here)."""
     emptied = {}
     for idx, player in enumerate(state.players):
         if player.mana_pool:
             emptied[idx] = dict(player.mana_pool)
             burnt = sum(player.mana_pool.values())
             player.mana_burnt_total += burnt
+            player.mana_burnt_this_turn += burnt
             _tally_mana_mistake(state, idx, player, burnt)
             player.mana_pool.clear()
         player.cost_paid_this_phase = False
@@ -593,6 +596,13 @@ def _run_turn_gen(state, combat_enabled=False):
         state.turns_taken += 1  # this player's own turn count -- see draw_step's own note on why turn_number alone isn't enough once a second player exists
         state.lands_played_this_turn = 0
         state.cards_drawn_this_turn = 0
+        # BOTH players -- mana_burnt_this_turn tracks either seat's burn
+        # (the non-active player floats/burns mana too), not just the turn
+        # player's -- see PlayerState's own docstring and
+        # rl.rewards.with_dense_mana_burn_penalty.
+        for player in state.players:
+            player.mana_burnt_this_turn = 0
+            player.mana_burn_penalty_credited = 0.0
         state.log_event("turn_start", turn_player_idx=state.turn_player_idx)
 
         phases = FULL_PHASES if combat_enabled else MINIMAL_PHASES

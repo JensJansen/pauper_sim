@@ -56,11 +56,33 @@ def _precompute_frozen_shared(net, token_lists, device, chunk_size=256):
 
 
 def ppo_update(net, optimizers, buf, device, n_epochs=4, batch_size=64, gamma=0.99, gae_lambda=0.95,
-                clip_range=0.2, ent_coef=0.01, vf_coef=0.5, max_grad_norm=0.5):
+                clip_range=0.2, ent_coef=0.01, vf_coef=0.5, max_grad_norm=0.5, target_kl=0.03):
     # ent_coef default 0.01: with no entropy bonus the main policy collapses
     # onto a narrow low-branching behavior (pass, shrink its own board) -- the
     # action-space-minimization pathology; see rl.rewards.deploy_reward_v2. The
     # mulligan model has its own ENTROPY_COEF; this is the DeckNetwork policy's.
+    # 0.01 is this function's own fallback for callers that don't schedule it
+    # (pretrain's train_selfplay path) -- league training instead computes a
+    # per-session value via rl.train.ent_coef_schedule and passes it in
+    # explicitly; see that function's docstring for why a FIXED coefficient
+    # was found to let entropy collapse to a floor by ~250 games/deck and
+    # never recover for the following 30,000+ (TRAINING_IMPROVEMENT_OPTIONS.md
+    # section 4).
+    #
+    # target_kl (2026-08-06 addition): a real, non-optional trust-region
+    # backstop independent of ent_coef -- 4 fixed epochs over a small
+    # (median ~500-transition), non-stationary buffer (a new opponent mix
+    # every iteration under league/PFSP sampling) is a textbook setup for
+    # each update sharply overfitting to whatever that one small buffer
+    # happened to reward, which shrinks the policy's entropy through the
+    # POLICY LOSS itself, not through ent_coef's soft regularizer -- raising
+    # ent_coef alone can't fully counter it. Checked once per EPOCH (mean
+    # approx-KL across that epoch's minibatches), not per-minibatch: a
+    # per-minibatch check is noisier and would risk stopping after a single
+    # unlucky minibatch; the epoch-level check is the convention used by
+    # OpenAI's Spinning Up and Stable-Baselines3's PPO (their own
+    # `target_kl` knob). 0.03 is their own commonly-used default; not yet
+    # tuned against this specific game/reward's KL distribution.
     """PPO update over a buffer of variable-length token lists -- pads ONCE
     per minibatch (not once for the whole buffer up front), since a buffer
     spanning many games can have wildly different token counts across
@@ -77,7 +99,14 @@ def ppo_update(net, optimizers, buf, device, n_epochs=4, batch_size=64, gamma=0.
     momentum/variance state for the identical shared_stack tensors, stepping
     on them in alternation. Passing a single-net-only optimizer as [optimizer]
     (league training, where the shared stack is frozen and only one optimizer
-    ever touches this net's own params) still works unchanged."""
+    ever touches this net's own params) still works unchanged.
+
+    Returns (policy_loss, value_loss, entropy, approx_kl, clip_fraction,
+    epochs_run) -- the last 3 are 2026-08-06 additions (see target_kl above)
+    giving callers visibility into how hard each update is pushing the
+    policy, previously invisible (only entropy was ever logged, and a fixed
+    ent_coef gave no signal on WHY it was collapsing). epochs_run < n_epochs
+    means target_kl triggered early stopping that update."""
     values = np.array(buf.value, dtype=np.float32)
     rewards_ = np.array(buf.reward, dtype=np.float32)
     dones = np.array(buf.done, dtype=np.float32)
@@ -100,12 +129,15 @@ def ppo_update(net, optimizers, buf, device, n_epochs=4, batch_size=64, gamma=0.
 
     total = len(buf)
     indices = np.arange(total)
-    last_policy_loss = last_value_loss = last_entropy = 0.0
+    last_policy_loss = last_value_loss = last_entropy = last_approx_kl = last_clip_fraction = 0.0
+    epochs_run = 0
     # net's parameter set is fixed for this whole call -- listing it once
     # avoids re-walking the module tree (net.parameters() -> named_modules())
     # on every one of the n_epochs * n_minibatches clip_grad_norm_ calls below.
     all_params = list(net.parameters())
     for _epoch in range(n_epochs):
+        epochs_run += 1
+        epoch_kl_sum, epoch_kl_n = 0.0, 0
         np.random.shuffle(indices)
         for start in range(0, total, batch_size):
             mb = indices[start:start + batch_size]
@@ -173,5 +205,26 @@ def ppo_update(net, optimizers, buf, device, n_epochs=4, batch_size=64, gamma=0.
             torch.nn.utils.clip_grad_norm_(all_params, max_grad_norm)
             for opt in optimizers:
                 opt.step()
+
+            with torch.no_grad():
+                # k3 estimator (Schulman, http://joschu.net/blog/kl-approx.html):
+                # unbiased, lower-variance than the naive (old_logp - new_logp)
+                # mean, and always >= 0 (a real divergence, not a noisy signed
+                # estimate) -- computed post-step (uses the SAME ratio the
+                # update just used) purely as a diagnostic of how far that step
+                # just moved the policy, not a pre-step gate.
+                approx_kl = ((ratio - 1) - torch.log(ratio)).mean().item()
+                clip_fraction = ((ratio - 1.0).abs() > clip_range).float().mean().item()
+            epoch_kl_sum += approx_kl
+            epoch_kl_n += 1
             last_policy_loss, last_value_loss, last_entropy = policy_loss.item(), value_loss.item(), entropy.item()
-    return last_policy_loss, last_value_loss, last_entropy
+            last_approx_kl, last_clip_fraction = approx_kl, clip_fraction
+
+        # target_kl early stop: checked once per EPOCH (mean KL across that
+        # epoch's own minibatches), not per-minibatch -- see ppo_update's own
+        # docstring for why. Only takes effect for the NEXT epoch (this one
+        # already ran in full), so epochs_run always reflects epochs that
+        # actually executed a full pass, never a partial one.
+        if target_kl is not None and epoch_kl_n and (epoch_kl_sum / epoch_kl_n) > target_kl:
+            break
+    return last_policy_loss, last_value_loss, last_entropy, last_approx_kl, last_clip_fraction, epochs_run

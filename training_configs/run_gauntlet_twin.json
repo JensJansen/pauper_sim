@@ -1,0 +1,11 @@
+{
+  "_note": "The gauntlet twin, generation 2 (2026-08-07). The ORIGINAL 4_deck_subleague_gauntlet population became permanently unusable as a comparison reference once its shared_stack_frozen.pt (never git-committed, only ever on local disk) was deleted during the 2026-08-06 restart's fresh pretrain -- gauntlet's saved per-deck weights were trained against that specific embedding space, and loading them onto the NEW frozen stack (same tensor shapes, unrelated representations) silently produces a technically-invalid comparison, not a crash. See TRAINING_IMPROVEMENT_OPTIONS.md and training_configs/run_default.json's own _gauntlet_disabled_note for the full trace. This config re-grows a genuine twin: SAME roster, SAME frozen stack (the one 4_deck_subleague_test is training against right now), SAME run-mechanics as run_default.json (checkpoint_opponent_rate, pfsp, snapshot_every_games, n_workers) -- diverging purely from a different nondeterministic training trajectory, exactly the original gauntlet's own design intent. Deliberately a NEW file (not resurrecting training_configs/run_gauntlet.json, which is retired -- see its own _note -- or run_gauntlet_pod.json, which targeted the now-invalid population).",
+  "snapshot_every_games": 200,
+  "n_workers": 6,
+  "checkpoint_opponent_rate": 0.15,
+  "pfsp": true,
+  "league_name": "4_deck_subleague_gauntlet",
+  "roster": ["rakdos_madness", "dmir_terror", "elves", "mono_red_rally"],
+  "total_games": 600000,
+  "heuristic_decks": ["mono_red_rally"]
+}

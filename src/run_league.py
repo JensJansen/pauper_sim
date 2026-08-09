@@ -164,11 +164,21 @@ def main():
     else:
         snapshot_every = 20
 
+    # cumulative_games_per_deck (progress.json, 0 for a brand-new or
+    # config-less league): the horizon rl.train.batch_size_for_iteration and
+    # rl.train.ent_coef_schedule ramp against -- see both docstrings for why
+    # this replaced the old session-LOCAL iteration/n_iterations tracking
+    # (a real run is many separate process invocations; the old version
+    # reset both ramps back to their start value at the beginning of every
+    # one of them, regardless of overall run progress).
+    cumulative_games = _load_progress(league_dir)["cumulative_games_per_deck"] if league_dir is not None else 0
+
     schedule_kwargs = dict(seed=args.seed,
                             train_deck=train_deck, train_mulligan=train_mulligan, train_decks=train_decks,
                             matchup=matchup, game_logs=game_logs, checkpoint_rate=checkpoint_rate,
                             league_dir=league_dir, roster=roster, pfsp=pfsp,
-                            gauntlet_league_dir=gauntlet_league_dir, heuristic_decks=heuristic_decks)
+                            gauntlet_league_dir=gauntlet_league_dir, heuristic_decks=heuristic_decks,
+                            cumulative_games=cumulative_games)
 
     sequential = matchup is not None or n_workers <= 1  # matchup uses collect_rollout directly (no worker path)
     if not sequential:

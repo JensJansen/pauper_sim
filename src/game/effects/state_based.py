@@ -272,6 +272,21 @@ def cleanup_step(state):
     own end); no-op if already at or under the limit (begin_discard's own
     n<=0 short-circuit handles that for free, no guard needed here).
 
+    Also runs check_state_based_actions right after the reset (below) so any
+    until-end-of-turn pump/debuff wearing off (Timberwatch Elf's +X/+X, Agony
+    Warp's -3/-0 / -0/-3, ...) logs its own "stats_changed" event immediately.
+    Without this, the replay/event log would keep showing the expired,
+    stale power/toughness until the NEXT check_state_based_actions call --
+    which, since Phase.UNTAP takes no priority round at all (rule 4), isn't
+    until the following turn's first priority round -- making the buff look
+    like it lasted into the opponent's whole turn even though the actual
+    game state (stats.permanent_power/toughness, read live everywhere else,
+    e.g. combat and rl.features) was already correct the instant cleanup ran.
+    Safe to call here: damage_marked is already zeroed above (in the same
+    loop, before this runs), so no creature can newly die from a shrinking
+    temp_toughness -- this call only ever logs, never destroys, at this
+    point in cleanup.
+
     This is the only ceiling on hand size in an adversarial 2-player game."""
     damaged = [
         (p.card_def.name, p.slot) for player in state.players for p in player.battlefield if p.damage_marked > 0
@@ -288,6 +303,7 @@ def cleanup_step(state):
             permanent.flags.pop("deathtouched", None)
     if damaged:
         state.log_event("cleanup_damage_cleared", permanents=damaged)
+    check_state_based_actions(state)  # logs stats_changed for any pump/debuff that just wore off
     n = max(0, len(state.hand) - HAND_SIZE_LIMIT)
     if n > 0:
         # One count per TURN this player over-drew and had to pitch the excess

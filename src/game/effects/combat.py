@@ -300,10 +300,15 @@ def combat_damage_step(state):
     (de)attaches an Aura mid-resolution; damage_marked is read fresh."""
     # The Initiative (Avenging Hunter): "Whenever one or more creatures a
     # player controls deal combat damage to you, that player takes the
-    # initiative." Snapshot the defending player's life now so any net combat-
-    # damage loss below (unblocked hits + trample) can be detected at the end.
+    # initiative." This is keyed on combat damage actually being DEALT to the
+    # defending player -- unblocked hits + trample overflow -- tracked
+    # directly below as damage_dealt_to_defender, NOT a net life-total delta:
+    # a net-life check would wrongly miss the transfer whenever life gained
+    # elsewhere in this same step (e.g. a lifelink blocker, whose gain lands
+    # on the defending player -- see _blocker_deal_damage) offsets or exceeds
+    # the damage this step actually dealt them.
     defender_idx = 1 - state.active_idx if len(state.players) > 1 else None
-    defender_life_before = state.players[defender_idx].life_total if defender_idx is not None else None
+    damage_dealt_to_defender = 0
 
     unblocked = [p for p in state.attackers if p not in state.blocked_by]
     groups = list(state.blocked_by.items())  # [(attacker, [blockers, ...])] -- gang-blocking (list-valued)
@@ -339,6 +344,7 @@ def combat_damage_step(state):
             amount=unblocked_total,
         )
     deal_damage_to_opponent(state, unblocked_total)
+    damage_dealt_to_defender += unblocked_total
     if lifelink_total:
         gain_life(state, lifelink_total)
 
@@ -351,6 +357,7 @@ def combat_damage_step(state):
         if creature_facts[id(attacker)]["first_strike"]:
             living = [b for b in blockers if _is_alive(state, b)]
             amounts, opp = _damage_assignment_for(attacker, living, creature_facts[id(attacker)], creature_facts)
+            damage_dealt_to_defender += opp
             _attacker_deal_damage(state, attacker, living, amounts, opp, creature_facts[id(attacker)])
         for blocker in blockers:
             if creature_facts[id(blocker)]["first_strike"]:
@@ -361,23 +368,38 @@ def combat_damage_step(state):
         attacker_alive = _is_alive(state, attacker)
         if not creature_facts[id(attacker)]["first_strike"] and attacker_alive:
             living = [b for b in blockers if _is_alive(state, b)]  # a first-strike attacker's kills are already gone
-            if living:
-                amounts, opp = _damage_assignment_for(attacker, living, creature_facts[id(attacker)], creature_facts)
-                _attacker_deal_damage(state, attacker, living, amounts, opp, creature_facts[id(attacker)])
+            # Unconditional even when living is empty (every blocker died to
+            # first strike): a non-trampler then deals no damage at all
+            # (_default_damage_assignment's blockers=[] path leaves amounts
+            # and opponent_amount both empty/0, so _attacker_deal_damage is a
+            # no-op) -- but a TRAMPLER with no blockers left to assign lethal
+            # to must have its full power go through to the defending player
+            # (702.19e/510.1c), which that same blockers=[] path already
+            # produces correctly (opponent_amount = full power) once this is
+            # actually called instead of skipped.
+            amounts, opp = _damage_assignment_for(attacker, living, creature_facts[id(attacker)], creature_facts)
+            damage_dealt_to_defender += opp
+            _attacker_deal_damage(state, attacker, living, amounts, opp, creature_facts[id(attacker)])
         for blocker in blockers:
             if not creature_facts[id(blocker)]["first_strike"] and _is_alive(state, blocker) and attacker_alive:
                 _blocker_deal_damage(state, blocker, attacker, creature_facts[id(blocker)])
     state_based.check_state_based_actions(state)
 
-    # The Initiative transfer: if the current holder was the defender and took
-    # any combat damage this step (life dropped), the attacking player takes
-    # the initiative (and ventures). Skipped if the game already ended -- a
-    # dead defender's initiative is moot. Lazy import: undercity pulls in
-    # casting/tokens, and combat sits underneath those.
+    # The Initiative transfer: if the current holder was the defender and any
+    # of the attacker's creatures actually dealt combat damage to them this
+    # step (damage_dealt_to_defender, tracked above -- unaffected by any life
+    # gained the defender's own blockers this same step), QUEUE the attacking
+    # player's own "you take the initiative" triggered ability (CR 722.2's
+    # second one) -- a real trigger, not an immediate effect: it doesn't
+    # actually flip state.initiative_idx until it resolves off the stack
+    # (game.effects.triggers' "take_initiative" branch), same as any other
+    # triggered ability gets a priority window first. Skipped if the game
+    # already ended -- a dead defender's initiative is moot. Lazy import:
+    # undercity pulls in casting/tokens, and combat sits underneath those.
     if (defender_idx is not None and state.turn_won is None and state.initiative_idx == defender_idx
-            and state.players[defender_idx].life_total < defender_life_before):
+            and damage_dealt_to_defender > 0):
         from . import undercity
-        undercity.take_initiative(state, state.active_idx)
+        undercity.queue_take_initiative(state, state.active_idx)
 
 
 def menace_block_incomplete(state):

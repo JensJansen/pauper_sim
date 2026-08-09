@@ -20,7 +20,7 @@ from rl.deck import DeckNetwork
 from rl.league import LeaguePool
 from rl.pool import build_pool
 from rl.agent import HeuristicAgent, SeatAgent
-from rl.train import batch_size_for_iteration, collect_rollout, collect_rollout_league, _constant_pairing
+from rl.train import batch_size_for_iteration, collect_rollout, collect_rollout_league, _constant_pairing, ent_coef_schedule
 from rl.rollout_parallel import collect_rollout_league_parallel
 from rl.ppo import ppo_update
 from rl.mulligan import MulliganNet, update as mulligan_update
@@ -142,7 +142,15 @@ def _run_session(n_iterations, games_per_iteration, snapshot_every, executor, n_
                   fresh_stack=False, league_dir=None, seed=None,
                   train_deck=True, train_mulligan=True, train_decks=None,
                   matchup=None, game_logs=None, checkpoint_rate=0.0, roster=None, pfsp=True,
-                  gauntlet_league_dir=None, heuristic_decks=()):
+                  gauntlet_league_dir=None, heuristic_decks=(), cumulative_games=0):
+    # cumulative_games: this league's games/deck ALREADY played before this
+    # session started (progress.json, threaded in by run_league.py's main())
+    # -- the horizon batch_size_for_iteration and ent_coef_schedule (rl.train)
+    # ramp against, recomputed every iteration as cumulative_games + iteration
+    # * games_per_iteration so the ramp both grows smoothly WITHIN a big
+    # session and picks up from the right point when a NEW session starts,
+    # rather than resetting to each schedule's start value every single
+    # process invocation the way both used to (see their own docstrings).
     # fresh_stack + league_dir + seed let the benchmark harness drive this EXACT
     # loop with untrained (but identical-config) models over a throwaway dir,
     # reproducibly -- the only intended differences from a real training
@@ -243,14 +251,28 @@ def _run_session(n_iterations, games_per_iteration, snapshot_every, executor, n_
     total_games = 0
     collect_time_total = 0.0
     update_time_total = 0.0
+    # Mulligan transitions accumulate ACROSS iterations now (2026-08-06),
+    # flushed to a real REINFORCE update only every MULLIGAN_UPDATE_EVERY
+    # iterations (see the update block below) instead of every single
+    # iteration on whatever that one iteration happened to generate (median
+    # 11 transitions/update, measured on a real run -- both the policy
+    # gradient AND its learned baseline were being fit from the same tiny,
+    # correlated batch, a genuinely high-variance regime given reward is
+    # dominated by a 0/1 win outcome). See TRAINING_IMPROVEMENT_OPTIONS.md
+    # section 4.
+    MULLIGAN_UPDATE_EVERY = 8
+    mull_by_deck_accum = {name: [] for name in train_decks}
     for iteration in range(n_iterations):
-        # PPO minibatch ramp (32 -> 2048 over 6 steps): batch_size_for_iteration's
-        # own hardcoded defaults -- see its docstring (Smith et al. 2017 "grow
-        # batch size instead of decaying LR"). Used to be 3 separate CLI-tunable
-        # knobs; the codebase's own comment on them admitted nobody had ever
-        # actually overridden them in practice, so they're fixed here instead.
-        batch_size = batch_size_for_iteration(iteration, n_iterations)
-        mull_by_deck_iter = {name: [] for name in train_decks}  # mulligan transitions accumulated across this iteration
+        # PPO minibatch ramp (32 -> 2048 over 6 steps) and entropy-coefficient
+        # anneal: both tracked against TRUE cumulative games/deck (this
+        # session's own starting point, cumulative_games, plus games played so
+        # far THIS session) -- see batch_size_for_iteration's and
+        # ent_coef_schedule's own docstrings (rl.train) for why session-local
+        # tracking was replaced. games_per_iteration is the per-deck games
+        # count each iteration adds, regardless of how many decks train.
+        games_so_far_this_session = iteration * games_per_iteration
+        batch_size = batch_size_for_iteration(cumulative_games + games_so_far_this_session)
+        ent_coef = ent_coef_schedule(cumulative_games + games_so_far_this_session)
         # Snapshot the mulligan nets for the workers now (ALL decks -- a frozen
         # opponent still needs its mulligan net to play). Updated once after the
         # deck-loop (on-policy within the iteration, same as the main nets).
@@ -300,7 +322,7 @@ def _run_session(n_iterations, games_per_iteration, snapshot_every, executor, n_
             # opponent's are discarded (it isn't being trained).
             for deck_name, tr in mull_by_deck.items():
                 if deck_name in train_set:
-                    mull_by_deck_iter[deck_name].extend(tr)
+                    mull_by_deck_accum[deck_name].extend(tr)
             t_update0 = time.time()
             # PPO-update every TRAIN deck that received transitions this round (only
             # when deck training is on). ONE gate, unconditionally: deck_name must be
@@ -316,43 +338,60 @@ def _run_session(n_iterations, games_per_iteration, snapshot_every, executor, n_
             # Within train_set, "live opponent got real transitions this round" and
             # "that deck should learn from them" are the same fact -- never a
             # separate, configurable choice.
-            policy_loss = value_loss = entropy = 0.0
+            policy_loss = value_loss = entropy = approx_kl = clip_fraction = 0.0
+            epochs_run = 0
             salvaged = 0
             if train_deck:
                 for deck_name, buf in buffers_by_deck.items():
                     if not len(buf) or deck_name not in train_set:
                         continue
                     if deck_name == name:
-                        policy_loss, value_loss, entropy = ppo_update(
-                            live_nets[name], [optimizers[name]], buf, "cpu", batch_size=batch_size)
+                        policy_loss, value_loss, entropy, approx_kl, clip_fraction, epochs_run = ppo_update(
+                            live_nets[name], [optimizers[name]], buf, "cpu", batch_size=batch_size, ent_coef=ent_coef)
                     else:
-                        ppo_update(live_nets[deck_name], [optimizers[deck_name]], buf, "cpu", batch_size=batch_size)
+                        ppo_update(live_nets[deck_name], [optimizers[deck_name]], buf, "cpu",
+                                   batch_size=batch_size, ent_coef=ent_coef)
                         salvaged += len(buf)
             update_time_total += time.time() - t_update0
             buffer_size = len(buffers_by_deck.get(name, ()))
             print(f"  iter {iteration} [{name}]: games={played} buf={buffer_size} "
-                  f"salvaged={salvaged} batch_size={batch_size} "
-                  f"policy_loss={policy_loss:.4f} value_loss={value_loss:.4f}", flush=True)
+                  f"salvaged={salvaged} batch_size={batch_size} ent_coef={ent_coef:.4f} "
+                  f"policy_loss={policy_loss:.4f} value_loss={value_loss:.4f} "
+                  f"approx_kl={approx_kl:.4f} clip_frac={clip_fraction:.3f} epochs_run={epochs_run}", flush=True)
             # entropy: computed by ppo_update every call, previously discarded
             # right after this print -- see _append_metric's own docstring.
             # buffer_size alongside batch_size is what actually answers "has
             # the minibatch ramp saturated past the real amount of collected
             # data" (once batch_size >= buffer_size, ppo_update's inner loop
             # stops sub-batching and just runs n_epochs full-batch steps).
+            # approx_kl/clip_fraction/epochs_run (2026-08-06): visibility into
+            # WHY entropy moves the way it does, not just that it did -- see
+            # ppo_update's own docstring and TRAINING_IMPROVEMENT_OPTIONS.md
+            # section 4 for the entropy-collapse investigation this exists to
+            # let the owner actually check going forward, instead of guessing.
             _append_metric(league_dir, kind="ppo", session=session, iteration=iteration, deck=name,
                            games=played, buffer_size=buffer_size, batch_size=batch_size, salvaged=salvaged,
-                           policy_loss=policy_loss, value_loss=value_loss, entropy=entropy)
+                           ent_coef=ent_coef, policy_loss=policy_loss, value_loss=value_loss, entropy=entropy,
+                           approx_kl=approx_kl, clip_fraction=clip_fraction, epochs_run=epochs_run)
 
-        # Mulligan-model REINFORCE: one step per TRAIN deck on its own transitions
-        # this iteration (its games + live-opponent salvage). Gated on train_mulligan;
-        # decoupled from the main PPO updates above -- its own optimizer, its own reward.
+        # Mulligan-model REINFORCE: one step per TRAIN deck on transitions
+        # accumulated across the last MULLIGAN_UPDATE_EVERY iterations (see
+        # this loop's own top-of-function comment for why), flushed early on
+        # the session's FINAL iteration regardless of the cadence so no
+        # transitions are silently dropped at a session boundary (this
+        # accumulator is a local variable -- nothing persists it across
+        # separate `run_league.py` process invocations). Gated on
+        # train_mulligan; decoupled from the main PPO updates above -- its
+        # own optimizer, its own reward.
         mull_stats = {}
-        if train_mulligan:
+        is_mulligan_flush = (iteration + 1) % MULLIGAN_UPDATE_EVERY == 0 or iteration == n_iterations - 1
+        if train_mulligan and is_mulligan_flush:
             for name in train_decks:
-                if mull_by_deck_iter[name]:
-                    mull_stats[name] = mulligan_update(mulligan_nets[name], mulligan_optimizers[name], mull_by_deck_iter[name])
+                if mull_by_deck_accum[name]:
+                    mull_stats[name] = mulligan_update(mulligan_nets[name], mulligan_optimizers[name], mull_by_deck_accum[name])
                     _append_metric(league_dir, kind="mulligan", session=session, iteration=iteration, deck=name,
                                    n=mull_stats[name]["n"], loss=mull_stats[name]["loss"])
+                    mull_by_deck_accum[name] = []
         if mull_stats:  # readout so the mulligan subsystem is visible while it trains
             total_n = sum(s["n"] for s in mull_stats.values())
             mean_loss = sum(s["loss"] for s in mull_stats.values()) / len(mull_stats)

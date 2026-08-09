@@ -262,9 +262,13 @@ Never claim a run succeeded without having seen its "done" line and exit 0 in th
   DeckNetworks vs. the pretrain shared stack, NOT a subset of decks.
 - Reward is terminal (near-zero early is expected, not a failure — watch losses moving
   and games completing instead): pretrain uses `action_count_win_reward_200_floor02`
-  (plain win/loss); league play uses `deploy_reward_v2` (win/loss plus a small dense
-  per-transition mana-mistake penalty — see `rl/rewards.py`). Different reward fns for
-  the two phases, not the same one throughout.
+  (plain win/loss); league play uses `deploy_reward_v2` (win/loss minus a cleanup-discard
+  sloppiness penalty `q` — see `rl/rewards.py`). Different reward fns for the two phases,
+  not the same one throughout. A dense, per-transition mana-burn penalty
+  (`with_dense_mana_burn_penalty`) was tried in `deploy_reward_v2` for part of 2026-08 and
+  reverted the same month after it showed archetype-biased regressions (see
+  `TRAINING_IMPROVEMENT_OPTIONS.md` section 2) -- if a future session finds it wired back
+  in, that's a deliberate re-introduction to check the reasoning on, not a leftover.
 - Each session checkpoints at its end and resumes on the next run, so escalating across
   many separate sessions accumulates training without loss (a mid-session crash loses
   only that session's uncheckpointed games).
