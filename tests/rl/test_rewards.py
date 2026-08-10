@@ -194,58 +194,70 @@ def test_with_dense_mana_burn_penalty_telescopes():
     # per-pip single-pip-tagged mana_burnt_this_turn_single_pip instead --
     # see rewards.py's own comment on deploy_reward_v2 for the full history;
     # tested standalone here for reference/regression coverage, not as the
-    # active league reward): reads PlayerState.mana_burnt_this_turn_single_pip
-    # (NEVER drained by this wrapper -- only reset by game.turn._run_turn_gen
-    # at turn boundaries) and charges only the MARGINAL increase in
-    # _hill(mana_burnt_this_turn_single_pip, c, p) since the last call, tracked
-    # via PlayerState.mana_burn_penalty_credited.
+    # active league reward).
+    #
+    # SECOND iteration (2026-08-10): reward_fn is now a plain passthrough of
+    # base_reward_fn -- the actual Hill-curve charge lives in the returned
+    # closure's own charge_single_pip_burn(player) attribute instead, called
+    # by rl.train's on_single_pip_burn hook at the moment of an actual burn
+    # rather than at an arbitrary later reward_fn call (see this module's
+    # own docstring on with_dense_mana_burn_penalty for why). Reads
+    # PlayerState.mana_burnt_this_turn_single_pip (NEVER drained by this --
+    # only reset by game.turn._run_turn_gen at turn boundaries) and charges
+    # only the MARGINAL increase in _hill(mana_burnt_this_turn_single_pip,
+    # c, p) since the last call, tracked via PlayerState.
+    # mana_burn_penalty_credited.
     s = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
     s.active_idx = 0
     base_calls = []
     base = lambda state, done, horizon: base_calls.append((done, horizon)) or 0.25
     wrapped = with_dense_mana_burn_penalty(base, mana_burn_c=3.3, mana_burn_p=4.0)
 
-    # Nothing burnt yet -> base's own value passes through unchanged.
+    # reward_fn itself is a pure passthrough now, regardless of burn state --
+    # the dense charge is applied elsewhere (rl.train.collect_rollout's
+    # buffer patch), never through this return value.
     assert wrapped(s, done=False, horizon=99) == 0.25
     assert base_calls == [(False, 99)]  # base_reward_fn really was called, with the same args
+    s.players[0].mana_burnt_this_turn_single_pip = 6
+    assert wrapped(s, done=False, horizon=99) == 0.25  # still unaffected, even with real burn on the books
+    s.players[0].mana_burnt_this_turn_single_pip = 0  # reset for the charge_single_pip_burn checks below
 
-    # First pip burnt this turn: charged the FULL hill(1) (baseline was 0),
-    # and mana_burnt_this_turn_single_pip itself is untouched (unlike
-    # mana_mistake_burn, this wrapper never drains its input -- only the
-    # engine resets it, at the next turn boundary).
+    # First pip burnt this turn: charge_single_pip_burn charges the FULL
+    # hill(1) (baseline was 0), and mana_burnt_this_turn_single_pip itself
+    # is untouched (unlike mana_mistake_burn, this never drains its input --
+    # only the engine resets it, at the next turn boundary).
     s.players[0].mana_burnt_this_turn_single_pip = 1
     h1 = _hill(1, 3.3, 4.0)
     assert h1 == pytest.approx(0.0084, abs=1e-3)  # matches the owner-specified "~0.008 on the first pip" anchor
-    assert abs(wrapped(s, done=False, horizon=99) - (0.25 - h1)) < 1e-9
+    assert wrapped.charge_single_pip_burn(s.players[0]) == pytest.approx(h1)
     assert s.players[0].mana_burnt_this_turn_single_pip == 1  # NOT drained
     assert s.players[0].mana_burn_penalty_credited == pytest.approx(h1)
 
     # Same call again with NO new burn -> baseline already matches current
     # cumulative, so the marginal charge is exactly 0 (no double-charging a
     # pip that's already been paid for).
-    assert wrapped(s, done=False, horizon=99) == 0.25
+    assert wrapped.charge_single_pip_burn(s.players[0]) == pytest.approx(0.0)
 
     # More mana burns later in the SAME turn: charged only the DELTA, not
     # hill() of the new total from scratch -- this is what makes it
-    # genuinely dense (each transition pays for what IT added) while still
+    # genuinely dense (each burn pays for what IT added) while still
     # summing to the same total a one-shot terminal charge would give.
     s.players[0].mana_burnt_this_turn_single_pip = 6
     h6 = _hill(6, 3.3, 4.0)
     assert h6 == pytest.approx(0.916, abs=1e-3)  # matches the owner-specified "~close to 1 by 6/7" anchor
-    assert abs(wrapped(s, done=False, horizon=99) - (0.25 - (h6 - h1))) < 1e-9
+    assert wrapped.charge_single_pip_burn(s.players[0]) == pytest.approx(h6 - h1)
     assert s.players[0].mana_burn_penalty_credited == pytest.approx(h6)
 
     # Telescoping identity: the SUM of every marginal charge this turn must
     # equal hill(final total) exactly, whether charged in one jump (as
     # above) or many small steps -- verify the many-small-steps path lands
     # on the identical total.
-    s2 = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
-    s2.active_idx = 0
+    p2 = PlayerState(True)
     wrapped2 = with_dense_mana_burn_penalty(lambda state, done, horizon: 0.0, mana_burn_c=3.3, mana_burn_p=4.0)
     total_charged = 0.0
-    for cum in range(1, 8):  # 7 separate single-pip burns, one reward call after each
-        s2.players[0].mana_burnt_this_turn_single_pip = cum
-        total_charged += -wrapped2(s2, done=False, horizon=99)
+    for cum in range(1, 8):  # 7 separate single-pip burns, one charge call after each
+        p2.mana_burnt_this_turn_single_pip = cum
+        total_charged += wrapped2.charge_single_pip_burn(p2)
     assert total_charged == pytest.approx(_hill(7, 3.3, 4.0))
 
     # Reset (simulating a new turn, same as game.turn._run_turn_gen does)
@@ -253,15 +265,15 @@ def test_with_dense_mana_burn_penalty_telescopes():
     # not charged against the PREVIOUS turn's already-elevated baseline.
     s.players[0].mana_burnt_this_turn_single_pip = 0
     s.players[0].mana_burn_penalty_credited = 0.0
-    assert abs(wrapped(s, done=False, horizon=99) - 0.25) < 1e-9  # nothing burnt yet this (new) turn
+    assert wrapped.charge_single_pip_burn(s.players[0]) == pytest.approx(0.0)  # nothing burnt yet this (new) turn
     s.players[0].mana_burnt_this_turn_single_pip = 1
-    assert abs(wrapped(s, done=False, horizon=99) - (0.25 - h1)) < 1e-9  # cheap again, not h1-relative-to-6
+    assert wrapped.charge_single_pip_burn(s.players[0]) == pytest.approx(h1)  # cheap again, not h1-relative-to-6
 
-    # Scored seat-relative, same convention as with_mana_mistake_penalty.
-    s.active_idx = 1
+    # charge_single_pip_burn takes the player directly -- a DIFFERENT
+    # player's own credited/charged_total is untouched by another's charge.
     s.players[1].mana_burnt_this_turn_single_pip = 1
-    assert abs(wrapped(s, done=False, horizon=99) - (0.25 - h1)) < 1e-9
-    assert s.players[0].mana_burn_penalty_credited == pytest.approx(h1)  # untouched -- seat 0 wasn't scored this call
+    assert wrapped.charge_single_pip_burn(s.players[1]) == pytest.approx(h1)
+    assert s.players[0].mana_burn_penalty_credited == pytest.approx(h1)  # untouched -- player 0 wasn't charged this call
 
 
 @pytest.mark.slow
@@ -279,7 +291,7 @@ def test_with_dense_mana_burn_penalty_game_cap():
     # Turn 1: burn 6 (hill(6) ~= 0.916, far past the 0.05 cap on its own) --
     # charged only up to the cap, not the full curve value.
     s.players[0].mana_burnt_this_turn_single_pip = 6
-    assert abs(wrapped(s, done=False, horizon=99) - (-0.05)) < 1e-9
+    assert wrapped.charge_single_pip_burn(s.players[0]) == pytest.approx(0.05)
     assert s.players[0].mana_burn_penalty_charged_total == pytest.approx(0.05)
 
     # Simulate the turn boundary (game.turn._run_turn_gen resets the PER-TURN
@@ -291,13 +303,12 @@ def test_with_dense_mana_burn_penalty_game_cap():
     # the whole-game budget is already fully spent -- charged exactly 0, not
     # a bonus, not a further debt.
     s.players[0].mana_burnt_this_turn_single_pip = 1
-    assert wrapped(s, done=False, horizon=99) == 0.0
+    assert wrapped.charge_single_pip_burn(s.players[0]) == pytest.approx(0.0)
     assert s.players[0].mana_burn_penalty_charged_total == pytest.approx(0.05)  # unchanged -- nothing left to spend
 
     # A DIFFERENT player's own budget is untouched by the first player's cap.
-    s.active_idx = 1
     s.players[1].mana_burnt_this_turn_single_pip = 6
-    assert abs(wrapped(s, done=False, horizon=99) - (-0.05)) < 1e-9
+    assert wrapped.charge_single_pip_burn(s.players[1]) == pytest.approx(0.05)
     assert s.players[1].mana_burn_penalty_charged_total == pytest.approx(0.05)
 
 
@@ -306,13 +317,21 @@ def test_deploy_reward_v2_applies_dense_mana_burn_penalty():
     # deploy_reward_v2 (2026-08 re-wire): now with_dense_mana_burn_penalty(
     # deploy_reward(win_floor=1.0)), not the bare deploy_reward it was
     # between the with_mana_mistake_penalty revert and this change.
+    #
+    # SECOND iteration (2026-08-10): deploy_reward_v2 itself (the reward_fn
+    # callable) is a pure passthrough now -- calling it directly is
+    # byte-identical to the unwrapped base regardless of burn state. The
+    # actual penalty lives in its own charge_single_pip_burn(player)
+    # attribute, applied by rl.train's on_single_pip_burn hook instead (see
+    # with_dense_mana_burn_penalty's own docstring for why).
     s = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
     s.active_idx = 0
     s.winner = 0
     s.players[0].mana_burnt_this_turn_single_pip = 6  # a real (single-pip) mistake
     unpenalized = deploy_reward(win_floor=1.0)(s, done=True, horizon=99)
-    penalized = deploy_reward_v2(s, done=True, horizon=99)
-    assert penalized < unpenalized  # the wrap actually subtracts something
+    passthrough = deploy_reward_v2(s, done=True, horizon=99)
+    assert passthrough == pytest.approx(unpenalized)  # reward_fn itself no longer subtracts anything
+    assert deploy_reward_v2.charge_single_pip_burn(s.players[0]) > 0  # the real charge lives here now
 
 
 def test_deploy_reward_discard_weight_scales_q_asymptote():
@@ -346,6 +365,22 @@ def test_deploy_reward_v3_curve_considerably_steeper_than_v2():
     assert ratio == pytest.approx(17.97, abs=0.1)  # ~18x costlier first pip than v2
 
 
+def _effective_episode_score(reward_fn, s):
+    """reward_fn's own terminal return MINUS whatever its charge_
+    single_pip_burn (if any) would take for the active seat's CURRENT
+    mana_burnt_this_turn_single_pip -- reconstructs the single EFFECTIVE
+    number a real episode's return would sum to now that with_dense_mana_
+    burn_penalty applies its charge via rl.train's on_single_pip_burn hook
+    (a buffer patch on earlier transitions) rather than through reward_fn's
+    own return value. deploy_reward_v1/action_count_win_reward etc. have no
+    charge_single_pip_burn attribute at all -- getattr defaults to a no-op
+    so this helper works uniformly across every reward_fn in this module."""
+    terminal = reward_fn(s, done=True, horizon=99)
+    charge_fn = getattr(reward_fn, "charge_single_pip_burn", None)
+    charge = charge_fn(s.players[s.active_idx]) if charge_fn is not None else 0.0
+    return terminal - charge
+
+
 @pytest.mark.slow
 def test_deploy_reward_v3_best_win_worst_loss_spread_is_two():
     # Owner spec (2026-08-10): "normalize... so the best wins are ~2 > the
@@ -353,23 +388,28 @@ def test_deploy_reward_v3_best_win_worst_loss_spread_is_two():
     # approximately 2 greater than a game which discards and burns mana
     # frivolously)." discard_weight=0.4 + game_penalty_cap=0.6 sum to
     # exactly win_floor (1.0) by construction, verified here numerically at
-    # the actual asymptote/cap rather than trusted as arithmetic.
+    # the actual asymptote/cap rather than trusted as arithmetic. Uses
+    # _effective_episode_score (terminal reward_fn return minus the SEPARATE
+    # charge_single_pip_burn charge) since that's how the two now compose
+    # within a real episode -- see with_dense_mana_burn_penalty's own
+    # docstring for why the dense charge moved out of reward_fn's own
+    # return value.
     s = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
     s.active_idx = 0
 
     # Best win: no discarding, no mana burn -> exactly 1.0.
     s.winner = 0
-    assert deploy_reward_v3(s, done=True, horizon=99) == pytest.approx(1.0)
+    assert _effective_episode_score(deploy_reward_v3, s) == pytest.approx(1.0)
 
     # Worst loss: heavy discarding (q approaching its 0.4 asymptote) AND
     # mana burn saturating its 0.6 whole-game cap -> approaches -1.0. The
-    # first deploy_reward_v3 call above was a no-op on the mana-burn
-    # wrapper's own credited/charged_total state (nothing had burnt yet),
-    # so reusing the same player here is still a clean read.
+    # first score above was a no-op on the mana-burn wrapper's own
+    # credited/charged_total state (nothing had burnt yet), so reusing the
+    # same player here is still a clean read.
     s.winner = 1  # this seat (0) loses
     s.players[0].cleanup_discard_turns = 100  # q -> ~0.3994, close to its 0.4 asymptote
     s.players[0].mana_burnt_this_turn_single_pip = 50  # raw hill far past the 0.6 cap on its own
-    worst_loss = deploy_reward_v3(s, done=True, horizon=99)
+    worst_loss = _effective_episode_score(deploy_reward_v3, s)
     assert worst_loss == pytest.approx(-1.0, abs=1e-2)
 
     spread = 1.0 - worst_loss
@@ -384,16 +424,17 @@ def test_deploy_reward_v3_restores_every_win_beats_every_loss():
     # can in principle push a sloppy win below a clean loss). v3's
     # discard_weight=0.4 + game_penalty_cap=0.6 summing to exactly
     # win_floor (1.0) restores this as an actual guarantee -- proven here
-    # at the worst case for each reward, using INDEPENDENT GameStates per
-    # call so the mana-burn wrapper's own per-player credited/charged_total
-    # bookkeeping can't leak between the v3 and v2 comparison calls below.
+    # at the worst case for each reward (via _effective_episode_score, see
+    # its own docstring), using INDEPENDENT GameStates per call so the
+    # mana-burn wrapper's own per-player credited/charged_total bookkeeping
+    # can't leak between the v3 and v2 comparison calls below.
     def _worst_case_win(reward_fn):
         s = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
         s.active_idx = 0
         s.winner = 0
         s.players[0].cleanup_discard_turns = 100
         s.players[0].mana_burnt_this_turn_single_pip = 50
-        return reward_fn(s, done=True, horizon=99)
+        return _effective_episode_score(reward_fn, s)
 
     def _clean_loss(reward_fn):
         s = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])

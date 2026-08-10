@@ -388,6 +388,14 @@ def test_rule_500_4_mana_pool_clears_at_phase_boundaries_except_combat():
     # for the reward-facing, conditional signal.
     assert state.players[0].mana_burnt_total == 2
     assert state.players[1].mana_burnt_total == 1
+    # mana_burnt_total_single_pip: player 0's two floats both went through
+    # the real activate_mana_source/float_mana tagging flow (plain Mountain
+    # taps -- single-pip by construction) -- fully tagged, so it equals
+    # mana_burnt_total here. Player 1's "W":1 was injected directly onto
+    # mana_pool for the test, bypassing float_mana entirely, so it was never
+    # tagged into mana_pool_single_pip -- 0, unlike the raw total's 1.
+    assert state.players[0].mana_burnt_total_single_pip == 2
+    assert state.players[1].mana_burnt_total_single_pip == 0
 
 
 def test_mana_mistake_burn_three_way_exemption():

@@ -8,6 +8,12 @@ training/checkpointing. Written for benchmarking checkpoints/
 4_deck_subleague_gauntlet (the frozen reference pod) before/after a training
 batch, per the owner's own before/after comparison request.
 
+Also reports mana-burn rates per side (game_over's mana_burnt_total/
+mana_burnt_total_single_pip, seat-indexed -- rl.train.collect_rollout) --
+added to compare overtapping between two reward-policy populations (e.g.
+deploy_reward_v3 vs. the v2 gauntlet twin) head to head under identical
+opponents, not just win rate.
+
 Usage:
   python run_cross_league_eval.py LEAGUE_A LEAGUE_B [--games N] [--seed N] [--log PATH]
 """
@@ -65,6 +71,18 @@ def main():
     rng = random.Random(args.seed)
     horizon = 120
     results = []
+    # Per-deck mana-burn accumulators, keyed by (league_letter, deck_name) --
+    # a deck's own burn rate is compared across every opponent it faced, not
+    # just averaged blindly into one league-wide number, since burn rate is
+    # expected to vary a lot by archetype (Priest of Titania/Elves bursts).
+    burn_by_deck = {}  # (letter, name) -> [games, mana_burnt_total, mana_burnt_total_single_pip]
+
+    def _record_burn(letter, name, n_games, total, total_single_pip):
+        acc = burn_by_deck.setdefault((letter, name), [0, 0, 0])
+        acc[0] += n_games
+        acc[1] += total
+        acc[2] += total_single_pip
+
     t0 = time.time()
     for a, b in itertools.product(roster, roster):
         pairing = _constant_pairing(
@@ -77,10 +95,21 @@ def main():
         a_wins = sum(1 for e in outcomes if e["winner"] == 0)
         b_wins = sum(1 for e in outcomes if e["winner"] == 1)
         no_winner = played - a_wins - b_wins
+        a_burnt = sum(e["mana_burnt_total"][0] for e in outcomes)
+        b_burnt = sum(e["mana_burnt_total"][1] for e in outcomes)
+        a_burnt_single_pip = sum(e["mana_burnt_total_single_pip"][0] for e in outcomes)
+        b_burnt_single_pip = sum(e["mana_burnt_total_single_pip"][1] for e in outcomes)
+        _record_burn("a", a, played, a_burnt, a_burnt_single_pip)
+        _record_burn("b", b, played, b_burnt, b_burnt_single_pip)
         results.append({"deck_a": a, "deck_b": b, "games": played,
-                         "a_wins": a_wins, "b_wins": b_wins, "no_winner": no_winner})
+                         "a_wins": a_wins, "b_wins": b_wins, "no_winner": no_winner,
+                         "a_mana_burnt_total": a_burnt, "b_mana_burnt_total": b_burnt,
+                         "a_mana_burnt_total_single_pip": a_burnt_single_pip,
+                         "b_mana_burnt_total_single_pip": b_burnt_single_pip})
         print(f"  {a} ({args.league_a}) vs {b} ({args.league_b}): "
-              f"{a_wins}-{b_wins} ({no_winner} no-winner) of {played}", flush=True)
+              f"{a_wins}-{b_wins} ({no_winner} no-winner) of {played}, "
+              f"mana burnt/game: {a_burnt / played:.2f} ({a_burnt_single_pip / played:.2f} tagged) vs. "
+              f"{b_burnt / played:.2f} ({b_burnt_single_pip / played:.2f} tagged)", flush=True)
 
     total_games = sum(r["games"] for r in results)
     total_a = sum(r["a_wins"] for r in results)
@@ -89,9 +118,20 @@ def main():
     print(f"OVERALL: {args.league_a} {total_a}-{total_b} {args.league_b} "
           f"({total_a / total_games:.1%} - {total_b / total_games:.1%}) over {total_games} games")
 
+    burn_summary = {}
+    print("mana burnt/game by deck (raw, tagged-single-pip):")
+    for (letter, name), (n, total, total_single_pip) in sorted(burn_by_deck.items()):
+        league = args.league_a if letter == "a" else args.league_b
+        burn_summary[f"{league}/{name}"] = {
+            "games": n, "mana_burnt_total_per_game": total / n,
+            "mana_burnt_total_single_pip_per_game": total_single_pip / n,
+        }
+        print(f"  {league}/{name}: {total / n:.2f} ({total_single_pip / n:.2f} tagged) over {n} games")
+
     out = {"league_a": args.league_a, "league_b": args.league_b, "roster": roster,
            "games_per_matchup": args.games, "seed": args.seed, "results": results,
-           "total_games": total_games, "total_a_wins": total_a, "total_b_wins": total_b}
+           "total_games": total_games, "total_a_wins": total_a, "total_b_wins": total_b,
+           "mana_burnt_by_deck": burn_summary}
     if args.log:
         os.makedirs(os.path.dirname(args.log) or ".", exist_ok=True)
         with open(args.log, "w") as f:

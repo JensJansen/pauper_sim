@@ -370,6 +370,16 @@ class PlayerState:
         # signal). Never reset once the game is underway.
         self.mana_burnt_total = 0
 
+        # Whole-game cumulative subset of mana_burnt_total above: only the
+        # single-pip-tagged portion (same tag rule as mana_burnt_this_turn_
+        # single_pip below -- see PlayerState.mana_pool_single_pip's own
+        # docstring), but never reset at a turn boundary. Diagnostic-only
+        # (logging/viz -- rl.run_cross_league_eval's mana-burn comparison),
+        # not read by any reward function; with_dense_mana_burn_penalty
+        # reads the per-turn field below, not this one. Never reset once the
+        # game is underway, same lifecycle as mana_burnt_total.
+        self.mana_burnt_total_single_pip = 0
+
         # DENSE reward mailbox -- rl.rewards.with_mana_mistake_penalty drains
         # it (reads then zeroes) on every transition. A narrower subset of
         # mana_burnt_total above: game.turn._empty_mana_pools only adds to
@@ -532,6 +542,31 @@ class GameState:
         # through game_coroutine/_run_turn_gen's own signatures, since
         # nothing in that call chain besides _empty_mana_pools needs it.
         self.on_mana_burn = None
+
+        # Optional (state, player_idx, single_pip_burnt) -> None hook,
+        # called by game.turn._empty_mana_pools for EVERY player on EVERY
+        # phase-boundary clear (single_pip_burnt=0 when nothing was
+        # floating) -- the credit-assignment fix for rl.rewards.
+        # with_dense_mana_burn_penalty: that wrapper's own math is dense and
+        # correctly telescoping, but reward_fn is only ever called at a
+        # seat's OWN next decision, which can land many actions after the
+        # taps that actually produced the float (see rl.train.collect_
+        # rollout's pending-reward bookkeeping) -- in practice the whole
+        # charge was landing on whatever action happened to be pending at
+        # that moment (almost always that seat's own end-of-phase Pass, not
+        # the Tap actions that caused it). This hook fires synchronously,
+        # inside the SAME engine call that computes single_pip_burnt, so a
+        # consumer (rl.train's on_single_pip_burn) can charge it against
+        # the actual recent Tap actions directly instead. Fired
+        # unconditionally (not just when something burnt) so a consumer's
+        # own per-seat bookkeeping resets cleanly every phase boundary, not
+        # just the ones that happened to burn something -- a clean phase
+        # must still reset the tracker, or a later phase's burn would
+        # wrongly inherit blame for taps that were fully spent long before
+        # it. None (the default) is a no-op, same convention as
+        # on_mana_burn above. Stamped onto state by game.turn.
+        # run_multiplayer_game's own on_single_pip_burn param.
+        self.on_single_pip_burn = None
 
         # Whose turn it structurally is -- distinct from active_idx (see
         # this class's own docstring) the instant a priority consult flips

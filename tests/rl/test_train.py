@@ -26,13 +26,13 @@ import game
 from game import mana, registry, resolution
 from game.effects.casting import play_land_from_hand
 from rl.action_bridge import build_fixed_action_table
-from rl.agent import AlwaysKeep, SeatAgent
+from rl.agent import AlwaysKeep, DecisionResult, SeatAgent
 from rl.arch import SetTransformer
 from rl.deck import DeckNetwork
 from rl.features import CardVocab
 from rl.league import LeaguePool
 from rl.ppo import ppo_update
-from rl.rewards import action_count_win_reward_200_floor02, with_mana_mistake_penalty
+from rl.rewards import action_count_win_reward_200_floor02, with_dense_mana_burn_penalty, with_mana_mistake_penalty
 from rl.train import (
     RolloutBuffer,
     _constant_pairing,
@@ -378,3 +378,63 @@ def test_on_mana_burn_closure_flags_wasted_tap():
         "the real closure must recognize a mono-land deck's Tap/Play-land rows as NOT "
         "proof anything was castable, so the wasted tap is correctly tallied as a mistake"
     )
+
+
+def test_dense_mana_burn_credit_lands_on_the_tap_not_the_pass():
+    # rl.train's on_single_pip_burn hook + open_taps bookkeeping: the whole
+    # phase's dense mana-burn charge must land on the Tap action that
+    # produced the float, not on the Pass that happened to be pending when
+    # the phase boundary crossed -- the mis-attribution rl/
+    # check_credit_assignment.py found against the real production reward
+    # (see with_dense_mana_burn_penalty's own docstring: only 1.8% of real
+    # transitions ever carried a nonzero charge, and Tap wasn't preferred
+    # over Pass at all). Scripted mono-Mountain deck (nothing ever castable,
+    # so the tap's own pip is guaranteed to survive to the clear): play a
+    # land, tap it once in MAIN1, then always Pass.
+    #
+    # A real SeatAgent/DeckNetwork isn't needed -- collect_rollout's own
+    # choose_action closure only ever reads ppo_entry's action_idx (against
+    # a REAL fixed_table, for real "Tap"/"Pass" label lookups) and deck_ctx;
+    # everything else a buffer entry stores (tokens/scalar/mask/logp/value)
+    # is inert placeholder data this test never reads back.
+    decklist = [("Mountain", 20)]
+    token_defs = (game.BLOOD_TOKEN_CARD_DEF, game.ROBOT_TOKEN_CARD_DEF)
+    fixed_table = build_fixed_action_table(decklist, token_card_defs=token_defs)
+    tap_idx = next(i for i, (name, _l, _e) in enumerate(fixed_table) if name == "Tap Mountain")
+    pass_idx = next(i for i, (name, _l, _e) in enumerate(fixed_table) if name == "Pass")
+    land_idx = next(i for i, (name, _l, _e) in enumerate(fixed_table) if name.startswith("Play land"))
+
+    class _ScriptedAgent:
+        deck_ctx = (None, fixed_table)
+
+        def __init__(self):
+            self.tapped = False
+
+        def decide(self, state, seat, horizon, device, greedy=False):
+            pend = state.pending_resolution
+            if pend is not None and pend["kind"] == "mulligan_decision":
+                return DecisionResult(lambda: resolution.execute_mulligan_keep(state), None, None, False)
+            if state.lands_played_this_turn == 0 and any(c.name == "Mountain" for c in state.hand):
+                executor = lambda: play_land_from_hand(state, registry.CARD_DEFS["Mountain"])
+                return DecisionResult(executor, (None, None, None, land_idx, 0.0, 0.0), None, False)
+            if not self.tapped:
+                mtn = next((p for p in state.battlefield if p.card_def.name == "Mountain" and not p.tapped), None)
+                if mtn is not None:
+                    self.tapped = True
+                    executor = lambda: mana.activate_mana_source(state, mtn)
+                    return DecisionResult(executor, (None, None, None, tap_idx, 0.0, 0.0), None, False)
+            return DecisionResult(None, (None, None, None, pass_idx, 0.0, 0.0), None, True)
+
+    base = lambda state, done, horizon: 0.0
+    reward_fn = with_dense_mana_burn_penalty(base, mana_burn_c=3.3, mana_burn_p=4.0, game_penalty_cap=2.0)
+    agents = [_ScriptedAgent(), _ScriptedAgent()]
+    pairing = _constant_pairing(agents, [decklist, decklist], [reward_fn, reward_fn], ["m", None])
+
+    bufs, _mull, played = collect_rollout(pairing, 1, horizon=3, rng=_random.Random(0), device=DEVICE, record=True)
+    assert played == 1
+    buf = bufs["m"]
+    tap_rewards = [buf.reward[i] for i in range(len(buf)) if buf.action[i] == tap_idx]
+    pass_rewards = [buf.reward[i] for i in range(len(buf)) if buf.action[i] == pass_idx]
+    assert tap_rewards, "the scripted tap must have actually been recorded"
+    assert any(r < -1e-9 for r in tap_rewards), "the Tap action must carry the real negative dense charge"
+    assert all(r == 0.0 for r in pass_rewards), "Pass must NOT absorb the charge anymore -- that was the bug"

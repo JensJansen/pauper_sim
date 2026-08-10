@@ -109,6 +109,7 @@ def _log_target_fizzle(state, card_def, chosen_name_slot):
     begin_choose_permanent/search_fetch safety net."""
     where = f"{chosen_name_slot[0]!r} (slot {chosen_name_slot[1]})" if chosen_name_slot is not None else "no legal target at cast time"
     print(f"[target fizzle] turn {state.turn_number}: {card_def.name} failed to resolve -- target was {where}, not on the battlefield anymore.")
+    state.log_event("target_fizzle", card=card_def.name, target=chosen_name_slot)
 
 
 # MTG 400.7: a card that changes zones becomes a NEW object. Targeting here

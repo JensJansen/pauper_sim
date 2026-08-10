@@ -278,7 +278,13 @@ def _log_decision_weights(state, dec, dist, value, action_idx, full_mask_t):
     actually taken, and the critic's value estimate -- all already computed
     in the SAME forward pass _seat_step just ran, so this adds no inference
     call and no randomness. See todo/game_visualization.md's "Decision-point
-    overlay" section for the full design."""
+    overlay" section for the full design.
+
+    entropy is dist.entropy() (nats, same units PPO's own entropy bonus and
+    training-time logging use) -- the TRUE full-distribution entropy over
+    every legal action, not derivable from the top-5 `candidates` truncation
+    below. Same free-lunch reasoning as value_estimate: dist already exists
+    from this decision's own forward pass."""
     if state.event_log is None:
         return
     probs = dist.probs[0]
@@ -295,7 +301,7 @@ def _log_decision_weights(state, dec, dist, value, action_idx, full_mask_t):
                                 "pointer_identity": _resolve_pointer_identity(state, identity)})
     state.log_event(
         "decision_weights", network="main", chosen_index=action_idx, value_estimate=float(value.item()),
-        candidates=candidates, pointer_kind=pointer_kind(state),
+        entropy=float(dist.entropy().item()), candidates=candidates, pointer_kind=pointer_kind(state),
     )
 
 

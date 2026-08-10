@@ -149,22 +149,46 @@ def _empty_mana_pools(state):
     a TAGGED one) already guarantees only genuinely avoidable single-pip
     taps are still tagged and floating by the time a phase ends. See
     PlayerState.mana_pool_single_pip's own docstring for the full tag
-    rule."""
-    emptied = {}
+    rule. The same single-pip amount also feeds PlayerState.
+    mana_burnt_total_single_pip, mana_burnt_total's own whole-game (never
+    reset) counterpart -- diagnostic only, same as mana_burnt_total.
+
+    The logged event also carries pools_single_pip (idx -> pip count), the
+    same single-pip-tagged subset as a per-CLEAR breakdown rather than a
+    cumulative counter -- lets a consumer (analyze_mana_burn_by_turn.py)
+    reconstruct a per-turn burn timeline from game_logs alone (log_event's
+    own envelope already stamps every event with `turn`), without needing a
+    new per-turn cumulative field on PlayerState.
+
+    Also fires state.on_single_pip_burn(state, idx, single_pip_burnt) for
+    EVERY player, every call -- see that attribute's own docstring
+    (GameState.__init__) for why this is unconditional (0 when nothing was
+    floating) rather than gated like on_mana_burn above, and why it exists
+    at all (rl.train's credit-assignment fix for with_dense_mana_burn_
+    penalty's own mis-attribution -- the reward for it currently landing on
+    whatever action is pending at a seat's next decision, not the Tap
+    actions that actually caused it)."""
+    emptied, emptied_single_pip = {}, {}
     for idx, player in enumerate(state.players):
+        single_pip_burnt = 0
         if player.mana_pool:
             emptied[idx] = dict(player.mana_pool)
             burnt = sum(player.mana_pool.values())
+            single_pip_burnt = sum(player.mana_pool_single_pip.values())
+            emptied_single_pip[idx] = single_pip_burnt
             player.mana_burnt_total += burnt
+            player.mana_burnt_total_single_pip += single_pip_burnt
             player.mana_burnt_this_turn += burnt
-            player.mana_burnt_this_turn_single_pip += sum(player.mana_pool_single_pip.values())
+            player.mana_burnt_this_turn_single_pip += single_pip_burnt
             _tally_mana_mistake(state, idx, player, burnt)
             player.mana_pool.clear()
             player.mana_pool_single_pip.clear()
+        if state.on_single_pip_burn is not None:
+            state.on_single_pip_burn(state, idx, single_pip_burnt)
         player.cost_paid_this_phase = False
         player.triggers_fired_this_phase = False
     if emptied:
-        state.log_event("mana_emptied", pools=emptied)
+        state.log_event("mana_emptied", pools=emptied, pools_single_pip=emptied_single_pip)
 
 
 def speed_legal(state, speed):
@@ -841,7 +865,8 @@ def game_coroutine(state, horizon=None, combat_enabled=False):
 
 
 def run_multiplayer_game(decklists, rng, starting_player_idx, choose_action,
-                          horizon=None, combat_enabled=False, event_log=None, on_mana_burn=None):
+                          horizon=None, combat_enabled=False, event_log=None, on_mana_burn=None,
+                          on_single_pip_burn=None):
     """N-player entry point. Full
     sequential turns -- one player's whole turn runs to completion (the
     same run_turn/choose_action(state) contract run_turn itself uses; a
@@ -867,9 +892,11 @@ def run_multiplayer_game(decklists, rng, starting_player_idx, choose_action,
     on_mana_burn: optional (state, player_idx) -> bool, stamped straight onto
     state.on_mana_burn (see GameState's own docstring on it) rather than
     threaded through game_coroutine/_run_turn_gen -- only _empty_mana_pools
-    ever reads it."""
+    ever reads it. on_single_pip_burn: same threading, onto state.
+    on_single_pip_burn (see its own docstring)."""
     state = new_multiplayer_game_state(decklists, starting_player_idx, rng, event_log=event_log)
     state.on_mana_burn = on_mana_burn
+    state.on_single_pip_burn = on_single_pip_burn
     # Drive the game as a coroutine (game_coroutine) -- choose_action(state)
     # is called for EVERY decision regardless of whose it is. The loop
     # lives in game_coroutine (single source of truth) so the batched

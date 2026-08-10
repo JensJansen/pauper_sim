@@ -135,6 +135,24 @@ def _wants_mana_mistake(reward_fns, record_as):
     )
 
 
+def _charge_fns_for(reward_fns):
+    """Per-seat rl.rewards.with_dense_mana_burn_penalty.charge_single_pip_burn
+    attribute, or None -- the same opt-in-attribute pattern _wants_mana_
+    mistake reads off consumes_mana_mistake, one level more specific (the
+    actual charge callable, not just a bool) since collect_rollout's own
+    on_single_pip_burn hook needs to CALL it, not just know it exists."""
+    return [getattr(reward_fns[s], "charge_single_pip_burn", None) for s in (0, 1)]
+
+
+def _wants_single_pip_burn_hook(charge_fns, record_as):
+    """True when at least one TRACKED seat's reward_fn exposes
+    charge_single_pip_burn -- lets collect_rollout skip building/wiring the
+    on_single_pip_burn hook for a pairing that never uses with_dense_mana_
+    burn_penalty (e.g. pretraining's action_count_win_reward_*), same
+    reasoning _wants_mana_mistake gives for the older on_mana_burn hook."""
+    return any(charge_fns[s] is not None and record_as[s] is not None for s in (0, 1))
+
+
 def _constant_pairing(agents, decklists, reward_fns, record_as):
     """A pairing that yields the SAME layout every game -- mirror, cross-matchup,
     or a fixed A-vs-B matchup. (League resampling is _make_league_pairing.)"""
@@ -192,11 +210,30 @@ def collect_rollout(pairing, n_games, horizon, rng, device="cpu", record=True, g
             game_buffers = [RolloutBuffer(), RolloutBuffer()]  # per-game per-seat, kept contiguous
             pending = [None, None]
             mull_game = [[], []]
+            charge_fns = _charge_fns_for(reward_fns)
+            # Per-seat credit-assignment bookkeeping for with_dense_mana_burn_
+            # penalty's charge_single_pip_burn (see rl.rewards' own docstring
+            # for why this exists at all): open_taps holds (buffer_index, pips)
+            # for every single-pip Tap action recorded since that seat's own
+            # last phase clear -- reset every clear via on_single_pip_burn
+            # below, whether or not it burnt anything, so a clean phase can't
+            # leave stale entries for a LATER burn to wrongly inherit.
+            # prev_single_pip_sum is the sum(mana_pool_single_pip) observed at
+            # the START of that seat's own last choose_action call -- an
+            # INCREASE since then can only be that seat's own immediately
+            # preceding action (nothing else touches ITS pool between two of
+            # ITS OWN decisions: taking any non-Pass action never hands
+            # priority away, so nothing else runs in between; a burn instead
+            # DROPS this to whatever's newly floating post-clear, never up).
+            open_taps = [[], []]
+            prev_single_pip_sum = [0, 0]
 
             def choose_action(state, agents=agents, reward_fns=reward_fns, record_as=record_as,
                               game_buffers=game_buffers, pending=pending,
-                              mull_game=mull_game):
+                              mull_game=mull_game, open_taps=open_taps,
+                              prev_single_pip_sum=prev_single_pip_sum, charge_fns=charge_fns):
                 seat = state.active_idx
+                current_sum = sum(state.players[seat].mana_pool_single_pip.values())
                 dr = agents[seat].decide(state, seat, horizon, device, greedy=greedy)
                 if record and record_as[seat] is not None:
                     # Mulligan transition: whole-game bandit reward, filled at game end.
@@ -209,12 +246,51 @@ def collect_rollout(pairing, n_games, horizon, rng, device="cpu", record=True, g
                     if dr.ppo_entry is not None:
                         if pending[seat] is not None:
                             reward = _reward_for(state, seat, reward_fns[seat], horizon, False)
+                            # pending[seat] (about to be appended, at the index
+                            # game_buffers[seat] is about to get) was a single-pip
+                            # Tap iff the pool grew since we last looked AND its
+                            # own fixed-table label says so -- gated on the label
+                            # too, not just the delta, since only Pass can ever
+                            # cross a phase boundary (see prev_single_pip_sum's
+                            # own comment above) and Pass structurally can't
+                            # itself have added to the pool.
+                            if charge_fns[seat] is not None and current_sum > prev_single_pip_sum[seat]:
+                                prev_action_idx = pending[seat][3]
+                                fixed_table = agents[seat].deck_ctx[1]
+                                if prev_action_idx < len(fixed_table) and fixed_table[prev_action_idx][0].startswith("Tap"):
+                                    open_taps[seat].append((len(game_buffers[seat]), 1))
                             game_buffers[seat].add(*pending[seat], reward, False)
                         pending[seat] = dr.ppo_entry
+                    prev_single_pip_sum[seat] = current_sum
                 return None if dr.is_pass else dr.executor
+
+            def on_single_pip_burn(state, seat, amount, game_buffers=game_buffers, open_taps=open_taps,
+                                    record_as=record_as, charge_fns=charge_fns):
+                taps, open_taps[seat] = open_taps[seat], []
+                if charge_fns[seat] is None or record_as[seat] is None or not taps:
+                    return
+                # charge_single_pip_burn reads/mutates PlayerState fields keyed
+                # off amount (already applied by game.turn._empty_mana_pools
+                # before this hook fires) -- called even when this specific
+                # burn is 0 so mana_burn_penalty_credited/_charged_total stay
+                # exactly in sync with a caller that DID rely on reward_fn's
+                # own (now-passthrough) per-decision calls elsewhere.
+                charge = charge_fns[seat](state.players[seat])
+                if charge <= 0:
+                    return
+                total_pips = sum(pips for _, pips in taps)
+                distributed = 0.0
+                for k, (idx, pips) in enumerate(taps):
+                    # last tap absorbs the rounding remainder so shares sum to
+                    # EXACTLY `charge`, never more (fine to be exact here --
+                    # no downstream code depends on per-share precision).
+                    share = charge - distributed if k == len(taps) - 1 else charge * pips / total_pips
+                    game_buffers[seat].reward[idx] -= share
+                    distributed += share
 
             on_mana_burn = _make_on_mana_burn(agents, record, record_as)
             wants_mana_mistake = _wants_mana_mistake(reward_fns, record_as)
+            wants_single_pip_hook = _wants_single_pip_burn_hook(charge_fns, record_as)
 
             starting_idx = rng.randint(0, 1)
             event_log = [] if game_logs is not None else None
@@ -222,6 +298,7 @@ def collect_rollout(pairing, n_games, horizon, rng, device="cpu", record=True, g
                 decklists=decklists, rng=rng, starting_player_idx=starting_idx,
                 choose_action=choose_action, horizon=horizon, combat_enabled=True, event_log=event_log,
                 on_mana_burn=on_mana_burn if wants_mana_mistake else None,
+                on_single_pip_burn=on_single_pip_burn if wants_single_pip_hook else None,
             )
             # The engine's own win-check (game/effects/win_check.py) sets
             # state.winner/state.turn_won as plain attributes with no log_event
@@ -232,8 +309,17 @@ def collect_rollout(pairing, n_games, horizon, rng, device="cpu", record=True, g
             # game_logs (win-rate aggregation, the vs-history eval below) never
             # has to reconstruct the outcome by replaying life_change deltas.
             # No-ops (state.event_log is None) when logging is off, same as
-            # every other log_event call site.
-            state.log_event("game_over", winner=state.winner, turn_won=state.turn_won)
+            # every other log_event call site. mana_burnt_total/_single_pip
+            # are whole-game cumulative diagnostics (game.state.PlayerState),
+            # seat-indexed lists here (index == seat, same convention
+            # game.turn._empty_mana_pools' own "pools" event uses) -- lets a
+            # consumer (run_cross_league_eval.py) compare mana-waste rates
+            # across reward policies without replaying the whole event log.
+            state.log_event(
+                "game_over", winner=state.winner, turn_won=state.turn_won,
+                mana_burnt_total=[p.mana_burnt_total for p in state.players],
+                mana_burnt_total_single_pip=[p.mana_burnt_total_single_pip for p in state.players],
+            )
             if on_game_end is not None:
                 on_game_end(state)
             if game_logs is not None:
