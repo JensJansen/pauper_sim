@@ -7,11 +7,13 @@ mana clear."""
 
 import random
 
+from drl_env._actions_mana import _mana_ability_legal
 from game import mana, registry, resolution
 from game.cards import CardDef, CardType, EffectId
 from game.effects.casting import play_land_from_hand
 from game.effects.stack import push_to_stack
 from game.effects.win_check import deal_damage_to_opponent
+from game.resolution.handlers_casting import execute_madness_decline
 from game.state import GameState, Permanent, PlayerState
 from game.turn import (
     Phase, Speed, _declare_blockers_gen, new_multiplayer_game_state,
@@ -631,6 +633,96 @@ def test_mana_burnt_this_turn_resets_at_turn_boundary():
         "both players' per-turn mana-burn tracking must already be reset by the very first "
         "decision point of the new turn, for both players, not just the turn owner"
     )
+
+
+def test_mana_floated_in_real_end_step_swept_same_turn():
+    # Fix (2026-08-10): Phase.END now runs a REAL end-step priority round
+    # (rule 513) BEFORE cleanup, instead of cleanup_step firing immediately
+    # on phase entry with no priority window at all. Before this fix, mana
+    # floated here would persist unswept until the FOLLOWING turn's own
+    # UNTAP entry -- by which point that turn's own
+    # mana_burnt_this_turn_single_pip counter had already reset (see
+    # test_mana_burnt_this_turn_single_pip_resets_at_turn_boundary above),
+    # silently dropping the burn from the dense reward signal entirely
+    # (this engine has no interrupt window, so the player who just
+    # finished their turn never gets another decision before that reset
+    # fires). Proves the float is now swept and counted for the SAME turn.
+    state = new_multiplayer_game_state(
+        decklists=[[("Mountain", 20)], [("Mountain", 20)]],
+        starting_player_idx=0, rng=random.Random(0),
+    )
+    mountain = Permanent(registry.CARD_DEFS["Mountain"])
+    state.players[0].battlefield = [mountain]
+
+    floated = {"done": False}
+
+    def _float_once_in_end_step_then_pass(state):
+        if state.pending_resolution is not None:
+            name = resolution.discard_options(state)[0]
+            return lambda: resolution.execute_discard_option(state, name)
+        if not floated["done"] and state.phase is Phase.END and not state.in_cleanup:
+            floated["done"] = True
+            return lambda: mana.activate_mana_source(state, mountain)
+        return None  # always pass otherwise -- nothing else to play from a bare opening hand
+
+    run_turn(state, choose_action=_float_once_in_end_step_then_pass, combat_enabled=False)
+    assert floated["done"]
+    assert state.players[0].mana_burnt_this_turn_single_pip == 1
+    assert state.players[0].mana_pool_single_pip == {}  # cleared alongside mana_pool
+
+
+def test_mana_ability_illegal_during_cleanup():
+    # AUTHORIZED SIMPLIFICATION (owner-approved 2026-08-10): a gate-free
+    # mana ability (605.1a/605.3b -- legal in ANY OTHER priority window) is
+    # specifically revoked while state.in_cleanup, even though the source
+    # itself remains a perfectly ordinary, otherwise-untapped Mountain --
+    # ground truth (game.mana_ability_options) still lists it, only the
+    # drl_env-facing legal() gate additionally checks in_cleanup.
+    state = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
+    mountain = Permanent(registry.CARD_DEFS["Mountain"])
+    state.battlefield = [mountain]
+    legal = _mana_ability_legal("Mountain", None)
+    assert legal(state)  # untapped, not in cleanup -- legal as normal
+    assert ("Mountain", None) in mana.mana_ability_options(state)  # ground truth agrees
+    state.in_cleanup = True
+    assert not legal(state)  # blocked purely by the flag, not by source availability
+    assert ("Mountain", None) in mana.mana_ability_options(state)  # ground truth is unchanged -- the source itself is still available
+
+
+def test_madness_decision_from_forced_cleanup_discard_still_resolves():
+    # A card discarded via cleanup's own forced hand-size discard queues a
+    # Madness cast-or-graveyard decision exactly like any other discard
+    # (game.resolution.handlers_library._discard_one, "regardless of why
+    # the card was discarded"). state.in_cleanup blocks every OTHER action
+    # (mana abilities included) for the whole cleanup window, but the
+    # existing trigger_queue-driven extra priority round (rule 514.3a) is
+    # deliberately KEPT specifically so this decision still gets a chance
+    # to resolve -- see _run_turn_gen's own Phase.END handling. Declines
+    # the cast (no black mana available) -- this test is about the decision
+    # reaching a real pending_resolution at all, not about completing a
+    # cast (see test_kitchen_imp_madness_cast_from_discard for that).
+    state = new_multiplayer_game_state(
+        decklists=[[("Mountain", 20)], [("Mountain", 20)]],
+        starting_player_idx=0, rng=random.Random(0),
+    )
+    state.players[0].hand = [registry.CARD_DEFS["Mountain"]] * 7 + [registry.CARD_DEFS["Kitchen Imp"]]
+    assert len(state.players[0].hand) == 8  # 1 over HAND_SIZE_LIMIT -- cleanup must force exactly 1 discard
+
+    madness_decision_seen = {"done": False}
+
+    def _discard_kitchen_imp_then_decline_madness(state):
+        pending = state.pending_resolution
+        if pending is not None and pending["kind"] == "discard":
+            return lambda: resolution.execute_discard_option(state, "Kitchen Imp")
+        if pending is not None and pending["kind"] == "madness_decision":
+            madness_decision_seen["done"] = True
+            return lambda: execute_madness_decline(state)
+        return None  # always pass otherwise
+
+    run_turn(state, choose_action=_discard_kitchen_imp_then_decline_madness, combat_enabled=False)
+    assert madness_decision_seen["done"]
+    assert not any(c.name == "Kitchen Imp" for c in state.players[0].hand)
+    assert any(c.name == "Kitchen Imp" for c in state.players[0].graveyard)  # declined -> exile to graveyard
 
 
 def test_on_mana_burn_hook_wired_through_run_multiplayer_game():

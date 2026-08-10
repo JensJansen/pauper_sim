@@ -3,7 +3,7 @@ import pytest
 
 from game.state import GameState, PlayerState
 from rl.rewards import (
-    action_count_win_reward, deploy_reward, deploy_reward_v2,
+    action_count_win_reward, deploy_reward, deploy_reward_v2, deploy_reward_v3,
     with_dense_mana_burn_penalty, with_mana_mistake_penalty,
 )
 
@@ -313,3 +313,98 @@ def test_deploy_reward_v2_applies_dense_mana_burn_penalty():
     unpenalized = deploy_reward(win_floor=1.0)(s, done=True, horizon=99)
     penalized = deploy_reward_v2(s, done=True, horizon=99)
     assert penalized < unpenalized  # the wrap actually subtracts something
+
+
+def test_deploy_reward_discard_weight_scales_q_asymptote():
+    # discard_weight (new 2026-08-10 param, default 1.0 -- v1/v2 byte-
+    # identical to before, since neither passes it) scales q's own
+    # asymptote down WITHOUT reshaping its curve: q approaches
+    # discard_weight, never 1.0, as cleanup_discard_turns grows -- lets
+    # deploy_reward_v3 (below) size discard's own share of a combined
+    # badness budget shared with the dense mana-burn wrap.
+    s = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
+    s.active_idx = 0
+    s.winner = 0
+    s.players[0].cleanup_discard_turns = 1000  # deep into the asymptote either way
+    q_default = 1.0 - deploy_reward(win_floor=1.0)(s, done=True, horizon=99)
+    q_weighted = 1.0 - deploy_reward(win_floor=1.0, discard_weight=0.4)(s, done=True, horizon=99)
+    assert q_default == pytest.approx(1.0, abs=1e-3)
+    assert q_weighted == pytest.approx(0.4, abs=1e-3)
+
+
+@pytest.mark.slow
+def test_deploy_reward_v3_curve_considerably_steeper_than_v2():
+    # Owner spec (2026-08-10): "up the cost of burning the first mana pip
+    # considerably... more aggressive punishment for burning tagged mana
+    # sources." Verifies the new mana_burn_c=2.0/mana_burn_p=2.5 curve
+    # against the exact numbers documented on deploy_reward_v3 itself, and
+    # that the first pip really is considerably (not just nominally)
+    # costlier than v2's own curve (mana_burn_c=3.3/mana_burn_p=4.0).
+    for x, expected in [(1, 0.1502), (2, 0.5), (3, 0.7337), (4, 0.8498), (6, 0.9397)]:
+        assert _hill(x, 2.0, 2.5) == pytest.approx(expected, abs=1e-3)
+    ratio = _hill(1, 2.0, 2.5) / _hill(1, 3.3, 4.0)
+    assert ratio == pytest.approx(17.97, abs=0.1)  # ~18x costlier first pip than v2
+
+
+@pytest.mark.slow
+def test_deploy_reward_v3_best_win_worst_loss_spread_is_two():
+    # Owner spec (2026-08-10): "normalize... so the best wins are ~2 > the
+    # worst losses (IE games without discarding, without mana burn score
+    # approximately 2 greater than a game which discards and burns mana
+    # frivolously)." discard_weight=0.4 + game_penalty_cap=0.6 sum to
+    # exactly win_floor (1.0) by construction, verified here numerically at
+    # the actual asymptote/cap rather than trusted as arithmetic.
+    s = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
+    s.active_idx = 0
+
+    # Best win: no discarding, no mana burn -> exactly 1.0.
+    s.winner = 0
+    assert deploy_reward_v3(s, done=True, horizon=99) == pytest.approx(1.0)
+
+    # Worst loss: heavy discarding (q approaching its 0.4 asymptote) AND
+    # mana burn saturating its 0.6 whole-game cap -> approaches -1.0. The
+    # first deploy_reward_v3 call above was a no-op on the mana-burn
+    # wrapper's own credited/charged_total state (nothing had burnt yet),
+    # so reusing the same player here is still a clean read.
+    s.winner = 1  # this seat (0) loses
+    s.players[0].cleanup_discard_turns = 100  # q -> ~0.3994, close to its 0.4 asymptote
+    s.players[0].mana_burnt_this_turn_single_pip = 50  # raw hill far past the 0.6 cap on its own
+    worst_loss = deploy_reward_v3(s, done=True, horizon=99)
+    assert worst_loss == pytest.approx(-1.0, abs=1e-2)
+
+    spread = 1.0 - worst_loss
+    assert spread == pytest.approx(2.0, abs=1e-2)
+
+
+@pytest.mark.slow
+def test_deploy_reward_v3_restores_every_win_beats_every_loss():
+    # v2's own comment explicitly ABANDONED "every win beats every loss" as
+    # an accepted tradeoff once its mana-burn wrap was re-enabled
+    # (game_penalty_cap=2.0 stacked on top of q's own up-to-1.0 asymptote
+    # can in principle push a sloppy win below a clean loss). v3's
+    # discard_weight=0.4 + game_penalty_cap=0.6 summing to exactly
+    # win_floor (1.0) restores this as an actual guarantee -- proven here
+    # at the worst case for each reward, using INDEPENDENT GameStates per
+    # call so the mana-burn wrapper's own per-player credited/charged_total
+    # bookkeeping can't leak between the v3 and v2 comparison calls below.
+    def _worst_case_win(reward_fn):
+        s = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
+        s.active_idx = 0
+        s.winner = 0
+        s.players[0].cleanup_discard_turns = 100
+        s.players[0].mana_burnt_this_turn_single_pip = 50
+        return reward_fn(s, done=True, horizon=99)
+
+    def _clean_loss(reward_fn):
+        s = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
+        s.active_idx = 0
+        s.winner = 1
+        return reward_fn(s, done=True, horizon=99)
+
+    clean_loss_v3 = _clean_loss(deploy_reward_v3)
+    assert clean_loss_v3 == pytest.approx(0.0)
+    assert _worst_case_win(deploy_reward_v3) > clean_loss_v3  # v3: restored, holds even at the worst case
+
+    clean_loss_v2 = _clean_loss(deploy_reward_v2)
+    assert clean_loss_v2 == pytest.approx(0.0)
+    assert _worst_case_win(deploy_reward_v2) < clean_loss_v2  # v2: the accepted tradeoff actually firing, same input

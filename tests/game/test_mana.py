@@ -1,7 +1,10 @@
 """Tests for game.mana float-first mana system: activate_mana_source,
-begin_pay_cost/execute_pool_spend, pool_can_pay/plan_payment, and the
+begin_pay_cost/execute_pool_spend, pool_can_pay/plan_payment, the
 Boggles-style mana-fixing Auras (Utopia Sprawl automatic bonus, Abundant
-Growth competing granted ability)."""
+Growth competing granted ability), and discount_departing_source (the
+sacrifice/untap mana-burn-tag discount)."""
+
+import random
 
 from game import mana, registry
 from game.cards import CardDef, CardType, EffectId
@@ -185,6 +188,92 @@ def test_abundant_growth_granted_color_only_via_enchanted_permanent():
         assert False, "the unenchanted Plains must not be able to produce G"
     except ValueError:
         pass
+
+
+def test_discount_departing_source_ignores_permanent_without_mana_spec():
+    # A permanent whose effect_id has no registry "mana" spec at all is a
+    # silent no-op -- e.g. a plain non-mana creature getting sacrificed.
+    state = GameState(on_the_play=True)
+    mana.float_mana(state, ["R"])
+    creature = Permanent(CardDef("Some Creature", CardType.CREATURE, {"generic": 1}, EffectId.FILLER))
+    mana.discount_departing_source(state, creature, 0)
+    assert state.mana_pool_single_pip == {"R": 1}  # untouched
+
+
+def test_discount_departing_source_no_op_when_nothing_tagged():
+    state = GameState(on_the_play=True)
+    mountain = Permanent(CardDef("Mountain", CardType.LAND, None, EffectId.MOUNTAIN))
+    mana.discount_departing_source(state, mountain, 0)  # nothing floating at all
+    assert state.mana_pool_single_pip == {}
+
+
+def test_discount_departing_source_fixed_color_discounts_tag():
+    # Fireblast's own scenario: a Mountain tapped for {R} earlier, then
+    # sacrificed -- the R it produced was free value regardless of whether
+    # it ends up spent, so the tag (not the mana itself) is excused.
+    state = GameState(on_the_play=True)
+    mountain = Permanent(CardDef("Mountain", CardType.LAND, None, EffectId.MOUNTAIN))
+    state.battlefield = [mountain]
+    mana.activate_mana_source(state, mountain)
+    assert state.mana_pool_single_pip == {"R": 1}
+    mana.discount_departing_source(state, mountain, 0)
+    assert state.mana_pool_single_pip == {}
+    assert state.mana_pool == {"R": 1}  # the floating mana itself is untouched
+
+
+def test_discount_departing_source_flexible_picks_higher_tagged_candidate():
+    # A dual land (flexible kind) discounts whichever candidate color
+    # currently has the most tagged mana floating, not a fixed choice.
+    filler_backup = registry.EFFECT_REGISTRY[EffectId.FILLER]
+    registry.EFFECT_REGISTRY[EffectId.FILLER] = {"mana": ("flexible", {"W", "U"})}
+    try:
+        state = GameState(on_the_play=True)
+        dual = Permanent(CardDef("Dual-ish", CardType.LAND, None, EffectId.FILLER))
+        mana.float_mana(state, ["W"])
+        mana.float_mana(state, ["W"])
+        mana.float_mana(state, ["U"])
+        assert state.mana_pool_single_pip == {"W": 2, "U": 1}
+        mana.discount_departing_source(state, dual, 0)
+        assert state.mana_pool_single_pip == {"W": 1, "U": 1}  # W had more tagged, so W is discounted
+    finally:
+        registry.EFFECT_REGISTRY[EffectId.FILLER] = filler_backup
+
+
+def test_discount_departing_source_flexible_tie_break_uses_state_rng():
+    # On a tie, the choice comes from state.rng (the engine's own seeded
+    # RNG, not the stdlib random module) -- reproducible given the same seed.
+    filler_backup = registry.EFFECT_REGISTRY[EffectId.FILLER]
+    registry.EFFECT_REGISTRY[EffectId.FILLER] = {"mana": ("flexible", {"W", "U"})}
+    try:
+        state = GameState(on_the_play=True, rng=random.Random(0))
+        dual = Permanent(CardDef("Dual-ish", CardType.LAND, None, EffectId.FILLER))
+        mana.float_mana(state, ["W"])
+        mana.float_mana(state, ["U"])
+        assert state.mana_pool_single_pip == {"W": 1, "U": 1}  # a genuine tie
+
+        expected = random.Random(0).choice(["U", "W"])  # sorted candidate order, same seed
+        mana.discount_departing_source(state, dual, 0)
+        remaining = "U" if expected == "W" else "W"
+        assert state.mana_pool_single_pip == {remaining: 1}
+    finally:
+        registry.EFFECT_REGISTRY[EffectId.FILLER] = filler_backup
+
+
+def test_discount_departing_source_out_of_scope_kind_is_a_no_op():
+    # fixed_multi/tron/count/count_all are deliberately out of scope --
+    # even if one happens to be tagged (the count/count_all edge case),
+    # sacrificing/untapping it never discounts anything.
+    filler_backup = registry.EFFECT_REGISTRY[EffectId.FILLER]
+    registry.EFFECT_REGISTRY[EffectId.FILLER] = {"mana": ("fixed_multi", ("B", "R"))}
+    try:
+        state = GameState(on_the_play=True)
+        source = Permanent(CardDef("Carnarium-ish", CardType.LAND, None, EffectId.FILLER))
+        mana.float_mana(state, ["B"])  # pretend a genuine single-pip B is floating from elsewhere
+        assert state.mana_pool_single_pip == {"B": 1}
+        mana.discount_departing_source(state, source, 0)
+        assert state.mana_pool_single_pip == {"B": 1}  # untouched
+    finally:
+        registry.EFFECT_REGISTRY[EffectId.FILLER] = filler_backup
 
 
 # Mana filters (Conduit Pylons / Barrels of Blasting Jelly) are a two-step

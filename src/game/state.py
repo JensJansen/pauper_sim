@@ -300,7 +300,20 @@ class PlayerState:
         # _actions_mana._filter_mana_execute) is the one explicit
         # exception: always exactly 1 symbol but forced untagged
         # (float_mana(..., taggable=False)), since it's a deliberate
-        # pool->pool conversion, not reflexive tapping.
+        # pool->pool conversion, not reflexive tapping. An Eldrazi Spawn's
+        # sac-for-{C} (effects.tokens.activate_eldrazi_spawn_sac) is the
+        # same exception for a different reason: the float and the
+        # sacrifice are one atomic action, so it's forced untagged too.
+        #
+        # A mana-producing permanent that's SACRIFICED (game.effects.
+        # state_based.sacrifice_to_graveyard) or gets UNTAPPED by an effect
+        # after already being tapped this phase (Quirion Ranger, Sewer-
+        # veillance Cam) instead gets an after-the-fact discount via
+        # game.mana.discount_departing_source -- tapping it for mana right
+        # before/around either event would have been free, so any of its
+        # own colors still tagged here are retroactively excused, picking
+        # whichever candidate color has the most tagged mana when the
+        # source can produce more than one (see that function's docstring).
         #
         # A lossless shadow COUNT, not a literal per-pip list -- sufficient
         # for this one boolean tag dimension (doesn't scale to more tag
@@ -604,6 +617,33 @@ class GameState:
         # filter has no equivalent first stage; it opens straight into
         # choose_color from its own flat fixed-table row's execute.
         self.mana_subdecision = None
+
+        # True for the duration of game.turn.Phase.END's own CLEANUP portion
+        # (after the real end-step priority round and cleanup_step's
+        # hand-size discard have both started -- see _run_turn_gen's own
+        # handling). Rule 514.3: normally no player receives priority at all
+        # during cleanup. AUTHORIZED SIMPLIFICATION (owner-approved
+        # 2026-08-10): this flag additionally revokes gate-free mana
+        # abilities' own real-rules any-window legality (605.1a/605.3b --
+        # see drl_env._actions_mana's own gate on it) specifically while
+        # True, so nothing can float new mana during cleanup at all. Kept as
+        # a dedicated flag rather than a Phase.CLEANUP enum value (which
+        # would change len(game.turn.Phase) and silently break every
+        # existing checkpoint's rl.deck.SCALAR_FEATURE_DIM / rl.agent's own
+        # phase one-hot) and rather than gating on pending_resolution["kind"]
+        # == "discard" (that kind is shared with unrelated non-cleanup
+        # effects -- Faithless Looting, Grab the Prize -- where mana
+        # abilities must stay legal), matching mana_subdecision's own
+        # "dedicated exclusive-mode field, not a pending_resolution kind"
+        # reasoning above. Does NOT block a Madness cast-or-graveyard
+        # decision queued by a cleanup discard (game.resolution.
+        # handlers_library._discard_one) -- that's a mandatory game-state
+        # resolution, not a discretionary action, and still gets its own
+        # priority round via _run_turn_gen's existing trigger_queue check;
+        # this flag just stays True through that round too. Reset to False
+        # in a finally, so an early return (a game-ending state-based action
+        # mid cleanup) can never leave it stuck True into the next turn.
+        self.in_cleanup = False
 
         # list[dict {"card_def": CardDef, "resolve": (state, card_def) ->
         # None}], top of stack = last element. Real Magic's stack is one

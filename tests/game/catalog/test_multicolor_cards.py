@@ -93,6 +93,9 @@ def test_writhing_chrysalis_devoid_eldrazi_spawn_and_sacrifice_counter():
     assert card_colors(wr.card_def) == set()  # Devoid -> colorless
     spawn = next(p for p in state.battlefield if p.card_def.name == "Eldrazi Spawn")
     registry.EFFECT_REGISTRY[EffectId.ELDRAZI_SPAWN_TOKEN]["activated_abilities"]["sac"]["resolve"](state, spawn)
+    # Sacrificing purely for the +1/+1 trigger still floats {C} as a forced
+    # side effect, but it must never count as avoidable burn -- untagged.
+    assert state.mana_pool_single_pip == {}
     promote_triggers_to_stack(state)
     resolve_top_of_stack(state)
     assert wr.counters.get("+1/+1") == 1  # "whenever you sacrifice another Eldrazi"

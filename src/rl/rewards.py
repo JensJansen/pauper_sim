@@ -14,11 +14,13 @@ minus a "sloppiness" penalty for hoarded cards forced to cleanup discard (see
 _hill); a loss/timeout is 0.0 minus that same penalty (action_count_win_reward
 has no such penalty -- it's the plain, pretrain-only predecessor). Pretraining
 uses action_count_win_reward_200_floor02; league self-play uses
-deploy_reward_v2 (= deploy_reward with win_floor=1.0 -> flat efficiency term;
-the v1 efficiency scaling caused an action-space-minimization pathology).
+deploy_reward_v3 (2026-08-10; = deploy_reward with win_floor=1.0 -> flat
+efficiency term, the v1 efficiency scaling caused an action-space-
+minimization pathology -- and discard_weight=0.4, normalizing its combined
+badness budget against the dense mana-burn wrap below; see its own comment).
 
 DENSE shaping (with_dense_mana_burn_penalty, below) IS wired into
-deploy_reward_v2 -- see deploy_reward_v2's own comment for its history: an
+deploy_reward_v3 -- see deploy_reward_v2's own comment for its history: an
 unconditional first version was reverted 2026-08 (archetype bias against
 Elves' Priest of Titania), then re-enabled 2026-08 reading a PER-PIP
 single-pip-tagged subset of mana burnt (PlayerState.
@@ -34,7 +36,8 @@ avoidable, unlike the narrower with_mana_mistake_penalty it had itself
 replaced). The penalty telescopes a Hill curve (_hill) across a turn's
 transitions, so its sum by turn's end equals a single terminal charge for
 that turn's total single-pip-tagged burn, but attributed to the transitions
-that actually caused it."""
+that actually caused it. deploy_reward_v3's own comment (below) covers its
+2026-08-10 curve/cap reshape on top of this same mechanism."""
 
 
 def _hill(x, c, p):
@@ -86,17 +89,24 @@ def action_count_win_reward(plateau_actions=80, max_actions=200, min_reward=0.25
 
 
 def deploy_reward(plateau_actions=80, max_actions=200, win_floor=0.5,
-                   discard_c=4.0, discard_p=2.0):
+                   discard_c=4.0, discard_p=2.0, discard_weight=1.0):
     """Two-band terminal reward. Scored PER SEAT: rl.train._reward_for flips
     state.active_idx to the seat being scored (via drl_env._for_player) and no
     longer zeroes the loser first, so this callable decides win vs loss itself.
 
-    Both bands subtract the SAME sloppiness penalty, q = _hill(...) in
-    [0, 1) -- PlayerState.cleanup_discard_turns (cards hoarded past hand
-    size) -- so a win with a lot of hoarded cards scores barely above a clean
-    loss, not barely below a clean win. Mana burn no longer feeds this
-    terminal penalty at all -- see with_mana_mistake_penalty below for its
-    (dense, per-transition) replacement.
+    Both bands subtract the SAME sloppiness penalty, q = discard_weight *
+    _hill(...) in [0, discard_weight) -- PlayerState.cleanup_discard_turns
+    (cards hoarded past hand size) -- so a win with a lot of hoarded cards
+    scores barely above a clean loss, not barely below a clean win. Mana burn
+    no longer feeds this terminal penalty at all -- see with_mana_mistake_
+    penalty below for its (dense, per-transition) replacement.
+    discard_weight (default 1.0, byte-identical to every existing caller --
+    v1/v2 below don't pass it) scales q's own asymptote DOWN from 1 without
+    reshaping its curve, so a caller layering ANOTHER bounded penalty on top
+    (deploy_reward_v3's own mana-burn wrap, rl.rewards below) can size each
+    penalty's own share of a shared worst-case badness budget instead of both
+    independently asymptoting toward 1 and compounding past whatever spread
+    that caller actually wants.
 
     WIN (state.winner == this seat): win_floor (0.5) -> 1.0 - q, scaled by the
     winner's own GAMEPLAY efficiency -- actions_taken MINUS pregame_actions (the
@@ -110,14 +120,15 @@ def deploy_reward(plateau_actions=80, max_actions=200, win_floor=0.5,
     win_check awards every life/deck-out end to a seat): exactly -q (0.0 for a
     clean loss, same q as above otherwise).
 
-    q asymptotes toward but never reaches 1, so -- when win_floor is 1.0 (the
-    only value league self-play actually uses, deploy_reward_v2 below) -- every
-    win (which lands in (0, 1]) still strictly outscores every loss (which lands
-    in (-1, 0]) regardless of how sloppy either one was. That guarantee does NOT
-    hold for win_floor < 1.0 (a sloppy-enough win can dip below win_floor - 1,
-    underneath a clean loss's 0) -- deploy_reward_v1 below is reference-only,
-    unused by training, specifically because of its OWN efficiency-scaling
-    pathology (see deploy_reward_v2's comment), so this is not considered a bug.
+    q asymptotes toward but never reaches discard_weight, so -- when win_floor
+    is 1.0 and discard_weight is 1.0 (deploy_reward_v2's own values below) --
+    every win (which lands in (0, 1]) still strictly outscores every loss
+    (which lands in (-1, 0]) regardless of how sloppy either one was. That
+    guarantee does NOT hold for win_floor < 1.0 (a sloppy-enough win can dip
+    below win_floor - discard_weight, underneath a clean loss's 0) --
+    deploy_reward_v1 below is reference-only, unused by training,
+    specifically because of its OWN efficiency-scaling pathology (see
+    deploy_reward_v2's comment), so this is not considered a bug.
 
     The MULLIGAN decision is not scored here: it's owned by the separate per-deck
     mulligan model (rl.mulligan), which the main policy doesn't drive, so
@@ -133,7 +144,7 @@ def deploy_reward(plateau_actions=80, max_actions=200, win_floor=0.5,
             return 0.0
         seat = state.active_idx  # the seat being scored (rl.train._reward_for flipped it here)
         p = state.players[seat]
-        q = _hill(p.cleanup_discard_turns, discard_c, discard_p)
+        q = discard_weight * _hill(p.cleanup_discard_turns, discard_c, discard_p)
         if state.winner == seat:
             gameplay_actions = p.actions_taken - p.pregame_actions
             over = min(max(0, gameplay_actions - plateau_actions), span)
@@ -396,5 +407,61 @@ deploy_reward_v1 = deploy_reward()
 # genuinely sloppy game can still land well below a clean loss -- that
 # outcome is fine, only the UNBOUNDED magnitude was the problem") -- that was
 # a deliberate design choice when the wrapper was authored, orthogonal to
-# the archetype-bias bug this split fixes.
+# the archetype-bias bug this split fixes. SUPERSEDED as of deploy_reward_v3
+# below (2026-08-10) for the actual trained path -- v3's own discard_weight/
+# game_penalty_cap split resolves this tradeoff by construction instead of
+# accepting it. v2 itself is kept unchanged, for reference/comparison, same
+# treatment v1 already gets above.
 deploy_reward_v2 = with_dense_mana_burn_penalty(deploy_reward(win_floor=1.0))
+
+
+# League self-play's CURRENT reward (run_league.py, 2026-08-10), replacing
+# deploy_reward_v2 above: same shape (flat win_floor=1.0, no efficiency
+# scaling), but reshaped so mana-burn hits considerably harder and the whole
+# thing is normalized to a specific, provable best-win/worst-loss spread
+# (owner spec, 2026-08-10: "best wins ~2 > worst losses... up the cost of
+# burning the first mana pip considerably... more aggressive punishment").
+#
+# discard_weight=0.4 caps q's own asymptote at 0.4 (down from 1.0) rather
+# than reshaping its curve (discard_c/discard_p unchanged) -- discard-
+# sloppiness keeps the exact same shape, just a smaller maximum share of the
+# combined badness budget below. mana_burn_c=2.0/mana_burn_p=2.5 (down from
+# 3.3/4.0) makes the per-pip curve considerably front-loaded (verified
+# numerically): pip1=0.150, pip2=0.500, pip3=0.734, pip4=0.850, pip6=0.940 --
+# vs. v2's pip1=0.008, pip2=0.119, pip3=0.406, pip4=0.683, pip6=0.916. The
+# first wasted pip in a turn now costs ~18x what it cost under v2 (0.150 vs.
+# 0.008) instead of being "nearly free," and the curve reaches near-max
+# badness within 4-5 pips instead of 6-7. game_penalty_cap=0.6 (down from
+# 2.0) is mana-burn's own share of the combined budget.
+#
+# Combined: clean win (q=0, mana_penalty=0) = 1.0, unchanged. Worst-case
+# loss (q -> its 0.4 asymptote, mana_penalty -> its 0.6 cap) -> -1.0,
+# asymptotically -- so best win minus worst loss -> 2.0, exactly matching
+# the requested spread as a provable bound rather than an empirical
+# approximation. Mana-burn's own share of that budget (0.6) now outweighs
+# discard's (0.4), matching mana burn being called out as the bigger
+# concern of the two.
+#
+# Side effect worth noting explicitly: this also restores "every win
+# strictly outscores every loss" as an actual guarantee, which v2's own
+# comment above explicitly ABANDONED as an accepted tradeoff. Worst win =
+# 1.0 - q - mana_penalty > 1.0 - 0.4 - 0.6 = 0.0 STRICTLY (q < 0.4 always,
+# even though mana_penalty can reach its 0.6 cap exactly); best/clean loss =
+# 0.0 - 0.0 = 0.0 exactly. Worst win is therefore always strictly greater
+# than best loss -- a consequence of discard_weight + game_penalty_cap
+# summing to exactly win_floor (0.4 + 0.6 = 1.0), not something separately
+# enforced.
+#
+# Accepted, NOT fixed, tradeoff: game_penalty_cap=0.6 combined with the
+# steeper curve means a single very bad turn (~3 pips wasted, raw 0.734) can
+# nearly exhaust the WHOLE GAME's mana-burn budget on its own, making any
+# further waste that same game free. Kept as-is, same "blunt safety
+# backstop, not principled shaping" philosophy game_penalty_cap's own
+# docstring already states -- a PER-TURN (rather than whole-game) cap would
+# reintroduce the exact unbounded-episode-length PPO/GAE instability the
+# whole-game cap exists to prevent (see with_dense_mana_burn_penalty's own
+# docstring and the cbd7379 history it cites).
+deploy_reward_v3 = with_dense_mana_burn_penalty(
+    deploy_reward(win_floor=1.0, discard_weight=0.4),
+    mana_burn_c=2.0, mana_burn_p=2.5, game_penalty_cap=0.6,
+)

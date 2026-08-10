@@ -23,15 +23,20 @@ def _cached_mana_ability_options(state):
 
 
 def _mana_ability_legal(name, color):
-    """Float-first: a mana ability is legal in ANY priority window, even
-    mid-resolution of anything else (605.1a/605.3b -- it never uses the
-    stack and doesn't require priority to activate), so this has no
+    """Float-first: a mana ability is legal in ANY OTHER priority window,
+    even mid-resolution of anything else (605.1a/605.3b -- it never uses
+    the stack and doesn't require priority to activate), so this has no
     pending-resolution gate at all -- no `_pending_gate` attribute means
     legal_action_mask always calls it, regardless of what's pending. Legal
     iff a source named `name` can produce `color` right now
-    (game.mana_ability_options; color=None for fixed/tron/count sources)."""
+    (game.mana_ability_options; color=None for fixed/tron/count sources),
+    AND state.in_cleanup is False -- AUTHORIZED SIMPLIFICATION (owner-
+    approved 2026-08-10, see state.in_cleanup's own docstring): real
+    605.1a/605.3b grants no exception from this during real Magic's own
+    cleanup step, but this engine's does, specifically so mana can never be
+    floated somewhere it can dodge the dense mana-burn reward signal."""
     def legal(state):
-        return (name, color) in _cached_mana_ability_options(state)
+        return not state.in_cleanup and (name, color) in _cached_mana_ability_options(state)
     return legal
 
 
@@ -118,8 +123,14 @@ def _mana_extra_choose_legal(name):
     extra_pred off the resolved permanent's own card_def.effect_id (not a
     closed-over table-build-time value) -- same reasoning
     _mana_extra_choose_execute gives, handles a token-sourced name
-    identically to a real decklist name."""
+    identically to a real decklist name. AUTHORIZED SIMPLIFICATION
+    (owner-approved 2026-08-10, see state.in_cleanup's own docstring):
+    additionally illegal while state.in_cleanup, same as every other
+    gate-free mana entry point -- cleanup is the one priority window this
+    engine deliberately does revoke it from."""
     def legal(state):
+        if state.in_cleanup:
+            return False
         p = _find_mana_extra_source(state, name)
         if p is None:
             return False
@@ -231,9 +242,13 @@ def _filter_mana_legal(name, input_color):
     _filter_would_strand_payment). Uses the sweep-scoped
     _cached_filter_source cache, not a fresh scan -- this legal() runs once
     per (source, input_color) row, POOL_COLORS-many per source now instead
-    of POOL_COLORS x len(colors)."""
+    of POOL_COLORS x len(colors). AUTHORIZED SIMPLIFICATION (owner-approved
+    2026-08-10, see state.in_cleanup's own docstring): additionally illegal
+    while state.in_cleanup, same as every other gate-free mana entry
+    point."""
     def legal(state):
-        if _cached_filter_source(state, name) is None or state.mana_pool.get(input_color, 0) <= 0:
+        if state.in_cleanup or _cached_filter_source(state, name) is None \
+                or state.mana_pool.get(input_color, 0) <= 0:
             return False
         return not _filter_would_strand_payment(state, input_color)
     return legal

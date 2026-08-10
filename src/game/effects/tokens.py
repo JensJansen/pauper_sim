@@ -72,12 +72,20 @@ def activate_eldrazi_spawn_sac(state, permanent):
     floating {C} directly into the mana pool -- reusing state.mana_pool's
     existing "produced now, spent later via a separate action" mechanism
     unchanged, since a sacrifice isn't a tap this engine's interactive
-    pay_cost loop has any other way to represent."""
+    pay_cost loop has any other way to represent.
+
+    taggable=False: this token has no registry "mana" spec (its production
+    is this bespoke function, not registry-driven), so mana.
+    discount_departing_source's generic sacrifice-time lookup can't find it
+    the way it finds a land. The float and the sacrifice are the same atomic
+    action anyway -- there's no "tap now, sacrifice later" window -- so it's
+    forced untagged at the source instead, same as a mana filter's output
+    pip (mana.float_mana's own taggable=False case)."""
     # Mana is floated (and logged) BEFORE the sacrifice so it's on the pool
     # ahead of the dies-trigger's queueing -- sacrifice_to_graveyard bundles
     # the zone-move log and the trigger fire into one call, with no seam to
     # insert this between them the way the old hand-rolled body could.
-    float_mana(state, ["C"])
+    float_mana(state, ["C"], taggable=False)
     state.log_event("mana_tap", permanent=(permanent.card_def.name, permanent.slot), mode="sac_ability", produced=["C"])
     sacrifice_to_graveyard(state, permanent)  # ceases to exist; queues the dies-trigger (Writhing Chrysalis: "whenever you sacrifice another Eldrazi")
 

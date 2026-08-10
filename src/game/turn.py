@@ -302,7 +302,10 @@ _PHASE_AUTO_EFFECTS = {
     Phase.DRAW: draw_step,
     Phase.DECLARE_ATTACKERS: declare_attackers_step,
     Phase.COMBAT_DAMAGE: combat_damage_step,
-    Phase.END: cleanup_step,
+    # Phase.END deliberately has no entry here -- cleanup_step now runs
+    # explicitly, mid this phase's own custom handling below, AFTER a real
+    # end-step priority round rather than automatically on phase entry. See
+    # that handling's own docstring.
 }
 
 
@@ -563,9 +566,13 @@ def _run_turn_gen(state, combat_enabled=False):
     training pipeline's own per-seat driver (rl.train). Iterates FULL_PHASES or
     MINIMAL_PHASES depending on combat_enabled; for each phase, runs that
     phase's own turn-based automatic effect (if any), then a real
-    priority round -- except Untap (never any
-    priority at all, rule 4) and Cleanup (priority only if something
-    newly triggered there, rule 4 -- see its own handling below).
+    priority round -- except Untap (never any priority at all, rule 4).
+    Phase.END additionally packs TWO real-rules steps (513 end step, then
+    514 cleanup) into that one Phase value: a normal priority round first,
+    then cleanup_step's hand-size discard with NO priority at all beyond a
+    Madness decision's own (514.3a) -- see its own handling below, and
+    state.in_cleanup's docstring for why both steps still share one Phase
+    member instead of getting their own.
     Phase.DECLARE_BLOCKERS additionally runs the defending player's own
     block-assignment decision (_declare_blockers_gen) BEFORE its own
     priority round, since that's a turn-based special action belonging to
@@ -658,50 +665,106 @@ def _run_turn_gen(state, combat_enabled=False):
                     return
 
             if phase is Phase.END:
-                # Rule 4: "usually none during Cleanup, unless something
-                # triggers there" (real Magic 514.2/514.3). cleanup_step
-                # (hand-size discard + damage clear) already ran once as
-                # this phase's own auto_effect above -- drive its own
-                # discard resolution to completion first (a turn-based
-                # action for the active player alone, NOT a priority
-                # round: the opponent never gets a window between
-                # individual discard picks, same generic yield protocol
-                # as everything else, just without any stack/pass-
-                # counting semantics), then check whether anything got
-                # queued (a discarded card with its own Madness trigger,
-                # say). If so, a real priority round for it, then
-                # cleanup_step repeats (matching the real rule instead of
-                # a single hardcoded pass). No current card ever queues
-                # anything during cleanup, so this loop always runs
-                # exactly once in practice.
-                while True:
-                    for _ in range(PRIORITY_ROUND_ACTION_CAP):
-                        if state.pending_resolution is None:
+                # Rule 513: the end step itself -- a normal priority round,
+                # same shape every other phase's own trailing round below
+                # already uses (mana abilities/instants/responses all
+                # legal; a future "at the beginning of the end step"
+                # trigger would queue and resolve through this same round,
+                # same as any other phase-entry trigger). Previously
+                # cleanup_step ran immediately on entering this phase with
+                # NO priority window at all first -- letting mana floated
+                # here escape rule 500.4's per-boundary clear until swept
+                # by the FOLLOWING turn's own UNTAP entry, after that
+                # turn's mana_burnt_this_turn_single_pip reset had already
+                # run (see this generator's own turn-start reset, above),
+                # silently un-scoring it. This round, plus the explicit
+                # _empty_mana_pools call below, gives it a real same-turn
+                # boundary instead.
+                yield from _run_priority_round_gen(state)
+                if state.turn_won is not None:
+                    return
+
+                # Rule 500.4: unused mana empties here too -- a genuine
+                # sub-step boundary between the end step (above) and
+                # cleanup (below), even though both still share the single
+                # Phase.END value (state.phase deliberately never becomes a
+                # distinct "cleanup" phase -- see state.in_cleanup's own
+                # docstring for why: a second real Phase member would
+                # change len(Phase) and silently break every existing
+                # checkpoint's rl.deck.SCALAR_FEATURE_DIM / rl.agent's own
+                # phase one-hot). Because state.phase doesn't change here,
+                # the generic "phase changed -> sweep" call at the top of
+                # this loop never fires for this boundary on its own --
+                # called explicitly instead of relying on it.
+                _empty_mana_pools(state)
+
+                # Rule 514: cleanup. cleanup_step (hand-size discard +
+                # damage/until-EOT clear) now runs explicitly here rather
+                # than as this phase's own auto_effect -- see
+                # _PHASE_AUTO_EFFECTS' own comment.
+                cleanup_step(state)
+                if state.turn_won is not None:
+                    return
+
+                # Normally no player receives priority at all during
+                # cleanup (514.3). AUTHORIZED SIMPLIFICATION (owner-
+                # approved 2026-08-10): gate-free mana abilities (605.1a/
+                # 605.3b -- legal in ANY OTHER priority window) are
+                # additionally revoked for this whole cleanup portion, via
+                # state.in_cleanup (see its own docstring) -- real Magic
+                # wouldn't revoke them, but nothing here needs to float
+                # mana it can never spend, and doing so was exactly what
+                # let mana burnt during cleanup dodge the dense mana-burn
+                # reward signal (rl.rewards.with_dense_mana_burn_penalty)
+                # entirely (this engine has no interrupt window, so the
+                # player who just finished their turn never gets another
+                # decision before the NEXT turn's own reset silently
+                # discards whatever got tallied here). The forced discard
+                # picks themselves, and a discarded card's own Madness
+                # cast-or-graveyard decision (game.resolution.
+                # handlers_library._discard_one), are the ONLY things still
+                # possible here: rule 514.3a's real "priority round if
+                # something triggers" exception is kept (below) purely to
+                # let that Madness decision resolve, not to reopen mana/
+                # instant-speed play -- in_cleanup stays True through it.
+                state.in_cleanup = True
+                try:
+                    while True:
+                        for _ in range(PRIORITY_ROUND_ACTION_CAP):
+                            if state.pending_resolution is None:
+                                break
+                            action = yield
+                            state.players[state.active_idx].actions_taken += 1
+                            action()
+                        else:
+                            # Same defensive cap _declare_blockers_gen now has,
+                            # for the same reason (an uncapped yield loop here
+                            # could spin forever the same way that one did) --
+                            # naturally bounded by hand size in practice (a
+                            # discard resolution can only ask for as many cards
+                            # as are actually over the hand-size limit), so this
+                            # is defense-in-depth rather than a confirmed-live
+                            # bug like that one was.
+                            if state.pending_resolution is not None:
+                                complete_resolution(state)
+                        if state.turn_won is not None:
+                            return
+                        if not state.trigger_queue:
                             break
-                        action = yield
-                        state.players[state.active_idx].actions_taken += 1
-                        action()
-                    else:
-                        # Same defensive cap _declare_blockers_gen now has,
-                        # for the same reason (an uncapped yield loop here
-                        # could spin forever the same way that one did) --
-                        # naturally bounded by hand size in practice (a
-                        # discard resolution can only ask for as many cards
-                        # as are actually over the hand-size limit), so this
-                        # is defense-in-depth rather than a confirmed-live
-                        # bug like that one was.
-                        if state.pending_resolution is not None:
-                            complete_resolution(state)
-                    if state.turn_won is not None:
-                        return
-                    if not state.trigger_queue:
-                        break
-                    yield from _run_priority_round_gen(state)
-                    if state.turn_won is not None:
-                        return
-                    cleanup_step(state)
-                    if state.turn_won is not None:
-                        return
+                        # Only a Madness decision (queued by the discard
+                        # picks just resolved above) is expected to reach
+                        # here in practice -- in_cleanup stays True through
+                        # this round too, so nothing else newly legal (a
+                        # mana ability, an instant) can sneak in alongside
+                        # it.
+                        yield from _run_priority_round_gen(state)
+                        if state.turn_won is not None:
+                            return
+                        cleanup_step(state)
+                        if state.turn_won is not None:
+                            return
+                finally:
+                    state.in_cleanup = False
                 continue
 
             yield from _run_priority_round_gen(state)

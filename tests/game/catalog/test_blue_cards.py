@@ -27,13 +27,14 @@ from game.catalog.blue_cards import (
     flashback_deep_analysis,
     islandcycle_lorien_revealed,
     sewer_cam_sac,
+    sewer_cam_tap_or_untap,
 )
 from game.effects.casting import cast_permanent_from_hand, cast_targeting_creature
 from game.effects.stack import on_cast_trigger, push_to_stack, resolve_top_of_stack
 from game.effects.state_based import check_state_based_actions, destroy_permanent, sacrifice_to_graveyard
 from game.effects.stats import creature_keywords, has_keyword, permanent_power, permanent_toughness
 from game.effects.triggers import promote_triggers_to_stack
-from game.mana import activate_mana_source, execute_pool_spend, pool_spend_options
+from game.mana import activate_mana_source, execute_pool_spend, float_mana, pool_spend_options
 from game.resolution import (
     choose_any_target_creature_options,
     choose_stack_target_options,
@@ -459,6 +460,49 @@ def test_sewer_veillance_cam_toggle_and_sac_draw_two():
         execute_choose_any_target_decline(state)  # decline the LTB toggle
         _drive(state)
     assert len(state.players[0].hand) == 2  # drew 2
+
+
+def test_sewer_cam_untap_direction_discounts_mana_dork_tag():
+    """Untapping an already-tapped mana dork via the toggle is free value
+    (tapping it for {G} first costs nothing, since it's about to be untapped
+    again regardless), so its tagged pip is discounted
+    (mana.discount_departing_source) -- mirrors Quirion Ranger's own version
+    of this (test_quirion_ranger_untapping_a_mana_dork_discounts_its_tag)."""
+    state = GameState(on_the_play=True)
+    cam = Permanent(registry.CARD_DEFS["Sewer-veillance Cam"])
+    elves = Permanent(registry.CARD_DEFS["Llanowar Elves"])
+    elves.slot = 1
+    elves.summoning_sick = False
+    state.battlefield = [cam, elves]
+    activate_mana_source(state, elves)  # float+tag {G} before it gets untapped
+    assert state.mana_pool_single_pip == {"G": 1}
+
+    sewer_cam_tap_or_untap(state, cam.card_def)
+    execute_choose_any_target_creature(state, 0, "Llanowar Elves", 1)
+    resolve_top_of_stack(state)
+    assert not elves.tapped  # toggled tapped -> untapped
+    assert state.mana_pool_single_pip == {}  # the tag is excused
+    assert state.mana_pool == {"G": 1}  # the floated mana itself is untouched
+
+
+def test_sewer_cam_tap_direction_never_discounts():
+    """The opposite toggle direction (untapped -> tapped) never discounts
+    anything -- tapping a mana source down doesn't free up any mana, so an
+    already-tagged pip from an unrelated source stays tagged."""
+    state = GameState(on_the_play=True)
+    cam = Permanent(registry.CARD_DEFS["Sewer-veillance Cam"])
+    elves = Permanent(registry.CARD_DEFS["Llanowar Elves"])
+    elves.slot = 1
+    elves.summoning_sick = False
+    state.battlefield = [cam, elves]
+    float_mana(state, ["G"])  # tagged G from an unrelated source
+    assert state.mana_pool_single_pip == {"G": 1}
+
+    sewer_cam_tap_or_untap(state, cam.card_def)
+    execute_choose_any_target_creature(state, 0, "Llanowar Elves", 1)
+    resolve_top_of_stack(state)
+    assert elves.tapped  # toggled untapped -> tapped
+    assert state.mana_pool_single_pip == {"G": 1}  # untouched
 
 
 def test_sewer_veillance_cam_etb_target_chosen_at_promotion_not_resolution():

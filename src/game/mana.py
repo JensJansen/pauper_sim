@@ -295,6 +295,45 @@ def float_mana(state, symbols, taggable=True):
         single[color] = single.get(color, 0) + 1
 
 
+def discount_departing_source(state, permanent, owner_idx):
+    """`permanent` just became newly available for a fresh tap this phase
+    without actually being tapped for it -- either it left the battlefield
+    via sacrifice, or an effect just untapped it after it had already been
+    tapped. Tapping it for its own mana ability right before/around that
+    event would have been strictly free value (there's no future turn where
+    holding the mana back could have mattered), so any single-pip-tagged
+    mana of a color it can produce is retroactively excused from burn --
+    exactly like a mana filter's own output pip (float_mana's taggable=False
+    case above).
+
+    mana_pool_single_pip carries no per-source identity (see its own
+    docstring), so this can't target the exact pip `permanent` itself
+    produced -- it discounts whichever of its candidate colors currently has
+    the most tagged mana floating (state.rng breaks a tie, over colors
+    sorted first so the tie-break depends only on state.rng, not on a
+    set's hash-randomized iteration order), the same fungible-pip treatment
+    spend_one_pip already gives same-color pips.
+
+    Only the "fixed" and "flexible" mana-spec kinds qualify -- every kind
+    that always produces exactly one symbol per tap, matching float_mana's
+    own single-pip tag rule. fixed_multi/tron/count/count_all are out of
+    scope (almost never tagged in the first place)."""
+    spec = registry.EFFECT_REGISTRY.get(permanent.card_def.effect_id, {}).get("mana")
+    if spec is None or spec[0] not in ("fixed", "flexible"):
+        return
+    candidates = [spec[1]] if spec[0] == "fixed" else sorted(spec[1])
+    single = state.players[owner_idx].mana_pool_single_pip
+    positive = [c for c in candidates if single.get(c, 0) > 0]
+    if not positive:
+        return
+    best = max(single[c] for c in positive)
+    tied = [c for c in positive if single[c] == best]
+    color = tied[0] if len(tied) == 1 else state.rng.choice(tied)
+    single[color] -= 1
+    if single[color] <= 0:
+        del single[color]
+
+
 def pool_spend_options(state):
     """While a pay_cost resolution is pending: every floating-pool color
     with a nonzero balance that would still make progress on the remaining

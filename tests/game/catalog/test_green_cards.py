@@ -101,14 +101,18 @@ def test_malevolent_rumble_take_creature():
 
 def test_eldrazi_spawn_token_sac_ability():
     """The 0/1 Eldrazi Spawn token created by Malevolent Rumble: its own
-    "Sacrifice: Add {C}" ability floats mana with no {T} at all."""
+    "Sacrifice: Add {C}" ability floats mana with no {T} at all. Forced
+    untagged (taggable=False) -- the float and the sacrifice are the same
+    atomic action (e.g. sacrificing purely to trigger Writhing Chrysalis),
+    so it must never count as avoidable single-pip burn regardless of
+    whether the {C} ends up spent."""
     state, _rumble = _malevolent_rumble_cast()
     spawn = state.battlefield[0]
     assert state.mana_pool == {}
     activate_eldrazi_spawn_sac(state, spawn)
     assert state.battlefield == []  # sacrificed, not graveyarded -- a token ceases to exist
     assert state.mana_pool == {"C": 1}
-    assert state.mana_pool_single_pip == {"C": 1}  # a 1-symbol event -- tagged single-pip
+    assert state.mana_pool_single_pip == {}  # forced untagged, not the usual 1-symbol tag
 
 
 def test_malevolent_rumble_decline():
@@ -774,6 +778,33 @@ def test_quirion_ranger_untap_lets_player_choose_which_forest():
     execute_choose_any_target_creature(state, 0, "Beater", 1)
     resolve_top_of_stack(state)
     assert not target.tapped
+
+
+def test_quirion_ranger_untapping_a_mana_dork_discounts_its_tag():
+    """Untapping a mana dork that was already tapped for mana this phase is
+    free value (tapping it for {G} before the untap costs nothing), so its
+    tagged pip is discounted (mana.discount_departing_source) -- the tapped
+    creature target in test_quirion_ranger_untap_lets_player_choose_which_
+    forest never produces mana, so it doesn't exercise this path."""
+    state = GameState(on_the_play=True)
+    ranger = Permanent(registry.CARD_DEFS["Quirion Ranger"])
+    ranger.slot = 1
+    forest = Permanent(CardDef("Forest", CardType.LAND, None, EffectId.FOREST, basic=True, subtypes=("Forest",)))
+    forest.slot = 1
+    elves = Permanent(registry.CARD_DEFS["Llanowar Elves"])
+    elves.slot = 1
+    elves.summoning_sick = False
+    state.battlefield = [ranger, forest, elves]
+    activate_mana_source(state, elves)  # float+tag {G} before it gets untapped
+    assert state.mana_pool_single_pip == {"G": 1}
+
+    quirion_ranger_untap_resolve(state, ranger)
+    execute_choose_permanent_option(state, "Forest", 1)
+    execute_choose_any_target_creature(state, 0, "Llanowar Elves", 1)
+    resolve_top_of_stack(state)
+    assert not elves.tapped
+    assert state.mana_pool_single_pip == {}  # the tag is excused
+    assert state.mana_pool == {"G": 1}  # the floated mana itself is untouched
 
 
 def test_avenging_hunter_etb_initiative_venture():

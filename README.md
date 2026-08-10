@@ -493,19 +493,18 @@ wired only through `--matchup` mode.)
   `action_count_win_reward_200_floor02` — loss/draw → `0.0`, win → `1.0` down
   to a `0.2` floor scaled by the *winning seat's* action count (so a policy
   can't pad a turn with free actions to inflate its reward). **League** play
-  uses `deploy_reward_v2`: a flat `1.0` on any win minus `q` (no efficiency
-  scaling — the earlier `deploy_reward_v1`'s efficiency band induced an
-  action-space-minimization pathology where policies learned to shrink their
-  own board to "win in fewer actions"), and exactly `-q` on a loss. `q` is a
-  terminal "sloppiness" penalty shared by both bands: a saturating
-  (Hill-function) curve over `PlayerState.cleanup_discard_turns` (cards
-  hoarded past hand size) — near-zero for a couple of stray discards, severe
-  by ~6 cumulative, asymptoting toward but never reaching `1.0`, so every win
-  still strictly outscores every loss no matter how sloppy either was. `q` is
-  itself a live, unresolved risk flagged for a heavy-card-draw archetype
-  (`dmir_terror`) whose correct play is to hoard cards looking for the right
-  window — watch its aggregate trend once the 2026-08-06 restart (below) has
-  run for a while; see `TRAINING_IMPROVEMENT_OPTIONS.md` section 2.
+  uses `deploy_reward_v3` (2026-08-10): a flat `1.0` on any win minus `q` (no
+  efficiency scaling — the earlier `deploy_reward_v1`'s efficiency band
+  induced an action-space-minimization pathology where policies learned to
+  shrink their own board to "win in fewer actions"), and exactly `-q` on a
+  loss. `q` is a terminal "sloppiness" penalty shared by both bands: a
+  saturating (Hill-function) curve over `PlayerState.cleanup_discard_turns`
+  (cards hoarded past hand size), scaled by a `discard_weight=0.4` so it
+  asymptotes toward `0.4`, never `1.0` (see dense mana-burn shaping below for
+  why `0.4` specifically). `q` is itself a live, unresolved risk flagged for a
+  heavy-card-draw archetype (`dmir_terror`) whose correct play is to hoard
+  cards looking for the right window — watch its aggregate trend; see
+  `TRAINING_IMPROVEMENT_OPTIONS.md` section 2.
   `PlayerState.mana_burnt_total`/`mana_burnt_this_turn` feed no reward —
   they remain raw diagnostics for logging/viz (`mana_burnt_this_turn_single_pip`,
   a filtered subset of the latter, does feed reward — see dense mana-burn
@@ -516,9 +515,9 @@ wired only through `--matchup` mode.)
   each time) since 2026-08-06 — see `rl.league_runner._run_session`'s
   `MULLIGAN_UPDATE_EVERY`.
 
-  **Dense mana-burn shaping — tried, reverted, fixed twice
-  (2026-08).** A per-transition penalty for mana burnt at a phase boundary
-  (rule 500.4) is wired into `deploy_reward_v2` as
+  **Dense mana-burn shaping — tried, reverted, fixed twice, then
+  reweighted (2026-08).** A per-transition penalty for mana burnt at a phase
+  boundary (rule 500.4) is wired into `deploy_reward_v3` as
   `with_dense_mana_burn_penalty`, replacing an earlier, narrower,
   exemption-aware version (`with_mana_mistake_penalty`). Its first version
   read raw `PlayerState.mana_burnt_this_turn` unconditionally — every pip
@@ -529,7 +528,7 @@ wired only through `--matchup` mode.)
   battlefields with no partial-tap option): for that archetype, large
   per-turn mana bursts are an intrinsic, unavoidable part of correct play,
   not a mistake a dense curve on raw totals could distinguish from real
-  waste. `deploy_reward_v2` was reverted to plain `deploy_reward(win_floor=1.0)`.
+  waste. The wrap was reverted to plain `deploy_reward(win_floor=1.0)`.
 
   A second version re-enabled it reading `PlayerState.
   mana_burnt_this_turn_metered`, a WHOLE-PHASE fix: `game.turn.
@@ -540,7 +539,7 @@ wired only through `--matchup` mode.)
   correct for Priest, but blind to a mixed phase where a genuinely
   avoidable single-pip tap sat alongside an unavoidable burst.
 
-  The current version replaces that whole-phase exclusion with **per-pip
+  A third version replaced that whole-phase exclusion with **per-pip
   attribution**: `PlayerState.mana_pool_single_pip` is a shadow count,
   parallel to `mana_pool`, tracking how many of the currently floating pips
   of each color trace back to a "single-pip" mana-producing EVENT — one
@@ -559,16 +558,37 @@ wired only through `--matchup` mode.)
   excess absorbs blame for a burnt leftover ahead of a genuinely avoidable
   single-pip tap of the same color — `PlayerState.
   mana_burnt_this_turn_single_pip` (`game.turn._empty_mana_pools`) sums
-  whatever remains tagged at the moment of the burn. Priest of Titania's
-  burst still never reaches the penalty, and now neither does a metered
-  source's mana genuinely spent — but a reflexive single-pip tap sitting
-  alongside a burst tap in the same phase, previously excused entirely, is
-  correctly caught. This does **not** resolve the wrap's separate,
-  already-accepted tradeoff that its own `game_penalty_cap` can in
-  principle still push a sufficiently sloppy win below a clean loss,
-  breaking `q`'s "every win outscores every loss" guarantee — that was a
-  deliberate design choice when the wrapper was authored (see its own
-  docstring), orthogonal to the archetype-bias bug this fixes.
+  whatever remains tagged at the moment of the burn.
+
+  A **2026-08-10 engine fix** closed a real gap in that same accounting:
+  `game.turn.Phase.END` used to run `cleanup_step` immediately on entry, with
+  no priority window before it — since mana abilities are gate-free (legal in
+  any window, 605.1a/605.3b), a player could float mana during the forced
+  hand-size discard itself, which (because `_run_turn_gen` resets the
+  per-turn mana-burn counters for the *next* turn before that next turn's own
+  boundary sweep runs) escaped the dense penalty entirely. `Phase.END` now
+  runs a real end-step priority round first (rule 513), sweeps mana at an
+  explicit sub-boundary, THEN runs cleanup — and `state.in_cleanup` makes
+  every gate-free mana ability illegal for the whole cleanup portion itself
+  (an authorized simplification beyond real rule 514.3; the existing
+  trigger-driven extra priority round there is kept, specifically so a
+  Madness card discarded by forced cleanup can still resolve its own
+  cast-or-graveyard decision).
+
+  `deploy_reward_v3` (2026-08-10) reshapes the curve itself considerably on
+  top of all the above, per owner request: `mana_burn_c=2.0`/`mana_burn_p=2.5`
+  (down from v2's `3.3`/`4.0`) makes the first wasted pip in a turn cost
+  `≈0.150` instead of `≈0.008` (~18x), reaching near-max badness within 4-5
+  pips instead of 6-7. `game_penalty_cap=0.6` (down from `2.0`) and
+  `discard_weight=0.4` (new — see above) are sized to sum to exactly
+  `win_floor` (`1.0`), so a clean win scores `1.0`, the worst realistic loss
+  (heavy discarding *and* mana burn saturating its cap) approaches `-1.0`,
+  and the spread between them is exactly `2.0` by construction rather than an
+  empirical hope — this also RESTORES "every win outscores every loss" as an
+  actual guarantee, which v2's own combined budget (`1.0` possible from `q`
+  alone, `+2.0` more from an uncapped mana wrap) had explicitly abandoned as
+  an accepted tradeoff. `deploy_reward_v2` is kept, unchanged, for reference
+  (same treatment `deploy_reward_v1` already gets).
 - **Win condition**: the engine's real one — an opponent's life total hitting
   0, or a player decking out. There is no separate termination heuristic.
 

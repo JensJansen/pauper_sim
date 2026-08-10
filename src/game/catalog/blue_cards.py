@@ -23,6 +23,7 @@ from ..effects.state_based import departing_card_def, sacrifice_to_graveyard
 from ..effects.stats import can_be_targeted, controller_idx
 from ..effects.tokens import BIRD_ILLUSION_TOKEN_CARD_DEF, create_token
 from ..effects.win_check import lose_life
+from ..mana import discount_departing_source
 from ..turn import Speed
 from ..resolution import (
     begin_choose_any_target, begin_choose_graveyard_card, begin_choose_stack_target, begin_choose_target_player,
@@ -233,7 +234,13 @@ def sewer_cam_tap_or_untap(state, source_card_def):
     on resolution it TOGGLES the target's tapped state -- observationally
     identical to the real tap-or-untap choice, since the no-op direction
     (tapping a tapped or untapping an untapped creature) is never the
-    meaningful pick -- fizzling if the target's gone by then (608.2b)."""
+    meaningful pick -- fizzling if the target's gone by then (608.2b).
+
+    A toggle landing on the untap direction (target was tapped going in)
+    also discounts mana.mana_pool_single_pip for whatever the target can
+    produce (mana.discount_departing_source) -- see that function's own
+    docstring; the tap direction never does, since tapping a mana source
+    doesn't free anything up."""
     idx = state.active_idx
 
     def _on_target(state, descriptor):
@@ -243,7 +250,10 @@ def sewer_cam_tap_or_untap(state, source_card_def):
             if captured is None or not target_still_legal(st, captured):
                 return
             perm = captured[1]
+            was_tapped = perm.tapped
             perm.tapped = not perm.tapped
+            if was_tapped:
+                discount_departing_source(st, perm, controller_idx(st, perm))
             st.log_event("tap_or_untap", permanent=(perm.card_def.name, perm.slot), now_tapped=perm.tapped)
 
         push_to_stack(state, source_card_def, _resolve, reserves_hand_card=False, is_spell=False,

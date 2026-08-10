@@ -262,11 +262,14 @@ Never claim a run succeeded without having seen its "done" line and exit 0 in th
   DeckNetworks vs. the pretrain shared stack, NOT a subset of decks.
 - Reward is terminal (near-zero early is expected, not a failure — watch losses moving
   and games completing instead): pretrain uses `action_count_win_reward_200_floor02`
-  (plain win/loss); league play uses `deploy_reward_v2` (win/loss minus a cleanup-discard
-  sloppiness penalty `q` — see `rl/rewards.py`). Different reward fns for the two phases,
-  not the same one throughout. `deploy_reward_v2` also wraps a dense, per-transition
-  mana-burn penalty (`with_dense_mana_burn_penalty`), reading a PER-PIP single-pip-tagged
-  subset of burnt mana (`PlayerState.mana_burnt_this_turn_single_pip`) that excludes
+  (plain win/loss); league play uses `deploy_reward_v3` (win/loss minus a cleanup-discard
+  sloppiness penalty `q`, weighted so it caps at 0.4 of the combined badness budget —
+  see `rl/rewards.py`). Different reward fns for the two phases, not the same one
+  throughout. `deploy_reward_v3` also wraps a dense, per-transition mana-burn penalty
+  (`with_dense_mana_burn_penalty`, capped at the other 0.6 of that budget as of
+  2026-08-10 — considerably steeper than `deploy_reward_v2`'s own older curve), reading
+  a PER-PIP single-pip-tagged subset of burnt mana (`PlayerState.
+  mana_burnt_this_turn_single_pip`) that excludes
   board-state-scaled burst sources (Priest of Titania, Overgrown Battlement) from the
   penalty by construction, pip by pip, rather than by whole-phase exclusion -- an earlier
   unconditional version was tried and reverted in 2026-08 over an archetype-biased

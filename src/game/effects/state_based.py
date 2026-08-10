@@ -3,7 +3,7 @@ stats.py for effective toughness and on registry (lazily) to tell a real card
 from a token and to read an orphaned Aura's return-to-hand flag."""
 
 from . import stats
-from .. import registry, resolution
+from .. import mana, registry, resolution
 from ..cards import CardType
 
 HAND_SIZE_LIMIT = 7  # real Magic's own rule -- not a per-config tunable, no card in this pool ever modifies it
@@ -234,12 +234,21 @@ def sacrifice_to_graveyard(state, permanent):
     correctly don't fire a "put into a graveyard" trigger. Reuses the existing
     ltb_trigger mechanism: in this pool these artifacts only ever leave the
     battlefield by going to the graveyard, so ltb == dies-to-graveyard for
-    them."""
+    them.
+
+    Also discounts mana.mana_pool_single_pip for whatever this permanent
+    could have produced (mana.discount_departing_source) -- a mana source
+    that's leaving the battlefield anyway can never have "wastefully" tapped
+    for mana, tagged or not, so any of its own color(s) still tagged as
+    floating gets excused. Applies to every sacrifice uniformly, including
+    opponent-forced ones, since this is the one choke point all of them
+    share."""
     from .shared import fire_sacrifice_triggers
 
     owner_idx = stats.controller_idx(state, permanent)
     assert owner_idx is not None, "sacrifice_to_graveyard: permanent not found on any battlefield"
     owner = state.players[owner_idx]
+    mana.discount_departing_source(state, permanent, owner_idx)
     permanent.flags["owner_idx"] = owner_idx  # see _destroy_creature's own comment -- true controller for a later-resolving ltb_trigger
     owner.battlefield.remove(permanent)
     departing = departing_card_def(permanent)  # front face for a DFC leaving the battlefield

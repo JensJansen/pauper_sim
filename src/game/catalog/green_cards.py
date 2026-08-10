@@ -19,13 +19,13 @@ from ..effects.shared import (
 )
 from ..effects.stack import push_ability_to_stack, push_to_stack
 from ..effects.state_based import check_state_based_actions
-from ..effects.stats import can_be_targeted, enchantment_count, has_keyword, permanent_power, permanent_toughness
+from ..effects.stats import can_be_targeted, controller_idx, enchantment_count, has_keyword, permanent_power, permanent_toughness
 from ..effects.tokens import (
     ELDRAZI_SPAWN_TOKEN_CARD_DEF, FOOD_TOKEN_CARD_DEF, activate_eldrazi_spawn_sac, activate_food_sac, create_token,
 )
 from ..effects import undercity
 from ..effects.win_check import deal_damage_to_opponent, gain_life
-from ..mana import COLORS, tap_summoning_locked
+from ..mana import COLORS, discount_departing_source, tap_summoning_locked
 
 GREEN_CARD_CATALOG = {
     "Forest": CardDef("Forest", CardType.LAND, None, EffectId.FOREST, basic=True, subtypes=("Forest",)),
@@ -366,7 +366,9 @@ def quirion_ranger_untap_resolve(state, permanent):
     either battlefield, hexproof-aware) is locked at activation, then the
     creature is untapped when the ability resolves off the stack, or the
     ability fizzles if that exact creature has left the battlefield by
-    then (608.2b) or is illegal."""
+    then (608.2b) or is illegal. If the target was actually tapped, also
+    discounts mana.mana_pool_single_pip for whatever it can produce (mana.
+    discount_departing_source) -- see that function's own docstring."""
     permanent.flags["used_this_turn"] = True
 
     def _on_forest_chosen(state, choice):
@@ -388,7 +390,13 @@ def quirion_ranger_untap_resolve(state, permanent):
                     _log_target_fizzle(state, card_def, where)
                     return
                 target = captured[1]
+                was_tapped = target.tapped
                 target.tapped = False
+                if was_tapped:
+                    # Untapping it back for free -- tapping it for mana first would
+                    # have cost nothing, so excuse any of its own colors still
+                    # tagged as floating (mana.discount_departing_source).
+                    discount_departing_source(state, target, controller_idx(state, target))
                 state.log_event("untap", permanent=(target.card_def.name, target.slot), reason="quirion_ranger")
 
             push_to_stack(state, permanent.card_def, _resolve, reserves_hand_card=False, is_spell=False,  # activated ability -- not a spell

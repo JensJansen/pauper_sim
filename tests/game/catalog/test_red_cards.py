@@ -920,6 +920,30 @@ def test_fireblast_alt_cost_sacrifices_two_mountains_no_mana():
     assert sum(state.players[0].mana_pool.values()) == 0
 
 
+def test_fireblast_alt_cost_discounts_tag_from_a_tapped_mountain():
+    """Tapping one of the two sacrificed Mountains for {R} first (correct
+    play -- free value, since it's being sacrificed either way) tags an R
+    pip; sacrificing both Mountains via the alt cost discounts that tag by
+    exactly 1 (mana.discount_departing_source), not 2 -- only one Mountain
+    actually produced tagged mana, the other never got a chance to activate
+    before its sacrifice-time discount already found nothing left to take."""
+    state = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
+    fb = registry.CARD_DEFS["Fireblast"]
+    mountains = [Permanent(registry.CARD_DEFS["Mountain"]) for _ in range(2)]
+    mountains[0].slot = 1
+    mountains[1].slot = 2
+    state.players[0].hand = [fb]
+    state.players[0].battlefield = mountains
+    activate_mana_source(state, mountains[0])  # float+tag {R} before sacrificing it
+    assert state.players[0].mana_pool_single_pip == {"R": 1}
+
+    cast_fireblast_alt(state, fb)
+    resolution.execute_choose_permanent_option(state, "Mountain", 1)
+    resolution.execute_choose_permanent_option(state, "Mountain", 2)
+    assert state.players[0].mana_pool_single_pip == {}  # the one tagged R pip is excused
+    assert state.players[0].mana_pool == {"R": 1}  # the floated mana itself is still there, unspent
+
+
 def test_fireblast_alt_illegal_with_fewer_than_two_mountains():
     """_fireblast_alt_extra_legal: fewer than 2 Mountains controlled ->
     illegal to even attempt the alt cost."""
