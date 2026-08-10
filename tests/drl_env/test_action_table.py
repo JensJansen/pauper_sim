@@ -672,8 +672,49 @@ def test_mana_filter_two_step_color_choice():
     produce_b_execute(state)
 
     assert state.mana_pool == {"B": 1}  # U spent at step 1, B produced at step 2 -- net one pip converted
+    # A filter's output is never single-pip-tagged, even though it's
+    # exactly 1 symbol -- a deliberate pool->pool conversion, not
+    # reflexive tapping (game.mana.float_mana's taggable=False).
+    assert state.mana_pool_single_pip == {}
     assert state.mana_subdecision is None
     assert not legal_pay_u(state)  # Barrels' own once-per-turn gate now closed -- no more floating U to spend either way
+
+
+def test_mana_filter_same_color_round_trip_erases_single_pip_tag():
+    # KNOWN, OWNER-APPROVED GAP (2026-08, see _filter_mana_execute's own
+    # on_choose_color comment): running an already-TAGGED (avoidable,
+    # single-pip-sourced) floating pip through a filter -- even choosing the
+    # SAME output color back -- erases its tag for zero pool-size cost,
+    # because game.spend_one_pip pays the filter's {1} out of the only
+    # (tagged) pip of that color, and float_mana(..., taggable=False) never
+    # re-tags the output. Locked in here as deliberate (filters are
+    # once-per-turn per source, so the exploitable surface is small), not a
+    # regression to fix.
+    filter_decklist = [("Barrels of Blasting Jelly", 2)]
+    filter_actions = build_action_table(filter_decklist, game.EFFECT_REGISTRY)
+
+    barrels = Permanent(game.CARD_DEFS["Barrels of Blasting Jelly"])
+    forest = Permanent(game.CARD_DEFS["Forest"])
+    state = GameState(on_the_play=True)
+    state.battlefield = [barrels, forest]
+
+    game.activate_mana_source(state, forest)  # a real, avoidable single land tap
+    assert state.mana_pool == {"G": 1}
+    assert state.mana_pool_single_pip == {"G": 1}  # tagged -- this pip WOULD count if later burnt
+
+    pay_g_idx = _action_index(filter_actions, "Filter Barrels of Blasting Jelly, paying G")
+    _, legal_pay_g, execute_pay_g = filter_actions[pay_g_idx]
+    assert legal_pay_g(state)
+    execute_pay_g(state)  # spends the only (tagged) G pip -- both dict entries deleted
+    assert state.mana_pool == {}
+    assert state.mana_pool_single_pip == {}
+
+    produce_g_idx = _action_index(filter_actions, "Produce G")
+    _, _produce_g_legal, produce_g_execute = filter_actions[produce_g_idx]
+    produce_g_execute(state)  # choose the SAME color, G, back out
+
+    assert state.mana_pool == {"G": 1}  # net zero pool-size change...
+    assert state.mana_pool_single_pip == {}  # ...but the avoidable tag is gone, by design
 
 
 def test_mana_filter_row_count_stays_flat_not_cross_product():

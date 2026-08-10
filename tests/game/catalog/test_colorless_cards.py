@@ -791,6 +791,7 @@ def test_chromatic_star_any_color_choice_and_dies_draw():
     assert set(resolution.choose_mana_color_options(state)) == {"W", "U", "B", "R", "G"}  # any color, never {C}
     resolution.execute_choose_mana_color(state, "U")
     assert state.mana_pool.get("U") == 1 and "C" not in state.mana_pool  # a real blue, not colorless
+    assert state.mana_pool_single_pip == {"U": 1}  # a 1-symbol event -- tagged single-pip
     _drive(state)  # the dies-trigger (draw) was queued by the sacrifice
     assert len(state.hand) == 1  # dies-draw fired
 
@@ -808,14 +809,17 @@ def test_tron_lands_double_mana_when_all_three_controlled():
     state.battlefield = [mine, plant, tower]
     activate_mana_source(state, mine)
     assert state.mana_pool == {"C": 2}  # all three online -- Mine doubles
+    assert state.mana_pool_single_pip == {}  # a 2-symbol event -- never single-pip-tagged
     activate_mana_source(state, tower)
     assert state.mana_pool == {"C": 5}  # + Tower's own tripled {C}{C}{C}
+    assert state.mana_pool_single_pip == {}  # a 3-symbol event -- never single-pip-tagged
 
     solo_state = GameState(on_the_play=True)
     solo_mine = Permanent(registry.CARD_DEFS["Urza's Mine"])
     solo_state.battlefield = [solo_mine]
     activate_mana_source(solo_state, solo_mine)
     assert solo_state.mana_pool == {"C": 1}  # alone -- just a plain single C
+    assert solo_state.mana_pool_single_pip == {"C": 1}  # a 1-symbol event -- tagged, same as any land
 
     two_state = GameState(on_the_play=True)
     two_mine = Permanent(registry.CARD_DEFS["Urza's Mine"])
@@ -823,6 +827,10 @@ def test_tron_lands_double_mana_when_all_three_controlled():
     two_state.battlefield = [two_mine, two_plant]
     activate_mana_source(two_state, two_mine)
     assert two_state.mana_pool == {"C": 1}  # only two of three -- still just one C
+    # THE conditional case: this exact source is single-pip-tagged here
+    # (off), but was NOT tagged above (online) -- the tag rule tracks the
+    # actual per-event yield, not a static per-source classification.
+    assert two_state.mana_pool_single_pip == {"C": 1}
 
 
 def test_tocasia_dig_site_taps_for_colorless():

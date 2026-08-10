@@ -226,18 +226,6 @@ class PlayerState:
         self.cost_paid_this_phase = False
         self.triggers_fired_this_phase = False
 
-        # Phase-scoped flag for rl.rewards.with_dense_mana_burn_penalty's
-        # metered/unmetered split (2026-08): set True by game.mana.
-        # activate_mana_source whenever an "unmetered" source (registry mana
-        # kind "count"/"count_all" -- Overgrown Battlement, Priest of
-        # Titania: a board-state-scaled burst, binary tap/no-tap, no
-        # partial-tap option) was tapped this phase. Read (then reset to
-        # False for every player, unconditionally) by game.turn.
-        # _empty_mana_pools alongside cost_paid_this_phase/
-        # triggers_fired_this_phase -- see mana_burnt_this_turn_metered
-        # below for what it gates.
-        self.unmetered_mana_tapped_this_phase = False
-
         self.lands_played_this_turn = 0
         # Reset each turn this player takes (turn._run_turn_gen), incremented
         # once per card actually drawn (see draw() below).
@@ -295,6 +283,39 @@ class PlayerState:
         # color/colorless symbols (generic is a cost-side concept, never
         # something a source produces).
         self.mana_pool = {}
+
+        # Parallel shadow-count to mana_pool: dict[str symbol -> int count]
+        # -- how many of the CURRENTLY FLOATING pips of each color trace
+        # back to a "single-pip" mana-producing EVENT (one that added
+        # EXACTLY 1 symbol to the pool in that one event -- computed
+        # dynamically per event by game.mana.float_mana, len(symbols)==1,
+        # NOT a static per-source-kind classification). A plain land or
+        # Llanowar Elves is always single-pip; Rakdos Carnarium and Utopia
+        # Sprawl's automatic bonus (always 2+ symbols in one tap) never is;
+        # a Tron land is single-pip only while NOT all three Tron types are
+        # controlled; Priest of Titania/Overgrown Battlement are single-pip
+        # only in the edge case their count happens to resolve to exactly 1
+        # (e.g. Priest with zero other Elves out) -- deliberate, not a bug
+        # to guard against. A mana filter's output pip (drl_env.
+        # _actions_mana._filter_mana_execute) is the one explicit
+        # exception: always exactly 1 symbol but forced untagged
+        # (float_mana(..., taggable=False)), since it's a deliberate
+        # pool->pool conversion, not reflexive tapping.
+        #
+        # A lossless shadow COUNT, not a literal per-pip list -- sufficient
+        # for this one boolean tag dimension (doesn't scale to more tag
+        # dimensions, fine for now). Invariant: mana_pool_single_pip[c] <=
+        # mana_pool[c] for every color c, always. Decremented by game.mana.
+        # spend_one_pip per the spend-order convention -- an UNTAGGED pip
+        # of a color is always spent before a TAGGED one, so this only
+        # shrinks once no untagged pip of that color remains (see
+        # spend_one_pip's own docstring for why). Cleared alongside
+        # mana_pool at every phase boundary (game.turn._empty_mana_pools).
+        # Replaces the earlier (2026-08) whole-phase
+        # unmetered_mana_tapped_this_phase boolean with per-pip
+        # attribution -- see mana_burnt_this_turn_single_pip below for what
+        # this feeds.
+        self.mana_pool_single_pip = {}
 
         # Total REAL actions this player has personally taken over the
         # whole game -- incremented once per non-Pass action executed in
@@ -356,36 +377,36 @@ class PlayerState:
         # pip counts, no cost-paid/trigger-fired/nothing-castable exemption)
         # -- a deliberately blunter signal than mana_mistake_burn: the point
         # is punishing floating more than you can spend WITHIN a turn, not
-        # just avoidable waste. Raw diagnostic -- mana_burnt_this_turn_metered
+        # just avoidable waste. Raw diagnostic -- mana_burnt_this_turn_single_pip
         # below (a filtered subset of this) is what with_dense_mana_burn_penalty
         # actually reads for reward.
         self.mana_burnt_this_turn = 0
 
-        # Subset of mana_burnt_this_turn above, tallied only for phases where
-        # NO unmetered source (unmetered_mana_tapped_this_phase) was tapped --
-        # game.turn._empty_mana_pools's whole-phase attribution: once mana
-        # lands in the fungible state.mana_pool dict there's no way to know
-        # which burnt pip came from which source, so ANY unmetered tap that
-        # phase excludes the WHOLE phase's burn from this counter, even if a
-        # metered source was also tapped the same phase (erring toward
-        # under-penalizing an ambiguous mixed phase). rl.rewards.
-        # with_dense_mana_burn_penalty's actual input (2026-08, replacing raw
-        # mana_burnt_this_turn) -- this is what lets that penalty ignore
-        # Priest of Titania/Overgrown Battlement's large, unavoidable
-        # "count_all"/"count" bursts while still punishing reflexive tapping
-        # of ordinary lands/dorks. Reset alongside mana_burnt_this_turn, same
-        # turn-boundary lifecycle.
-        self.mana_burnt_this_turn_metered = 0
+        # Subset of mana_burnt_this_turn above: at each phase-boundary burn,
+        # only the portion of the burnt pool that was still TAGGED
+        # single-pip (sum(player.mana_pool_single_pip.values()) at that
+        # moment) -- game.turn._empty_mana_pools' per-pip attribution
+        # (2026-08, replacing the earlier whole-phase
+        # unmetered_mana_tapped_this_phase exclusion). Because
+        # game.mana.spend_one_pip always spends an UNTAGGED pip of a color
+        # before a TAGGED one, whatever single-pip mana is still floating
+        # (and tagged) at phase end is genuinely avoidable waste: a
+        # Priest-of-Titania-style burst's own excess is untagged and gets
+        # spent/burnt first, so it never reaches this counter, while a
+        # single-pip tap left floating unnecessarily does. rl.rewards.
+        # with_dense_mana_burn_penalty's actual input. Reset alongside
+        # mana_burnt_this_turn, same turn-boundary lifecycle.
+        self.mana_burnt_this_turn_single_pip = 0
 
         # The Hill-curve badness value (rl.rewards._hill) ALREADY charged
-        # against reward for this turn's mana_burnt_this_turn_metered so far
-        # -- with_dense_mana_burn_penalty's own running baseline, so each
+        # against reward for this turn's mana_burnt_this_turn_single_pip so
+        # far -- with_dense_mana_burn_penalty's own running baseline, so each
         # reward call charges only the MARGINAL increase in badness since the
         # last call (a genuinely dense, per-transition credit whose sum across
         # a turn still telescopes to exactly _hill(total_this_turn, c, p) by
         # the turn's end -- same total a one-shot terminal score would have
         # given, just attributed to the transitions that actually caused it).
-        # Reset alongside mana_burnt_this_turn_metered.
+        # Reset alongside mana_burnt_this_turn_single_pip.
         self.mana_burn_penalty_credited = 0.0
 
         # Running total of dense mana-burn penalty ACTUALLY charged against
@@ -626,6 +647,7 @@ class GameState:
     # reason -- see that function's own docstring.
     cost_paid_this_phase = _active_player_property("cost_paid_this_phase")
     mana_pool = _active_player_property("mana_pool")
+    mana_pool_single_pip = _active_player_property("mana_pool_single_pip")
     decked_out = _active_player_property("decked_out")
     life_total = _active_player_property("life_total")
     attackers = _active_player_property("attackers")

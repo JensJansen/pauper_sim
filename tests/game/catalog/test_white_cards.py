@@ -102,6 +102,7 @@ def test_cartouche_of_solidarity_cast_pays_w_through_the_mana_pipeline():
 
     mana.activate_mana_source(state, plains)
     assert state.mana_pool == {"W": 1}
+    assert state.mana_pool_single_pip == {"W": 1}  # a 1-symbol event -- tagged single-pip
     mana.begin_pay_cost(state, card_def.cast_cost, on_complete=lambda s: cast_cartouche_of_solidarity(s, card_def))
     mana.execute_pool_spend(state, mana.pool_spend_options(state)[0])
     assert state.mana_pool == {}  # the W pip was actually spent, not skipped
@@ -153,6 +154,7 @@ def test_ethereal_armor_cast_pays_w_through_the_mana_pipeline():
 
     mana.activate_mana_source(state, plains)
     assert state.mana_pool == {"W": 1}
+    assert state.mana_pool_single_pip == {"W": 1}  # a 1-symbol event -- tagged single-pip
     mana.begin_pay_cost(state, card_def.cast_cost, on_complete=lambda s: cast_ethereal_armor(s, card_def))
     mana.execute_pool_spend(state, mana.pool_spend_options(state)[0])
     assert state.mana_pool == {}  # the W pip was actually spent, not skipped

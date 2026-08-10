@@ -317,9 +317,7 @@ def _filter_mana_execute(name, input_color):
             p.flags["used_this_turn"] = True
         else:
             p.tapped = True
-        state.mana_pool[input_color] -= 1
-        if state.mana_pool[input_color] <= 0:
-            del state.mana_pool[input_color]
+        game.spend_one_pip(state, input_color)
         state.log_event("mana_spend", color=input_color, toward="filter")
 
         colors = game.EFFECT_REGISTRY[p.card_def.effect_id]["filter_mana"]["colors"]
@@ -328,7 +326,26 @@ def _filter_mana_execute(name, input_color):
             return color in colors
 
         def on_choose_color(state, color):
-            state.mana_pool[color] = state.mana_pool.get(color, 0) + 1
+            # taggable=False: a filter's output is a deliberate pool->pool
+            # conversion, never reflexive tapping -- must not be tagged as
+            # single-pip production even though it's exactly 1 symbol. See
+            # PlayerState.mana_pool_single_pip's own docstring.
+            #
+            # KNOWN, OWNER-APPROVED GAP (2026-08): because game.spend_one_pip
+            # (called on input_color above) drains an UNTAGGED pip of a color
+            # before a TAGGED one, a filter can "launder" an already-TAGGED
+            # (avoidable) pip into an untagged one -- pay the {1} with a
+            # tagged pip (only one floating of that color), then choose the
+            # SAME output color here -- for zero pool-size cost, since
+            # nothing stops choosing the input color as the output color.
+            # That pip's mana-burn tag is erased even though it traces back
+            # to an ordinary, avoidable tap. Deliberately left as designed:
+            # filters are once-per-turn per source, so the exploitable
+            # surface is small, and reward-shaping input here doesn't have
+            # to be airtight, only directionally correct. Revisit only if
+            # training data shows filter-heavy decks (monster_tron) training
+            # differently than their non-filter peers.
+            game.float_mana(state, [color], taggable=False)
             state.log_event("mana_tap", permanent=(name, p.slot), mode="filter", produced=[color])
 
         game.begin_mana_color_choice(state, can_produce, on_choose_color)

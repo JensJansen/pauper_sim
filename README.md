@@ -507,7 +507,7 @@ wired only through `--matchup` mode.)
   window — watch its aggregate trend once the 2026-08-06 restart (below) has
   run for a while; see `TRAINING_IMPROVEMENT_OPTIONS.md` section 2.
   `PlayerState.mana_burnt_total`/`mana_burnt_this_turn` feed no reward —
-  they remain raw diagnostics for logging/viz (`mana_burnt_this_turn_metered`,
+  they remain raw diagnostics for logging/viz (`mana_burnt_this_turn_single_pip`,
   a filtered subset of the latter, does feed reward — see dense mana-burn
   shaping below). The **mulligan model** trains
   on its own reward (`rl/mulligan.py`): win payout minus a convex
@@ -516,7 +516,7 @@ wired only through `--matchup` mode.)
   each time) since 2026-08-06 — see `rl.league_runner._run_session`'s
   `MULLIGAN_UPDATE_EVERY`.
 
-  **Dense mana-burn shaping — tried, reverted, fixed and re-enabled
+  **Dense mana-burn shaping — tried, reverted, fixed twice
   (2026-08).** A per-transition penalty for mana burnt at a phase boundary
   (rule 500.4) is wired into `deploy_reward_v2` as
   `with_dense_mana_burn_penalty`, replacing an earlier, narrower,
@@ -531,28 +531,44 @@ wired only through `--matchup` mode.)
   not a mistake a dense curve on raw totals could distinguish from real
   waste. `deploy_reward_v2` was reverted to plain `deploy_reward(win_floor=1.0)`.
 
-  It was re-enabled after switching the wrapper's input to
-  `PlayerState.mana_burnt_this_turn_metered`: `game.turn._empty_mana_pools`
-  now excludes a player's **entire phase's** burn from that counter whenever
-  any "unmetered" mana source (registry mana kind `"count"`/`"count_all"` —
-  a board-state-scaled burst with no partial-tap option, e.g. Priest of
-  Titania, Overgrown Battlement) was tapped that phase, regardless of
-  whether an ordinary "metered" source (`"fixed"`/`"flexible"`/
-  `"fixed_multi"`/`"tron"` — every land, every simple mana dork, where one
-  tap is a small, fully agent-controlled amount) was also tapped the same
-  phase. Whole-phase, not per-pip, because once mana lands in the fungible
-  `state.mana_pool` dict there's no way to attribute a burnt pip back to the
-  source that produced it — erring toward under-penalizing an ambiguous
-  mixed phase rather than risk repeating the archetype-bias regression.
-  Priest of Titania's burst no longer reaches the penalty at all, while
-  reflexive tapping of ordinary metered sources — the actual pathology this
-  shaping exists to discourage — is unaffected. This does **not** resolve
-  the wrap's separate, already-accepted tradeoff that its own
-  `game_penalty_cap` can in principle still push a sufficiently sloppy win
-  below a clean loss, breaking `q`'s "every win outscores every loss"
-  guarantee — that was a deliberate design choice when the wrapper was
-  authored (see its own docstring), orthogonal to the archetype-bias bug
-  this split fixes.
+  A second version re-enabled it reading `PlayerState.
+  mana_burnt_this_turn_metered`, a WHOLE-PHASE fix: `game.turn.
+  _empty_mana_pools` excused a player's entire phase's burn whenever any
+  board-state-scaled burst source (Priest of Titania, Overgrown Battlement)
+  was tapped that phase, regardless of whether an ordinary metered source
+  (every land, every simple mana dork) was also tapped the same phase —
+  correct for Priest, but blind to a mixed phase where a genuinely
+  avoidable single-pip tap sat alongside an unavoidable burst.
+
+  The current version replaces that whole-phase exclusion with **per-pip
+  attribution**: `PlayerState.mana_pool_single_pip` is a shadow count,
+  parallel to `mana_pool`, tracking how many of the currently floating pips
+  of each color trace back to a "single-pip" mana-producing EVENT — one
+  that added exactly 1 symbol to the pool in that one event
+  (`game.mana.float_mana`, `len(symbols) == 1`, computed dynamically per
+  event, not from a static per-source-kind list). A plain land or Llanowar
+  Elves always qualifies; Rakdos Carnarium and Utopia Sprawl's automatic
+  bonus (2+ symbols per tap) never do; a Tron land qualifies only while not
+  all three Tron types are controlled; Priest of Titania/Overgrown
+  Battlement qualify only in the edge case their count happens to resolve
+  to exactly 1. A mana filter's output (Conduit Pylons/Barrels of Blasting
+  Jelly) is the one explicit exception, forced untagged regardless of count
+  (`taggable=False`) — a deliberate pool→pool conversion, not reflexive
+  tapping. Spending a pip (`game.mana.spend_one_pip`) always consumes an
+  UNTAGGED pip of that color first, so a burst source's own unavoidable
+  excess absorbs blame for a burnt leftover ahead of a genuinely avoidable
+  single-pip tap of the same color — `PlayerState.
+  mana_burnt_this_turn_single_pip` (`game.turn._empty_mana_pools`) sums
+  whatever remains tagged at the moment of the burn. Priest of Titania's
+  burst still never reaches the penalty, and now neither does a metered
+  source's mana genuinely spent — but a reflexive single-pip tap sitting
+  alongside a burst tap in the same phase, previously excused entirely, is
+  correctly caught. This does **not** resolve the wrap's separate,
+  already-accepted tradeoff that its own `game_penalty_cap` can in
+  principle still push a sufficiently sloppy win below a clean loss,
+  breaking `q`'s "every win outscores every loss" guarantee — that was a
+  deliberate design choice when the wrapper was authored (see its own
+  docstring), orthogonal to the archetype-bias bug this fixes.
 - **Win condition**: the engine's real one — an opponent's life total hitting
   0, or a player decking out. There is no separate termination heuristic.
 

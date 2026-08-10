@@ -644,6 +644,7 @@ def test_island_taps_for_blue_mana():
     state.battlefield = [island]
     activate_mana_source(state, island)
     assert island.tapped and state.mana_pool.get("U") == 1
+    assert state.mana_pool_single_pip == {"U": 1}  # a 1-symbol event -- tagged single-pip
 
 
 def test_seat_of_the_synod_taps_for_blue_mana():
@@ -654,6 +655,7 @@ def test_seat_of_the_synod_taps_for_blue_mana():
     state.battlefield = [seat]
     activate_mana_source(state, seat)
     assert seat.tapped and state.mana_pool.get("U") == 1
+    assert state.mana_pool_single_pip == {"U": 1}  # a 1-symbol event -- tagged single-pip
 
 
 def test_seat_of_the_synod_counts_for_affinity_as_an_artifact():

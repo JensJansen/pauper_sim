@@ -146,8 +146,10 @@ def test_wooded_ridgeline_taps_for_r_or_g_and_enters_tapped():
         land = Permanent(ridgeline)
         state.battlefield = [land]
         state.mana_pool = {}
+        state.mana_pool_single_pip = {}
         mana.activate_mana_source(state, land, color)
         assert state.mana_pool == {color: 1} and land.tapped
+        assert state.mana_pool_single_pip == {color: 1}  # a 1-symbol event -- tagged single-pip
     entered = enters_battlefield(state, ridgeline, from_zone=None)
     assert entered.tapped
 
@@ -162,6 +164,7 @@ def test_rakdos_carnarium_taps_for_b_and_r_simultaneously():
     state.battlefield = [carnarium]
     mana.activate_mana_source(state, carnarium)
     assert state.mana_pool == {"B": 1, "R": 1} and carnarium.tapped
+    assert state.mana_pool_single_pip == {}  # a 2-symbol event -- never single-pip-tagged
 
 
 def test_rakdos_carnarium_etb_bounce_is_queued_through_real_card():
@@ -203,8 +206,10 @@ def test_jagged_barrens_taps_for_b_or_r():
         land = Permanent(barrens)
         state.battlefield = [land]
         state.mana_pool = {}
+        state.mana_pool_single_pip = {}
         mana.activate_mana_source(state, land, color)
         assert state.mana_pool == {color: 1} and land.tapped
+        assert state.mana_pool_single_pip == {color: 1}  # a 1-symbol event -- tagged single-pip
 
 
 def test_drossforge_bridge_taps_for_b_or_r():
@@ -216,8 +221,10 @@ def test_drossforge_bridge_taps_for_b_or_r():
         land = Permanent(bridge)
         state.battlefield = [land]
         state.mana_pool = {}
+        state.mana_pool_single_pip = {}
         mana.activate_mana_source(state, land, color)
         assert state.mana_pool == {color: 1} and land.tapped
+        assert state.mana_pool_single_pip == {color: 1}  # a 1-symbol event -- tagged single-pip
 
 
 def test_drossforge_bridge_counts_for_affinity_and_metalcraft():
@@ -241,8 +248,10 @@ def test_mistvault_bridge_taps_for_u_or_b():
         land = Permanent(bridge)
         state.battlefield = [land]
         state.mana_pool = {}
+        state.mana_pool_single_pip = {}
         mana.activate_mana_source(state, land, color)
         assert state.mana_pool == {color: 1} and land.tapped
+        assert state.mana_pool_single_pip == {color: 1}  # a 1-symbol event -- tagged single-pip
 
 
 def test_silverbluff_bridge_taps_for_u_or_r():
@@ -254,8 +263,10 @@ def test_silverbluff_bridge_taps_for_u_or_r():
         land = Permanent(bridge)
         state.battlefield = [land]
         state.mana_pool = {}
+        state.mana_pool_single_pip = {}
         mana.activate_mana_source(state, land, color)
         assert state.mana_pool == {color: 1} and land.tapped
+        assert state.mana_pool_single_pip == {color: 1}  # a 1-symbol event -- tagged single-pip
 
 
 def test_slagwoods_bridge_taps_for_r_or_g():
@@ -267,8 +278,10 @@ def test_slagwoods_bridge_taps_for_r_or_g():
         land = Permanent(bridge)
         state.battlefield = [land]
         state.mana_pool = {}
+        state.mana_pool_single_pip = {}
         mana.activate_mana_source(state, land, color)
         assert state.mana_pool == {color: 1} and land.tapped
+        assert state.mana_pool_single_pip == {color: 1}  # a 1-symbol event -- tagged single-pip
 
 
 def test_contaminated_aquifer_taps_for_u_or_b():
@@ -280,8 +293,10 @@ def test_contaminated_aquifer_taps_for_u_or_b():
         land = Permanent(aquifer)
         state.battlefield = [land]
         state.mana_pool = {}
+        state.mana_pool_single_pip = {}
         mana.activate_mana_source(state, land, color)
         assert state.mana_pool == {color: 1} and land.tapped
+        assert state.mana_pool_single_pip == {color: 1}  # a 1-symbol event -- tagged single-pip
 
 
 def test_contaminated_aquifer_is_legal_islandcycling_target():
@@ -313,8 +328,10 @@ def test_ice_tunnel_taps_for_u_or_b():
         land = Permanent(tunnel)
         state.battlefield = [land]
         state.mana_pool = {}
+        state.mana_pool_single_pip = {}
         mana.activate_mana_source(state, land, color)
         assert state.mana_pool == {color: 1} and land.tapped
+        assert state.mana_pool_single_pip == {color: 1}  # a 1-symbol event -- tagged single-pip
 
 
 def test_sneaky_snacker_real_draw_trigger_orders_and_returns():

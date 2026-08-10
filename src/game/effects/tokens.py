@@ -9,6 +9,7 @@ from .state_based import is_token, sacrifice_to_graveyard
 from .win_check import gain_life
 from .. import resolution
 from ..cards import CardDef, CardType, EffectId
+from ..mana import float_mana
 
 TOKEN_LIMIT = 20  # shared across every token name, not per-name
 
@@ -76,7 +77,7 @@ def activate_eldrazi_spawn_sac(state, permanent):
     # ahead of the dies-trigger's queueing -- sacrifice_to_graveyard bundles
     # the zone-move log and the trigger fire into one call, with no seam to
     # insert this between them the way the old hand-rolled body could.
-    state.mana_pool["C"] = state.mana_pool.get("C", 0) + 1
+    float_mana(state, ["C"])
     state.log_event("mana_tap", permanent=(permanent.card_def.name, permanent.slot), mode="sac_ability", produced=["C"])
     sacrifice_to_graveyard(state, permanent)  # ceases to exist; queues the dies-trigger (Writhing Chrysalis: "whenever you sacrifice another Eldrazi")
 

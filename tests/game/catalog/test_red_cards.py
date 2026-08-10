@@ -546,6 +546,7 @@ def test_burning_tree_emissary_etb_adds_rr():
     while state.stack:
         resolve_top_of_stack(state)
     assert state.mana_pool.get("R") == 2
+    assert state.mana_pool_single_pip == {}  # a 2-symbol event -- never single-pip-tagged
 
 
 def _drive_stack(state):

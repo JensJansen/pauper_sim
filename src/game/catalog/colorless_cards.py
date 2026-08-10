@@ -87,7 +87,7 @@ from ..effects.state_based import check_state_based_actions, sacrifice_to_gravey
 from ..effects.stats import can_be_targeted, permanent_power
 from ..effects.tokens import activate_blood_sac, activate_clue_sac, activate_map_sac
 from ..effects.win_check import gain_life
-from ..mana import COLORS
+from ..mana import COLORS, float_mana
 from ..resolution import (
     begin_choose_any_target, begin_choose_graveyard_card, begin_choose_mana_color, begin_choose_opponent_permanent,
     begin_choose_permanent, begin_choose_target_player, begin_choose_up_to_graveyard, begin_may_cast, begin_pay_unless,
@@ -172,7 +172,7 @@ def chromatic_star_mana(state, permanent):
     sacrifice_to_graveyard(state, permanent)  # queues the dies-trigger (draw)
 
     def _add_color(state, color):
-        state.mana_pool[color] = state.mana_pool.get(color, 0) + 1
+        float_mana(state, [color])
         state.log_event("mana_tap", permanent=(permanent.card_def.name, permanent.slot), mode="chromatic_star", produced=[color])
 
     begin_choose_mana_color(state, _add_color)

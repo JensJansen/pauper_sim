@@ -20,17 +20,21 @@ the v1 efficiency scaling caused an action-space-minimization pathology).
 DENSE shaping (with_dense_mana_burn_penalty, below) IS wired into
 deploy_reward_v2 -- see deploy_reward_v2's own comment for its history: an
 unconditional first version was reverted 2026-08 (archetype bias against
-Elves' Priest of Titania), then re-enabled 2026-08 reading a metered/
-unmetered-filtered subset of mana burnt (PlayerState.
-mana_burnt_this_turn_metered) instead of the raw total, which structurally
-excludes Priest-style board-state-scaled bursts from the penalty. It wraps a
-base reward_fn with a per-transition penalty for mana burnt (unconditional
-WITHIN the metered bucket -- no exemption for whether the burn was
+Elves' Priest of Titania), then re-enabled 2026-08 reading a PER-PIP
+single-pip-tagged subset of mana burnt (PlayerState.
+mana_burnt_this_turn_single_pip) instead of the raw total -- game.mana.
+float_mana/spend_one_pip tag and spend individual floating pips (see their
+own docstrings, and PlayerState.mana_pool_single_pip's), which structurally
+excludes Priest-style board-state-scaled bursts from the penalty while still
+catching avoidable single-pip waste even in a phase that ALSO saw a burst
+tap (a whole-phase-exclusion predecessor of this design could not). It wraps
+a base reward_fn with a per-transition penalty for mana burnt (unconditional
+WITHIN the single-pip-tagged bucket -- no exemption for whether the burn was
 avoidable, unlike the narrower with_mana_mistake_penalty it had itself
 replaced). The penalty telescopes a Hill curve (_hill) across a turn's
 transitions, so its sum by turn's end equals a single terminal charge for
-that turn's total metered burn, but attributed to the transitions that
-actually caused it."""
+that turn's total single-pip-tagged burn, but attributed to the transitions
+that actually caused it."""
 
 
 def _hill(x, c, p):
@@ -205,46 +209,59 @@ def with_dense_mana_burn_penalty(base_reward_fn, mana_burn_c=3.3, mana_burn_p=4.
     than a slightly-sloppy one rather than unboundedly worse) but keeps it
     genuinely DENSE and per-transition rather than terminal, and switches
     its input from that era's mana_burnt_total (unconditional, whole-GAME
-    cumulative) to PlayerState.mana_burnt_this_turn_metered (per-TURN
+    cumulative) to PlayerState.mana_burnt_this_turn_single_pip (per-TURN
     cumulative, reset by game.turn._run_turn_gen) -- deliberately still
-    unconditional WITHIN the metered bucket, unlike mana_mistake_burn's
-    cost-paid/trigger-fired/nothing-castable exemptions: the point here is
-    punishing floating more mana in a turn than you spend, full stop, not
-    just provably avoidable waste (owner call, 2026-08 -- mana_mistake_burn's
-    own exemptions were forgiving exactly the cases meant to be punished).
+    unconditional WITHIN the single-pip-tagged bucket, unlike
+    mana_mistake_burn's cost-paid/trigger-fired/nothing-castable exemptions:
+    the point here is punishing floating more mana in a turn than you spend,
+    full stop, not just provably avoidable waste (owner call, 2026-08 --
+    mana_mistake_burn's own exemptions were forgiving exactly the cases
+    meant to be punished).
 
-    METERED/UNMETERED SPLIT (2026-08, second iteration -- this wrapper was
-    first wired unconditionally against raw mana_burnt_this_turn, then
-    reverted after a real training batch showed the `elves` deck regressing
-    sharply across every cross-league matchup, traced to Priest of Titania's
-    mana ability ("count_all" in the card registry -- sums every Elf on BOTH
+    PER-PIP SINGLE-PIP TAG (2026-08, second iteration -- this wrapper was
+    first wired unconditionally against raw mana_burnt_this_turn, reverted
+    after a real training batch showed the `elves` deck regressing sharply
+    across every cross-league matchup, traced to Priest of Titania's mana
+    ability ("count_all" in the card registry -- sums every Elf on BOTH
     battlefields in one all-or-nothing tap): a large, unavoidable per-turn
-    burst that's correct, intrinsic play for that archetype, not a mistake a
-    penalty on raw burnt totals could tell apart from real waste).
-    mana_burnt_this_turn_metered (game.mana.activate_mana_source /
-    game.turn._empty_mana_pools) excludes the ENTIRE phase's burn whenever
-    any "unmetered" source -- registry mana kind "count"/"count_all",
-    board-state-scaled, binary tap/no-tap, no partial-tap option -- was
-    tapped that phase, regardless of whether a metered source (every land,
-    every simple mana dork -- kinds "fixed"/"flexible"/"fixed_multi"/"tron",
-    where one tap is a small, fully agent-controlled, deterministic amount)
-    was ALSO tapped the same phase: once mana lands in the fungible
-    state.mana_pool dict there's no way to attribute which burnt pip came
-    from which source, so this errs toward under-penalizing an ambiguous
-    mixed phase rather than risk re-triggering the same archetype bias.
-    Reflexive tapping of ordinary, fully-metered sources -- the actual
-    problem this wrapper exists for -- is unaffected by the exclusion.
+    burst that's correct, intrinsic archetype play, not a mistake raw totals
+    could tell apart from real waste. A first fix, since replaced, excluded
+    an entire PHASE's burn whenever any "unmetered" source was tapped that
+    phase -- coarse, and blind to a mixed phase where an avoidable
+    single-pip tap sat alongside an unavoidable burst.)
+
+    mana_burnt_this_turn_single_pip (game.mana.float_mana / spend_one_pip,
+    game.turn._empty_mana_pools) now attributes PER PIP: a mana-producing
+    EVENT is tagged "single-pip" iff it adds exactly 1 symbol to the pool in
+    that one event (dynamic, len(produced) == 1) -- a plain land or Llanowar
+    Elves always qualifies; Rakdos Carnarium/Utopia Sprawl's automatic bonus
+    (2+ symbols) never does; a Tron land qualifies only while not all three
+    Tron types are online; Priest of Titania/Overgrown Battlement qualify
+    only in the edge case their count resolves to exactly 1.
+    PlayerState.mana_pool_single_pip shadow-counts how many of the CURRENTLY
+    FLOATING pips of each color are tagged. Spending a pip (game.mana.
+    spend_one_pip) always consumes an UNTAGGED pip of that color first -- so
+    Priest's own burst mana is always spent/burnt ahead of any tagged
+    single-pip mana of the same color, meaning
+    mana_burnt_this_turn_single_pip never blames Priest's unavoidable excess
+    while still correctly catching a genuinely avoidable single-pip tap
+    (e.g. 2 unneeded Llanowar Elves alongside a Priest burst that alone
+    would have covered the spend). Reflexive tapping of ordinary single-pip
+    sources -- the actual problem this wrapper exists for -- is fully
+    penalized, now with per-pip precision instead of the earlier
+    whole-phase exclusion's coarser under-penalizing of mixed phases.
 
     TELESCOPING, not a flat per-event charge: each call charges only the
-    MARGINAL increase in _hill(mana_burnt_this_turn_metered, c, p) since the
-    last call for this player this turn (PlayerState.mana_burn_penalty_credited
-    is the running baseline, reset alongside mana_burnt_this_turn_metered each
-    new turn). Burning early in a turn is nearly free (the curve's shallow
-    start); each additional pip burnt LATER in the same turn costs more than
-    the last, because it's added to an already-elevated baseline -- a
-    natural, compounding "you should have planned this turn's mana better"
-    shape. Summed across a whole turn's worth of calls, the total charged is
-    EXACTLY _hill(total_burnt_this_turn_metered, c, p) -- the same number a
+    MARGINAL increase in _hill(mana_burnt_this_turn_single_pip, c, p) since
+    the last call for this player this turn (PlayerState.mana_burn_penalty_
+    credited is the running baseline, reset alongside
+    mana_burnt_this_turn_single_pip each new turn). Burning early in a turn
+    is nearly free (the curve's shallow start); each additional pip burnt
+    LATER in the same turn costs more than the last, because it's added to
+    an already-elevated baseline -- a natural, compounding "you should have
+    planned this turn's mana better" shape. Summed across a whole turn's
+    worth of calls, the total charged is EXACTLY
+    _hill(total_burnt_this_turn_single_pip, c, p) -- the same number a
     one-shot terminal score would have given for that turn, just attributed
     to whichever individual transitions actually caused it (proper credit
     assignment, not blurred across the whole game the way this file's
@@ -294,14 +311,14 @@ def with_dense_mana_burn_penalty(base_reward_fn, mana_burn_c=3.3, mana_burn_p=4.
     under this rule, same as mana_burn_c/mana_burn_p above.
 
     No exemption checking means no need for game.turn's on_mana_burn hook at
-    all (unlike with_mana_mistake_penalty) -- mana_burnt_this_turn_metered is
-    always tallied by game.turn._empty_mana_pools regardless of reward_fn, so
-    this wrapper needs no consumes_mana_mistake-style opt-in flag; it's pure,
-    already-available bookkeeping to read, not something rl.train needs to
-    wire up conditionally."""
+    all (unlike with_mana_mistake_penalty) -- mana_burnt_this_turn_single_pip
+    is always tallied by game.turn._empty_mana_pools regardless of
+    reward_fn, so this wrapper needs no consumes_mana_mistake-style opt-in
+    flag; it's pure, already-available bookkeeping to read, not something
+    rl.train needs to wire up conditionally."""
     def reward_fn(state, done, horizon):
         p = state.players[state.active_idx]
-        current = _hill(p.mana_burnt_this_turn_metered, mana_burn_c, mana_burn_p)
+        current = _hill(p.mana_burnt_this_turn_single_pip, mana_burn_c, mana_burn_p)
         penalty = current - p.mana_burn_penalty_credited
         p.mana_burn_penalty_credited = current
         # Whole-game cap: clamp this charge so mana_burn_penalty_charged_total
@@ -358,14 +375,20 @@ deploy_reward_v1 = deploy_reward()
 # exemption (e.g. "was anything castable") because Priest's burst is large
 # enough that even a coarse castability check would rarely exempt it.
 #
-# Re-enabled under with_dense_mana_burn_penalty's own metered/unmetered
-# split (see its docstring): the penalty now reads PlayerState.
-# mana_burnt_this_turn_metered, which game.turn._empty_mana_pools tallies
-# only for phases where no "count"/"count_all"-kind (board-state-scaled,
-# no-partial-tap) source was tapped -- Priest of Titania's burst never
-# reaches the penalty at all now, regardless of magnitude, while reflexive
-# tapping of ordinary metered sources (every land, every simple mana dork --
-# the actual problem this wrapper exists for) is still fully penalized.
+# Re-enabled, second iteration: a first fix wrapped this in a whole-phase
+# metered/unmetered exclusion (excuse an entire phase's burn if any burst
+# source was tapped that phase) -- since replaced by with_dense_mana_burn_
+# penalty's own PER-PIP single-pip tag (see its docstring): the penalty now
+# reads PlayerState.mana_burnt_this_turn_single_pip, which game.turn.
+# _empty_mana_pools sums straight from PlayerState.mana_pool_single_pip --
+# only pips from a mana-producing EVENT that added exactly 1 symbol, spent
+# last (game.mana.spend_one_pip always drains untagged/burst mana of a
+# color first). Priest of Titania's burst never reaches the penalty at all
+# now, regardless of magnitude, AND (unlike the whole-phase predecessor) a
+# reflexive single-pip tap sitting alongside a burst tap in the same phase
+# is still correctly penalized -- reflexive tapping of ordinary metered
+# sources (every land, every simple mana dork -- the actual problem this
+# wrapper exists for) is fully penalized with per-pip precision.
 #
 # This does NOT resolve the wrap's separate, already-accepted tradeoff that
 # its own game_penalty_cap can still push a sufficiently sloppy win below a

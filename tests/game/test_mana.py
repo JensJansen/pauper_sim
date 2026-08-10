@@ -21,10 +21,10 @@ def test_fixed_multi_source_floats_both_symbols_at_once():
         mana.activate_mana_source(state, state.battlefield[0])  # one activation floats BOTH symbols
         assert state.mana_pool == {"B": 1, "R": 1} and state.battlefield[0].tapped
         assert mana.pool_can_pay(state.mana_pool, {"B": 1, "R": 1})
-        # fixed_multi is a METERED kind -- doesn't tag the dense mana-burn
-        # penalty's unmetered-phase-exclusion flag (see PlayerState.
-        # unmetered_mana_tapped_this_phase's own docstring).
-        assert state.players[state.active_idx].unmetered_mana_tapped_this_phase is False
+        # A 2-symbol event -- never single-pip-tagged, regardless of
+        # registry kind (see PlayerState.mana_pool_single_pip's own
+        # docstring: the tag rule is dynamic, len(produced) == 1).
+        assert state.mana_pool_single_pip == {}
     finally:
         registry.EFFECT_REGISTRY[EffectId.FILLER] = filler_backup
 
@@ -47,10 +47,53 @@ def test_count_source_produces_one_symbol_per_matching_permanent():
     mana.activate_mana_source(state, battlement)  # one activation floats all 3 G into the pool
     assert state.mana_pool == {"G": 3} and battlement.tapped
     assert mana.pool_can_pay(state.mana_pool, {"G": 3}) and not mana.pool_can_pay(state.mana_pool, {"G": 4})
-    # count is an UNMETERED kind -- tags the dense mana-burn penalty's
-    # unmetered-phase-exclusion flag (see PlayerState.
-    # unmetered_mana_tapped_this_phase's own docstring).
-    assert state.players[state.active_idx].unmetered_mana_tapped_this_phase is True
+    # A 3-symbol event -- never single-pip-tagged (see
+    # test_single_pip_tag_on_fixed_source for the ==1 case, including the
+    # edge case where a "count"/"count_all" source happens to resolve to
+    # exactly 1 and IS tagged).
+    assert state.mana_pool_single_pip == {}
+
+
+def test_single_pip_tag_on_fixed_source():
+    # A plain land's tap is always a 1-symbol event -> tagged single-pip
+    # (see PlayerState.mana_pool_single_pip's own docstring for the dynamic
+    # len(produced) == 1 tag rule).
+    state = GameState(on_the_play=True)
+    state.battlefield = [Permanent(CardDef("Mountain", CardType.LAND, None, EffectId.MOUNTAIN))]
+    mana.activate_mana_source(state, state.battlefield[0])
+    assert state.mana_pool == {"R": 1}
+    assert state.mana_pool_single_pip == {"R": 1}
+
+
+def test_spend_one_pip_untagged_first():
+    # game.mana.spend_one_pip's spend-order convention: an UNTAGGED
+    # (multi-pip-event-sourced) pip of a color is always consumed before a
+    # TAGGED (single-pip-event-sourced) one -- see its own docstring for
+    # why (lets a burst source's own excess absorb blame for a burnt
+    # leftover ahead of a genuinely avoidable single-pip tap).
+    state = GameState(on_the_play=True)
+    mana.float_mana(state, ["R", "G"])  # 2-symbol event -- untagged
+    mana.float_mana(state, ["R"])       # 1-symbol event -- tagged
+    assert state.mana_pool == {"R": 2, "G": 1}
+    assert state.mana_pool_single_pip == {"R": 1}
+
+    mana.spend_one_pip(state, "R")  # untagged R spent first
+    assert state.mana_pool == {"R": 1, "G": 1}
+    assert state.mana_pool_single_pip == {"R": 1}  # untouched -- the tagged pip is still floating
+
+    mana.spend_one_pip(state, "R")  # only the tagged R remains
+    assert "R" not in state.mana_pool
+    assert "R" not in state.mana_pool_single_pip
+
+
+def test_float_mana_taggable_false_forces_no_tag():
+    # taggable=False overrides the len==1 rule -- used only by drl_env's
+    # mana-filter output, which must never be tagged despite always
+    # producing exactly 1 symbol (see float_mana's own docstring).
+    state = GameState(on_the_play=True)
+    mana.float_mana(state, ["U"], taggable=False)
+    assert state.mana_pool == {"U": 1}
+    assert state.mana_pool_single_pip == {}
 
 
 def test_pool_can_pay_edges():
@@ -87,6 +130,7 @@ def test_utopia_sprawl_automatic_bonus_mana():
     assert mana.mana_output(forest, state) == ["G", "W"]  # native G, plus Utopia Sprawl's automatic bonus
     mana.activate_mana_source(state, forest)  # one activation floats native G AND the automatic bonus W
     assert state.mana_pool == {"G": 1, "W": 1} and forest.tapped
+    assert state.mana_pool_single_pip == {}  # a 2-symbol event -- never single-pip-tagged
     # pay a {W} cost by spending the floated W; the unneeded G stays in the pool.
     mana.begin_pay_cost(state, {"W": 1}, on_complete=lambda s: None)
     assert state.pending_resolution is not None
@@ -111,6 +155,7 @@ def test_abundant_growth_competing_granted_ability():
     assert ("Plains", "G") in mana.mana_ability_options(state)  # the grant color is offered as a tap option
     mana.activate_mana_source(state, plains, "G")  # float G via the grant, chosen at tap time
     assert state.mana_pool == {"G": 1} and plains.tapped
+    assert state.mana_pool_single_pip == {"G": 1}  # a 1-symbol event -- tagged single-pip
     mana.begin_pay_cost(state, {"G": 1}, on_complete=lambda s: None)
     mana.execute_pool_spend(state, "G")
     assert state.pending_resolution is None  # {G} covered via the granted color
@@ -134,6 +179,7 @@ def test_abundant_growth_granted_color_only_via_enchanted_permanent():
     assert ("Plains", "G") in mana.mana_ability_options(state)  # only the ENCHANTED Plains can make G
     mana.activate_mana_source(state, grant_plains, "G")
     assert grant_plains.tapped and not plain_plains.tapped
+    assert state.mana_pool_single_pip == {"G": 1}  # a 1-symbol event -- tagged single-pip
     try:
         mana.mana_output(plain_plains, state, "G")
         assert False, "the unenchanted Plains must not be able to produce G"

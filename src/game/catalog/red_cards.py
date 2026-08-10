@@ -22,7 +22,7 @@ from ..effects.tokens import (
     BLOOD_TOKEN_CARD_DEF, HUMAN_SOLDIER_TOKEN_CARD_DEF, ROBOT_TOKEN_CARD_DEF, SAMURAI_TOKEN_CARD_DEF,
     TREASURE_TOKEN_CARD_DEF, create_token,
 )
-from ..mana import begin_pay_cost, plan_payment
+from ..mana import begin_pay_cost, float_mana, plan_payment
 from ..turn import Speed
 from ..effects.win_check import deal_damage_to_opponent, deal_damage_to_player
 
@@ -195,7 +195,7 @@ def _goblin_tomb_raider_controls_artifact(state, permanent):
 def burning_tree_emissary_etb(state):
     """Real card adds {R}{G}. AUTHORIZED SIMPLIFICATION (owner, 2026-08-02):
     adds {R}{R} instead -- mono_red_rally has no green source/sink for the G."""
-    state.mana_pool["R"] = state.mana_pool.get("R", 0) + 2
+    float_mana(state, ["R", "R"])
     state.log_event("mana_tap", permanent=("Burning-Tree Emissary", None), mode="etb", produced=["R", "R"])
 
 

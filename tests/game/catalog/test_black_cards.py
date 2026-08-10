@@ -556,6 +556,7 @@ def test_vault_of_whispers_taps_for_black():
     assert mana_output(vault, state) == ["B"]
     activate_mana_source(state, vault)
     assert state.mana_pool == {"B": 1} and vault.tapped
+    assert state.mana_pool_single_pip == {"B": 1}  # a 1-symbol event -- tagged single-pip
 
 
 def test_bojuka_bog_taps_for_black():
@@ -569,6 +570,7 @@ def test_bojuka_bog_taps_for_black():
     assert mana_output(bog, state) == ["B"]
     activate_mana_source(state, bog)
     assert state.mana_pool == {"B": 1} and bog.tapped
+    assert state.mana_pool_single_pip == {"B": 1}  # a 1-symbol event -- tagged single-pip
 
 
 # --- Lotleth Giant: Undergrowth ETB, "1 damage to the opponent per

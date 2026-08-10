@@ -249,35 +249,50 @@ def mana_ability_options(state):
 
 def activate_mana_source(state, permanent, color_choice=None):
     """Float-first: activate `permanent`'s mana ability immediately -- tap it
-    (unless mana_no_tap), add its produced symbols to the pool, run any on_tap
-    side effect (Lotus Petal/Treasure self-sac, Wall of Roots counter). No
-    pending resolution: a mana ability resolves at once and never uses the
-    stack. (Saruli's extra "tap another creature" cost is an agent choice
-    opened by the drl_env mana-ability action, not an on_tap side effect.)
-
-    Also tags PlayerState.unmetered_mana_tapped_this_phase (on the acting
-    player, state.active_idx -- a mana ability can only ever be activated by
-    its own controller, and this function already writes to state.mana_pool,
-    itself an implicit-active-player proxy, so this matches rather than
-    introduces a convention) whenever the source's mana kind is "count" or
-    "count_all" -- see that field's own docstring, and rl.rewards.
-    with_dense_mana_burn_penalty, for why."""
+    (unless mana_no_tap), add its produced symbols to the pool (float_mana,
+    which also tags single-pip production -- see its own docstring), run any
+    on_tap side effect (Lotus Petal/Treasure self-sac, Wall of Roots
+    counter). No pending resolution: a mana ability resolves at once and
+    never uses the stack. (Saruli's extra "tap another creature" cost is an
+    agent choice opened by the drl_env mana-ability action, not an on_tap
+    side effect.)"""
     no_tap = registry.EFFECT_REGISTRY.get(permanent.card_def.effect_id, {}).get("mana_no_tap", False)
     if not no_tap:
         permanent.tapped = True
     produced = mana_output(permanent, state, color_choice)
-    for symbol in produced:
-        state.mana_pool[symbol] = state.mana_pool.get(symbol, 0) + 1
-    # spec is guaranteed non-None here: mana_output above already raised if
-    # the registry had no "mana" entry for this permanent.
-    spec = registry.EFFECT_REGISTRY.get(permanent.card_def.effect_id, {}).get("mana")
-    if spec[0] in ("count", "count_all"):
-        state.players[state.active_idx].unmetered_mana_tapped_this_phase = True
+    float_mana(state, produced)
     state.log_event("mana_tap", permanent=(permanent.card_def.name, permanent.slot),
                     mode="no_tap" if no_tap else "normal", produced=produced)
     on_tap = registry.EFFECT_REGISTRY.get(permanent.card_def.effect_id, {}).get("on_tap")
     if on_tap is not None:
         on_tap(state, permanent)
+
+
+def float_mana(state, symbols, taggable=True):
+    """Adds `symbols` (the list a mana-producing EVENT just produced, e.g.
+    ["G"] or ["G", "G", "G"]) to state.mana_pool, one add per symbol.
+
+    Also TAGS the floated pip in state.mana_pool_single_pip -- the
+    "single-pip" tag rule is dynamic and per-event: an event is single-pip
+    iff it added EXACTLY 1 symbol to the pool (len(symbols) == 1),
+    regardless of the source's registry mana `kind`. A plain land or
+    Llanowar Elves always qualifies; a 2+-symbol event (Rakdos Carnarium,
+    Priest of Titania with other Elves out, Utopia Sprawl's automatic
+    bonus, an online Tron land) never does. See PlayerState.
+    mana_pool_single_pip's own docstring for the full rationale.
+
+    taggable=False is the ONE explicit exception to that rule: forces no
+    tag even for a 1-symbol event -- used only by a mana filter's output
+    pip (drl_env._actions_mana._filter_mana_execute), which always
+    produces exactly 1 symbol but is a deliberate pool->pool conversion,
+    not reflexive tapping, and must never be punished as such."""
+    pool = state.mana_pool
+    for symbol in symbols:
+        pool[symbol] = pool.get(symbol, 0) + 1
+    if taggable and len(symbols) == 1:
+        single = state.mana_pool_single_pip
+        color = symbols[0]
+        single[color] = single.get(color, 0) + 1
 
 
 def pool_spend_options(state):
@@ -296,16 +311,44 @@ def pool_spend_options(state):
     )
 
 
+def spend_one_pip(state, color):
+    """Decrements one floating pip of `color` off state.mana_pool --
+    applying the spend-order convention: an UNTAGGED (multi-pip-burst-
+    sourced) pip of this color is always consumed BEFORE a TAGGED
+    (single-pip-sourced) one. state.mana_pool_single_pip only shrinks once
+    no untagged pip of this color remains. This is what lets a burst
+    source's own unavoidable excess (Priest of Titania, Overgrown
+    Battlement) absorb blame for a burnt leftover ahead of a genuinely
+    avoidable single-pip tap of the same color (e.g. tapping 2 unneeded
+    Llanowar Elves alongside a Priest burst that alone would have covered
+    the spend) -- the burst mana is always "spent" first by this
+    convention, so it's never what's left over to be counted as burnt.
+
+    Same precondition the two-line decrement this replaces always had:
+    `color` must already have a positive balance in state.mana_pool --
+    callers only ever reach this after their own legality gate
+    (pool_spend_options / drl_env's _filter_mana_legal) already confirmed
+    that."""
+    pool = state.mana_pool
+    single = state.mana_pool_single_pip
+    total = pool[color]
+    tagged = single.get(color, 0)
+    if tagged >= total:  # no untagged pip of this color remains
+        single[color] = tagged - 1
+        if single[color] <= 0:
+            del single[color]
+    pool[color] = total - 1
+    if pool[color] <= 0:
+        del pool[color]
+
+
 def execute_pool_spend(state, color):
     """Spend one floating pip of `color` toward the pending cost: its own
     matching colored need first, else outstanding generic -- which color to
     preserve for a possible same-phase second spell is the agent's decision,
     made explicitly here."""
     pending = state.pending_resolution
-    pool = state.mana_pool
-    pool[color] -= 1
-    if pool[color] <= 0:
-        del pool[color]
+    spend_one_pip(state, color)
     # Marks this phase as having paid for SOMETHING -- one of the three
     # exemptions game.turn._empty_mana_pools checks before ever counting a
     # later burn as a mistake (see PlayerState.cost_paid_this_phase).

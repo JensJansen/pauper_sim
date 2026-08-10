@@ -485,81 +485,109 @@ def test_mana_burnt_this_turn_unconditional():
     assert state.players[0].mana_burnt_this_turn == 3
 
 
-def test_mana_burnt_this_turn_metered_excludes_unmetered_sources():
+def test_mana_burnt_this_turn_single_pip_per_pip_attribution():
     # rl.rewards.with_dense_mana_burn_penalty's actual input (2026-08,
-    # replacing raw mana_burnt_this_turn -- see that field's own docstring):
-    # a per-phase filter that excludes the WHOLE phase's burn whenever an
-    # "unmetered" source (registry mana kind "count"/"count_all" -- Priest of
-    # Titania, Overgrown Battlement) was tapped that phase, so board-state-
-    # scaled bursts never feed the penalty regardless of size, while ordinary
-    # metered sources (every land, every simple mana dork) still do.
+    # replacing the earlier whole-phase unmetered_mana_tapped_this_phase
+    # exclusion -- see PlayerState.mana_pool_single_pip's own docstring for
+    # the dynamic len(produced)==1 tag rule and game.mana.spend_one_pip's
+    # untagged-first spend-order convention): sums whatever remains TAGGED
+    # in mana_pool_single_pip at the moment of the burn, per pip, not a
+    # whole-phase exclusion.
     from game.turn import _empty_mana_pools
 
-    # (a) A metered source (Mountain, "fixed" kind): both counters increment
-    # equally, and the unmetered flag never sets.
+    # (a) A single-pip source (Mountain): tagged, and burning it counts.
     state = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
     state.active_idx = 0
     mountain = Permanent(registry.CARD_DEFS["Mountain"])
     state.players[0].battlefield = [mountain]
     mana.activate_mana_source(state, mountain)
-    assert state.players[0].unmetered_mana_tapped_this_phase is False
+    assert state.players[0].mana_pool_single_pip == {"R": 1}
     _empty_mana_pools(state)
     assert state.players[0].mana_burnt_this_turn == 1
-    assert state.players[0].mana_burnt_this_turn_metered == 1
-    assert state.players[0].unmetered_mana_tapped_this_phase is False  # reset for next phase
+    assert state.players[0].mana_burnt_this_turn_single_pip == 1
+    assert state.players[0].mana_pool_single_pip == {}  # cleared alongside mana_pool
 
-    # (b) An unmetered source (Priest of Titania, "count_all" kind):
-    # mana_burnt_this_turn increments, mana_burnt_this_turn_metered does not.
+    # (b) Priest of Titania's burst, WITH another Elf out (a genuine
+    # multi-symbol event): never tagged, so burning it never counts,
+    # regardless of size.
+    state = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
+    state.active_idx = 0
+    priest = Permanent(registry.CARD_DEFS["Priest of Titania"])
+    elves = Permanent(registry.CARD_DEFS["Llanowar Elves"])
+    state.players[0].battlefield = [priest, elves]
+    mana.activate_mana_source(state, priest)  # 2 G: itself + the other Elf
+    assert state.players[0].mana_pool == {"G": 2}
+    assert state.players[0].mana_pool_single_pip == {}
+    _empty_mana_pools(state)
+    assert state.players[0].mana_burnt_this_turn == 2
+    assert state.players[0].mana_burnt_this_turn_single_pip == 0
+
+    # (b2) Confirmed edge case (owner-approved): Priest ALONE, no other
+    # Elves out, resolves to exactly 1 G -- a genuine 1-symbol event, so IS
+    # tagged, same as any other single-pip source. Not a bug to guard
+    # against.
     state = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
     state.active_idx = 0
     priest = Permanent(registry.CARD_DEFS["Priest of Titania"])
     state.players[0].battlefield = [priest]
-    mana.activate_mana_source(state, priest)
-    assert state.players[0].unmetered_mana_tapped_this_phase is True
+    mana.activate_mana_source(state, priest)  # 1 G: just itself
+    assert state.players[0].mana_pool_single_pip == {"G": 1}
     _empty_mana_pools(state)
-    assert state.players[0].mana_burnt_this_turn == 1
-    assert state.players[0].mana_burnt_this_turn_metered == 0
-    assert state.players[0].unmetered_mana_tapped_this_phase is False  # reset regardless
+    assert state.players[0].mana_burnt_this_turn_single_pip == 1
 
-    # (c) MIXED phase: an unmetered source AND a metered source both tapped
-    # and burnt in the same phase -- the WHOLE phase's burn is excluded from
-    # the metered counter (deliberate under-penalize-when-ambiguous choice),
-    # not just the unmetered source's own share.
+    # (c) MIXED phase, the case the old whole-phase mechanism got wrong:
+    # Priest's multi-symbol burst AND a Mountain both tapped and burnt the
+    # same phase -- only the Mountain's 1 tagged pip is counted, not 0
+    # (the old exclusion) and not both pips either.
     state = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
     state.active_idx = 0
     priest = Permanent(registry.CARD_DEFS["Priest of Titania"])
+    elves = Permanent(registry.CARD_DEFS["Llanowar Elves"])
     mountain = Permanent(registry.CARD_DEFS["Mountain"])
-    state.players[0].battlefield = [priest, mountain]
-    mana.activate_mana_source(state, priest)   # 1 G (just itself, no other Elves)
-    mana.activate_mana_source(state, mountain)  # 1 R
+    state.players[0].battlefield = [priest, elves, mountain]
+    mana.activate_mana_source(state, priest)   # 2 G (untagged)
+    mana.activate_mana_source(state, mountain)  # 1 R (tagged)
+    _empty_mana_pools(state)
+    assert state.players[0].mana_burnt_this_turn == 3
+    assert state.players[0].mana_burnt_this_turn_single_pip == 1  # only the Mountain's pip
+
+    # (d) Spend-order scenario: Priest's burst (untagged, 3 G from itself +
+    # 2 other Elves) plus 2 avoidable single-pip taps (tagged) float
+    # together; spending exactly what Priest's burst alone would have
+    # covered consumes the untagged pips first, so the 2 avoidable tagged
+    # pips are what's left floating and correctly blamed.
+    state = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
+    state.active_idx = 0
+    mana.float_mana(state, ["G", "G", "G"])  # simulates Priest's 3-symbol burst -- untagged
+    mana.float_mana(state, ["G"])  # 2 separate single-pip taps -- tagged
+    mana.float_mana(state, ["G"])
+    assert state.players[0].mana_pool == {"G": 5}
+    assert state.players[0].mana_pool_single_pip == {"G": 2}
+    for _ in range(3):  # spend exactly what Priest's burst alone covered
+        mana.spend_one_pip(state, "G")
+    assert state.players[0].mana_pool == {"G": 2}
+    assert state.players[0].mana_pool_single_pip == {"G": 2}  # untouched -- untagged spent first
     _empty_mana_pools(state)
     assert state.players[0].mana_burnt_this_turn == 2
-    assert state.players[0].mana_burnt_this_turn_metered == 0  # whole phase excluded
-
-    # (d) unmetered_mana_tapped_this_phase resets to False every phase, even
-    # for a player whose pool was EMPTY that phase (no tap at all).
-    state = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
-    state.players[0].unmetered_mana_tapped_this_phase = True  # fabricated leftover
-    _empty_mana_pools(state)
-    assert state.players[0].unmetered_mana_tapped_this_phase is False
+    assert state.players[0].mana_burnt_this_turn_single_pip == 2  # both avoidable taps blamed
 
 
-def test_mana_burnt_this_turn_metered_resets_at_turn_boundary():
+def test_mana_burnt_this_turn_single_pip_resets_at_turn_boundary():
     # Same pattern as test_mana_burnt_this_turn_resets_at_turn_boundary
-    # above, extended to mana_burnt_this_turn_metered.
+    # above, extended to mana_burnt_this_turn_single_pip.
     state = new_multiplayer_game_state(
         decklists=[[("Mountain", 20)], [("Mountain", 20)]],
         starting_player_idx=0, rng=random.Random(0),
     )
-    state.players[0].mana_burnt_this_turn_metered = 5
-    state.players[1].mana_burnt_this_turn_metered = 2
+    state.players[0].mana_burnt_this_turn_single_pip = 5
+    state.players[1].mana_burnt_this_turn_single_pip = 2
 
     seen_at_first_yield = {}
 
     def _pass_and_snoop(state):
         if not seen_at_first_yield:
-            seen_at_first_yield["p0"] = state.players[0].mana_burnt_this_turn_metered
-            seen_at_first_yield["p1"] = state.players[1].mana_burnt_this_turn_metered
+            seen_at_first_yield["p0"] = state.players[0].mana_burnt_this_turn_single_pip
+            seen_at_first_yield["p1"] = state.players[1].mana_burnt_this_turn_single_pip
         return None  # always pass -- nothing to play from a bare opening hand
 
     run_turn(state, choose_action=_pass_and_snoop, combat_enabled=False)

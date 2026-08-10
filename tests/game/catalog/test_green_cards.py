@@ -108,6 +108,7 @@ def test_eldrazi_spawn_token_sac_ability():
     activate_eldrazi_spawn_sac(state, spawn)
     assert state.battlefield == []  # sacrificed, not graveyarded -- a token ceases to exist
     assert state.mana_pool == {"C": 1}
+    assert state.mana_pool_single_pip == {"C": 1}  # a 1-symbol event -- tagged single-pip
 
 
 def test_malevolent_rumble_decline():
