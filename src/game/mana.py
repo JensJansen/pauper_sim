@@ -253,13 +253,26 @@ def activate_mana_source(state, permanent, color_choice=None):
     side effect (Lotus Petal/Treasure self-sac, Wall of Roots counter). No
     pending resolution: a mana ability resolves at once and never uses the
     stack. (Saruli's extra "tap another creature" cost is an agent choice
-    opened by the drl_env mana-ability action, not an on_tap side effect.)"""
+    opened by the drl_env mana-ability action, not an on_tap side effect.)
+
+    Also tags PlayerState.unmetered_mana_tapped_this_phase (on the acting
+    player, state.active_idx -- a mana ability can only ever be activated by
+    its own controller, and this function already writes to state.mana_pool,
+    itself an implicit-active-player proxy, so this matches rather than
+    introduces a convention) whenever the source's mana kind is "count" or
+    "count_all" -- see that field's own docstring, and rl.rewards.
+    with_dense_mana_burn_penalty, for why."""
     no_tap = registry.EFFECT_REGISTRY.get(permanent.card_def.effect_id, {}).get("mana_no_tap", False)
     if not no_tap:
         permanent.tapped = True
     produced = mana_output(permanent, state, color_choice)
     for symbol in produced:
         state.mana_pool[symbol] = state.mana_pool.get(symbol, 0) + 1
+    # spec is guaranteed non-None here: mana_output above already raised if
+    # the registry had no "mana" entry for this permanent.
+    spec = registry.EFFECT_REGISTRY.get(permanent.card_def.effect_id, {}).get("mana")
+    if spec[0] in ("count", "count_all"):
+        state.players[state.active_idx].unmetered_mana_tapped_this_phase = True
     state.log_event("mana_tap", permanent=(permanent.card_def.name, permanent.slot),
                     mode="no_tap" if no_tap else "normal", produced=produced)
     on_tap = registry.EFFECT_REGISTRY.get(permanent.card_def.effect_id, {}).get("on_tap")

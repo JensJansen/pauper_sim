@@ -139,8 +139,14 @@ def _empty_mana_pools(state):
     via _tally_mana_mistake (see its own docstring) -- and resets
     cost_paid_this_phase/triggers_fired_this_phase to False for every player
     once tallied, for the next phase. Unconditionally tallies
-    PlayerState.mana_burnt_this_turn too (rl.rewards.with_dense_mana_burn_
-    penalty's own input -- reset each new turn by _run_turn_gen, not here)."""
+    PlayerState.mana_burnt_this_turn too (raw diagnostic -- reset each new
+    turn by _run_turn_gen, not here), and its metered/unmetered-filtered
+    subset mana_burnt_this_turn_metered (rl.rewards.with_dense_mana_burn_
+    penalty's actual input): skipped for this player entirely, for the WHOLE
+    phase's burn, whenever unmetered_mana_tapped_this_phase is set -- see
+    that field's own docstring for why a whole-phase cut, not a per-pip one.
+    unmetered_mana_tapped_this_phase resets to False for every player here
+    too, alongside cost_paid_this_phase/triggers_fired_this_phase."""
     emptied = {}
     for idx, player in enumerate(state.players):
         if player.mana_pool:
@@ -148,10 +154,13 @@ def _empty_mana_pools(state):
             burnt = sum(player.mana_pool.values())
             player.mana_burnt_total += burnt
             player.mana_burnt_this_turn += burnt
+            if not player.unmetered_mana_tapped_this_phase:
+                player.mana_burnt_this_turn_metered += burnt
             _tally_mana_mistake(state, idx, player, burnt)
             player.mana_pool.clear()
         player.cost_paid_this_phase = False
         player.triggers_fired_this_phase = False
+        player.unmetered_mana_tapped_this_phase = False
     if emptied:
         state.log_event("mana_emptied", pools=emptied)
 
@@ -596,12 +605,13 @@ def _run_turn_gen(state, combat_enabled=False):
         state.turns_taken += 1  # this player's own turn count -- see draw_step's own note on why turn_number alone isn't enough once a second player exists
         state.lands_played_this_turn = 0
         state.cards_drawn_this_turn = 0
-        # BOTH players -- mana_burnt_this_turn tracks either seat's burn
-        # (the non-active player floats/burns mana too), not just the turn
-        # player's -- see PlayerState's own docstring and
-        # rl.rewards.with_dense_mana_burn_penalty.
+        # BOTH players -- mana_burnt_this_turn/mana_burnt_this_turn_metered
+        # track either seat's burn (the non-active player floats/burns mana
+        # too), not just the turn player's -- see PlayerState's own
+        # docstring and rl.rewards.with_dense_mana_burn_penalty.
         for player in state.players:
             player.mana_burnt_this_turn = 0
+            player.mana_burnt_this_turn_metered = 0
             player.mana_burn_penalty_credited = 0.0
         state.log_event("turn_start", turn_player_idx=state.turn_player_idx)
 

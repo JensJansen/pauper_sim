@@ -485,6 +485,87 @@ def test_mana_burnt_this_turn_unconditional():
     assert state.players[0].mana_burnt_this_turn == 3
 
 
+def test_mana_burnt_this_turn_metered_excludes_unmetered_sources():
+    # rl.rewards.with_dense_mana_burn_penalty's actual input (2026-08,
+    # replacing raw mana_burnt_this_turn -- see that field's own docstring):
+    # a per-phase filter that excludes the WHOLE phase's burn whenever an
+    # "unmetered" source (registry mana kind "count"/"count_all" -- Priest of
+    # Titania, Overgrown Battlement) was tapped that phase, so board-state-
+    # scaled bursts never feed the penalty regardless of size, while ordinary
+    # metered sources (every land, every simple mana dork) still do.
+    from game.turn import _empty_mana_pools
+
+    # (a) A metered source (Mountain, "fixed" kind): both counters increment
+    # equally, and the unmetered flag never sets.
+    state = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
+    state.active_idx = 0
+    mountain = Permanent(registry.CARD_DEFS["Mountain"])
+    state.players[0].battlefield = [mountain]
+    mana.activate_mana_source(state, mountain)
+    assert state.players[0].unmetered_mana_tapped_this_phase is False
+    _empty_mana_pools(state)
+    assert state.players[0].mana_burnt_this_turn == 1
+    assert state.players[0].mana_burnt_this_turn_metered == 1
+    assert state.players[0].unmetered_mana_tapped_this_phase is False  # reset for next phase
+
+    # (b) An unmetered source (Priest of Titania, "count_all" kind):
+    # mana_burnt_this_turn increments, mana_burnt_this_turn_metered does not.
+    state = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
+    state.active_idx = 0
+    priest = Permanent(registry.CARD_DEFS["Priest of Titania"])
+    state.players[0].battlefield = [priest]
+    mana.activate_mana_source(state, priest)
+    assert state.players[0].unmetered_mana_tapped_this_phase is True
+    _empty_mana_pools(state)
+    assert state.players[0].mana_burnt_this_turn == 1
+    assert state.players[0].mana_burnt_this_turn_metered == 0
+    assert state.players[0].unmetered_mana_tapped_this_phase is False  # reset regardless
+
+    # (c) MIXED phase: an unmetered source AND a metered source both tapped
+    # and burnt in the same phase -- the WHOLE phase's burn is excluded from
+    # the metered counter (deliberate under-penalize-when-ambiguous choice),
+    # not just the unmetered source's own share.
+    state = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
+    state.active_idx = 0
+    priest = Permanent(registry.CARD_DEFS["Priest of Titania"])
+    mountain = Permanent(registry.CARD_DEFS["Mountain"])
+    state.players[0].battlefield = [priest, mountain]
+    mana.activate_mana_source(state, priest)   # 1 G (just itself, no other Elves)
+    mana.activate_mana_source(state, mountain)  # 1 R
+    _empty_mana_pools(state)
+    assert state.players[0].mana_burnt_this_turn == 2
+    assert state.players[0].mana_burnt_this_turn_metered == 0  # whole phase excluded
+
+    # (d) unmetered_mana_tapped_this_phase resets to False every phase, even
+    # for a player whose pool was EMPTY that phase (no tap at all).
+    state = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
+    state.players[0].unmetered_mana_tapped_this_phase = True  # fabricated leftover
+    _empty_mana_pools(state)
+    assert state.players[0].unmetered_mana_tapped_this_phase is False
+
+
+def test_mana_burnt_this_turn_metered_resets_at_turn_boundary():
+    # Same pattern as test_mana_burnt_this_turn_resets_at_turn_boundary
+    # above, extended to mana_burnt_this_turn_metered.
+    state = new_multiplayer_game_state(
+        decklists=[[("Mountain", 20)], [("Mountain", 20)]],
+        starting_player_idx=0, rng=random.Random(0),
+    )
+    state.players[0].mana_burnt_this_turn_metered = 5
+    state.players[1].mana_burnt_this_turn_metered = 2
+
+    seen_at_first_yield = {}
+
+    def _pass_and_snoop(state):
+        if not seen_at_first_yield:
+            seen_at_first_yield["p0"] = state.players[0].mana_burnt_this_turn_metered
+            seen_at_first_yield["p1"] = state.players[1].mana_burnt_this_turn_metered
+        return None  # always pass -- nothing to play from a bare opening hand
+
+    run_turn(state, choose_action=_pass_and_snoop, combat_enabled=False)
+    assert seen_at_first_yield == {"p0": 0, "p1": 0}
+
+
 def test_mana_burnt_this_turn_resets_at_turn_boundary():
     # _run_turn_gen resets mana_burnt_this_turn (and mana_burn_penalty_credited)
     # for BOTH players at the start of every new turn. run_turn (not

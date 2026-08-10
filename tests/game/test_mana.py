@@ -21,6 +21,10 @@ def test_fixed_multi_source_floats_both_symbols_at_once():
         mana.activate_mana_source(state, state.battlefield[0])  # one activation floats BOTH symbols
         assert state.mana_pool == {"B": 1, "R": 1} and state.battlefield[0].tapped
         assert mana.pool_can_pay(state.mana_pool, {"B": 1, "R": 1})
+        # fixed_multi is a METERED kind -- doesn't tag the dense mana-burn
+        # penalty's unmetered-phase-exclusion flag (see PlayerState.
+        # unmetered_mana_tapped_this_phase's own docstring).
+        assert state.players[state.active_idx].unmetered_mana_tapped_this_phase is False
     finally:
         registry.EFFECT_REGISTRY[EffectId.FILLER] = filler_backup
 
@@ -43,6 +47,10 @@ def test_count_source_produces_one_symbol_per_matching_permanent():
     mana.activate_mana_source(state, battlement)  # one activation floats all 3 G into the pool
     assert state.mana_pool == {"G": 3} and battlement.tapped
     assert mana.pool_can_pay(state.mana_pool, {"G": 3}) and not mana.pool_can_pay(state.mana_pool, {"G": 4})
+    # count is an UNMETERED kind -- tags the dense mana-burn penalty's
+    # unmetered-phase-exclusion flag (see PlayerState.
+    # unmetered_mana_tapped_this_phase's own docstring).
+    assert state.players[state.active_idx].unmetered_mana_tapped_this_phase is True
 
 
 def test_pool_can_pay_edges():

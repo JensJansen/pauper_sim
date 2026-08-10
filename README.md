@@ -507,31 +507,52 @@ wired only through `--matchup` mode.)
   window — watch its aggregate trend once the 2026-08-06 restart (below) has
   run for a while; see `TRAINING_IMPROVEMENT_OPTIONS.md` section 2.
   `PlayerState.mana_burnt_total`/`mana_burnt_this_turn` feed no reward —
-  they remain raw diagnostics for logging/viz. The **mulligan model** trains
+  they remain raw diagnostics for logging/viz (`mana_burnt_this_turn_metered`,
+  a filtered subset of the latter, does feed reward — see dense mana-burn
+  shaping below). The **mulligan model** trains
   on its own reward (`rl/mulligan.py`): win payout minus a convex
   (quadratic) per-mulligan penalty, on transitions accumulated across
   several league iterations per REINFORCE update (not one iteration's worth
   each time) since 2026-08-06 — see `rl.league_runner._run_session`'s
   `MULLIGAN_UPDATE_EVERY`.
 
-  **Dense mana-burn shaping — tried, reverted (2026-08).** A per-transition
-  penalty for `PlayerState.mana_burnt_this_turn` (every pip burnt at a phase
-  boundary, rule 500.4, unconditionally — no exemption for whether the burn
-  was avoidable) was wired into `deploy_reward_v2` for part of 2026-08 as
+  **Dense mana-burn shaping — tried, reverted, fixed and re-enabled
+  (2026-08).** A per-transition penalty for mana burnt at a phase boundary
+  (rule 500.4) is wired into `deploy_reward_v2` as
   `with_dense_mana_burn_penalty`, replacing an earlier, narrower,
-  exemption-aware version (`with_mana_mistake_penalty`). A real training
-  batch under it showed the `elves` deck regressing consistently across
-  every matchup in a cross-league benchmark — traced to Priest of Titania's
-  mana ability (`"count_all"`, `game/mana.py`, sums Elves on BOTH
+  exemption-aware version (`with_mana_mistake_penalty`). Its first version
+  read raw `PlayerState.mana_burnt_this_turn` unconditionally — every pip
+  burnt counted, no exemption for whether the burn was avoidable. A real
+  training batch under it showed the `elves` deck regressing consistently
+  across every matchup in a cross-league benchmark — traced to Priest of
+  Titania's mana ability (`"count_all"`, `game/mana.py`, sums Elves on BOTH
   battlefields with no partial-tap option): for that archetype, large
   per-turn mana bursts are an intrinsic, unavoidable part of correct play,
-  not a mistake a dense curve on top of a fixed-cost card could distinguish
-  from real waste. The wrap also broke `q`'s own "every win outscores every
-  loss" guarantee in practice (its whole-game cap could still push a
-  sufficiently sloppy win below a clean loss). `deploy_reward_v2` reverted
-  to plain `deploy_reward(win_floor=1.0)`; both wrapper functions are kept
-  in `rl/rewards.py`, unused, for reference. Full writeup:
-  `TRAINING_IMPROVEMENT_OPTIONS.md` section 2.
+  not a mistake a dense curve on raw totals could distinguish from real
+  waste. `deploy_reward_v2` was reverted to plain `deploy_reward(win_floor=1.0)`.
+
+  It was re-enabled after switching the wrapper's input to
+  `PlayerState.mana_burnt_this_turn_metered`: `game.turn._empty_mana_pools`
+  now excludes a player's **entire phase's** burn from that counter whenever
+  any "unmetered" mana source (registry mana kind `"count"`/`"count_all"` —
+  a board-state-scaled burst with no partial-tap option, e.g. Priest of
+  Titania, Overgrown Battlement) was tapped that phase, regardless of
+  whether an ordinary "metered" source (`"fixed"`/`"flexible"`/
+  `"fixed_multi"`/`"tron"` — every land, every simple mana dork, where one
+  tap is a small, fully agent-controlled amount) was also tapped the same
+  phase. Whole-phase, not per-pip, because once mana lands in the fungible
+  `state.mana_pool` dict there's no way to attribute a burnt pip back to the
+  source that produced it — erring toward under-penalizing an ambiguous
+  mixed phase rather than risk repeating the archetype-bias regression.
+  Priest of Titania's burst no longer reaches the penalty at all, while
+  reflexive tapping of ordinary metered sources — the actual pathology this
+  shaping exists to discourage — is unaffected. This does **not** resolve
+  the wrap's separate, already-accepted tradeoff that its own
+  `game_penalty_cap` can in principle still push a sufficiently sloppy win
+  below a clean loss, breaking `q`'s "every win outscores every loss"
+  guarantee — that was a deliberate design choice when the wrapper was
+  authored (see its own docstring), orthogonal to the archetype-bias bug
+  this split fixes.
 - **Win condition**: the engine's real one — an opponent's life total hitting
   0, or a player decking out. There is no separate termination heuristic.
 

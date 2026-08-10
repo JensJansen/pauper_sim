@@ -264,11 +264,14 @@ Never claim a run succeeded without having seen its "done" line and exit 0 in th
   and games completing instead): pretrain uses `action_count_win_reward_200_floor02`
   (plain win/loss); league play uses `deploy_reward_v2` (win/loss minus a cleanup-discard
   sloppiness penalty `q` — see `rl/rewards.py`). Different reward fns for the two phases,
-  not the same one throughout. A dense, per-transition mana-burn penalty
-  (`with_dense_mana_burn_penalty`) was tried in `deploy_reward_v2` for part of 2026-08 and
-  reverted the same month after it showed archetype-biased regressions (see
-  `TRAINING_IMPROVEMENT_OPTIONS.md` section 2) -- if a future session finds it wired back
-  in, that's a deliberate re-introduction to check the reasoning on, not a leftover.
+  not the same one throughout. `deploy_reward_v2` also wraps a dense, per-transition
+  mana-burn penalty (`with_dense_mana_burn_penalty`), reading a metered/unmetered-filtered
+  subset of burnt mana (`PlayerState.mana_burnt_this_turn_metered`) that excludes board-
+  state-scaled burst sources (Priest of Titania, Overgrown Battlement) from the penalty
+  -- an earlier, unconditional version was tried and reverted in 2026-08 over an
+  archetype-biased regression before this split fixed it (see `rl/rewards.py`'s own
+  comment on `deploy_reward_v2` for the full history) -- if a future session finds it
+  unwired, that's a deliberate regression to check the reasoning on, not the norm.
 - Each session checkpoints at its end and resumes on the next run, so escalating across
   many separate sessions accumulates training without loss (a mid-session crash loses
   only that session's uncheckpointed games).

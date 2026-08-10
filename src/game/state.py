@@ -226,6 +226,18 @@ class PlayerState:
         self.cost_paid_this_phase = False
         self.triggers_fired_this_phase = False
 
+        # Phase-scoped flag for rl.rewards.with_dense_mana_burn_penalty's
+        # metered/unmetered split (2026-08): set True by game.mana.
+        # activate_mana_source whenever an "unmetered" source (registry mana
+        # kind "count"/"count_all" -- Overgrown Battlement, Priest of
+        # Titania: a board-state-scaled burst, binary tap/no-tap, no
+        # partial-tap option) was tapped this phase. Read (then reset to
+        # False for every player, unconditionally) by game.turn.
+        # _empty_mana_pools alongside cost_paid_this_phase/
+        # triggers_fired_this_phase -- see mana_burnt_this_turn_metered
+        # below for what it gates.
+        self.unmetered_mana_tapped_this_phase = False
+
         self.lands_played_this_turn = 0
         # Reset each turn this player takes (turn._run_turn_gen), incremented
         # once per card actually drawn (see draw() below).
@@ -344,18 +356,36 @@ class PlayerState:
         # pip counts, no cost-paid/trigger-fired/nothing-castable exemption)
         # -- a deliberately blunter signal than mana_mistake_burn: the point
         # is punishing floating more than you can spend WITHIN a turn, not
-        # just avoidable waste. Read by rl.rewards.with_dense_mana_burn_penalty.
+        # just avoidable waste. Raw diagnostic -- mana_burnt_this_turn_metered
+        # below (a filtered subset of this) is what with_dense_mana_burn_penalty
+        # actually reads for reward.
         self.mana_burnt_this_turn = 0
 
+        # Subset of mana_burnt_this_turn above, tallied only for phases where
+        # NO unmetered source (unmetered_mana_tapped_this_phase) was tapped --
+        # game.turn._empty_mana_pools's whole-phase attribution: once mana
+        # lands in the fungible state.mana_pool dict there's no way to know
+        # which burnt pip came from which source, so ANY unmetered tap that
+        # phase excludes the WHOLE phase's burn from this counter, even if a
+        # metered source was also tapped the same phase (erring toward
+        # under-penalizing an ambiguous mixed phase). rl.rewards.
+        # with_dense_mana_burn_penalty's actual input (2026-08, replacing raw
+        # mana_burnt_this_turn) -- this is what lets that penalty ignore
+        # Priest of Titania/Overgrown Battlement's large, unavoidable
+        # "count_all"/"count" bursts while still punishing reflexive tapping
+        # of ordinary lands/dorks. Reset alongside mana_burnt_this_turn, same
+        # turn-boundary lifecycle.
+        self.mana_burnt_this_turn_metered = 0
+
         # The Hill-curve badness value (rl.rewards._hill) ALREADY charged
-        # against reward for this turn's mana_burnt_this_turn so far --
-        # with_dense_mana_burn_penalty's own running baseline, so each reward
-        # call charges only the MARGINAL increase in badness since the last
-        # call (a genuinely dense, per-transition credit whose sum across a
-        # turn still telescopes to exactly _hill(total_this_turn, c, p) by
+        # against reward for this turn's mana_burnt_this_turn_metered so far
+        # -- with_dense_mana_burn_penalty's own running baseline, so each
+        # reward call charges only the MARGINAL increase in badness since the
+        # last call (a genuinely dense, per-transition credit whose sum across
+        # a turn still telescopes to exactly _hill(total_this_turn, c, p) by
         # the turn's end -- same total a one-shot terminal score would have
         # given, just attributed to the transitions that actually caused it).
-        # Reset alongside mana_burnt_this_turn.
+        # Reset alongside mana_burnt_this_turn_metered.
         self.mana_burn_penalty_credited = 0.0
 
         # Running total of dense mana-burn penalty ACTUALLY charged against

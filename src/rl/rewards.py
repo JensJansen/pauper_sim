@@ -17,17 +17,20 @@ uses action_count_win_reward_200_floor02; league self-play uses
 deploy_reward_v2 (= deploy_reward with win_floor=1.0 -> flat efficiency term;
 the v1 efficiency scaling caused an action-space-minimization pathology).
 
-DENSE shaping (with_dense_mana_burn_penalty, below) is defined but NOT
-currently wired into deploy_reward_v2 -- see deploy_reward_v2's own comment
-for why it was reverted 2026-08 (archetype bias against Elves' Priest of
-Titania, and it broke the "every win outscores every loss" guarantee in
-practice). Kept for reference: it wraps a base reward_fn with a per-
-transition penalty for mana burnt (PlayerState.mana_burnt_this_turn,
-unconditional -- no exemption for whether the burn was avoidable, unlike the
-narrower with_mana_mistake_penalty it had itself replaced). The penalty
-telescopes a Hill curve (_hill) across a turn's transitions, so its sum by
-turn's end equals a single terminal charge for that turn's total burn, but
-attributed to the transitions that actually caused it."""
+DENSE shaping (with_dense_mana_burn_penalty, below) IS wired into
+deploy_reward_v2 -- see deploy_reward_v2's own comment for its history: an
+unconditional first version was reverted 2026-08 (archetype bias against
+Elves' Priest of Titania), then re-enabled 2026-08 reading a metered/
+unmetered-filtered subset of mana burnt (PlayerState.
+mana_burnt_this_turn_metered) instead of the raw total, which structurally
+excludes Priest-style board-state-scaled bursts from the penalty. It wraps a
+base reward_fn with a per-transition penalty for mana burnt (unconditional
+WITHIN the metered bucket -- no exemption for whether the burn was
+avoidable, unlike the narrower with_mana_mistake_penalty it had itself
+replaced). The penalty telescopes a Hill curve (_hill) across a turn's
+transitions, so its sum by turn's end equals a single terminal charge for
+that turn's total metered burn, but attributed to the transitions that
+actually caused it."""
 
 
 def _hill(x, c, p):
@@ -202,26 +205,48 @@ def with_dense_mana_burn_penalty(base_reward_fn, mana_burn_c=3.3, mana_burn_p=4.
     than a slightly-sloppy one rather than unboundedly worse) but keeps it
     genuinely DENSE and per-transition rather than terminal, and switches
     its input from that era's mana_burnt_total (unconditional, whole-GAME
-    cumulative) to PlayerState.mana_burnt_this_turn (unconditional, per-TURN
+    cumulative) to PlayerState.mana_burnt_this_turn_metered (per-TURN
     cumulative, reset by game.turn._run_turn_gen) -- deliberately still
-    unconditional, unlike mana_mistake_burn's cost-paid/trigger-fired/
-    nothing-castable exemptions: the point here is punishing floating more
-    mana in a turn than you spend, full stop, not just provably avoidable
-    waste (owner call, 2026-08 -- mana_mistake_burn's own exemptions were
-    forgiving exactly the cases meant to be punished).
+    unconditional WITHIN the metered bucket, unlike mana_mistake_burn's
+    cost-paid/trigger-fired/nothing-castable exemptions: the point here is
+    punishing floating more mana in a turn than you spend, full stop, not
+    just provably avoidable waste (owner call, 2026-08 -- mana_mistake_burn's
+    own exemptions were forgiving exactly the cases meant to be punished).
+
+    METERED/UNMETERED SPLIT (2026-08, second iteration -- this wrapper was
+    first wired unconditionally against raw mana_burnt_this_turn, then
+    reverted after a real training batch showed the `elves` deck regressing
+    sharply across every cross-league matchup, traced to Priest of Titania's
+    mana ability ("count_all" in the card registry -- sums every Elf on BOTH
+    battlefields in one all-or-nothing tap): a large, unavoidable per-turn
+    burst that's correct, intrinsic play for that archetype, not a mistake a
+    penalty on raw burnt totals could tell apart from real waste).
+    mana_burnt_this_turn_metered (game.mana.activate_mana_source /
+    game.turn._empty_mana_pools) excludes the ENTIRE phase's burn whenever
+    any "unmetered" source -- registry mana kind "count"/"count_all",
+    board-state-scaled, binary tap/no-tap, no partial-tap option -- was
+    tapped that phase, regardless of whether a metered source (every land,
+    every simple mana dork -- kinds "fixed"/"flexible"/"fixed_multi"/"tron",
+    where one tap is a small, fully agent-controlled, deterministic amount)
+    was ALSO tapped the same phase: once mana lands in the fungible
+    state.mana_pool dict there's no way to attribute which burnt pip came
+    from which source, so this errs toward under-penalizing an ambiguous
+    mixed phase rather than risk re-triggering the same archetype bias.
+    Reflexive tapping of ordinary, fully-metered sources -- the actual
+    problem this wrapper exists for -- is unaffected by the exclusion.
 
     TELESCOPING, not a flat per-event charge: each call charges only the
-    MARGINAL increase in _hill(mana_burnt_this_turn, c, p) since the last
-    call for this player this turn (PlayerState.mana_burn_penalty_credited
-    is the running baseline, reset alongside mana_burnt_this_turn each new
-    turn). Burning early in a turn is nearly free (the curve's shallow
+    MARGINAL increase in _hill(mana_burnt_this_turn_metered, c, p) since the
+    last call for this player this turn (PlayerState.mana_burn_penalty_credited
+    is the running baseline, reset alongside mana_burnt_this_turn_metered each
+    new turn). Burning early in a turn is nearly free (the curve's shallow
     start); each additional pip burnt LATER in the same turn costs more than
     the last, because it's added to an already-elevated baseline -- a
     natural, compounding "you should have planned this turn's mana better"
     shape. Summed across a whole turn's worth of calls, the total charged is
-    EXACTLY _hill(total_burnt_this_turn, c, p) -- the same number a one-shot
-    terminal score would have given for that turn, just attributed to
-    whichever individual transitions actually caused it (proper credit
+    EXACTLY _hill(total_burnt_this_turn_metered, c, p) -- the same number a
+    one-shot terminal score would have given for that turn, just attributed
+    to whichever individual transitions actually caused it (proper credit
     assignment, not blurred across the whole game the way this file's
     original terminal mana-burn penalty was -- see git history on cbd7379).
 
@@ -269,14 +294,14 @@ def with_dense_mana_burn_penalty(base_reward_fn, mana_burn_c=3.3, mana_burn_p=4.
     under this rule, same as mana_burn_c/mana_burn_p above.
 
     No exemption checking means no need for game.turn's on_mana_burn hook at
-    all (unlike with_mana_mistake_penalty) -- mana_burnt_this_turn is always
-    tallied by game.turn._empty_mana_pools regardless of reward_fn, so this
-    wrapper needs no consumes_mana_mistake-style opt-in flag; it's pure,
+    all (unlike with_mana_mistake_penalty) -- mana_burnt_this_turn_metered is
+    always tallied by game.turn._empty_mana_pools regardless of reward_fn, so
+    this wrapper needs no consumes_mana_mistake-style opt-in flag; it's pure,
     already-available bookkeeping to read, not something rl.train needs to
     wire up conditionally."""
     def reward_fn(state, done, horizon):
         p = state.players[state.active_idx]
-        current = _hill(p.mana_burnt_this_turn, mana_burn_c, mana_burn_p)
+        current = _hill(p.mana_burnt_this_turn_metered, mana_burn_c, mana_burn_p)
         penalty = current - p.mana_burn_penalty_credited
         p.mana_burn_penalty_credited = current
         # Whole-game cap: clamp this charge so mana_burn_penalty_charged_total
@@ -320,22 +345,33 @@ deploy_reward_v1 = deploy_reward()
 # matter how sloppy either was -- see deploy_reward's own docstring for the
 # exact guarantee and its win_floor=1.0 precondition.
 #
-# NOT wrapped by with_dense_mana_burn_penalty (2026-08 addition, since
-# reverted same month): a 2026-08-06 cross-league benchmark (before/after a
-# +10,000-game/deck batch trained under the dense wrap) showed elves
-# regressing consistently across all 4 gauntlet matchups -- traced to Priest
-# of Titania's mana ability ("count_all", src/game/mana.py, sums Elves on
-# BOTH battlefields with no partial-tap option) making large, unavoidable
-# per-turn bursts an intrinsic, correct part of the archetype, not a mistake
-# the dense curve could distinguish from real waste. The wrap also broke this
-# function's own "every win outscores every loss" guarantee in practice (its
-# own game_penalty_cap could push a sloppy win below a clean loss). Reverted
-# to plain deploy_reward(win_floor=1.0) rather than patched (e.g. exemption-
-# gating) because Priest's burst is large enough that even a coarse "was
-# anything castable" exemption would rarely fire for it -- see
-# TRAINING_IMPROVEMENT_OPTIONS.md section 2 for the full option menu this
-# reverted, and the still-open q/dmir_terror risk it flags as worth watching
-# next. with_dense_mana_burn_penalty itself is left defined above, unused,
-# for reference/comparison, same status this comment block already gave
-# with_mana_mistake_penalty before it.
-deploy_reward_v2 = deploy_reward(win_floor=1.0)
+# WRAPPED by with_dense_mana_burn_penalty (2026-08 addition; reverted the
+# same month; RE-ENABLED 2026-08 under a fix -- see below). First version: a
+# 2026-08-06 cross-league benchmark (before/after a +10,000-game/deck batch
+# trained under an UNCONDITIONAL dense wrap, reading raw mana_burnt_this_turn)
+# showed elves regressing consistently across all 4 gauntlet matchups --
+# traced to Priest of Titania's mana ability ("count_all", src/game/mana.py,
+# sums Elves on BOTH battlefields with no partial-tap option) making large,
+# unavoidable per-turn bursts an intrinsic, correct part of the archetype,
+# not a mistake the dense curve could distinguish from real waste. Reverted
+# to plain deploy_reward(win_floor=1.0) rather than patched with an
+# exemption (e.g. "was anything castable") because Priest's burst is large
+# enough that even a coarse castability check would rarely exempt it.
+#
+# Re-enabled under with_dense_mana_burn_penalty's own metered/unmetered
+# split (see its docstring): the penalty now reads PlayerState.
+# mana_burnt_this_turn_metered, which game.turn._empty_mana_pools tallies
+# only for phases where no "count"/"count_all"-kind (board-state-scaled,
+# no-partial-tap) source was tapped -- Priest of Titania's burst never
+# reaches the penalty at all now, regardless of magnitude, while reflexive
+# tapping of ordinary metered sources (every land, every simple mana dork --
+# the actual problem this wrapper exists for) is still fully penalized.
+#
+# This does NOT resolve the wrap's separate, already-accepted tradeoff that
+# its own game_penalty_cap can still push a sufficiently sloppy win below a
+# clean loss in principle (with_dense_mana_burn_penalty's own docstring: "a
+# genuinely sloppy game can still land well below a clean loss -- that
+# outcome is fine, only the UNBOUNDED magnitude was the problem") -- that was
+# a deliberate design choice when the wrapper was authored, orthogonal to
+# the archetype-bias bug this split fixes.
+deploy_reward_v2 = with_dense_mana_burn_penalty(deploy_reward(win_floor=1.0))
