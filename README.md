@@ -493,18 +493,15 @@ wired only through `--matchup` mode.)
   `action_count_win_reward_200_floor02` — loss/draw → `0.0`, win → `1.0` down
   to a `0.2` floor scaled by the *winning seat's* action count (so a policy
   can't pad a turn with free actions to inflate its reward). **League** play
-  uses `deploy_reward_v3` (2026-08-10): a flat `1.0` on any win minus `q` (no
-  efficiency scaling — the earlier `deploy_reward_v1`'s efficiency band
-  induced an action-space-minimization pathology where policies learned to
-  shrink their own board to "win in fewer actions"), and exactly `-q` on a
-  loss. `q` is a terminal "sloppiness" penalty shared by both bands: a
-  saturating (Hill-function) curve over `PlayerState.cleanup_discard_turns`
-  (cards hoarded past hand size), scaled by a `discard_weight=0.4` so it
-  asymptotes toward `0.4`, never `1.0` (see dense mana-burn shaping below for
-  why `0.4` specifically). `q` is itself a live, unresolved risk flagged for a
-  heavy-card-draw archetype (`dmir_terror`) whose correct play is to hoard
-  cards looking for the right window — watch its aggregate trend; see
-  `TRAINING_IMPROVEMENT_OPTIONS.md` section 2.
+  uses `deploy_reward_v5` (2026-08-11 — supersedes `deploy_reward_v4`, see
+  below): a **flat `+1.0` on any win, `-1.0` on any loss or no-winner
+  timeout** (`flat_win_loss_reward`), with the dense mana-burn penalty below
+  applied to the **winner only**. There is no efficiency scaling (the earlier
+  `deploy_reward_v1`'s efficiency band induced an action-space-minimization
+  pathology where policies learned to shrink their own board to "win in fewer
+  actions") and, as of v5, **no cleanup-discard penalty `q` at all** on either
+  band — v1-v4's `q` (a Hill curve over `PlayerState.cleanup_discard_turns`,
+  cards hoarded past hand size) is gone. See "Why `q` was dropped" below.
   `PlayerState.mana_burnt_total`/`mana_burnt_this_turn` feed no reward —
   they remain raw diagnostics for logging/viz (`mana_burnt_this_turn_single_pip`,
   a filtered subset of the latter, does feed reward — see dense mana-burn
@@ -515,9 +512,10 @@ wired only through `--matchup` mode.)
   each time) since 2026-08-06 — see `rl.league_runner._run_session`'s
   `MULLIGAN_UPDATE_EVERY`.
 
-  **Dense mana-burn shaping — tried, reverted, fixed twice, then
-  reweighted (2026-08).** A per-transition penalty for mana burnt at a phase
-  boundary (rule 500.4) is wired into `deploy_reward_v3` as
+  **Dense mana-burn shaping — tried, reverted, fixed twice, reweighted, then
+  made winner-only (2026-08).** A per-transition penalty for mana burnt at a
+  phase boundary (rule 500.4) is wired into `deploy_reward_v3`, `v4`, and —
+  winner-only, via `refund_on_loss=True` — `v5`, as
   `with_dense_mana_burn_penalty`, replacing an earlier, narrower,
   exemption-aware version (`with_mana_mistake_penalty`). Its first version
   read raw `PlayerState.mana_burnt_this_turn` unconditionally — every pip
@@ -588,7 +586,99 @@ wired only through `--matchup` mode.)
   actual guarantee, which v2's own combined budget (`1.0` possible from `q`
   alone, `+2.0` more from an uncapped mana wrap) had explicitly abandoned as
   an accepted tradeoff. `deploy_reward_v2` is kept, unchanged, for reference
-  (same treatment `deploy_reward_v1` already gets).
+  (same treatment `deploy_reward_v1` already gets). `deploy_reward_v3` is
+  **superseded** as of `deploy_reward_v4` below (same day) but is likewise
+  kept, unchanged, for reference.
+
+  `deploy_reward_v4` (2026-08-10, second revision) supersedes
+  `deploy_reward_v3` above: a real training run under v3 (sessions 13-25,
+  ~10,001 → 20,004 games/deck — the same run that validated the
+  `on_single_pip_burn` attribution fix described above) drove `elves` and
+  `rakdos_madness` into a degenerate zero-mana-development collapse —
+  `vs_gauntlet` win rate for `elves` flatlined at exactly `0/20` for 5
+  consecutive sessions, confirmed via a hand-inspected game where it held a
+  playable land and passed rather than ever play it, forfeiting rather than
+  risk the burn penalty. v3's steepened curve had been calibrated to
+  compensate for the very credit-assignment bug `on_single_pip_burn` fixed
+  the same session — once the charge started landing precisely on the
+  causal Tap action instead of almost uniformly on whatever was pending,
+  that compensation became a double-count, strong enough on two archetypes
+  to make guaranteed inaction score better than a real attempt to win. `v4`
+  keeps v3's `discard_weight=0.4`/`game_penalty_cap=0.6` split (unrelated to
+  the curve's own steepness, and what makes "every win beats every loss" a
+  provable guarantee) but reverts `mana_burn_c`/`mana_burn_p` to v2's
+  original `3.3`/`4.0` (from v3's `2.0`/`2.5`), removing the compensation
+  that was tuned for the now-fixed bug while keeping the correct,
+  precisely-targeted attribution.
+
+  That bet was then measured, and came back **split**: retrained from scratch
+  under v4, `elves` showed the passivity pattern in only `0.8%` of games
+  (1/125), but `dmir_terror` still showed it in `11.2%` (14/125) — in a fresh
+  league that had never seen v3's collapse at all. So v4 helped but was not
+  the whole fix, and the earlier "v3's steepened curve caused it" reading was
+  at best partial.
+
+  `deploy_reward_v5` (2026-08-11) supersedes `deploy_reward_v4` with two
+  **structural** changes rather than another re-tuning:
+
+  1. **Mana burn is charged to the WINNER only.** v4 charged it on both
+     bands, and that turned out to reward losing *passively* over losing
+     while trying: a seat that never taps mana cannot burn mana, so a fully
+     passive loss scored exactly `0.0` on that term by construction, every
+     time, while a seat that developed its board and made any ordinary
+     sequencing mistake paid up to the whole cap. Measured across a real
+     10,003-games/deck run, `dmir_terror`'s own losses averaged `0.321` total
+     penalty across 14 passive games vs. `0.598` across 64 active ones —
+     nearly 2× worse for trying. The observed behavior matched exactly: 26 of
+     26 flagged games cast **zero** spells, including free ones (Snuff Out
+     costs only life), which no mana-shaped incentive explains on its own but
+     a general "losing quietly is cheaper" gradient does.
+  2. **Why `q` was dropped** (both bands, not just the loss band). `q`
+     existed to discourage hoarding, but the win/loss outcome already carries
+     that: hoarded cards stay **visible** in game state (an overflowing hand,
+     uncast threats, a board that never developed), so a terminal signal can
+     attribute their cost on its own given enough training. Burnt mana is the
+     opposite, and that asymmetry is exactly why the dense term survives
+     while `q` doesn't: once a phase boundary clears the pool, the waste
+     leaves **no trace** in game state for any terminal signal to see. This
+     also removes the tight `discard_weight + game_penalty_cap == win_floor`
+     equation v3/v4 depended on.
+
+  **Curve/guarantee.** The `_hill` shape is unchanged ("first pip nearly
+  free, accelerating, asymptotic") but is now scaled by a new
+  `mana_burn_weight=1.5` (`_hill` itself asymptotes at `1.0`), with
+  `mana_burn_c=2.9`/`p=4.0` placing that asymptote near 5 burnt pips and
+  `game_penalty_cap=1.5` bounding the whole-game sum. Per-turn charge by pips
+  burnt: `1→0.021`, `2→0.277`, `3→0.801`, `4→1.175`, `5→1.348` (~90% of the
+  weight), asymptoting toward `1.5`. Weight and cap are equal here but do
+  different jobs — under v4 (weight implicitly `1.0`, cap `0.6`) a single
+  4-pip turn computed `0.683` and was immediately clipped by the whole-game
+  cap, so the *cap* set per-turn magnitude and every later mistake that game
+  was free; now the curve owns per-turn magnitude and the cap owns the sum,
+  so one bad turn (`1.35`) is distinguishable from several (up to `1.5`).
+  Guarantee, re-derived (it no longer needs the equation above): worst-case
+  win `= 1.0 - 1.5 = -0.5`; **every** loss `= -1.0` exactly, with no range at
+  all. A sloppy win *can* now score negative, which v4 could not (floor
+  `+0.4`) — deliberate and harmless, since the only ordering that matters is
+  win-vs-loss.
+
+  **Implementation is a DEFERRAL, not a terminal refund** (`rl/train.py`'s
+  `deferred_charges`). Charges are computed and attributed per-Tap exactly as
+  before, but held for the whole game and applied at the terminal flush only
+  if that seat won; on a loss they are simply never written, leaving the
+  trajectory bit-for-bit identical to one that burnt nothing. A refund would
+  *not* be equivalent: PPO trains on GAE advantages, where a charge written
+  at step `t` lands in `delta_t` immediately while a terminal refund reaches
+  it only through GAE's backward recursion, discounted by
+  `(gamma*gae_lambda)^k` (`0.9405^k` at `gamma=0.99`/`gae_lambda=0.95` — ~11%
+  surviving 40 steps back), which would leave early burns in a long losing
+  game mostly un-cancelled.
+
+  **Unproven risk, stated plainly:** removing `q` removes the only penalty
+  for hoarding anywhere in the reward. The reasoning above is sound but
+  unmeasured — if a hoarding pathology appears under v5, this is the first
+  thing to suspect. `deploy_reward_v1`-`v4` are all kept unchanged for
+  reference/comparison.
 - **Win condition**: the engine's real one — an opponent's life total hitting
   0, or a player decking out. There is no separate termination heuristic.
 

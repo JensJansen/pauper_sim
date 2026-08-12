@@ -14,7 +14,7 @@ import time
 
 import torch
 
-from rl.rewards import deploy_reward_v3
+from rl.rewards import deploy_reward_v5
 from rl.arch import SetTransformer
 from rl.deck import DeckNetwork
 from rl.league import LeaguePool
@@ -233,8 +233,8 @@ def _run_session(n_iterations, games_per_iteration, snapshot_every, executor, n_
               f"{ {name: len(pool.snapshots[name]) for name in deck_names} }")
 
     rng = random.Random(seed)  # seed=None -> nondeterministic, identical to the prior random.Random()
-    reward_fn = deploy_reward_v3
-    reward_fn_name = "deploy_reward_v3"
+    reward_fn = deploy_reward_v5
+    reward_fn_name = "deploy_reward_v5"
     horizon = 120
 
     mode = []

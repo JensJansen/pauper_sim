@@ -153,6 +153,22 @@ def _wants_single_pip_burn_hook(charge_fns, record_as):
     return any(charge_fns[s] is not None and record_as[s] is not None for s in (0, 1))
 
 
+def _winner_only_burn_for(reward_fns):
+    """Per-seat "does this seat's reward_fn charge mana burn to the WINNER
+    ONLY" flag (rl.rewards.with_dense_mana_burn_penalty tags its own closure
+    with mana_burn_winner_only when built with refund_on_loss=True -- see
+    there). Same opt-in-attribute pattern as _charge_fns_for/
+    _wants_mana_mistake, read per seat since a cross-deck pairing could in
+    principle mix reward functions.
+
+    When True for a seat, collect_rollout DEFERS that seat's per-Tap burn
+    charges instead of writing them into the buffer as they happen, and
+    applies them at game end only if that seat won -- see deferred_charges in
+    collect_rollout, and with_dense_mana_burn_penalty's own docstring for why
+    deferring is not interchangeable with charging-then-refunding."""
+    return [bool(getattr(reward_fns[s], "mana_burn_winner_only", False)) for s in (0, 1)]
+
+
 def _constant_pairing(agents, decklists, reward_fns, record_as):
     """A pairing that yields the SAME layout every game -- mirror, cross-matchup,
     or a fixed A-vs-B matchup. (League resampling is _make_league_pairing.)"""
@@ -192,7 +208,14 @@ def collect_rollout(pairing, n_games, horizon, rng, device="cpu", record=True, g
     (pooled single-policy self-play); a live cross-deck opponent routes its own
     seat to its own bucket. Each seat's per-game trajectory is appended to its
     bucket CONTIGUOUSLY and ends done=True, so a later GAE pass never
-    bootstraps across a trajectory boundary."""
+    bootstraps across a trajectory boundary.
+
+    Dense mana-burn charges (rl.rewards.with_dense_mana_burn_penalty) are
+    normally written into the buffer as they happen, attributed to the Tap
+    actions that caused them. For a seat whose reward_fn is WINNER-ONLY
+    (refund_on_loss=True there), they are instead DEFERRED for the whole game
+    and applied at the terminal flush only if that seat won -- see
+    deferred_charges below."""
     buffers_by_deck = {}   # bucket -> RolloutBuffer (main PPO transitions)
     mull_by_deck = {}      # bucket -> list of mulligan transitions (bandit)
     games_played = 0
@@ -227,6 +250,15 @@ def collect_rollout(pairing, n_games, horizon, rng, device="cpu", record=True, g
             # DROPS this to whatever's newly floating post-clear, never up).
             open_taps = [[], []]
             prev_single_pip_sum = [0, 0]
+            # deferred_charges[seat]: (buffer_index, share) for every burn
+            # charge NOT yet written into the buffer, when that seat's
+            # reward_fn is winner-only (rl.rewards' refund_on_loss). WHOLE-GAME
+            # scoped -- deliberately NOT reset per phase clear the way
+            # open_taps is, since the win/loss that decides whether these ever
+            # apply isn't known until the game ends. Applied (or dropped
+            # entirely, on a loss) in the terminal-flush block below.
+            deferred_charges = [[], []]
+            winner_only_burn = _winner_only_burn_for(reward_fns)
 
             def choose_action(state, agents=agents, reward_fns=reward_fns, record_as=record_as,
                               game_buffers=game_buffers, pending=pending,
@@ -265,7 +297,8 @@ def collect_rollout(pairing, n_games, horizon, rng, device="cpu", record=True, g
                 return None if dr.is_pass else dr.executor
 
             def on_single_pip_burn(state, seat, amount, game_buffers=game_buffers, open_taps=open_taps,
-                                    record_as=record_as, charge_fns=charge_fns):
+                                    record_as=record_as, charge_fns=charge_fns,
+                                    deferred_charges=deferred_charges, winner_only_burn=winner_only_burn):
                 taps, open_taps[seat] = open_taps[seat], []
                 if charge_fns[seat] is None or record_as[seat] is None or not taps:
                     return
@@ -285,7 +318,13 @@ def collect_rollout(pairing, n_games, horizon, rng, device="cpu", record=True, g
                     # EXACTLY `charge`, never more (fine to be exact here --
                     # no downstream code depends on per-share precision).
                     share = charge - distributed if k == len(taps) - 1 else charge * pips / total_pips
-                    game_buffers[seat].reward[idx] -= share
+                    # Winner-only seats bank the share instead of spending it
+                    # now; identical arithmetic either way, only the WHEN
+                    # differs (see deferred_charges above).
+                    if winner_only_burn[seat]:
+                        deferred_charges[seat].append((idx, share))
+                    else:
+                        game_buffers[seat].reward[idx] -= share
                     distributed += share
 
             on_mana_burn = _make_on_mana_burn(agents, record, record_as)
@@ -332,6 +371,21 @@ def collect_rollout(pairing, n_games, horizon, rng, device="cpu", record=True, g
                     if pending[seat] is not None:  # terminal flush for this seat's last real decision
                         reward = _reward_for(state, seat, reward_fns[seat], horizon, True)
                         game_buffers[seat].add(*pending[seat], reward, True)
+                    # Winner-only mana burn (rl.rewards' refund_on_loss): now
+                    # that the outcome is known, spend this seat's banked
+                    # charges iff it WON. On a loss they are simply dropped --
+                    # never written, so the trajectory is bit-for-bit
+                    # identical to one that burnt nothing (a terminal refund
+                    # would NOT be: GAE discounts it back by
+                    # (gamma*gae_lambda)^k per step of distance, leaving early
+                    # burns mostly uncancelled -- see with_dense_mana_burn_
+                    # penalty's docstring). Ordered deliberately: AFTER the
+                    # terminal add above (its index must exist to be charged)
+                    # and BEFORE the extend below (which copies values, not
+                    # references, so a later write wouldn't reach the bucket).
+                    if deferred_charges[seat] and state.winner == seat:
+                        for idx, share in deferred_charges[seat]:
+                            game_buffers[seat].reward[idx] -= share
                     if len(game_buffers[seat]):  # append this seat's whole (contiguous) trajectory to its bucket
                         buffers_by_deck.setdefault(bucket, RolloutBuffer()).extend(game_buffers[seat])
                     if mull_game[seat]:  # attribute the game's outcome to this seat's mulligan picks (bandit)

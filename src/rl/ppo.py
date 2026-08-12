@@ -60,8 +60,13 @@ def ppo_update(net, optimizers, buf, device, n_epochs=4, batch_size=64, gamma=0.
     # ent_coef default 0.01: with no entropy bonus the main policy collapses
     # onto a narrow low-branching behavior (pass, shrink its own board) -- the
     # action-space-minimization pathology; see rl.rewards.deploy_reward_v2's own
-    # comment (still accurate -- deploy_reward_v3, what league training actually
-    # uses as of 2026-08-10, inherits the same flat win_floor=1.0 band). The
+    # comment. Still the relevant risk under deploy_reward_v5 (what league
+    # training uses as of 2026-08-11), which has no efficiency scaling either:
+    # its flat_win_loss_reward base is a flat +1/-1, so nothing in the terminal
+    # reward rewards taking FEWER actions, and this bonus stays the thing
+    # bounding pointless ones. v5 was itself a response to a related but
+    # distinct failure -- passivity that the LOSS band made cheaper than
+    # trying, which an entropy bonus alone could not have fixed. The
     # mulligan model has its own ENTROPY_COEF; this is the DeckNetwork policy's.
     # 0.01 is this function's own fallback for callers that don't schedule it
     # (pretrain's train_selfplay path) -- league training instead computes a

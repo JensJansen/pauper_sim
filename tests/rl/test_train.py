@@ -438,3 +438,89 @@ def test_dense_mana_burn_credit_lands_on_the_tap_not_the_pass():
     assert tap_rewards, "the scripted tap must have actually been recorded"
     assert any(r < -1e-9 for r in tap_rewards), "the Tap action must carry the real negative dense charge"
     assert all(r == 0.0 for r in pass_rewards), "Pass must NOT absorb the charge anymore -- that was the bug"
+
+
+@pytest.mark.slow
+def test_winner_only_mana_burn_charges_the_winner_and_drops_the_loser():
+    # rl.train's deferred_charges + _winner_only_burn_for: with a WINNER-ONLY
+    # reward (rl.rewards.with_dense_mana_burn_penalty(refund_on_loss=True),
+    # i.e. deploy_reward_v5's wrap), a seat's dense burn charges are held for
+    # the whole game and applied at the terminal flush ONLY if it won. A
+    # losing seat's trajectory must come out bit-for-bit identical to one
+    # that never burnt anything at all.
+    #
+    # That neutrality is the entire point of DEFERRING rather than charging-
+    # then-refunding: PPO trains on GAE advantages, so a charge written at
+    # step t lands in delta_t immediately while a terminal refund only reaches
+    # it discounted by (gamma*gae_lambda)^k -- see with_dense_mana_burn_
+    # penalty's own docstring. A refund-based implementation would leave a
+    # residue here; this asserts there is none.
+    #
+    # Same scripted mono-Mountain setup as test_dense_mana_burn_credit_lands_
+    # on_the_tap_not_the_pass above (nothing castable, so every tapped pip
+    # survives to the phase clear), but with a deck small enough to DECK OUT
+    # within the horizon -- that produces a real winner and a real loser in
+    # ONE game, exercising both branches against the same rollout.
+    decklist = [("Mountain", 8)]
+    token_defs = (game.BLOOD_TOKEN_CARD_DEF, game.ROBOT_TOKEN_CARD_DEF)
+    fixed_table = build_fixed_action_table(decklist, token_card_defs=token_defs)
+    tap_idx = next(i for i, (name, _l, _e) in enumerate(fixed_table) if name == "Tap Mountain")
+    pass_idx = next(i for i, (name, _l, _e) in enumerate(fixed_table) if name == "Pass")
+    land_idx = next(i for i, (name, _l, _e) in enumerate(fixed_table) if name.startswith("Play land"))
+
+    class _ScriptedAgent:
+        deck_ctx = (None, fixed_table)
+
+        def __init__(self):
+            self.tapped = False
+
+        def decide(self, state, seat, horizon, device, greedy=False):
+            pend = state.pending_resolution
+            if pend is not None and pend["kind"] == "mulligan_decision":
+                return DecisionResult(lambda: resolution.execute_mulligan_keep(state), None, None, False)
+            if state.lands_played_this_turn == 0 and any(c.name == "Mountain" for c in state.hand):
+                executor = lambda: play_land_from_hand(state, registry.CARD_DEFS["Mountain"])
+                return DecisionResult(executor, (None, None, None, land_idx, 0.0, 0.0), None, False)
+            if not self.tapped:
+                mtn = next((p for p in state.battlefield if p.card_def.name == "Mountain" and not p.tapped), None)
+                if mtn is not None:
+                    self.tapped = True
+                    executor = lambda: mana.activate_mana_source(state, mtn)
+                    return DecisionResult(executor, (None, None, None, tap_idx, 0.0, 0.0), None, False)
+            return DecisionResult(None, (None, None, None, pass_idx, 0.0, 0.0), None, True)
+
+    base = lambda state, done, horizon: 0.0
+    reward_fn = with_dense_mana_burn_penalty(base, mana_burn_c=3.3, mana_burn_p=4.0,
+                                              game_penalty_cap=2.0, refund_on_loss=True)
+    agents = [_ScriptedAgent(), _ScriptedAgent()]
+    # Both seats recorded, into SEPARATE buckets, so winner and loser can be
+    # told apart afterwards.
+    pairing = _constant_pairing(agents, [decklist, decklist], [reward_fn, reward_fn], ["seat0", "seat1"])
+
+    winner = {}
+    bufs, _mull, played = collect_rollout(pairing, 1, horizon=6, rng=_random.Random(0), device=DEVICE,
+                                           record=True, on_game_end=lambda s: winner.setdefault("idx", s.winner))
+    assert played == 1
+    assert winner["idx"] is not None, "this fixture must deck someone out -- otherwise neither branch is exercised"
+
+    won_buf = bufs[f"seat{winner['idx']}"]
+    lost_buf = bufs[f"seat{1 - winner['idx']}"]
+
+    # WINNER: the charge applies, and still lands on the Tap (not the Pass) --
+    # deferring must not disturb the attribution the non-deferred path already
+    # guarantees (test_dense_mana_burn_credit_lands_on_the_tap_not_the_pass).
+    won_taps = [won_buf.reward[i] for i in range(len(won_buf)) if won_buf.action[i] == tap_idx]
+    won_passes = [won_buf.reward[i] for i in range(len(won_buf)) if won_buf.action[i] == pass_idx]
+    assert won_taps, "the winner's scripted tap must have been recorded"
+    assert any(r < -1e-9 for r in won_taps), "the winner's Tap must carry the deferred charge once applied"
+    assert all(r == 0.0 for r in won_passes), "Pass must never absorb the charge"
+
+    # LOSER: nothing was ever written. Not "smaller", not "refunded to about
+    # zero" -- EXACTLY zero on every single transition, the guarantee a
+    # terminal refund could not have provided.
+    assert len(lost_buf), "the loser's trajectory must have been recorded at all"
+    assert all(r == 0.0 for r in lost_buf.reward), (
+        "a losing seat must pay nothing for mana burnt -- every transition exactly 0.0"
+    )
+    lost_taps = [i for i in range(len(lost_buf)) if lost_buf.action[i] == tap_idx]
+    assert lost_taps, "the loser also tapped -- otherwise this proves nothing about dropping its charge"

@@ -4,6 +4,7 @@ import pytest
 from game.state import GameState, PlayerState
 from rl.rewards import (
     action_count_win_reward, deploy_reward, deploy_reward_v2, deploy_reward_v3,
+    deploy_reward_v4, deploy_reward_v5, flat_win_loss_reward,
     with_dense_mana_burn_penalty, with_mana_mistake_penalty,
 )
 
@@ -449,3 +450,191 @@ def test_deploy_reward_v3_restores_every_win_beats_every_loss():
     clean_loss_v2 = _clean_loss(deploy_reward_v2)
     assert clean_loss_v2 == pytest.approx(0.0)
     assert _worst_case_win(deploy_reward_v2) < clean_loss_v2  # v2: the accepted tradeoff actually firing, same input
+
+
+@pytest.mark.slow
+def test_deploy_reward_v4_curve_reverts_to_v2_shape():
+    # deploy_reward_v4 (2026-08-10, second revision) SUPERSEDES
+    # deploy_reward_v3: a real training run under v3 drove elves/
+    # rakdos_madness into a zero-mana-development collapse once the same-day
+    # on_single_pip_burn credit-assignment fix turned v3's steepened curve
+    # into a double-count (see rewards.py's own SUPERSEDED comment on
+    # deploy_reward_v3). v4 keeps v3's discard_weight=0.4/game_penalty_cap=
+    # 0.6 split but reverts mana_burn_c/mana_burn_p to v2's original 3.3/4.0
+    # (from v3's 2.0/2.5) -- verified here against the wired-in
+    # charge_single_pip_burn value itself, not just the source constants, so
+    # a future edit to deploy_reward_v4's call or with_dense_mana_burn_
+    # penalty's defaults would actually break this test.
+    s = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
+    s.active_idx = 0
+    s.players[0].mana_burnt_this_turn_single_pip = 1
+    h1_v2_shape = _hill(1, 3.3, 4.0)
+    assert h1_v2_shape == pytest.approx(0.0084, abs=1e-3)  # v2's "~0.008 on the first pip" anchor, NOT v3's ~0.150
+    assert deploy_reward_v4.charge_single_pip_burn(s.players[0]) == pytest.approx(h1_v2_shape)
+
+
+@pytest.mark.slow
+def test_deploy_reward_v4_best_win_worst_loss_spread_is_two():
+    # Same guarantee as test_deploy_reward_v3_best_win_worst_loss_spread_is_
+    # two above, re-verified for v4: discard_weight=0.4 + game_penalty_cap=
+    # 0.6 (unchanged from v3, unrelated to the curve's own steepness) still
+    # sum to exactly win_floor (1.0), so the best-win/worst-loss spread
+    # holds regardless of the mana_burn_c/p revert.
+    s = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
+    s.active_idx = 0
+
+    # Best win: no discarding, no mana burn -> exactly 1.0.
+    s.winner = 0
+    assert _effective_episode_score(deploy_reward_v4, s) == pytest.approx(1.0)
+
+    # Worst loss: heavy discarding (q approaching its 0.4 asymptote) AND
+    # mana burn saturating its 0.6 whole-game cap -> approaches -1.0, same
+    # as v3 -- the milder v4 curve still saturates well past the cap at 50
+    # burnt pips, so the cap (not the curve) determines the worst case.
+    s.winner = 1  # this seat (0) loses
+    s.players[0].cleanup_discard_turns = 100  # q -> ~0.3994, close to its 0.4 asymptote
+    s.players[0].mana_burnt_this_turn_single_pip = 50  # raw hill far past the 0.6 cap on its own
+    worst_loss = _effective_episode_score(deploy_reward_v4, s)
+    assert worst_loss == pytest.approx(-1.0, abs=1e-2)
+
+    spread = 1.0 - worst_loss
+    assert spread == pytest.approx(2.0, abs=1e-2)
+
+
+@pytest.mark.slow
+def test_deploy_reward_v4_restores_every_win_beats_every_loss():
+    # Same "every win beats every loss" guarantee test as
+    # test_deploy_reward_v3_restores_every_win_beats_every_loss above,
+    # re-verified for v4 -- the guarantee comes from discard_weight/
+    # game_penalty_cap summing to win_floor, which v4 keeps unchanged from
+    # v3, so it must hold identically despite the curve revert.
+    def _worst_case_win(reward_fn):
+        s = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
+        s.active_idx = 0
+        s.winner = 0
+        s.players[0].cleanup_discard_turns = 100
+        s.players[0].mana_burnt_this_turn_single_pip = 50
+        return _effective_episode_score(reward_fn, s)
+
+    def _clean_loss(reward_fn):
+        s = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
+        s.active_idx = 0
+        s.winner = 1
+        return reward_fn(s, done=True, horizon=99)
+
+    clean_loss_v4 = _clean_loss(deploy_reward_v4)
+    assert clean_loss_v4 == pytest.approx(0.0)
+    assert _worst_case_win(deploy_reward_v4) > clean_loss_v4  # v4: guarantee holds, same as v3
+
+
+@pytest.mark.slow
+def test_flat_win_loss_reward_bands():
+    # flat_win_loss_reward (2026-08-11): deploy_reward_v5's base. Flat +1/-1,
+    # NO discard penalty q on either band, terminal only. Scored per seat off
+    # state.active_idx exactly like deploy_reward (rl.train._reward_for flips
+    # it), so "did this seat win" is state.winner == state.active_idx.
+    rf = flat_win_loss_reward()
+    s = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
+    s.active_idx = 0
+
+    assert rf(s, done=False, horizon=99) == 0.0  # terminal only
+
+    s.winner = 0
+    assert rf(s, done=True, horizon=99) == pytest.approx(1.0)
+
+    s.winner = 1  # this seat lost
+    assert rf(s, done=True, horizon=99) == pytest.approx(-1.0)
+
+    s.winner = None  # no-winner horizon timeout scores as a loss, not 0
+    assert rf(s, done=True, horizon=99) == pytest.approx(-1.0)
+
+    # q is GONE: hoarding must not move either band (the whole point -- see
+    # deploy_reward_v5's comment on why q was dropped entirely).
+    s.players[0].cleanup_discard_turns = 100
+    s.winner = 0
+    assert rf(s, done=True, horizon=99) == pytest.approx(1.0)
+    s.winner = 1
+    assert rf(s, done=True, horizon=99) == pytest.approx(-1.0)
+
+
+@pytest.mark.slow
+def test_deploy_reward_v5_curve_matches_owner_spec():
+    # v5's curve (2026-08-11, owner spec "cap at 5 mana burnt and a score of
+    # -1.5"): mana_burn_weight=1.5 SCALES the Hill curve (new param -- _hill
+    # itself asymptotes at 1.0), mana_burn_c=2.9/p=4.0 place that asymptote
+    # near 5 burnt pips, game_penalty_cap=1.5 bounds the whole-GAME total.
+    # Locks the documented per-turn numbers so a future edit to v5's call, or
+    # to _charge_single_pip_burn's weight handling, can't silently reshape it.
+    def _charge_for(pips):
+        s = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
+        s.players[0].mana_burnt_this_turn_single_pip = pips
+        return deploy_reward_v5.charge_single_pip_burn(s.players[0])
+
+    assert _charge_for(1) == pytest.approx(1.5 * _hill(1, 2.9, 4.0), abs=1e-4)  # ~0.021, first pip nearly free
+    assert _charge_for(2) == pytest.approx(0.277, abs=1e-3)
+    assert _charge_for(3) == pytest.approx(0.801, abs=1e-3)
+    assert _charge_for(4) == pytest.approx(1.175, abs=1e-3)
+    assert _charge_for(5) == pytest.approx(1.348, abs=1e-3)  # ~90% of the 1.5 weight, per spec
+    assert _charge_for(50) < 1.5  # asymptotic: approaches the weight, never reaches it
+
+    # Whole-game cap: repeated bad turns accumulate but never exceed 1.5.
+    # (mana_burn_penalty_credited resets per turn -- game.turn._run_turn_gen --
+    # so each turn re-charges from 0; only charged_total persists.)
+    p = PlayerState(True)
+    p.mana_burnt_this_turn_single_pip = 5
+    total = 0.0
+    for _turn in range(10):
+        p.mana_burn_penalty_credited = 0.0
+        total += deploy_reward_v5.charge_single_pip_burn(p)
+    assert total == pytest.approx(1.5)
+
+
+@pytest.mark.slow
+def test_deploy_reward_v5_is_winner_only_and_v4_is_not():
+    # The opt-in flag rl.train._winner_only_burn_for reads. v5 sets it
+    # (refund_on_loss=True); every earlier version must NOT, since that flag
+    # is what makes collect_rollout defer charges instead of applying them --
+    # a regression here would silently change v2/v3/v4's semantics.
+    assert getattr(deploy_reward_v5, "mana_burn_winner_only", False) is True
+    for older in (deploy_reward_v2, deploy_reward_v3, deploy_reward_v4):
+        assert getattr(older, "mana_burn_winner_only", False) is False
+
+
+@pytest.mark.slow
+def test_deploy_reward_v5_guarantee_and_no_discard_dependence():
+    # v5's guarantee is re-derived, NOT inherited: it no longer depends on
+    # v3/v4's discard_weight + game_penalty_cap == win_floor equation (there
+    # is no discard_weight anymore). Worst win = 1.0 - cap = -0.5; EVERY loss
+    # = -1.0 exactly, with no range at all.
+    s = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
+    s.active_idx = 0
+
+    s.winner = 0
+    assert _effective_episode_score(deploy_reward_v5, s) == pytest.approx(1.0)  # clean win
+
+    # Worst-case win: burn saturating the whole-game cap -> 1.0 - 1.5 = -0.5.
+    # A sloppy win CAN score negative under v5 (v4's floor was +0.4) -- fine,
+    # since the only ordering that matters is win-vs-loss.
+    s.players[0].mana_burnt_this_turn_single_pip = 50
+    worst_win = _effective_episode_score(deploy_reward_v5, s)
+    assert worst_win == pytest.approx(-0.5, abs=1e-2)
+    assert worst_win > -1.0  # still strictly beats every loss
+
+    # THE FIX ITSELF: a loss scores exactly -1.0 no matter how it was played.
+    # Passive (never burnt, never hoarded) and active-and-sloppy (heavy burn,
+    # heavy hoarding) must be INDISTINGUISHABLE -- v4 scored the passive loss
+    # ~2x better, which is what taught dmir_terror to stop playing.
+    def _loss_score(discard_turns, burnt):
+        st = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
+        st.active_idx = 0
+        st.winner = 1
+        st.players[0].cleanup_discard_turns = discard_turns
+        st.players[0].mana_burnt_this_turn_single_pip = burnt
+        # Terminal return only: on a LOSS rl.train never applies the deferred
+        # burn charges at all (see collect_rollout's deferred_charges), so the
+        # effective episode score IS the terminal number.
+        return deploy_reward_v5(st, done=True, horizon=99)
+
+    assert _loss_score(0, 0) == pytest.approx(-1.0)      # passive loss
+    assert _loss_score(100, 50) == pytest.approx(-1.0)   # active, sloppy loss
+    assert _loss_score(0, 0) == _loss_score(100, 50)     # no gradation to exploit
