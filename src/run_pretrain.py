@@ -31,6 +31,7 @@ import torch
 from rl.rewards import action_count_win_reward_200_floor02
 from rl.arch import SetTransformer
 from rl.deck import DeckNetwork
+from rl.league_runner import HORIZON
 from rl.pool import build_pool
 from rl.train import train_selfplay
 from rl import checkpoint as ckpt_io
@@ -83,7 +84,7 @@ def main():
 
     rng = random.Random()
     reward_fn = action_count_win_reward_200_floor02
-    horizon = 120
+    horizon = HORIZON
 
     total_games = n_iterations * games_per_iteration * len(deck_names)
     print(f"pretrain session {session}: n_iterations={n_iterations} games_per_iteration={games_per_iteration} "

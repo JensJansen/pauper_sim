@@ -33,22 +33,25 @@ assignment cancels rather than being averaged over and hoped about.
 Evaluation-only: loads frozen snapshots, trains nothing, writes no checkpoint.
 
 Usage:
-  python run_snapshot_round_robin.py [--snapshots 0,58,116,174,232,289]
+  python analysis/run_snapshot_round_robin.py [--snapshots 0,58,116,174,232,289]
                                      [--games 100] [--out ../logs/rr.json]
 """
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))  # src/, for `repo_paths` / `rl.*` -- these live one level up now that this script sits in analysis/
 import argparse
 import itertools
 import json
 import math
-import random
 import time
 
 from repo_paths import CHECKPOINTS_DIR
 from rl.league import LeaguePool
 from rl.pool import build_pool
-from rl.league_runner import league_roster, load_frozen_stack, load_vintage_agent, _play_eval_games
+from rl.league_runner import (HORIZON, league_roster, load_frozen_stack, load_vintage_agent,
+                              _play_paired_eval_games)
 
-HORIZON = 120
 
 
 def _fit_bradley_terry(labels, pair_wins, iters=500, prior=1.0):
@@ -116,10 +119,8 @@ def _analyze(labels, pair_wins):
 def _play_pair(agent_a, agent_b, decklist, games, seed):
     """a's (wins, games) over b, sides swapped half way -- seat assignment
     cancels instead of being averaged over."""
-    half = games // 2
-    fwd = _play_eval_games(agent_a, agent_b, decklist, half, HORIZON, random.Random(seed), "opp_wins")
-    rev = _play_eval_games(agent_b, agent_a, decklist, games - half, HORIZON, random.Random(seed), "opp_wins")
-    return fwd["live_wins"] + rev["opp_wins"], fwd["games"] + rev["games"]
+    result = _play_paired_eval_games(agent_a, agent_b, decklist, games, HORIZON, seed, "opp_wins")
+    return result["live_wins"], result["games"]
 
 
 def main():

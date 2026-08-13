@@ -12,7 +12,7 @@ gets a test with the actual numbers in it.
 """
 import json
 
-import report_metrics
+import analysis.report_metrics as report_metrics
 
 
 def _write_jsonl(path, records):

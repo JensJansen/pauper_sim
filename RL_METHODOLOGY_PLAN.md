@@ -128,7 +128,7 @@ were already recording.
 >
 > 1. **`vs_history archive_oldest` recorded the regression all along.** A second
 >    independent instrument, already on disk since session 24, corroborates
->    §1A.3. Nobody read it as a trend because `report_metrics.py` prints one
+>    §1A.3. Nobody read it as a trend because `analysis/report_metrics.py` prints one
 >    record at a time and every summary of it in this project pooled.
 > 2. **Confirming §1A.3 needed no new compute at all.** The 4,296s round robin
 >    was worth running — it gives the full matrix, the cycle test, and Elo — but
@@ -150,7 +150,7 @@ were already recording.
 
 ### 1A.1 Absolute scale: the random-init anchor
 
-`src/run_anchor_eval.py`, 150 games/cell, greedy (the sampled column agreed
+`src/analysis/run_anchor_eval.py`, 150 games/cell, greedy (the sampled column agreed
 throughout — argmax over randomly initialized heads did **not** degenerate, so
 that concern is retired). Opponent is an untrained `DeckNetwork` on the real
 frozen stack: the first fixed point in this repo whose strength is known by
@@ -173,7 +173,7 @@ as soon as a policy stops being embarrassing — `mono_red_rally` and
 cannot speak about them (the +2.7pp / z=+2.01 on mono_red is a ceiling artifact,
 not a result). Even on the two decks with headroom, some of the residual 17–26%
 is draw variance a perfect policy would also lose. The anchor is consistent with
-"learning stopped early"; it does not establish it. **`run_snapshot_round_robin.py`
+"learning stopped early"; it does not establish it. **`analysis/run_snapshot_round_robin.py`
 is the instrument that does** — head-to-head between trained policies, no ceiling.
 
 Elves reads −10.0pp greedy but −1.3pp sampled. A policy whose *argmax* degraded
@@ -221,7 +221,7 @@ so it is a lean, not a verdict. Step 2.3 still runs.
 
 ### 1A.3 Snapshot round robin — the decisive measurement
 
-`src/run_snapshot_round_robin.py`, 6 vintages × 15 pairs × 100 games × 4 decks,
+`src/analysis/run_snapshot_round_robin.py`, 6 vintages × 15 pairs × 100 games × 4 decks,
 sides swapped. 4,296s. Elo from a Bradley-Terry MM fit; residual printed against
 the residual sampling noise alone would produce.
 
@@ -300,7 +300,7 @@ Per-session `vs_gauntlet` is n=20 → SE 11.2pp, 95% CI ±21.9pp. Thirteen such
 readings are taken per session (4 decks × 3 instruments + heuristic) at a
 measured 1.64 s/game — **~7.1 min/session, ~4.5 h over the run, ~19% of total
 compute** — and spent as thirteen unusable readings instead of one usable one.
-`report_metrics.py` prints them one record at a time, so no pooled number, no
+`analysis/report_metrics.py` prints them one record at a time, so no pooled number, no
 confidence interval, and no trend test has ever been computed automatically.
 
 **2.2 ~~Two of the three references are near-worthless as written.~~
@@ -526,7 +526,7 @@ and `load_snapshot` so existing checkpoints still load.
 
 ### Phase 1 — Make the instruments readable (≈1 day, zero new compute)
 
-**Step 1.1 — rewrite `report_metrics.report()`.** Pool over a trailing window;
+**Step 1.1 — rewrite `analysis/report_metrics.report()`.** Pool over a trailing window;
 print `w/n (pp) ±CI95`; **never merge `archive_oldest` with `active_oldest`**;
 early-vs-late two-proportion z per deck per instrument; `SATURATED` flag at
 ≥95%; `.get` everything so old records still parse.
@@ -565,7 +565,7 @@ than the reallocation:**
 
 **Step 1.4 — `stack_id` guard.** Hash the frozen stack; write
 `<league_dir>/stack_id.txt`; `_run_eval_vs_gauntlet` and
-`run_cross_league_eval.py` **warn and return None** on mismatch (warn, not
+`analysis/run_cross_league_eval.py` **warn and return None** on mismatch (warn, not
 assert — missing file is the legacy case). This exact silent mismatch already
 invalidated 24,579 games/deck of `vs_gauntlet` numbers once
 (`run_default.json:9`). **Hard prerequisite for any perception-stack work.**
@@ -593,7 +593,7 @@ positive — while sitting **2.9σ below its own peak**. Only the peak compariso
 catches it, and it is the one that maps to the operator's actual question:
 *is the checkpoint I am about to keep training worse than one I already saved?*
 
-Implemented in `report_metrics.peak_comparison`, which the gate should call
+Implemented in `analysis/report_metrics.peak_comparison`, which the gate should call
 rather than reimplement. Note the **Šidák correction** in it: the best of W
 sliding windows is high by selection (the max of ~23 standard normals sits ~2σ
 up), so an uncorrected −2 threshold fires on flat data routinely. With the
@@ -616,7 +616,7 @@ Two hypotheses remain, and they demand opposite fixes:
   observation gaps, action space).
 
 **Step 2.1 — snapshot round-robin. ✅ DONE (§1A.3), 4,296s.**
-`src/run_snapshot_round_robin.py`, reusing `LeaguePool.load_snapshot_agent` +
+`src/analysis/run_snapshot_round_robin.py`, reusing `LeaguePool.load_snapshot_agent` +
 `league_runner._play_eval_games`. Six snapshots, 15-pair round robin, 100 games
 each, **sides swapped**, across all four decks.
 
@@ -629,7 +629,7 @@ the rest.
 acceptance test.** Re-run after Wave 2a; the target is `rising 5/5`.
 
 **Step 2.2 — random-init anchor. ✅ DONE (§1A.1), 2,632s.**
-`src/run_anchor_eval.py`. An **untrained** `DeckNetwork` on the real frozen
+`src/analysis/run_anchor_eval.py`. An **untrained** `DeckNetwork` on the real frozen
 stack. First absolute scale in the repo.
 
 Result: a ~200-game policy already beats random 78–100%, so the anchor
@@ -865,8 +865,8 @@ Three rules decide what can move together:
 - [x] `_play_eval_games` gains a `greedy` param (default True — no change to any existing caller)
 - [x] `league_runner.load_vintage_agent` — path resolution across `live.pt` / active dir / `archive/`
 - [x] `league_runner.league_roster` — decks with a `live.pt`, because `build_pool()` spans all 11 manifest decks
-- [x] `src/run_anchor_eval.py` (Step 2.2) — **run, §1A.1**
-- [x] `src/run_snapshot_round_robin.py` (Step 2.1)
+- [x] `src/analysis/run_anchor_eval.py` (Step 2.2) — **run, §1A.1**
+- [x] `src/analysis/run_snapshot_round_robin.py` (Step 2.1)
 - [x] PPO telemetry read off the existing `metrics.jsonl` — **§1A.2**, free
 - [x] Round robin run → `logs/snapshot_round_robin.json` — **§1A.3**
 - [x] `opponent_stats.json` cross-check — **§1A.4**, free
@@ -887,9 +887,9 @@ did not anticipate, and a stronger finding than any of them. See §1A.3.
 - [ ] **0.3** de-register the shared stack — `object.__setattr__` in `deck.py:34`, `mulligan.py:59`; strip `shared_stack.*` in `checkpoint.load_deck_checkpoint`/`load_snapshot`
   - [ ] test: loading deck B's checkpoint leaves the stack bit-identical; `load_snapshot_agent` leaves every `requires_grad` untouched
   - [ ] drop the BUG 3 note in `load_vintage_agent`'s docstring once fixed
-- [ ] **1.1** rewrite `report_metrics.report()` — pooled windows, `±CI95`, `SATURATED` flag, early-vs-late z, **never merge `archive_oldest` with `active_oldest`**
+- [ ] **1.1** rewrite `analysis/report_metrics.report()` — pooled windows, `±CI95`, `SATURATED` flag, early-vs-late z, **never merge `archive_oldest` with `active_oldest`**
 - [ ] **1.2** enrich records — `snapshot_id`/`is_archive` on vs_history; `cumulative_games` on every `_append_metric`; new `kind: "session_start"`
-- [ ] **1.3** `eval_games`/`eval_every_sessions` configurable (hardcoded 20 at `league_runner.py:564,606,648`); paired seeds + swapped sides, reusing `run_snapshot_round_robin._play_pair`
+- [ ] **1.3** `eval_games`/`eval_every_sessions` configurable (hardcoded 20 at `league_runner.py:564,606,648`); paired seeds + swapped sides, reusing `analysis/run_snapshot_round_robin._play_pair`
 - [ ] **1.4** `stack_id` guard — hash the frozen stack, write `<league_dir>/stack_id.txt`, warn-and-return-None on mismatch
 - [ ] **1.5** learning-stall gate in `webapp/runs.py:_escalating_loop` (**open question #1: stop or warn?**)
 - [ ] **1.6 (new, from §1A.2)** make the optimizer knobs configurable — `lr` is hardcoded `3e-4` at `league_runner.py:202`, `games_per_iteration` is welded to `n_workers` at `run_league.py:134`, `target_kl`/`gamma`/`gae_lambda` are `ppo.py` defaults. Exposing them changes no value, so it batches here at zero attribution cost; *changing* them is Wave 2. Same split as the 0.1 counter fix.
@@ -897,6 +897,19 @@ did not anticipate, and a stronger finding than any of them. See §1A.3.
 - [ ] delete `analyze_dmir_terror_land_pattern.py`, `analyze_mana_burn_by_turn.py`, orphaned `tests/__pycache__/test_run_league.*.pyc`
 - [ ] restore `tests/test_run_league.py` — the test whose absence let BUG 1 live
 - [ ] doc parity: README PPO section
+
+### Wave 1 — SHIPPED 2026-08-13
+
+- [x] **0.3** shared stack de-registered via `object.__setattr__` in `deck.py`/`mulligan.py`; `checkpoint.strip_shared_stack` strips it on load.
+- [x] **1.1** `analysis/report_metrics.report()` rewritten — pooled windows, Wilson CI, `SATURATED` flag, early-vs-late `trend_z`, Šidák-corrected `peak_comparison`, `archive_oldest`/`active_oldest` never merged.
+- [x] **1.2** records enriched — `cumulative_games` on every `_append_metric`, new `kind: "session_start"`.
+- [x] **1.3** paired common-random-numbers eval (`league_runner._play_paired_eval_games`) wired into all three in-training eval callers; `analysis/run_snapshot_round_robin._play_pair` now calls the same shared function instead of re-deriving it.
+- [x] **1.4** `stack_id` guard added — hash the frozen stack, warn-and-return-None on mismatch.
+- [x] **1.5** learning-stall gate added in `webapp/runs.py:_escalating_loop`, default warn / `stop_on_regression` opt-in (open question #1 resolved: warn by default), backed by `run_rollback.py`.
+- [x] **1.6** optimizer knobs (`lr`, `gamma`, `gae_lambda`, `target_kl`, `n_epochs`, `mulligan_lr`) moved to `league_runner.PPO_DEFAULTS`, overridable per league via a run-config `"ppo"` object.
+- [x] **1.7** `explained_variance` now recorded alongside `value_loss` from `ppo_update`.
+- [x] `analyze_mana_burn_by_turn.py` deleted; `tests/test_run_league.py` restored.
+- [x] doc parity: README PPO section updated.
 
 ### Wave 2a — signal-to-noise per update (the measured cause)
 
@@ -920,7 +933,7 @@ a failure to fire is still attributable.
   - [ ] test: with `--n-iterations` set, `cumulative_games_per_deck` advanced and `last_batch_size` did not
 
 **Success criterion, and it is not a win rate.** Re-run
-`run_snapshot_round_robin.py` over the *new* snapshots. The target is
+`analysis/run_snapshot_round_robin.py` over the *new* snapshots. The target is
 **newest = strongest**, i.e. `rising on 5/5` and a positive span. Elves and
 rakdos currently lose to their own 200-game-old selves; anything short of
 reversing that is not a fix.

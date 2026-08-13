@@ -19,15 +19,19 @@ land on whichever action is pending when the phase-boundary-crossing next
 decision point arrives (typically that seat's own final Pass ending the
 phase). This script checks that directly against real reward values.
 
-Usage: python check_credit_assignment.py [--games N] [--seed N]
+Usage: python analysis/check_credit_assignment.py [--games N] [--seed N]
 """
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))  # src/, for `repo_paths` / `rl.*` -- these live one level up now that this script sits in analysis/
 import argparse
 import random
 
 from repo_paths import CHECKPOINTS_DIR
 from rl.pool import build_pool
 from rl.train import _constant_pairing, collect_rollout
-from rl.league_runner import load_frozen_stack, D_MODEL
+from rl.league_runner import HORIZON, load_frozen_stack, D_MODEL
 from rl.rewards import deploy_reward_v3
 from rl.agent import SeatAgent
 from rl import checkpoint as ckpt_io
@@ -71,7 +75,7 @@ def main():
     )
 
     buffers_by_deck, _mull, played = collect_rollout(
-        pairing, args.games, 120, rng, device="cpu", record=True, greedy=True)
+        pairing, args.games, HORIZON, rng, device="cpu", record=True, greedy=True)
     buf = buffers_by_deck["dmir_terror"]
     print(f"{played} games, {len(buf)} recorded dmir_terror transitions\n")
 

@@ -147,15 +147,34 @@ src/
   run_pretrain.py          Pretrain + freeze the shared stack.
   run_league.py            Thin CLI wrapper (arg resolution + main()) around
                            rl/league_runner.py.
-  report_metrics.py        Plain-text summary of a league's metrics.jsonl -- per-record
+  run_rollback.py          Promote a historical snapshot back to live.pt (the archive
+                           already holds every snapshot; this is how to USE it).
+                           The only run_* at this level that does NOT write state is
+                           none -- that is the split: root mutates checkpoints,
+                           analysis/ only reads them.
+  analysis/                Read-only inspection tools. Run them from src/, e.g.
+                           `python analysis/report_metrics.py ../checkpoints/<league>`
+                           -- each adds src/ to sys.path itself, the same way
+                           webapp/runs.py does.
+    report_metrics.py      Plain-text summary of a league's metrics.jsonl -- per-record
                            trends first, then pooled stats with IMPROVING/FLAT/
                            REGRESSING/PAST PEAK verdicts and CIs.
-  run_anchor_eval.py       Absolute scale: checkpoints vs an UNTRAINED DeckNetwork on
+    run_anchor_eval.py     Absolute scale: checkpoints vs an UNTRAINED DeckNetwork on
                            the real frozen stack (a floor, saturates fast).
-  run_snapshot_round_robin.py
+    run_snapshot_round_robin.py
                            Round robin among a deck's own snapshots -- 3-cycle count,
                            Bradley-Terry Elo + residual vs noise floor, monotonicity.
-                           The instrument that showed 3 of 4 decks REGRESSING.
+                           Showed 3 of 4 decks REGRESSING; the acceptance test for any
+                           training change.
+    run_cross_league_eval.py
+                           Live weights of one league vs another, per deck.
+    _shared.py             Helpers several analysis scripts import (DEFAULT_ROSTER,
+                           _load_deck, _per_turn_tagged_burn).
+    analyze_*.py           Per-question forensics: burn saturation, hoarding, land
+                           patterns, decision entropy, target fizzles.
+    check_credit_assignment.py
+                           Where the dense mana-burn charge actually lands in the PPO
+                           buffer relative to the taps that caused it.
   benchmarking/            training_run.py (benchmarks the real league loop under
                            different collection configs) + _common.py (path/stdout
                            bootstrap it imports for its side effect).
@@ -441,7 +460,7 @@ the one game loop) also gets one `game_over` event appended to its own
 to the log stream at all, only reconstructible by replaying `life_change`
 deltas by hand.
 
-`python report_metrics.py <league_dir> [--window N]` prints a plain-text
+`python analysis/report_metrics.py <league_dir> [--window N]` prints a plain-text
 summary read from `metrics.jsonl` — stdlib only, no plotting dependency. It
 leads with the **per-record sequence** for every win-rate series and only then
 pools, because pooling is what hides a decline: `dmir_terror` vs
@@ -544,7 +563,7 @@ reference points, outside that history entirely:
   `AlwaysKeep`.
 
 Both report into `metrics.jsonl` (`kind: "vs_gauntlet"` / `"vs_heuristic"`,
-picked up by `report_metrics.py` the same way as everything else) and cost
+picked up by `analysis/report_metrics.py` the same way as everything else) and cost
 nothing when unconfigured — most leagues won't set `gauntlet_league_name` or
 `heuristic_decks` at all.
 
@@ -757,7 +776,7 @@ wired only through `--matchup` mode.)
   (rakdos/dmir/elves/mono_red) against v4's `7.75`/`10.09` on the two worst
   decks — hoarding got *better* without its penalty, because it was a symptom
   of passivity rather than an independent problem. Standing check:
-  `src/analyze_hoarding.py`.
+  `src/analysis/analyze_hoarding.py`.
 
   `deploy_reward_v6` (2026-08-12) supersedes `deploy_reward_v5`, moving
   **one** constant: `mana_burn_weight` `1.5 → 0.5`. Band, winner-only
@@ -791,7 +810,7 @@ wired only through `--matchup` mode.)
   instead of 66%. Per-turn charge by pips burnt: `1→0.007`, `2→0.092`,
   `3→0.267`, `4→0.392`, `5→0.449`, asymptoting toward `0.5`. One 5-pip turn
   now costs 30% of the whole-game budget instead of 90%. Standing check:
-  `src/analyze_burn_saturation.py` (replays the reward's own
+  `src/analysis/analyze_burn_saturation.py` (replays the reward's own
   `charge_single_pip_burn`, so it cannot drift from `rl/rewards.py`).
 
   `deploy_reward_v1`-`v5` are all kept unchanged for reference/comparison.

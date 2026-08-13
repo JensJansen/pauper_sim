@@ -9,16 +9,20 @@ even chosen, so a turn that taps for a big hard-cast then delves deep (or
 vice versa) can strand floated mana structurally, not just from sloppy
 play -- this pulls real turns to check whether that's actually happening.
 
-Usage: python analyze_mana_burn_turns.py DECK [--games N] [--seed N] [--top N] [--min_burn N]
+Usage: python analysis/analyze_mana_burn_turns.py DECK [--games N] [--seed N] [--top N] [--min_burn N]
 """
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))  # src/, for `repo_paths` / `rl.*` -- these live one level up now that this script sits in analysis/
 import argparse
 import random
 
 from repo_paths import CHECKPOINTS_DIR
 from rl.pool import build_pool
 from rl.train import _constant_pairing, collect_rollout
-from rl.league_runner import load_frozen_stack, D_MODEL
-from analyze_mana_burn_by_turn import DEFAULT_ROSTER, _load_deck, _per_turn_tagged_burn
+from rl.league_runner import HORIZON, load_frozen_stack, D_MODEL
+from _shared import DEFAULT_ROSTER, _load_deck, _per_turn_tagged_burn
 
 _ENVELOPE_SKIP = {"kind", "turn", "turn_player_idx"}
 _SKIP_KINDS = {"priority_flip", "decision_weights", "pass", "untap_step", "phase_change", "turn_start"}
@@ -40,7 +44,7 @@ def _play_games(deck_name, deck_league_dir, opponent_league_dir, opponents, game
             [SeatAgent(net, mnet, deck_ctxs[deck_name]), SeatAgent(onet, omnet, deck_ctxs[opp])],
             [decklists[deck_name], decklists[opp]], [None, None], [None, None])
         game_logs = []
-        collect_rollout(pairing, games_per_opp, 120, rng, device="cpu",
+        collect_rollout(pairing, games_per_opp, HORIZON, rng, device="cpu",
                          record=False, greedy=True, game_logs=game_logs)
         all_logs.extend(game_logs)
     return all_logs

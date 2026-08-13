@@ -33,8 +33,12 @@ mask -- a policy making its own decisions, just an untrained one. It is not a
 scripted rule set and is never a training target. Evaluation-only.
 
 Usage:
-  python run_anchor_eval.py [--games 100] [--vintages 0,live] [--mode both]
+  python analysis/run_anchor_eval.py [--games 100] [--vintages 0,live] [--mode both]
 """
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))  # src/, for `repo_paths` / `rl.*` -- these live one level up now that this script sits in analysis/
 import argparse
 import math
 import random
@@ -48,23 +52,12 @@ from rl.mulligan import MulliganNet
 from rl.agent import SeatAgent
 from rl.league import LeaguePool
 from rl.pool import build_pool
-from rl.league_runner import (D_MODEL, league_roster, load_frozen_stack, load_vintage_agent,
+from analysis.report_metrics import wilson as _wilson  # same helper, one definition -- both live in analysis/ now
+from rl.league_runner import (D_MODEL, HORIZON, league_roster, load_frozen_stack, load_vintage_agent,
                               _play_eval_games)
 
-HORIZON = 120
 
 
-def _wilson(wins, n, z=1.96):
-    """Wilson score interval -- correct near 0% and 100%, where the normal
-    approximation runs off the end of [0, 1]. Both are live possibilities here:
-    a trained deck may well shut out a random-init anchor."""
-    if not n:
-        return 0.0, 0.0, 0.0
-    p = wins / n
-    d = 1 + z * z / n
-    centre = (p + z * z / (2 * n)) / d
-    half = z * math.sqrt(p * (1 - p) / n + z * z / (4 * n * n)) / d
-    return p, max(0.0, centre - half), min(1.0, centre + half)
 
 
 def _anchor_agent(shared, deck_ctx, seed):

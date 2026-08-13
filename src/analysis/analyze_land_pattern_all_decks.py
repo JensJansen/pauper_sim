@@ -12,7 +12,7 @@ and picks each deck up wherever it appears: deck_a is always seat 0, so a
 per-target glob would sample each deck almost entirely on the play.
 
 Usage:
-  python analyze_land_pattern_all_decks.py '../logs/v5_20k/*_25games.json'
+  python analysis/analyze_land_pattern_all_decks.py '../logs/v5_20k/*_25games.json'
 """
 import glob
 import json

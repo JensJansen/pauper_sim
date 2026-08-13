@@ -97,8 +97,8 @@ def shuffle_library(state, player_idx=None):
     Exists to be a choke point rather than for the shuffle itself: shuffling
     destroys any knowledge the player had of their own library order, so
     PlayerState.known_top (see game.state.known_top_prefix) must be cleared at
-    exactly the same moment. Seven call sites used to invoke rng.shuffle
-    directly; routing them all through here means a future eighth cannot
+    exactly the same moment. Nine call sites used to invoke rng.shuffle
+    directly; routing them all through here means a future tenth cannot
     silently skip the clear.
 
     game.state.known_top_prefix already validates known_top against the real

@@ -9,8 +9,12 @@ specific to that decision context, rather than a magnitude-of-penalty problem
 (a much harsher dense curve already failed to move this deck's burn at all,
 see rl.rewards deploy_reward_v3 vs v2).
 
-Usage: python analyze_decision_entropy.py DECK [--baseline DECK2] [--games N] [--seed N]
+Usage: python analysis/analyze_decision_entropy.py DECK [--baseline DECK2] [--games N] [--seed N]
 """
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))  # src/, for `repo_paths` / `rl.*` -- these live one level up now that this script sits in analysis/
 import argparse
 import random
 import statistics
@@ -19,8 +23,8 @@ from collections import defaultdict
 from repo_paths import CHECKPOINTS_DIR
 from rl.pool import build_pool
 from rl.train import _constant_pairing, collect_rollout
-from rl.league_runner import load_frozen_stack, D_MODEL
-from analyze_mana_burn_by_turn import DEFAULT_ROSTER, _load_deck
+from rl.league_runner import HORIZON, load_frozen_stack, D_MODEL
+from _shared import DEFAULT_ROSTER, _load_deck
 
 _PHASE_ORDER = ["untap", "upkeep", "draw", "main1", "declare_attackers",
                 "declare_blockers", "combat_damage", "main2", "end"]
@@ -37,7 +41,7 @@ def _play_games(deck_name, deck_league_dir, opponent_league_dir, opponents, game
             [SeatAgent(net, mnet, deck_ctxs[deck_name]), SeatAgent(onet, omnet, deck_ctxs[opp])],
             [decklists[deck_name], decklists[opp]], [None, None], [None, None])
         game_logs = []
-        collect_rollout(pairing, games_per_opp, 120, rng, device="cpu",
+        collect_rollout(pairing, games_per_opp, HORIZON, rng, device="cpu",
                          record=False, greedy=True, game_logs=game_logs)
         all_logs.extend(game_logs)
     return all_logs

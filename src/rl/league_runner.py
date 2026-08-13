@@ -30,6 +30,14 @@ from repo_paths import CHECKPOINTS_DIR
 FROZEN_STACK = CHECKPOINTS_DIR / "shared_stack_frozen.pt"
 LEAGUE_DIR = CHECKPOINTS_DIR / "league"
 D_MODEL = 64
+# Turn limit for a single game, for TRAINING and EVERY eval alike. One constant
+# because a training/eval mismatch here is silent: games would simply end at a
+# different point than the policy was trained for, and every win rate would
+# measure something other than what it claimed. It was previously written out
+# as a literal `120` in six places (both _run_session and _run_eval here, plus
+# run_pretrain, run_cross_league_eval, run_anchor_eval, run_snapshot_round_robin),
+# so changing it would have silently desynchronized them.
+HORIZON = 120
 SHARED_HPARAMS = {"d_model": D_MODEL, "n_heads": 4, "n_layers": 2, "dim_feedforward": 128}
 
 # Games per in-training eval check (vs_history / vs_gauntlet / vs_heuristic).
@@ -382,7 +390,7 @@ def _run_session(n_iterations, games_per_iteration, snapshot_every, executor, n_
     rng = random.Random(seed)  # seed=None -> nondeterministic, identical to the prior random.Random()
     reward_fn = deploy_reward_v6
     reward_fn_name = "deploy_reward_v6"
-    horizon = 120
+    horizon = HORIZON
 
     mode = []
     if not train_deck:
@@ -679,7 +687,7 @@ def _run_eval(eval_decks, games_per_pairing, greedy, seed, game_logs, matchup=No
     pairings = [tuple(matchup)] if matchup else list(itertools.combinations_with_replacement(eval_decks, 2))
     shared = build_fresh_stack(vocab.size) if fresh_stack else load_frozen_stack(vocab.size)
     rng = random.Random(seed)
-    horizon = 120
+    horizon = HORIZON
 
     live_nets, mulligan_nets = {}, {}
     for name in set(eval_decks):

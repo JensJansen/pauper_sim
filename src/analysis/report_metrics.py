@@ -37,8 +37,8 @@ So this version leads with the PER-RECORD SEQUENCE, and only then pools:
 Every field is read with .get so records written before a field existed still
 parse -- metrics.jsonl is append-only across many schema revisions.
 
-Usage: python report_metrics.py <league_dir> [--window N]
-  e.g. python report_metrics.py ../checkpoints/4_deck_subleague_test
+Usage: python analysis/report_metrics.py <league_dir> [--window N]
+  e.g. python analysis/report_metrics.py ../checkpoints/4_deck_subleague_test
 """
 import json
 import math
@@ -284,7 +284,7 @@ def main():
         window = int(args[i + 1])
         del args[i:i + 2]
     if len(args) != 1:
-        print("usage: python report_metrics.py <league_dir> [--window N]")
+        print("usage: python analysis/report_metrics.py <league_dir> [--window N]")
         raise SystemExit(1)
     report(load(f"{args[0]}/metrics.jsonl"), window=window)
 

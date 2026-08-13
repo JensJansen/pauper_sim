@@ -7,9 +7,13 @@ mana, target died" hypothesis raised alongside analyze_mana_burn_by_turn.py
 itself mana burn -- so this checks the real event trace instead of assuming
 the two are linked from the console print frequency alone).
 
-Usage: python analyze_target_fizzle.py DECK [--games N] [--seed N] [--examples N]
+Usage: python analysis/analyze_target_fizzle.py DECK [--games N] [--seed N] [--examples N]
        (--games N = games per opponent; roster has 4 opponents)
 """
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))  # src/, for `repo_paths` / `rl.*` -- these live one level up now that this script sits in analysis/
 import argparse
 import random
 from collections import Counter
@@ -17,8 +21,8 @@ from collections import Counter
 from repo_paths import CHECKPOINTS_DIR
 from rl.pool import build_pool
 from rl.train import _constant_pairing, collect_rollout
-from rl.league_runner import load_frozen_stack, D_MODEL
-from analyze_mana_burn_by_turn import DEFAULT_ROSTER, _load_deck, _per_turn_tagged_burn
+from rl.league_runner import HORIZON, load_frozen_stack, D_MODEL
+from _shared import DEFAULT_ROSTER, _load_deck, _per_turn_tagged_burn
 
 _ENVELOPE_SKIP = {"kind", "turn", "turn_player_idx"}
 
@@ -39,7 +43,7 @@ def _play_games(deck_name, deck_league_dir, opponent_league_dir, opponents, game
             [SeatAgent(net, mnet, deck_ctxs[deck_name]), SeatAgent(onet, omnet, deck_ctxs[opp])],
             [decklists[deck_name], decklists[opp]], [None, None], [None, None])
         game_logs = []
-        collect_rollout(pairing, games_per_opp, 120, rng, device="cpu",
+        collect_rollout(pairing, games_per_opp, HORIZON, rng, device="cpu",
                          record=False, greedy=True, game_logs=game_logs)
         all_logs.extend(game_logs)
     return all_logs

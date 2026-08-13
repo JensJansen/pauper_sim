@@ -15,8 +15,12 @@ deploy_reward_v3 vs. the v2 gauntlet twin) head to head under identical
 opponents, not just win rate.
 
 Usage:
-  python run_cross_league_eval.py LEAGUE_A LEAGUE_B [--games N] [--seed N] [--log PATH]
+  python analysis/run_cross_league_eval.py LEAGUE_A LEAGUE_B [--games N] [--seed N] [--log PATH]
 """
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))  # src/, for `repo_paths` / `rl.*` -- these live one level up now that this script sits in analysis/
 import argparse
 import itertools
 import json
@@ -31,7 +35,7 @@ from rl.agent import SeatAgent
 from rl.pool import build_pool
 from rl.train import _constant_pairing, collect_rollout
 from rl import checkpoint as ckpt_io
-from rl.league_runner import load_frozen_stack, D_MODEL
+from rl.league_runner import HORIZON, load_frozen_stack, D_MODEL
 
 DEFAULT_ROSTER = ["rakdos_madness", "dmir_terror", "elves", "mono_red_rally"]
 
@@ -69,7 +73,6 @@ def main():
     live_b, mull_b = _load_deck_nets(CHECKPOINTS_DIR / args.league_b, roster, shared, fixed_tables)
 
     rng = random.Random(args.seed)
-    horizon = 120
     results = []
     # Per-deck mana-burn accumulators, keyed by (league_letter, deck_name) --
     # a deck's own burn rate is compared across every opponent it faced, not
@@ -83,22 +86,49 @@ def main():
         acc[1] += total
         acc[2] += total_single_pip
 
+    def _half(agents, decks, n_games, seed):
+        """One orientation: agents[0]/decks[0] at seat 0. Returns the raw
+        game_over events plus the count played."""
+        pairing = _constant_pairing(agents, decks, [None, None], [None, None])
+        game_logs = []
+        _bufs, _mull, played = collect_rollout(pairing, n_games, HORIZON, random.Random(seed),
+                                                device="cpu", record=False, greedy=True,
+                                                game_logs=game_logs)
+        return [e for ev in game_logs for e in ev if e["kind"] == "game_over"], played
+
     t0 = time.time()
     for a, b in itertools.product(roster, roster):
-        pairing = _constant_pairing(
-            [SeatAgent(live_a[a], mull_a[a], deck_ctxs[a]), SeatAgent(live_b[b], mull_b[b], deck_ctxs[b])],
-            [decklists[a], decklists[b]], [None, None], [None, None])
-        game_logs = []
-        _bufs, _mull, played = collect_rollout(pairing, args.games, horizon, rng, device="cpu",
-                                                record=False, greedy=True, game_logs=game_logs)
-        outcomes = [e for ev in game_logs for e in ev if e["kind"] == "game_over"]
-        a_wins = sum(1 for e in outcomes if e["winner"] == 0)
-        b_wins = sum(1 for e in outcomes if e["winner"] == 1)
+        agent_a = SeatAgent(live_a[a], mull_a[a], deck_ctxs[a])
+        agent_b = SeatAgent(live_b[b], mull_b[b], deck_ctxs[b])
+        # COMMON RANDOM NUMBERS: half the games with league A's deck at seat 0,
+        # half with the seats exchanged, BOTH driven from the same seed. Because
+        # collect_rollout draws starting_idx per game from that rng, replaying
+        # the seed with the seats swapped hands the play to the other league on
+        # the very same shuffles -- on-the-play is then balanced exactly rather
+        # than in expectation.
+        #
+        # The itertools.product grid does NOT already do this. It pairs every
+        # ordered (deck_from_A, deck_from_B), which are different MATCHUPS, not
+        # the same matchup from both seats -- so before this, league A's deck sat
+        # at seat 0 in every single game, and the MIRRORS (a == b, the most
+        # informative cells) were completely unpaired.
+        pair_seed = rng.randrange(2 ** 31)
+        half = args.games // 2
+        fwd, played_f = _half([agent_a, agent_b], [decklists[a], decklists[b]], half, pair_seed)
+        rev, played_r = _half([agent_b, agent_a], [decklists[b], decklists[a]], args.games - half, pair_seed)
+        played = played_f + played_r
+
+        # In `rev` the seats are exchanged, so seat 0 is league B and seat 1 is
+        # league A -- every per-seat read below flips accordingly.
+        a_wins = sum(1 for e in fwd if e["winner"] == 0) + sum(1 for e in rev if e["winner"] == 1)
+        b_wins = sum(1 for e in fwd if e["winner"] == 1) + sum(1 for e in rev if e["winner"] == 0)
         no_winner = played - a_wins - b_wins
-        a_burnt = sum(e["mana_burnt_total"][0] for e in outcomes)
-        b_burnt = sum(e["mana_burnt_total"][1] for e in outcomes)
-        a_burnt_single_pip = sum(e["mana_burnt_total_single_pip"][0] for e in outcomes)
-        b_burnt_single_pip = sum(e["mana_burnt_total_single_pip"][1] for e in outcomes)
+        a_burnt = sum(e["mana_burnt_total"][0] for e in fwd) + sum(e["mana_burnt_total"][1] for e in rev)
+        b_burnt = sum(e["mana_burnt_total"][1] for e in fwd) + sum(e["mana_burnt_total"][0] for e in rev)
+        a_burnt_single_pip = (sum(e["mana_burnt_total_single_pip"][0] for e in fwd)
+                              + sum(e["mana_burnt_total_single_pip"][1] for e in rev))
+        b_burnt_single_pip = (sum(e["mana_burnt_total_single_pip"][1] for e in fwd)
+                              + sum(e["mana_burnt_total_single_pip"][0] for e in rev))
         _record_burn("a", a, played, a_burnt, a_burnt_single_pip)
         _record_burn("b", b, played, b_burnt, b_burnt_single_pip)
         results.append({"deck_a": a, "deck_b": b, "games": played,

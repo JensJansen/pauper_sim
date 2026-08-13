@@ -48,6 +48,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))  # src/, for `repo_paths` / `rl.league_cli_spec`
 from repo_paths import REPO_ROOT, SRC_DIR, CHECKPOINTS_DIR  # noqa: E402
 from rl.league_cli_spec import build_arg_parser, LEAGUE_GLOBAL, LEAGUE_MODES  # noqa: E402 -- torch-free, safe on every league-run start
+import analysis.report_metrics as report_metrics  # noqa: E402 -- torch-free, safe on every league-run start
 
 LOG_DIR = REPO_ROOT / "logs" / "webapp_runs"
 REGISTRY_PATH = LOG_DIR / "registry.json"
@@ -200,7 +201,6 @@ def _rollback_hint(league_dir, deck, rows, peak_at):
 def _snapshot_every_games(league_dir):
     """This league's own snapshot cadence, from the most recent session_start
     record. None if nothing recorded it (pre-2026-08-13 records)."""
-    import report_metrics
     path = Path(league_dir) / "metrics.jsonl"
     if not path.exists():
         return None
@@ -229,7 +229,6 @@ def learning_health(league_dir, min_records=10):
     each of them ending up weaker than a snapshot already sitting on disk
     (RL_METHODOLOGY_PLAN.md section 1A.3). Crash-free is not the same as
     healthy."""
-    import report_metrics
     path = Path(league_dir) / "metrics.jsonl"
     if not path.exists():
         return "unknown", []

@@ -13,7 +13,7 @@ cleanup), plus mean cards pitched. Run against two different runs' logs to
 compare (e.g. v4's logs/freshreset_*.json vs v5's logs/v5_*.json).
 
 Usage:
-  python analyze_hoarding.py '../logs/v5_{target}_vs_*_25games.json'
+  python analysis/analyze_hoarding.py '../logs/v5_{target}_vs_*_25games.json'
 """
 import glob
 import json

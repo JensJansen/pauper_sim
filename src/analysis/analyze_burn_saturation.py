@@ -36,9 +36,13 @@ almost entirely on the play, and both game length and burn depend on that.
 A {target} placeholder is still honored if one is supplied.
 
 Usage:
-  python analyze_burn_saturation.py [--logs '../logs/v5_*_25games.json']
+  python analysis/analyze_burn_saturation.py [--logs '../logs/v5_*_25games.json']
                                     [--reward deploy_reward_v6]
 """
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))  # src/, for `repo_paths` / `rl.*` -- these live one level up now that this script sits in analysis/
 import argparse
 import glob
 import json

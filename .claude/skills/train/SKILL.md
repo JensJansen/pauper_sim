@@ -245,7 +245,7 @@ assume `checkpoints/league/` when a config's own `league_name` pointed elsewhere
   past-self check at the end of each session -- plus, only when the resolved config
   carries a `gauntlet_league_name` (or `--gauntlet-league-name` was passed), a
   `vs_gauntlet` win-rate-vs-an-independently-trained-twin-league check on the same
-  cadence, once that twin has a checkpoint for the deck. Run `python report_metrics.py
+  cadence, once that twin has a checkpoint for the deck. Run `python analysis/report_metrics.py
   <league_dir>` for a plain-text summary of it -- mention this to the owner rather than
   re-deriving trends from stdout scrollback by hand.
 
@@ -268,7 +268,7 @@ Never claim a run succeeded without having seen its "done" line and exit 0 in th
   one throughout. `deploy_reward_v6` also wraps a dense, per-transition mana-burn penalty
   (`with_dense_mana_burn_penalty`, whole-game cap 1.5 against a per-turn curve weighted to
   0.5 — v5 used 1.5 and saturated that cap in 64-71% of games, making the penalty a flat
-  toll rather than a gradient; check it with `src/analyze_burn_saturation.py`), charged to
+  toll rather than a gradient; check it with `src/analysis/analyze_burn_saturation.py`), charged to
   the WINNER only — a losing seat pays exactly -1.0 however it played,
   which is what fixed the "losing quietly is cheaper than trying" asymmetry that drove
   agents into doing nothing. It reads
