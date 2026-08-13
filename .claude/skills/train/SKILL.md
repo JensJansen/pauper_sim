@@ -262,12 +262,16 @@ Never claim a run succeeded without having seen its "done" line and exit 0 in th
   DeckNetworks vs. the pretrain shared stack, NOT a subset of decks.
 - Reward is terminal (near-zero early is expected, not a failure — watch losses moving
   and games completing instead): pretrain uses `action_count_win_reward_200_floor02`
-  (plain win/loss); league play uses `deploy_reward_v3` (win/loss minus a cleanup-discard
-  sloppiness penalty `q`, weighted so it caps at 0.4 of the combined badness budget —
-  see `rl/rewards.py`). Different reward fns for the two phases, not the same one
-  throughout. `deploy_reward_v3` also wraps a dense, per-transition mana-burn penalty
-  (`with_dense_mana_burn_penalty`, capped at the other 0.6 of that budget as of
-  2026-08-10 — considerably steeper than `deploy_reward_v2`'s own older curve), reading
+  (plain win/loss); league play uses `deploy_reward_v6` (a FLAT +1 win / -1 loss — the
+  cleanup-discard sloppiness penalty `q` that v3/v4 carried is gone from both bands as of
+  2026-08-11 — see `rl/rewards.py`). Different reward fns for the two phases, not the same
+  one throughout. `deploy_reward_v6` also wraps a dense, per-transition mana-burn penalty
+  (`with_dense_mana_burn_penalty`, whole-game cap 1.5 against a per-turn curve weighted to
+  0.5 — v5 used 1.5 and saturated that cap in 64-71% of games, making the penalty a flat
+  toll rather than a gradient; check it with `src/analyze_burn_saturation.py`), charged to
+  the WINNER only — a losing seat pays exactly -1.0 however it played,
+  which is what fixed the "losing quietly is cheaper than trying" asymmetry that drove
+  agents into doing nothing. It reads
   a PER-PIP single-pip-tagged subset of burnt mana (`PlayerState.
   mana_burnt_this_turn_single_pip`) that excludes
   board-state-scaled burst sources (Priest of Titania, Overgrown Battlement) from the

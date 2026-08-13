@@ -1,13 +1,20 @@
 """Tests for rl.mulligan: the per-deck mulligan reward function and
 MulliganNet's REINFORCE training.
 
-Flakiness note (do not touch the seeding): the REINFORCE learning assertions
-in test_mulligan_net_shapes_and_reinforce_learning are otherwise flaky
-(~1-in-several spurious failures on random init) even with
-torch.manual_seed(0)/random.seed(0) in place. The seeding calls' position --
-before the net/optimizer/rng are built -- matters for that reproducibility;
-moving them is likely to reintroduce the flakiness, not something to paper
-over with retries or loosened tolerances.
+Flakiness note: the REINFORCE learning assertions in
+test_mulligan_net_shapes_and_reinforce_learning are genuinely sensitive to the
+net's random init (~1-in-several spurious failures unseeded), so the seeding is
+load-bearing and must not be papered over with retries or loosened tolerances.
+
+REVISED 2026-08-13. Seeding ONCE at the top was not enough, and the reason is
+worth recording: it made the assertions depend on how many random draws every
+object built in between happened to consume. SetTransformer's input_proj is
+`Linear(d_model + TOKEN_FEATURE_DIM, ...)`, so when ZONES gained a sixth entry
+("known_top") and TOKEN_FEATURE_DIM went 40 -> 41, the RNG stream shifted and
+MulliganNet was re-rolled onto an init these asserts fail from -- an unrelated
+observation-feature change breaking a mulligan test. torch.manual_seed(0) is
+now ALSO called immediately before MulliganNet is constructed, so this test
+depends only on its own subject. Feature dims will keep changing.
 """
 import random
 
@@ -44,6 +51,14 @@ def test_mulligan_net_shapes_and_reinforce_learning():
     shared = SetTransformer(vocab.size, d_model=16, n_heads=2, n_layers=2, dim_feedforward=32)
     for p in shared.parameters():
         p.requires_grad = False
+    # Re-seed HERE, immediately before the net whose init the assertions below
+    # actually depend on. Seeding only at the top couples this test to how many
+    # random draws SetTransformer happens to consume, which is a function of
+    # TOKEN_FEATURE_DIM -- so an unrelated observation-feature change (ZONES
+    # gained "known_top" on 2026-08-13, 40 -> 41) shifted the RNG stream and
+    # re-rolled MulliganNet onto an init the REINFORCE asserts fail from. The
+    # feature dim will keep changing; this test's subject is the mulligan net.
+    torch.manual_seed(0)
     net = MulliganNet(shared, hidden=32)
     opt = torch.optim.Adam([p for p in net.parameters() if p.requires_grad], lr=1e-2)
 

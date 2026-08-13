@@ -36,7 +36,8 @@ def _scalar_features(state, seat_idx, horizon):
     """Non-tokenized globals -- turn number, lands-played, mulligans, am-I-
     turn-player, my/opponent floating mana pool, phase one-hot, my/opponent
     life, my/opponent library size, opponent's hand size, whether the stack
-    currently targets me/the opponent AS A PLAYER. Same composition
+    currently targets me/the opponent AS A PLAYER, am-I-on-the-play, and the
+    opponent's mulligans-taken / cleanup-discard-turns. Same composition
     rl.deck.SCALAR_FEATURE_DIM documents (mana-pool cap of 8, matched here).
     state.mana_pool is a GameState property proxying to
     state.players[state.active_idx] (game/state.py's _active_player_property)
@@ -81,6 +82,30 @@ def _scalar_features(state, seat_idx, horizon):
         out.append(min(len(other.hand), OPPONENT_HAND_SIZE_CAP) / OPPONENT_HAND_SIZE_CAP)
         out.append(1.0 if player_controllers[seat_idx] else 0.0)
         out.append(1.0 if player_controllers[1 - seat_idx] else 0.0)
+        # Three public facts the main policy could not see (2026-08-13). All
+        # are things a real player knows at the table without any hidden
+        # information, so these are observation-fidelity fixes, not new
+        # capabilities -- see RL_METHODOLOGY_PLAN.md section 9's compliance
+        # line: a deterministic function of publicly observable state,
+        # consumed only as a network input, never an evaluation.
+        #
+        # on_the_play: a plain oversight -- the MULLIGAN net has always seen it
+        # (rl.mulligan.MulliganNet.N_SCALAR) while the main policy did not,
+        # despite it changing correct play on essentially every turn of the
+        # game (who wins the race, whether to hold up interaction).
+        out.append(1.0 if me.on_the_play else 0.0)
+        # Opponent mulligans: public -- you watch them shuffle back and draw
+        # one fewer. Directly informs how hard to press. `s.mulligans_taken`
+        # is the ACTIVE-player proxy (game/state.py:732) and _for_player pins
+        # active_idx == seat_idx, so it is already mine; this is the other seat.
+        out.append(min(other.mulligans_taken, 7) / 7)
+        # Opponent cleanup discards: also public (discarding to hand size at
+        # cleanup happens in the open). One count per TURN over the limit, not
+        # per card -- a hoarding proxy the reward function already reads
+        # (rl.rewards.deploy_reward's q term) but the policy could not observe
+        # about its opponent. Capped at the same 7 as mulligans purely to keep
+        # the input in [0, 1]; games rarely exceed it.
+        out.append(min(other.cleanup_discard_turns, 7) / 7)
         return out
     return drl_env._for_player(state, seat_idx, _read)
 

@@ -31,7 +31,16 @@ from rl.arch import FiLM
 class DeckNetwork(nn.Module):
     def __init__(self, shared_stack, film_condition_dim, non_targeting_n_actions, trunk_hidden=(128, 128)):
         super().__init__()
-        self.shared_stack = shared_stack  # reference, not a copy -- see this module's own docstring
+        # object.__setattr__, NOT self.shared_stack = ...: nn.Module.__setattr__
+        # would REGISTER the stack as a child module, which embedded a full copy
+        # of it in every checkpoint (37 of 51 keys in a live.pt) and, worse, made
+        # three call sites able to silently mutate the one shared instance --
+        # LeaguePool.load_snapshot_agent's requires_grad sweep and state_dict
+        # load both reached it. Harmless only while the stack is frozen and every
+        # embedded copy is byte-identical; a landmine the moment it is trainable.
+        # Held as a plain reference instead: still reachable as net.shared_stack
+        # (rl.ppo's cache_shared check relies on that), just not owned.
+        object.__setattr__(self, "shared_stack", shared_stack)
         d_model = shared_stack.d_model
         trunk_input_dim = d_model + SCALAR_FEATURE_DIM  # mine_summary + non-tokenized globals (life, turn, phase, ...)
 
@@ -93,10 +102,19 @@ class DeckNetwork(nn.Module):
 # len(POOL_COLORS) -- floating mana is public information in real Magic,
 # same reasoning library/hand size below already follows), phase one-hot
 # (len(Phase)), my/opponent library size, opponent's hand size, stack-
-# targets-me/stack-targets-opponent -- genuinely scalar/global facts,
-# deliberately NOT re-derived via tokens since they aren't per-card ones
-# (rl.agent._scalar_features is the one place that builds this vector).
+# targets-me/stack-targets-opponent, and (2026-08-13) am-I-on-the-play,
+# opponent mulligans-taken, opponent cleanup-discard-turns -- genuinely
+# scalar/global facts, deliberately NOT re-derived via tokens since they
+# aren't per-card ones (rl.agent._scalar_features is the one place that
+# builds this vector).
+#
+# The last three were added together because all three are PUBLIC information
+# a real player has at the table and none of them was reaching the policy.
+# on_the_play in particular was a plain oversight: rl.mulligan.MulliganNet has
+# always received it while the main policy never did. See
+# RL_METHODOLOGY_PLAN.md section 4.2.
 #
 # 4 = turn/lands/mulligans/am-i-turn-player, +2 = my/opponent life totals,
-# +5 = my/opponent library size, opponent hand size, stack-targets-me/opponent
-SCALAR_FEATURE_DIM = 4 + 2 * len(game.POOL_COLORS) + len(game.turn.Phase) + 2 + 5
+# +5 = my/opponent library size, opponent hand size, stack-targets-me/opponent,
+# +3 = on_the_play, opponent mulligans, opponent cleanup-discard turns
+SCALAR_FEATURE_DIM = 4 + 2 * len(game.POOL_COLORS) + len(game.turn.Phase) + 2 + 5 + 3

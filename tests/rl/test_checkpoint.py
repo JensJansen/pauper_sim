@@ -153,3 +153,104 @@ def test_pretrain_checkpoint_round_trip_and_missing_returns_none(tmp_path):
     saved = ckpt_io.load_pretrain_checkpoint(path)
     assert set(saved) == {"shared", "opt_shared", "nets", "head_opts", "session", "vocab_size", "d_model"}
     assert saved["session"] == 3 and set(saved["nets"]) == {"deck_a"}
+
+
+# --- shared stack is a plain reference, not a registered child (2026-08-13) ---
+#
+# DeckNetwork/MulliganNet used to do `self.shared_stack = shared_stack`, which
+# nn.Module.__setattr__ registers -- so every checkpoint embedded a full copy of
+# the one shared perception stack, and three call sites could silently mutate it
+# through a net that was only supposed to be borrowing it. Harmless only while
+# the stack stayed frozen and every copy was byte-identical. These pin both the
+# new invariant and backward compatibility with the ~800 files already on disk.
+
+
+def _old_format_state_dict(net, shared):
+    """What net.state_dict() USED to return: the net's own tensors plus an
+    embedded `shared_stack.*` copy. Reconstructed rather than mocked so the
+    backward-compat tests run against the real historical shape."""
+    return {**net.state_dict(),
+            **{f"shared_stack.{k}": v for k, v in shared.state_dict().items()}}
+
+
+@pytest.mark.slow
+def test_shared_stack_is_not_registered_as_a_child_module():
+    shared = _tiny_shared()
+    net = DeckNetwork(shared, film_condition_dim=8, non_targeting_n_actions=4)
+    mull = MulliganNet(shared)
+
+    assert not any(k.startswith("shared_stack.") for k in net.state_dict())
+    assert not any(k.startswith("shared_stack.") for k in mull.state_dict())
+    # ...but still reachable by attribute: rl.ppo's cache_shared check and
+    # rl.deck.forward's own d_model read both go through net.shared_stack.
+    assert net.shared_stack is shared and mull.shared_stack is shared
+
+
+@pytest.mark.slow
+def test_legacy_checkpoint_with_embedded_stack_still_loads(tmp_path):
+    shared = _tiny_shared()
+    net = DeckNetwork(shared, film_condition_dim=8, non_targeting_n_actions=4)
+    path = str(tmp_path / "live.pt")
+    torch.save({"net": _old_format_state_dict(net, shared)}, path)  # pre-2026-08-13 shape
+
+    fresh = DeckNetwork(_tiny_shared(), film_condition_dim=8, non_targeting_n_actions=4)
+    assert ckpt_io.load_deck_checkpoint(path, fresh)  # strict load would reject the extra keys
+    assert torch.equal(fresh.critic_head.weight, net.critic_head.weight)
+
+
+@pytest.mark.slow
+def test_loading_one_decks_checkpoint_leaves_the_shared_stack_bit_identical(tmp_path):
+    """The actual landmine: deck B's checkpoint carried deck B's era of the
+    stack, so loading it rewound the ONE shared instance that deck A was also
+    using. Byte-identical copies made it invisible -- until the stack is
+    trainable, when it silently corrupts."""
+    shared = _tiny_shared()
+    before = {k: v.clone() for k, v in shared.state_dict().items()}
+
+    other_stack = _tiny_shared()  # a DIFFERENT stack, as a divergent-era copy would be
+    with torch.no_grad():
+        for p in other_stack.parameters():
+            p.add_(1.0)
+    deck_b = DeckNetwork(other_stack, film_condition_dim=8, non_targeting_n_actions=4)
+    path = str(tmp_path / "deck_b.pt")
+    torch.save({"net": _old_format_state_dict(deck_b, other_stack)}, path)
+
+    deck_a = DeckNetwork(shared, film_condition_dim=8, non_targeting_n_actions=4)
+    ckpt_io.load_deck_checkpoint(path, deck_a)
+
+    for k, v in shared.state_dict().items():
+        assert torch.equal(v, before[k]), f"load rewound the shared stack at {k}"
+
+
+@pytest.mark.slow
+def test_load_snapshot_strips_both_weight_entries(tmp_path):
+    shared = _tiny_shared()
+    net = DeckNetwork(shared, film_condition_dim=8, non_targeting_n_actions=4)
+    mull = MulliganNet(shared)
+    path = str(tmp_path / "snapshot_0.pt")
+    torch.save({"state_dict": _old_format_state_dict(net, shared),
+                "trunk_hidden": (128, 128),
+                "mulligan_state_dict": _old_format_state_dict(mull, shared),
+                "mulligan_hidden": 64}, path)
+
+    saved = ckpt_io.load_snapshot(path)
+    assert not any(k.startswith("shared_stack.") for k in saved["state_dict"])
+    assert not any(k.startswith("shared_stack.") for k in saved["mulligan_state_dict"])
+    assert saved["trunk_hidden"] == (128, 128) and saved["mulligan_hidden"] == 64
+
+
+@pytest.mark.slow
+def test_freezing_a_snapshots_parameters_no_longer_freezes_the_shared_stack():
+    """rl.league.LeaguePool.load_snapshot_agent sweeps requires_grad=False over
+    net.parameters(). While the stack was a child that sweep reached it and made
+    the freeze PERMANENT for every other user of the same instance -- the most
+    severe of the three call sites, and a hard blocker on ever unfreezing."""
+    shared = _tiny_shared()
+    for p in shared.parameters():
+        p.requires_grad = True
+    net = DeckNetwork(shared, film_condition_dim=8, non_targeting_n_actions=4)
+
+    for p in net.parameters():
+        p.requires_grad = False
+
+    assert all(p.requires_grad for p in shared.parameters())

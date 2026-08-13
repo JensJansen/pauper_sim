@@ -28,6 +28,7 @@ respectively) in this module.
 Real Undercity dungeon (Scryfall), branching room graph in _DUNGEON below."""
 
 from . import casting
+from .shared import shuffle_library
 from .stats import can_be_targeted
 from .tokens import SKELETON_TOKEN_CARD_DEF, TREASURE_TOKEN_CARD_DEF, create_token
 from .win_check import lose_life
@@ -163,7 +164,7 @@ def _room_secret_entrance(state, player_idx):
         card = next(c for c in state.library if c.name == name)
         state.library.remove(card)
         state.hand.append(card)
-        state.rng.shuffle(state.library)
+        shuffle_library(state)
 
     resolution.begin_search_fetch(
         state, lambda c: c.card_type == CardType.LAND and c.extra.get("basic"), _fetch,
@@ -258,7 +259,7 @@ def _finish_throne(state, chosen):
     revealed = state.pending_resolution["revealed"]
     rest = [c for c in revealed if c is not chosen] if chosen is not None else list(revealed)
     state.library.extend(rest)
-    state.rng.shuffle(state.library)
+    shuffle_library(state)
     resolution.complete_resolution(state, chosen)
 
 

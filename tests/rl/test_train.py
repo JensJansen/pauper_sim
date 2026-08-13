@@ -28,7 +28,7 @@ from game.effects.casting import play_land_from_hand
 from rl.action_bridge import build_fixed_action_table
 from rl.agent import AlwaysKeep, DecisionResult, SeatAgent
 from rl.arch import SetTransformer
-from rl.deck import DeckNetwork
+from rl.deck import DeckNetwork, SCALAR_FEATURE_DIM
 from rl.features import CardVocab
 from rl.league import LeaguePool
 from rl.ppo import ppo_update
@@ -93,7 +93,8 @@ def test_mirror_selfplay_smoke():
     assert all(np.isfinite(v) for v in buf.value), "collected values must be finite"
     assert all(np.isfinite(r) for r in buf.reward), "collected rewards must be finite"
     assert buf.done[-1] is True, "the bucket must end with a flushed terminal transition"
-    policy_loss, value_loss, entropy, approx_kl, clip_fraction, epochs_run = ppo_update(
+    (policy_loss, value_loss, entropy, approx_kl, clip_fraction,
+     epochs_run, explained_variance, adv_std) = ppo_update(
         net_a, [fx["opt_a"]], buf, DEVICE, n_epochs=2, batch_size=16)
     assert np.isfinite(policy_loss) and np.isfinite(value_loss) and np.isfinite(entropy)
     assert np.isfinite(approx_kl) and np.isfinite(clip_fraction)
@@ -257,7 +258,8 @@ def test_league_smoke_and_frozen_cache_ppo_update():
             assert all(np.isfinite(v) for v in buf.value)
             assert all(np.isfinite(r) for r in buf.reward)
 
-        policy_loss, value_loss, entropy, approx_kl, clip_fraction, epochs_run = ppo_update(
+        (policy_loss, value_loss, entropy, approx_kl, clip_fraction,
+         epochs_run, explained_variance, adv_std) = ppo_update(
             net_a, [opt_a], buf_self, DEVICE, n_epochs=1, batch_size=16)
         assert np.isfinite(policy_loss) and np.isfinite(value_loss)
         assert np.isfinite(approx_kl) and np.isfinite(clip_fraction) and epochs_run == 1
@@ -274,9 +276,14 @@ def test_league_smoke_and_frozen_cache_ppo_update():
     shared_before = [p.clone() for p in net_a.shared_stack.parameters()]
     head_before = [p.clone() for p in net_a.non_targeting_head.parameters()]
     opt_head = torch.optim.Adam([p for p in net_a.parameters() if p.requires_grad], lr=3e-4)
-    pl, vl, ent, akl, cf, ep = ppo_update(net_a, [opt_head], buf_self, DEVICE, n_epochs=2, batch_size=16)
+    pl, vl, ent, akl, cf, ep, ev, astd = ppo_update(net_a, [opt_head], buf_self, DEVICE, n_epochs=2, batch_size=16)
     assert np.isfinite(pl) and np.isfinite(vl) and np.isfinite(ent)
     assert np.isfinite(akl) and np.isfinite(cf) and 1 <= ep <= 2
+    # explained_variance: finite and <= 1 by construction. NOT asserted
+    # positive -- an untrained critic on a smoke-test buffer legitimately
+    # scores below zero (worse than predicting the mean), which is the honest
+    # reading and exactly why this is recorded next to the raw value_loss.
+    assert np.isfinite(ev) and ev <= 1.0
     assert all(torch.equal(a, b) for a, b in zip(shared_before, net_a.shared_stack.parameters())), \
         "a FROZEN shared stack must be byte-for-byte unchanged after a cached ppo_update"
     assert any(not torch.equal(a, b) for a, b in zip(head_before, net_a.non_targeting_head.parameters())), \
@@ -444,7 +451,7 @@ def test_dense_mana_burn_credit_lands_on_the_tap_not_the_pass():
 def test_winner_only_mana_burn_charges_the_winner_and_drops_the_loser():
     # rl.train's deferred_charges + _winner_only_burn_for: with a WINNER-ONLY
     # reward (rl.rewards.with_dense_mana_burn_penalty(refund_on_loss=True),
-    # i.e. deploy_reward_v5's wrap), a seat's dense burn charges are held for
+    # i.e. deploy_reward_v5/v6's wrap), a seat's dense burn charges are held for
     # the whole game and applied at the terminal flush ONLY if it won. A
     # losing seat's trajectory must come out bit-for-bit identical to one
     # that never burnt anything at all.
@@ -524,3 +531,81 @@ def test_winner_only_mana_burn_charges_the_winner_and_drops_the_loser():
     )
     lost_taps = [i for i in range(len(lost_buf)) if lost_buf.action[i] == tap_idx]
     assert lost_taps, "the loser also tapped -- otherwise this proves nothing about dropping its charge"
+
+
+@pytest.mark.slow
+def test_explained_variance_is_zero_not_one_when_returns_are_constant():
+    """The whole reason explained_variance was added (2026-08-13): value_loss
+    is a raw MSE with no scale attached, so a critic predicting a CONSTANT that
+    happens to be right reports a tiny loss and looks excellent. That is the
+    live competing explanation for this project's own flat 0.01 value_loss --
+    gamma/gae_lambda discounting early-game returns to ~0 makes them trivially
+    predictable. A degenerate target must therefore score 0, not 1."""
+    shared = SetTransformer(vocab_size=5, d_model=8, n_heads=2, n_layers=1, dim_feedforward=16)
+    for p in shared.parameters():
+        p.requires_grad = False
+    net = DeckNetwork(shared, film_condition_dim=8, non_targeting_n_actions=4)
+    buf = RolloutBuffer()
+    # Every transition identical, reward 0, done immediately -> zero-variance
+    # returns. A "perfect" critic here has explained nothing.
+    for _ in range(8):
+        buf.add([], np.zeros(SCALAR_FEATURE_DIM, dtype=np.float32),
+                np.ones(4, dtype=bool), 0, 0.0, 0.0, 0.0, True)
+    opt = torch.optim.Adam([p for p in net.parameters() if p.requires_grad], lr=3e-4)
+    *_rest, ev, _astd = ppo_update(net, [opt], buf, DEVICE, n_epochs=1, batch_size=4)
+    assert ev == 0.0, f"constant returns must explain nothing, got {ev}"
+
+
+@pytest.mark.slow
+def test_adv_norm_floor_defaults_to_a_true_no_op_and_damps_degenerate_batches():
+    """The guard on rl.ppo's advantage normalization.
+
+    Unguarded, (adv - mean) / (std + 1e-8) rescales EVERY batch to unit
+    variance, including one where nearly every trajectory returned the same
+    outcome -- so critic noise is promoted to a full-scale gradient. Three of
+    four decks spent 58-77% of training in matchups they win <25% of, and
+    flattening PFSP only reaches ~56%, so this is structural rather than
+    incidental (RL_METHODOLOGY_PLAN.md section 1A.4).
+
+    Two properties, both load-bearing:
+      - floor=0.0 (the default) must reproduce the historical behavior EXACTLY,
+        so shipping the knob changes nothing until it is deliberately set;
+      - a floor above the batch's own spread must SHRINK the advantages rather
+        than normalize them to unit scale.
+    """
+    import numpy as np
+
+    def normalized(adv_raw, floor):
+        adv = np.array(adv_raw, dtype=np.float32)
+        return (adv - adv.mean()) / (max(float(adv.std()), floor) + 1e-8)
+
+    degenerate = [-1.0, -1.0, -1.0, -0.98, -1.02]  # a lost matchup: nothing differentiates
+    healthy = [-1.0, 1.0, -1.0, 1.0, 0.2]
+
+    unguarded = normalized(degenerate, 0.0)
+    assert abs(float(unguarded.std()) - 1.0) < 1e-3, "floor=0 must still normalize to unit variance"
+
+    guarded = normalized(degenerate, 0.5)
+    assert float(guarded.std()) < 0.05, (
+        f"a batch with no real signal must stay small, got std={guarded.std():.3f}")
+
+    # ...and the same floor must not disturb a batch that DOES carry signal.
+    assert np.allclose(normalized(healthy, 0.5), normalized(healthy, 0.0), atol=1e-5), (
+        "a floor below the batch's own spread must be inert")
+
+
+@pytest.mark.slow
+def test_ppo_update_reports_raw_adv_std():
+    """adv_norm_floor cannot be set responsibly without knowing the actual
+    advantage scale, which nothing ever recorded. It is returned and logged so
+    the value comes from the measured distribution rather than a guess -- the
+    mistake that made PFSP_POWER=2.0 the leading cause of a 60,001-game
+    regression."""
+    fx = _base_fixture()
+    agent_a = SeatAgent(fx["net_a"], AlwaysKeep(), fx["deck_ctx_a"])
+    pairing = _constant_pairing([agent_a, agent_a], [fx["decklist_a"]] * 2,
+                                [fx["reward_fn"]] * 2, ["m", "m"])
+    bufs, _mull, _played = collect_rollout(pairing, 2, HORIZON, fx["rng"], device=DEVICE)
+    *_rest, _ev, adv_std = ppo_update(fx["net_a"], [fx["opt_a"]], bufs["m"], DEVICE,
+                                      n_epochs=1, batch_size=16)
+    assert np.isfinite(adv_std) and adv_std >= 0.0

@@ -271,3 +271,56 @@ def test_opponent_stats_persist_and_reload_and_eviction_drops_stale_entries(tmp_
     pool2.register_snapshot("deck_b", fake_net)  # 4th registration -> evicts oldest_id now
     assert ("snapshot", "deck_b", oldest_id) not in pool2.opponent_stats["deck_a"], \
         "an evicted snapshot's stats must be dropped from every training deck's opponent_stats"
+
+
+# --- PFSP_POWER direction (2026-08-13) ---
+
+
+def _stats_for_a_hopeless_matchup(pool, training_deck):
+    """training_deck loses ~1% to 'boss', ~50% in the mirror, wins the rest --
+    the real 4-deck shape (elves won 1.1% vs mono_red_rally, 50.1% in mirror)."""
+    for opp, (wins, games) in {"boss": (10, 1000), training_deck: (500, 1000),
+                               "easy_a": (900, 1000), "easy_b": (940, 1000)}.items():
+        pool.opponent_stats[training_deck][("deck", opp)] = (wins, games)
+
+
+def _share_of_hardest(power, seed=0):
+    import random as _random
+    from rl.league import LeaguePool
+    import tempfile
+    pool = LeaguePool(tempfile.mkdtemp(), ["me", "boss", "easy_a", "easy_b"], pfsp_power=power)
+    _stats_for_a_hopeless_matchup(pool, "me")
+    rng = _random.Random(seed)
+    picks = [pool.sample_opponent("me", rng)[0] for _ in range(4000)]
+    return picks.count("boss") / len(picks), picks.count("me") / len(picks)
+
+
+@pytest.mark.slow
+def test_share_of_the_hardest_matchup_decreases_as_pfsp_power_decreases():
+    """THE invariant the 2026-08-06 change violated, with no test to catch it.
+
+    weight = FLOOR + (1 - win_rate) ** POWER, and (1 - win_rate) < 1, so a
+    LARGER exponent SHARPENS concentration onto the opponent you lose to most.
+    The change was made to reduce that concentration and did the opposite,
+    sending three of four decks to 58-77% of their training games in matchups
+    they win <25% of (RL_METHODOLOGY_PLAN.md section 1A.4)."""
+    shares = {p: _share_of_hardest(p) for p in (0.5, 1.0, 2.0)}
+    hardest = {p: s[0] for p, s in shares.items()}
+    mirror = {p: s[1] for p, s in shares.items()}
+    assert hardest[0.5] < hardest[1.0] < hardest[2.0], (
+        f"share of the unwinnable matchup must be monotone INCREASING in POWER, got {hardest}")
+    assert mirror[0.5] > mirror[2.0], (
+        f"and the mirror -- the only matchup with real advantage variance -- must gain, got {mirror}")
+
+
+@pytest.mark.slow
+def test_default_pfsp_power_is_the_flattening_one():
+    from rl.league import PFSP_POWER
+    assert PFSP_POWER == 0.5, "0.5 flattens; 2.0 was backwards (see this module's own comment)"
+
+
+@pytest.mark.slow
+def test_pfsp_power_is_per_pool_not_a_global():
+    """It has to be settable per league so re-tuning is a config edit. A module
+    constant read at call time would make the two pools below agree."""
+    assert _share_of_hardest(0.5)[0] != _share_of_hardest(2.0)[0]

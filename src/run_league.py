@@ -39,8 +39,11 @@ Usage:
       batch, 1/2/4/8/..., stopping once total_games is reached). Either config's
       individual values, or --league-name/--roster/--n-workers/etc. directly, still override for one call.
   python run_league.py --n-iterations N [--snapshot-every N] [--n-workers N]
-      Debug / one-off: force an exact iteration count, bypassing auto-sizing (and its progress.json bookkeeping)
-      entirely. Config files still apply for anything not explicitly overridden.
+      Debug / one-off: force an exact iteration count, bypassing auto-SIZING. progress.json's
+      cumulative_games_per_deck still advances (it is the horizon the PPO schedules ramp against and has
+      nothing to do with the ladder -- gating it here was BUG 1); only last_batch_size stays untouched, so a
+      forced size never becomes the next auto-sized batch's base. Config files still apply for anything not
+      explicitly overridden.
   python run_league.py --matchup DECK_A DECK_B [--games N] [--log PATH]
       Fixed A-vs-B pairing, no league opponent sampling, no auto-sizing.
 
@@ -53,8 +56,10 @@ import json
 from concurrent.futures import ProcessPoolExecutor
 
 from repo_paths import CHECKPOINTS_DIR
+from rl.league import PFSP_POWER
 from rl.league_cli_spec import build_arg_parser
 from rl.league_runner import (
+    EVAL_EVERY_SESSIONS, EVAL_GAMES, advance_progress,
     _load_progress, _next_batch_games, _run_eval, _run_session, _save_progress, _write_event_log,
 )
 
@@ -107,7 +112,8 @@ def main():
     # Sizing: --matchup counts by --games (per deck round, its own scheme,
     # unaffected by any of this); an explicit --n-iterations forces an exact
     # size and is a pure debug escape hatch (see its own --help text -- never
-    # written to progress.json, never fed back into the doubling sequence);
+    # fed back into the doubling sequence, though it DOES advance the league's
+    # cumulative game count; see league_runner.advance_progress);
     # otherwise this league's own total_games + how far it's already gotten
     # (progress.json) determine the next batch automatically.
     # Logging is threaded through BOTH the sequential and MP league paths
@@ -131,7 +137,16 @@ def main():
         # fastest measured (2x/3x add PPO-update-side cost -- a bigger buffer to
         # update on -- without adding real collection parallelism once every
         # worker already has work).
-        games_per_iteration = max(1, n_workers)
+        # games_per_iteration: one game per worker by default (the benchmark
+        # above). Overridable via run-config so the games-per-POLICY-UPDATE
+        # ratio can be raised without a code edit -- at the default of 6, every
+        # ppo_update spends its whole trust region on six games of evidence
+        # (approx_kl 0.044 against target_kl 0.03, i.e. early stopping on most
+        # updates; see RL_METHODOLOGY_PLAN.md section 1A.2). Raising it costs
+        # wall-clock exactly as the benchmark comment above predicts -- a bigger
+        # buffer per update, no extra collection parallelism -- which is a
+        # deliberate trade, not an oversight.
+        games_per_iteration = run_cfg.get("games_per_iteration") or max(1, n_workers)
         if args.n_iterations is not None:
             n_iterations = args.n_iterations
         else:
@@ -178,7 +193,11 @@ def main():
                             matchup=matchup, game_logs=game_logs, checkpoint_rate=checkpoint_rate,
                             league_dir=league_dir, roster=roster, pfsp=pfsp,
                             gauntlet_league_dir=gauntlet_league_dir, heuristic_decks=heuristic_decks,
-                            cumulative_games=cumulative_games)
+                            cumulative_games=cumulative_games,
+                            ppo_hparams=run_cfg.get("ppo"),
+                            eval_games=run_cfg.get("eval_games", EVAL_GAMES),
+                            eval_every_sessions=run_cfg.get("eval_every_sessions", EVAL_EVERY_SESSIONS),
+                            pfsp_power=run_cfg.get("pfsp_power", PFSP_POWER))
 
     sequential = matchup is not None or n_workers <= 1  # matchup uses collect_rollout directly (no worker path)
     if not sequential:
@@ -189,14 +208,11 @@ def main():
     else:
         _run_session(n_iterations, games_per_iteration, snapshot_every, None, 1, **schedule_kwargs)
 
-    # Feed this batch's own size back into the doubling sequence and advance
-    # the league's cumulative count -- skipped entirely for a forced
-    # --n-iterations run (auto_sizing stays False), per --n-iterations' own
-    # "never written to progress.json" contract above.
-    if auto_sizing:
-        progress = _load_progress(league_dir)
-        played_this_batch = n_iterations * games_per_iteration
-        _save_progress(league_dir, played_this_batch, progress["cumulative_games_per_deck"] + played_this_batch)
+    # BUG 1 FIX (2026-08-13): cumulative_games_per_deck must advance for EVERY
+    # batch, not only auto-sized ones -- see league_runner.advance_progress for
+    # the full rationale and the invariant it protects.
+    if league_dir is not None:
+        advance_progress(league_dir, n_iterations, games_per_iteration, auto_sizing)
 
     if args.log:
         meta = {"mode": "matchup" if matchup else "league", "matchup": list(matchup) if matchup else None,

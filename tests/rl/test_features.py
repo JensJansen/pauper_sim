@@ -255,13 +255,14 @@ def test_own_hand_tokenized_opponent_hidden():
     opp.hand = [game.CARD_DEFS["Mountain"], game.CARD_DEFS["Mountain"]]
     state = GameState(on_the_play=True, players=[me, opp])
 
-    # "hand" is ZONES' own last entry, so its one-hot slot sits at row[-2]
-    # (the slot immediately before the side flag at row[-1]) -- same
-    # counted-from-the-end idiom this file's own big tokenization test uses.
-    assert ZONES[-1] == "hand"
+    # The zone one-hot block sits immediately before the side flag at row[-1],
+    # so "hand" is at -(1 + len(ZONES) - index). Derived rather than hardcoded:
+    # ZONES gained a sixth entry ("known_top") on 2026-08-13 and a literal -2
+    # silently started reading the wrong slot.
+    hand_slot = -(len(ZONES) - ZONES.index("hand")) - 1
     for seat, hand_size in ((0, 3), (1, 2)):
         tokens = build_token_set(state, seat, vocab)
-        hand_rows = [row for _idx, row, _ident in tokens if row[-2] == 1.0]
+        hand_rows = [row for _idx, row, _ident in tokens if row[hand_slot] == 1.0]
         assert len(hand_rows) == hand_size, f"seat {seat} must see exactly its own {hand_size}-card hand, got {len(hand_rows)}"
         assert all(row[-1] == 1.0 for row in hand_rows), "every hand token must carry the 'mine' side flag"
 
@@ -275,7 +276,8 @@ def test_hand_tokens_identity_none():
     me.hand = [game.CARD_DEFS["Lightning Bolt"]]
     state = GameState(on_the_play=True, players=[me, PlayerState(on_the_play=False)])
     tokens = build_token_set(state, 0, vocab)
-    matches = [(idx, row, ident) for idx, row, ident in tokens if row[-2] == 1.0]  # row[-2] = "hand" zone slot
+    hand_slot = -(len(ZONES) - ZONES.index("hand")) - 1  # derived: ZONES grows (see the test above)
+    matches = [(idx, row, ident) for idx, row, ident in tokens if row[hand_slot] == 1.0]
     assert len(matches) == 1
     assert matches[0][2] is None, "an own-hand token must carry identity=None"
 
@@ -319,7 +321,8 @@ def test_choose_graveyard_card_over_own_hand_not_double_tokenized():
     )
     _decklist_a, _decklist_b, vocab = _base_vocab()
     tokens = build_token_set(state, 0, vocab)
-    hand_tokens = [(idx, row, ident) for idx, row, ident in tokens if row[-2] == 1.0]  # row[-2] = "hand" zone slot
+    hand_slot = -(len(ZONES) - ZONES.index("hand")) - 1  # derived: ZONES grows (see above)
+    hand_tokens = [(idx, row, ident) for idx, row, ident in tokens if row[hand_slot] == 1.0]
     assert len(hand_tokens) == 2, "my hand must be tokenized exactly once (via the reveal branch), not twice"
     assert {ident.name for _idx, _row, ident in hand_tokens} == {"Lightning Bolt", "Mountain"}, (
         "the reveal branch's own real CardDef identity must be what's present, not an inert None duplicate"
@@ -389,3 +392,102 @@ def test_card_vocab_persistence_append_only():
             assert vocab3.name_to_index[name] == idx
     finally:
         shutil.rmtree(tmp_dir)
+
+
+# --- Brainstorm library blindness: known_top (2026-08-13) ---
+
+
+@pytest.mark.slow
+def test_known_top_is_visible_to_its_owner_and_hidden_from_the_opponent():
+    """The gap this closes: Brainstorm resolves through a real agent decision
+    choosing which two cards go on top and in what order, and the library
+    appeared NOWHERE in the observation -- so the choice's entire value
+    materialized 1-2 draws later with zero observability. A real player
+    obviously remembers what they just placed, so this is observation fidelity,
+    not new information."""
+    _decklist_a, _decklist_b, vocab = _base_vocab()
+    me, opp = PlayerState(on_the_play=True), PlayerState(on_the_play=False)
+    bolt, mountain = game.CARD_DEFS["Lightning Bolt"], game.CARD_DEFS["Mountain"]
+    for p in (me, opp):
+        p.library = [bolt, mountain, mountain, mountain]
+        p.known_top = [bolt]
+        p.known_top_library_len = len(p.library)
+    state = GameState(on_the_play=True, players=[me, opp])
+
+    slot = -(len(ZONES) - ZONES.index("known_top")) - 1
+    for seat in (0, 1):
+        rows = [row for _i, row, _id in build_token_set(state, seat, vocab) if row[slot] == 1.0]
+        assert len(rows) == 1, f"seat {seat} must see exactly its OWN known_top, got {len(rows)}"
+        assert rows[-1][-1] == 1.0, "a known_top token must carry the 'mine' side flag"
+
+
+@pytest.mark.slow
+def test_known_top_degrades_when_the_cards_are_consumed_off_the_top():
+    """known_top_prefix validates against the REAL library instead of trusting
+    the stored list, so a draw/mill/exile that consumed the known cards leaves
+    no phantom token behind -- with no hook at any of the engine's 40+ library
+    mutation sites."""
+    from game.state import known_top_prefix
+    bolt, mountain = game.CARD_DEFS["Lightning Bolt"], game.CARD_DEFS["Mountain"]
+    me = PlayerState(on_the_play=True)
+    me.library = [bolt, mountain, mountain]
+    me.known_top = [bolt, mountain]
+    me.known_top_library_len = len(me.library)
+    assert known_top_prefix(me) == [bolt, mountain]
+
+    del me.library[:1]                      # drew the Bolt
+    assert known_top_prefix(me) == [mountain], "the drawn card must drop out, the rest survive"
+
+    del me.library[:1]                      # drew the Mountain too
+    assert known_top_prefix(me) == [], "nothing known remains"
+
+
+@pytest.mark.slow
+def test_known_top_is_dropped_when_something_unexpected_reaches_the_top():
+    """Fail-closed: if the top no longer matches what was placed, the agent
+    forgets rather than believing something false."""
+    from game.state import known_top_prefix
+    bolt, mountain = game.CARD_DEFS["Lightning Bolt"], game.CARD_DEFS["Mountain"]
+    me = PlayerState(on_the_play=True)
+    me.known_top = [bolt, bolt]
+    me.library = [mountain, bolt, bolt]  # something got put on top above them
+    me.known_top_library_len = 2  # recorded when only the two Bolts were there
+    assert known_top_prefix(me) == [], "an unrecognized top must invalidate the whole claim"
+
+
+@pytest.mark.slow
+def test_every_library_shuffle_clears_known_top():
+    """Validation alone leaves a hidden-information LEAK: after a shuffle the
+    stored list can match the real library by coincidence (~7% with 4 copies in
+    60 cards). The claim would be TRUE but the player could not legitimately
+    know it, so every shuffle must clear known_top outright. Enforced
+    structurally -- game.effects.shared.shuffle_library is the single choke
+    point all shuffles route through."""
+    import random as _r
+    from game.effects.shared import shuffle_library
+    import game.effects.shared as shared_mod
+    import game.resolution.handlers_library as hl
+    import game.resolution.handlers_mulligan as hm
+    import game.effects.undercity as uc
+    import game.catalog.red_cards as red
+    import game.catalog.green_cards as grn
+    import game.catalog.colorless_cards as col
+
+    me = PlayerState(on_the_play=True)
+    me.library = [game.CARD_DEFS["Mountain"]] * 20
+    me.known_top = [game.CARD_DEFS["Mountain"]]
+    me.known_top_library_len = 20
+    state = GameState(on_the_play=True, players=[me, PlayerState(on_the_play=False)])
+    state.rng = _r.Random(0)
+    shuffle_library(state)
+    assert me.known_top == [], "shuffle_library must clear the owner's known_top"
+
+    # ...and no module may still shuffle a library behind its back.
+    import inspect
+    for mod in (shared_mod, hl, hm, uc, red, grn, col):
+        src = inspect.getsource(mod)
+        offenders = [ln.strip() for ln in src.splitlines()
+                     if "rng.shuffle(" in ln and "library" in ln and "def shuffle_library" not in ln]
+        # shared.py legitimately contains the ONE real shuffle, inside shuffle_library
+        allowed = 1 if mod is shared_mod else 0
+        assert len(offenders) == allowed, f"{mod.__name__} shuffles a library outside the choke point: {offenders}"

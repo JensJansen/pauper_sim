@@ -16,6 +16,7 @@ from ..effects.casting import (
 from ..effects.shared import (
     any_creature_on_either_battlefield, any_land_on_either_battlefield, discard_from_hand_to_graveyard,
     find_and_remove_by_name, find_to_hand,
+ shuffle_library,
 )
 from ..effects.stack import push_ability_to_stack, push_to_stack
 from ..effects.state_based import check_state_based_actions
@@ -533,7 +534,7 @@ def cast_crop_rotation(state, card_def):
         def _resolve(state, card_def):
             def _on_fetch_chosen(state, land_name):
                 found = find_and_remove_by_name(state, land_name)
-                state.rng.shuffle(state.library)
+                shuffle_library(state)
                 if found:
                     enters_battlefield(state, found)
 

@@ -147,8 +147,15 @@ src/
   run_pretrain.py          Pretrain + freeze the shared stack.
   run_league.py            Thin CLI wrapper (arg resolution + main()) around
                            rl/league_runner.py.
-  report_metrics.py        Plain-text summary of a league's metrics.jsonl (entropy/loss
-                           trends, win rate vs. archived past selves).
+  report_metrics.py        Plain-text summary of a league's metrics.jsonl -- per-record
+                           trends first, then pooled stats with IMPROVING/FLAT/
+                           REGRESSING/PAST PEAK verdicts and CIs.
+  run_anchor_eval.py       Absolute scale: checkpoints vs an UNTRAINED DeckNetwork on
+                           the real frozen stack (a floor, saturates fast).
+  run_snapshot_round_robin.py
+                           Round robin among a deck's own snapshots -- 3-cycle count,
+                           Bradley-Terry Elo + residual vs noise floor, monotonicity.
+                           The instrument that showed 3 of 4 decks REGRESSING.
   benchmarking/            training_run.py (benchmarks the real league loop under
                            different collection configs) + _common.py (path/stdout
                            bootstrap it imports for its side effect).
@@ -195,6 +202,22 @@ and play out matches on its own. Highlights:
   hidden information from yourself). Opponent hand/library SIZE isn't hidden
   in real Magic either (either player can count a library or a hand), so
   it's surfaced to the agent separately, as a scalar.
+
+  One deliberate addition (2026-08-13): the `known_top` pseudo-zone carries
+  cards a player has **legitimately seen placed on top of their own library**
+  — Brainstorm's "put two cards from your hand on top in any order". It is
+  tokenized for that player ONLY, so it adds nothing a real player lacks; it
+  removes an observation gap that made the placement choice structurally
+  untrainable, since its value only materialized 1–2 draws later with zero
+  observability. `game.state.known_top_prefix` never trusts the stored list:
+  it checks both how many cards have left the top (library length delta since
+  placement) *and* that the remaining cards still match, so a draw/mill/exile
+  degrades it correctly and anything unrecognized clears it. Length tracking is
+  what distinguishes "the Mountain I placed" from "a different Mountain now on
+  top" — library entries are interned CardDefs, so with a 4-of neither `==`
+  nor `is` can tell two copies apart. Shuffles additionally clear it outright
+  at `game.effects.shared.shuffle_library`, the single choke point every
+  library shuffle routes through.
 
 The engine's effect functions defensively handle a no-opponent (1-player)
 configuration — useful for a card-level unit test that doesn't need a second
@@ -347,12 +370,23 @@ Key flags:
   against, a genuinely external reference unlike this league's own historical
   snapshots (optional; most leagues won't have one — see **Gauntlet** below).
 
-`--games-per-iteration` isn't a flag — it's always derived as `max(1, n_workers)`
-(one game per worker; a smaller value used to silently starve some worker
-processes of any work at all). The PPO minibatch ramp (32 → 2048 over 6 steps)
-and the old `--max-batch-size` auto-sizing cap are likewise no longer
-parameters — see `rl/league_runner.py`'s (`_next_batch_games`) and
-`run_league.py`'s (`main()`) own comments at each removal site for why.
+`--games-per-iteration` isn't a flag — it defaults to `max(1, n_workers)` (one
+game per worker; a smaller value used to silently starve some worker processes
+of any work at all), overridable via the run-config's `games_per_iteration`.
+That override exists because the default of 6 means every `ppo_update` spends
+its whole trust region on **six games of evidence**. The old `--max-batch-size`
+auto-sizing cap is likewise no longer a parameter — see `rl/league_runner.py`'s
+(`_next_batch_games`) and `run_league.py`'s (`main()`) own comments at each
+removal site for why.
+
+**The PPO minibatch ramp (32 → 2048 over 6 steps) is documented below but has
+never actually executed** — see the warning under **Instrumentation**.
+
+Optimizer/PPO knobs (`lr`, `mulligan_lr`, `gamma`, `gae_lambda`, `target_kl`,
+`n_epochs`) come from `rl.league_runner.PPO_DEFAULTS` and are overridable per
+league via a run-config `"ppo"` object; an unknown key is a hard error rather
+than a silent no-op. Eval budget (`eval_games`, `eval_every_sessions`) is
+config-driven the same way.
 
 Training runs on **CPU** by design — the model is small (~200–250K params) and
 a batch-size sweep found no GPU crossover at this size.
@@ -361,12 +395,29 @@ a batch-size sweep found no GPU crossover at this size.
 
 Every league session (`_run_session`, both league and `--matchup` modes)
 appends to `checkpoints/<league>/metrics.jsonl`, one JSON line per record:
+> ⚠️ **The minibatch ramp and `ent_coef` anneal have never run.** Across all
+> 40,104 PPO iterations of the 60,001-games/deck run, `batch_size` was 32 on
+> every iteration and `ent_coef` stayed in [0.0191, 0.0200]. `--n-iterations`
+> leaves `auto_sizing` False → `_save_progress` is never called → `progress.json`
+> never exists → the horizon both schedules ramp against reads 0 every session.
+> See `tests/test_run_league.py` and RL_METHODOLOGY_PLAN.md BUG 1. Any
+> hyperparameter conclusion drawn since 2026-08-06 is against a configuration
+> that is not the one described here.
+
+- `kind: "session_start"` — one header per session recording the reward
+  function, roster, cumulative games/deck, and every resolved PPO/eval
+  hyperparameter, so `metrics.jsonl` is self-describing rather than requiring
+  the reader to reconstruct which config produced a stretch of records.
 - `kind: "ppo"` — per deck per iteration: `policy_loss`, `value_loss`,
   `entropy` (computed every call, previously never recorded past stdout),
+  `explained_variance` (`1 - Var(ret - value)/Var(ret)` — `value_loss` alone is
+  a raw MSE with no scale attached, so a genuinely-learned critic and one whose
+  targets collapsed to a constant both report a small number),
   `buffer_size` (transitions collected that iteration) and `batch_size` side
   by side, so a saturated minibatch ramp (`batch_size >= buffer_size`, at
   which point `ppo_update` stops sub-batching and just runs `n_epochs`
-  full-batch steps) is directly visible instead of assumed.
+  full-batch steps) is directly visible instead of assumed. Every record also
+  carries `cumulative_games`.
 - `kind: "mulligan"` — per deck per iteration REINFORCE loss/n.
 - `kind: "vs_history"` — once per session per deck (league mode only): the
   live net played against its own oldest still-active snapshot and, once one
@@ -374,7 +425,12 @@ appends to `checkpoints/<league>/metrics.jsonl`, one JSON line per record:
   see above) — a direct win-rate-vs-past-self measurement, not an inference
   from loss curves. Skipped (empty) automatically until a deck has been
   through at least one snapshot cycle, so it costs nothing during a run's
-  cheap early sessions.
+  cheap early sessions. Each record carries `snapshot_id`/`is_archive`, and
+  **the two labels must never be pooled**: `archive_oldest` is pinned to
+  `snapshot_0` forever (eviction is oldest-first and the archive minimum is
+  taken), making it a FIXED ~200-game reference, while `active_oldest` tracks a
+  rolling ~6,400-game-old self. Games are played **side-swapped from a paired
+  seed**, so on-the-play is balanced exactly rather than in expectation.
 - `kind: "vs_gauntlet"` / `kind: "vs_heuristic"` — the gauntlet mechanism's
   two tiers, both EXTERNAL to this league's own self-play history (unlike
   `vs_history`'s snapshots). See **Gauntlet** below.
@@ -385,9 +441,25 @@ the one game loop) also gets one `game_over` event appended to its own
 to the log stream at all, only reconstructible by replaying `life_change`
 deltas by hand.
 
-`python report_metrics.py <league_dir>` prints a plain-text summary (entropy
-trend, latest losses, vs-history win rates) read from `metrics.jsonl` — stdlib
-only, no plotting dependency.
+`python report_metrics.py <league_dir> [--window N]` prints a plain-text
+summary read from `metrics.jsonl` — stdlib only, no plotting dependency. It
+leads with the **per-record sequence** for every win-rate series and only then
+pools, because pooling is what hides a decline: `dmir_terror` vs
+`archive_oldest` ran 60/80/85/65/80/60/60/80/75/55/50/60/60/45 across sessions
+24–37, which pools to a bland ~65%. Four verdicts are distinguished —
+`IMPROVING` / `FLAT` / `REGRESSING` (linear decline) / `PAST PEAK` (below a
+window this run already reached, whatever the overall trend). `PAST PEAK` is
+the one that matters here: every deck in the league rose then fell, and a
+linear trend test reads that shape as no trend at all. Its threshold is
+Šidák-corrected for the number of windows searched, since the best of many
+noisy windows is high by selection. `FLAT` is annotated with the minimum
+effect the sample size could have detected, so "no change" is never confused
+with "cannot tell".
+
+The webapp's escalation loop calls the same statistics via
+`webapp/runs.py:learning_health` after every batch, so a run that has stopped
+buying anything says so in its own log. It **warns rather than stops** by
+default — set `stop_on_regression` on the run entry to opt in.
 
 ### Gauntlet
 
@@ -493,7 +565,7 @@ wired only through `--matchup` mode.)
   `action_count_win_reward_200_floor02` — loss/draw → `0.0`, win → `1.0` down
   to a `0.2` floor scaled by the *winning seat's* action count (so a policy
   can't pad a turn with free actions to inflate its reward). **League** play
-  uses `deploy_reward_v5` (2026-08-11 — supersedes `deploy_reward_v4`, see
+  uses `deploy_reward_v6` (2026-08-12 — supersedes `deploy_reward_v5`, see
   below): a **flat `+1.0` on any win, `-1.0` on any loss or no-winner
   timeout** (`flat_win_loss_reward`), with the dense mana-burn penalty below
   applied to the **winner only**. There is no efficiency scaling (the earlier
@@ -618,8 +690,10 @@ wired only through `--matchup` mode.)
   the whole fix, and the earlier "v3's steepened curve caused it" reading was
   at best partial.
 
-  `deploy_reward_v5` (2026-08-11) supersedes `deploy_reward_v4` with two
-  **structural** changes rather than another re-tuning:
+  `deploy_reward_v5` (2026-08-11, **superseded** by `deploy_reward_v6` below
+  — its two structural changes were validated over 20,065 games/deck and are
+  carried into v6 verbatim; only its curve *weight* was wrong) supersedes
+  `deploy_reward_v4` with two **structural** changes rather than a re-tuning:
 
   1. **Mana burn is charged to the WINNER only.** v4 charged it on both
      bands, and that turned out to reward losing *passively* over losing
@@ -656,6 +730,9 @@ wired only through `--matchup` mode.)
   cap, so the *cap* set per-turn magnitude and every later mistake that game
   was free; now the curve owns per-turn magnitude and the cap owns the sum,
   so one bad turn (`1.35`) is distinguishable from several (up to `1.5`).
+  *(Measured 2026-08-11: that last claim is only ~10% true — `1.348` of a
+  `1.5` cap is 90% of the budget, so v5 narrowed v4's failure mode rather
+  than escaping it. This is what `deploy_reward_v6` below fixes.)*
   Guarantee, re-derived (it no longer needs the equation above): worst-case
   win `= 1.0 - 1.5 = -0.5`; **every** loss `= -1.0` exactly, with no range at
   all. A sloppy win *can* now score negative, which v4 could not (floor
@@ -674,11 +751,50 @@ wired only through `--matchup` mode.)
   surviving 40 steps back), which would leave early burns in a long losing
   game mostly un-cancelled.
 
-  **Unproven risk, stated plainly:** removing `q` removes the only penalty
-  for hoarding anywhere in the reward. The reasoning above is sound but
-  unmeasured — if a hoarding pathology appears under v5, this is the first
-  thing to suspect. `deploy_reward_v1`-`v4` are all kept unchanged for
-  reference/comparison.
+  **The `q` risk, now measured.** Removing `q` removed the only penalty for
+  hoarding anywhere in the reward. Over 20,065 games/deck the bet held:
+  cleanup-discard turns per game came out at `0.87`/`2.39`/`3.00`/`0.10`
+  (rakdos/dmir/elves/mono_red) against v4's `7.75`/`10.09` on the two worst
+  decks — hoarding got *better* without its penalty, because it was a symptom
+  of passivity rather than an independent problem. Standing check:
+  `src/analyze_hoarding.py`.
+
+  `deploy_reward_v6` (2026-08-12) supersedes `deploy_reward_v5`, moving
+  **one** constant: `mana_burn_weight` `1.5 → 0.5`. Band, winner-only
+  charging, curve shape (`c=2.9`/`p=4.0`) and `game_penalty_cap` (`1.5`) are
+  byte-identical, so the guarantee is unchanged (worst win `-0.5` vs every
+  loss `-1.0`).
+
+  The problem it fixes is **saturation**: the whole-game cap was not bounding
+  an occasional disaster, it was the normal case. At v5's 20,065-games/deck
+  checkpoint `dmir_terror` exhausted the cap in **71%** of games and `elves`
+  in **64%**, roughly two thirds of the way through each — so in most games
+  the final third burnt mana entirely free of charge. A penalty that is
+  already maxed out is a flat toll, not a gradient. `dmir_terror`'s
+  *uncapped* charge averaged `4.26` against a `1.5` cap: **73% of the
+  computed penalty was clipped away** before reaching the buffer.
+
+  **Why not just raise the cap** (the obvious move): the guarantee fixes a
+  hard ceiling at `cap < 2.0`, so `1.5` is already 75% of the maximum the
+  shape can express and the remaining 25% *is* the safety margin. Spending it
+  buys almost nothing — at weight `1.5`, `cap=1.8` moves `dmir_terror` from
+  64% to 62% saturating while cutting the worst-win-to-loss margin from
+  `0.50` to `0.20`. v3's collapse happened *while its ordering guarantee
+  held* (an optimization failure, not a reward-ordering bug), so that margin
+  is load-bearing against exactly the pathology v5 was built to fix.
+
+  **Lowering the weight is not weakening the penalty.** The delivered tax
+  barely moves (`dmir_terror` `1.13 → 0.91` mean charge/game) because the cap
+  was already discarding most of it; what changes is how much is
+  *proportional to actual waste* — clipped fraction `73% → 36%`, saturation
+  `64% → 42%`, and when the cap does die it dies at 81% through the game
+  instead of 66%. Per-turn charge by pips burnt: `1→0.007`, `2→0.092`,
+  `3→0.267`, `4→0.392`, `5→0.449`, asymptoting toward `0.5`. One 5-pip turn
+  now costs 30% of the whole-game budget instead of 90%. Standing check:
+  `src/analyze_burn_saturation.py` (replays the reward's own
+  `charge_single_pip_burn`, so it cannot drift from `rl/rewards.py`).
+
+  `deploy_reward_v1`-`v5` are all kept unchanged for reference/comparison.
 - **Win condition**: the engine's real one — an opponent's life total hitting
   0, or a player decking out. There is no separate termination heuristic.
 

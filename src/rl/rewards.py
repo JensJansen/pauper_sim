@@ -696,9 +696,15 @@ deploy_reward_v4 = with_dense_mana_burn_penalty(
 )
 
 
-# League self-play's CURRENT reward (run_league.py, 2026-08-11), replacing
-# deploy_reward_v4 above. Two changes, both structural rather than a
-# re-tuning: the terminal band is now a flat +1/-1 (flat_win_loss_reward --
+# SUPERSEDED by deploy_reward_v6 below (2026-08-12) -- kept unchanged for
+# reference/comparison, same treatment v1-v4 get. v5's two STRUCTURAL changes
+# (flat +1/-1 band, winner-only burn) were both validated over 20,065
+# games/deck and are carried into v6 verbatim; only its curve WEIGHT was
+# wrong. See v6's own comment for the measurement.
+#
+# League self-play's reward from 2026-08-11 until v6 replaced it 2026-08-12,
+# itself replacing deploy_reward_v4 above. Two changes, both structural rather
+# than a re-tuning: the terminal band is a flat +1/-1 (flat_win_loss_reward --
 # no cleanup-discard penalty q at all, on either band), and the dense
 # mana-burn penalty applies ONLY to a seat that WON (refund_on_loss=True).
 #
@@ -757,6 +763,11 @@ deploy_reward_v4 = with_dense_mana_burn_penalty(
 # per-turn magnitude and the cap owns the whole-game sum, so one bad turn
 # (1.35) is now distinguishable from several (up to 1.5) instead of both
 # pinning at the same ceiling.
+#   CORRECTED 2026-08-11, measured: that last sentence is only ~10% true.
+#   One 5-pip turn charges 1.348 of a 1.5 cap -- 90% of the whole-game
+#   budget -- so "one bad turn" vs "several" spans just 1.35..1.50. v5 did
+#   NOT escape v4's failure mode, it only widened it slightly. See
+#   deploy_reward_v6 below for the measurement and the fix.
 #
 # UNPROVEN RISK worth stating plainly: removing q removes the ONLY penalty
 # for hoarding anywhere in the reward. The reasoning above (terminal outcome
@@ -768,4 +779,78 @@ deploy_reward_v5 = with_dense_mana_burn_penalty(
     flat_win_loss_reward(),
     mana_burn_c=2.9, mana_burn_p=4.0, game_penalty_cap=1.5,
     refund_on_loss=True, mana_burn_weight=1.5,
+)
+
+
+# League self-play's CURRENT reward (run_league.py, 2026-08-12), replacing
+# deploy_reward_v5 above. Staged 2026-08-11 behind an explicit gate -- apply
+# only if analyze_burn_saturation.py still showed dmir_terror/elves
+# saturating the cap in >50% of games at the 20,000-games/deck checkpoint,
+# since a self-correcting v5 would have made the swap a pure confound.
+# GATE RESULT (20,065 games/deck, 400 logged games): saturation went UP, not
+# down -- dmir_terror 64% -> 71%, elves 69% -> 64%, and burn rose on every
+# deck (dmir_terror 21.4 -> 30.3 pips/game, 2.00 -> 2.63 per own turn). The
+# share of burn happening on the burner's OWN turn also rose (84% -> 89%),
+# which rules out the benign reading that the extra burn was mana held up
+# for instant-speed interaction on the opponent's turn: it is sequencing
+# waste, which is what this term exists to price.
+#
+# ONE constant moves from v5: mana_burn_weight 1.5 -> 0.5. Base band
+# (flat +1/-1), winner-only charging, curve shape (c=2.9, p=4.0) and
+# game_penalty_cap (1.5) are all byte-identical, so the GUARANTEE is
+# unchanged and needs no re-derivation: worst win = 1.0 - 1.5 = -0.5, every
+# loss = -1.0 exactly, margin 0.5.
+#
+# WHY, MEASURED at v5's 10,003-games/deck checkpoint (analyze_burn_
+# saturation.py over logs/v5_*_25games.json, 200 seat-games per deck): the
+# cap was not bounding an occasional disaster, it was the normal case.
+# dmir_terror exhausted it in 64% of games and elves in 69%, about two
+# thirds of the way through each one -- so in most games the last third
+# burnt mana entirely free of charge. A penalty that is already maxed out
+# is a flat toll, not a gradient, and a flat toll cannot teach sequencing.
+# dmir_terror's UNCAPPED charge averaged 4.26 against a 1.5 cap: 73% of the
+# computed penalty was clipped away before it ever reached the buffer.
+#
+# WHY NOT JUST RAISE THE CAP (the owner's first instinct, and mine). The
+# guarantee fixes a hard ceiling at cap < 2.0 (worst win 1.0-cap must beat
+# every loss at -1.0), so 1.5 is already 75% of the maximum the shape can
+# ever express, and the remaining 25% IS the safety margin. Spending it buys
+# almost nothing: at weight 1.5, cap 1.8 moves dmir_terror from 64% to 62%
+# saturating and elves from 69% to 66%, while cutting the worst-win-to-loss
+# margin from 0.50 to 0.20. v3's collapse happened while its ordering
+# guarantee held -- it was an optimization failure, not a reward-ordering
+# bug -- so that margin is load-bearing against exactly the pathology v5 was
+# built to fix. Three points of saturation is not worth 60% of it.
+#
+# WHY LOWERING THE WEIGHT IS NOT "WEAKENING THE PENALTY". The delivered tax
+# barely moves (dmir_terror 1.13 -> 0.91 mean charge per game) because the
+# cap was already discarding most of it. What changes is how much of it is
+# PROPORTIONAL to actual waste: clipped fraction 73% -> 36%, saturation
+# 64% -> 42%, and when the cap does die it dies at 81% through the game
+# instead of 66%. Same total pressure, spread across the decisions that
+# caused it. Per-turn the signal stays sharp -- a 3-pip turn costs 0.267
+# against a +1.0 win -- and one 5-pip turn now costs 30% of the whole-game
+# budget instead of 90%, which is what v5's comment above claimed to have
+# achieved and did not.
+#
+# Per-turn charge by pips burnt: pip1=0.007, pip2=0.092, pip3=0.267,
+# pip4=0.392, pip5=0.449 (~90% of the weight, same place on the curve v5's
+# owner spec put it), pip6=0.474, asymptoting toward 0.5.
+#
+# WHAT v6 IS NOT RESPONDING TO. Win rate vs the frozen gauntlet twin went UP
+# over the same 10k games (43.2% -> 47.4%), never-play-lands fell to 0.0% on
+# three of four decks, and hoarding stayed low without q. v5's structural
+# changes work and v6 keeps them untouched. But that overall win rate hides a
+# split -- rakdos_madness 50->62%, dmir_terror 16->22%, mono_red_rally
+# 78->85%, elves 29->20% -- and elves is a deck that burnt heavily and LOST
+# ground, which is the case the shaping term should have caught and did not.
+#
+# OPEN QUESTION this does not settle: whether v5's flat toll CAUSED the high
+# burn ("capped either way, so tap freely") or merely failed to prevent it.
+# If burn does not move under v6, that is the distinction to test next, and
+# at that point cap=1.8 becomes worth its margin cost as the only lever left.
+deploy_reward_v6 = with_dense_mana_burn_penalty(
+    flat_win_loss_reward(),
+    mana_burn_c=2.9, mana_burn_p=4.0, game_penalty_cap=1.5,
+    refund_on_loss=True, mana_burn_weight=0.5,
 )

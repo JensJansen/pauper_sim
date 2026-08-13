@@ -611,11 +611,11 @@ def train_selfplay(net_a, deck_ctx_a, decklist_a, reward_fn_a, net_b, deck_ctx_b
             pairing, games_per_iteration, horizon, rng, device=device, game_logs=game_logs)
         buf_a = buffers_by_deck.get("a", RolloutBuffer())
         buf_b = buffers_by_deck.get("b", RolloutBuffer())
-        stats_a = ppo_update(net_a, optimizers_a, buf_a, device) if len(buf_a) else (0.0, 0.0, 0.0, 0.0, 0.0, 0)
+        stats_a = ppo_update(net_a, optimizers_a, buf_a, device) if len(buf_a) else (0.0, 0.0, 0.0, 0.0, 0.0, 0, 0.0, 0.0)
         if mirror:
             stats_b = stats_a
         else:
-            stats_b = ppo_update(net_b, optimizers_b, buf_b, device) if len(buf_b) else (0.0, 0.0, 0.0, 0.0, 0.0, 0)
+            stats_b = ppo_update(net_b, optimizers_b, buf_b, device) if len(buf_b) else (0.0, 0.0, 0.0, 0.0, 0.0, 0, 0.0, 0.0)
         mean_r_a = float(np.mean(buf_a.reward)) if len(buf_a) else 0.0
         mean_r_b = float(np.mean(buf_b.reward)) if len(buf_b) else 0.0
         print(f"  iter {iteration}: games={games_played} buf=({len(buf_a)},{len(buf_b)}) "

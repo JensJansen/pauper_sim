@@ -164,12 +164,20 @@ def cached_static_card_features(name, vocab):
 # DYNAMIC_FEATURE_DIM below is this function's own per-instance half.
 # ---------------------------------------------------------------------------
 
-ZONES = ("battlefield", "graveyard", "stack", "exile", "hand")
+# "known_top": cards the OWNER has legitimately seen placed on top of their own
+# library (Brainstorm), top-first. Not a real MTG zone -- those cards are in the
+# library -- but a distinct one here because their observability differs from
+# every other library card: the controller knows exactly what they are, and no
+# one else does. Tokenized for the owner ONLY (see build_token_set), so this
+# adds no hidden information; it removes an observation gap that made
+# Brainstorm's placement choice structurally untrainable, since the decision's
+# value only materializes 1-2 draws later. See game.state.known_top_prefix.
+ZONES = ("battlefield", "graveyard", "stack", "exile", "hand", "known_top")
 # cost_reduction_delta (1, own-hand tokens only -- see _token_row), untapped,
 # tapped, effective_power, effective_toughness, blocked_as_attacker,
 # committed_as_blocker, targeted_by_mine, targeted_by_theirs, zone one-hot
-# (5), side flag (1) -- see _token_row's own inline comments for what each
-# slot means and why.
+# (6, len(ZONES)), side flag (1) -- see _token_row's own inline comments for
+# what each slot means and why.
 HAND_FEATURE_DIM = 1
 DYNAMIC_FEATURE_DIM = HAND_FEATURE_DIM + 8 + len(ZONES) + 1
 TOKEN_FEATURE_DIM = STATIC_FEATURE_DIM + DYNAMIC_FEATURE_DIM
@@ -405,6 +413,20 @@ def build_token_set(state, my_seat_idx, vocab, include_rows=True, hand_cost_redu
                 delta = (hand_cost_reduction or {}).get(card_def.name, 0.0)
                 row = _token_row(card_def.name, "hand", True, vocab, cost_reduction_delta=delta)
                 tokens.append((vocab.index(card_def.name), row, None))
+            # MY OWN known library top (Brainstorm): cards I placed there and
+            # therefore remember, top-first. Gated on is_mine exactly like the
+            # hand above -- the opponent's known_top stays hidden, so this adds
+            # no information a real player lacks. identity=None: these are
+            # library CardDefs (interned/shared, like hand cards) and nothing
+            # points at them. known_top_prefix VALIDATES against the real
+            # library, so a card drawn/milled/exiled since placement simply
+            # stops appearing rather than lingering as a phantom token.
+            for card_def in game.state.known_top_prefix(player):
+                if not include_rows:
+                    tokens.append((vocab.index(card_def.name), None, None))
+                    continue
+                tokens.append((vocab.index(card_def.name),
+                               _token_row(card_def.name, "known_top", True, vocab), None))
     for entry in state.stack:
         is_mine = entry["controller"] == my_seat_idx
         if not include_rows:

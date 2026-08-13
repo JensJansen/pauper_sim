@@ -56,20 +56,45 @@ from rl import checkpoint as ckpt_io
 DEFAULT_MAX_SNAPSHOTS_PER_DECK = 32
 
 # PFSP weighting: weight(win_rate) = PFSP_FLOOR + (1 - win_rate) ** PFSP_POWER.
-# POWER raised 1.0->2.0 (2026-08-06): linear weighting, combined with a
-# small (4-deck) roster containing one deck (mono_red_rally) the other three
-# structurally cannot beat (a near-strict transitive hierarchy, not a
-# rock-paper-scissors cycle -- confirmed against opponent_stats.json, where
-# the linear formula's predicted ~44% opponent share for the losing decks'
-# training games matched the OBSERVED share almost exactly), was burning
-# ~40-44% of 3 of 4 decks' entire training budget on a single matchup they
-# can't win, crowding out exposure to matchups they might actually learn
-# from. A superlinear power still prioritizes the hardest matchup over
-# easier ones (PFSP's whole point), just less overwhelmingly -- re-tune
-# against opponent_stats.json's own share numbers if this over- or under-
-# corrects. See TRAINING_IMPROVEMENT_OPTIONS.md section 3.
+#
+# POWER 2.0 -> 0.5 (2026-08-13). THE 2026-08-06 CHANGE WENT THE WRONG WAY.
+# It was made to REDUCE concentration on unwinnable matchups and did the exact
+# opposite: since (1 - win_rate) < 1, raising the exponent SHARPENS the
+# weighting onto the hardest opponent. Lowering it flattens. The comment that
+# stood here claimed the opposite for a week.
+#
+# Predicted shares reproduce what was actually observed on disk to within 1pp,
+# so this formula is the mechanism, not a guess:
+#
+#   POWER  elves: mono_red / rakdos / dmir / mirror   hardest:mirror
+#   0.5         28.1 / 27.5 / 23.7 / 20.7                  1.36
+#   1.0         31.1 / 29.6 / 22.2 / 17.1                  1.82
+#   2.0         36.3 / 33.0 / 18.9 / 11.8                  3.09
+#   observed    36.9 / 33.0 / 18.4 / 11.8                    --
+#
+# Why this matters more than a mis-set knob. Measured from the real
+# opponent_stats.json at 60,001 games/deck, the share of each deck's training
+# games spent in matchups it wins <25% of, against the Elo it gained over the
+# whole run (RL_METHODOLOGY_PLAN.md sections 1A.3/1A.4):
+#
+#   mono_red_rally   0.0% unwinnable, 51.3% mirror  ->  +241 Elo
+#   rakdos_madness  58.0% unwinnable, 25.5% mirror  ->   -66 Elo
+#   elves           69.8% unwinnable, 11.8% mirror  ->   -57 Elo
+#   dmir_terror     76.5% unwinnable, 14.7% mirror  ->     0 Elo
+#
+# The one deck with a balanced training distribution is the one deck that
+# improved. Elves spent 36.9% of its games at a 1.1% win rate. Those games do
+# not merely waste compute: nearly every trajectory returns -1, so the raw
+# advantage spread is almost pure noise, and rl.ppo's unconditional
+# `adv = (adv - adv.mean()) / (adv.std() + 1e-8)` rescales that noise to UNIT
+# VARIANCE before ~67 Adam steps are taken on it.
+#
+# 0.5 is a first estimate exactly as 2.0 was. The table above is now a
+# calibration instrument: re-check the observed shares at the next checkpoint
+# and re-tune. PFSP_FLOOR keeps even a thoroughly-beaten opponent sampleable,
+# so nothing is ever starved to zero.
 PFSP_FLOOR = 0.1
-PFSP_POWER = 2.0
+PFSP_POWER = 0.5
 
 
 def _format_opponent_key(key):
@@ -87,8 +112,12 @@ def _parse_opponent_key(key_str):
 
 
 class LeaguePool:
-    def __init__(self, root_dir, deck_names, max_snapshots_per_deck=DEFAULT_MAX_SNAPSHOTS_PER_DECK):
+    def __init__(self, root_dir, deck_names, max_snapshots_per_deck=DEFAULT_MAX_SNAPSHOTS_PER_DECK,
+                 pfsp_power=PFSP_POWER):
         self.root_dir = root_dir
+        # Config-driven rather than a module constant: 0.5 is a first estimate
+        # and re-tuning it must not require a code edit (see PFSP_POWER above).
+        self.pfsp_power = pfsp_power
         self.deck_names = list(deck_names)
         self.max_snapshots_per_deck = max_snapshots_per_deck
         self.snapshots = {name: [] for name in self.deck_names}  # per deck: [(id, path), ...] oldest first
@@ -146,7 +175,7 @@ class LeaguePool:
     def _pfsp_weight(self, training_deck_name, opponent_key):
         wins, games = self.opponent_stats.get(training_deck_name, {}).get(opponent_key, (0, 0))
         win_rate = wins / games if games else 0.5  # cold start: neutral prior, not "beats everyone" or "loses to everyone"
-        return PFSP_FLOOR + (1.0 - win_rate) ** PFSP_POWER
+        return PFSP_FLOOR + (1.0 - win_rate) ** self.pfsp_power
 
     def register_snapshot(self, deck_name, net, mulligan_net=None):
         """Freezes net's CURRENT weights as a new historical opponent for

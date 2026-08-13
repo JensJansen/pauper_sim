@@ -14,6 +14,7 @@ from ..effects.casting import (
 from ..effects.madness_and_plot import plot_to_exile
 from ..effects.shared import (
     discard_from_hand_to_graveyard, find_and_remove_by_name, fire_sacrifice_triggers, impulse_exile,
+ shuffle_library,
 )
 from ..effects.stack import push_ability_to_stack, push_to_stack
 from ..effects.state_based import check_state_based_actions, destroy_permanent, sacrifice_to_graveyard
@@ -260,7 +261,7 @@ def cast_cleansing_wildfire(state, card_def):
 
             def _after_search(state, fetched_name):
                 found = find_and_remove_by_name(state, fetched_name) if fetched_name is not None else None
-                state.rng.shuffle(state.library)  # the controller's library (active_idx == controller here)
+                shuffle_library(state)  # the controller's library (active_idx == controller here)
                 if found is not None:
                     enters_battlefield(state, found, force_tapped=True)  # onto the controller's battlefield, tapped
                 state.active_idx = caster  # restore before the CASTER draws

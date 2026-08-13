@@ -64,7 +64,8 @@ def _sanitize_events(game_logs):
 
 def _league_rollout_worker(training_deck_name, all_state_dicts, all_trunk_hidden, shared_state_dict,
                             shared_hparams, reward_fn_name, league_root_dir, horizon, n_games, seed,
-                            mulligan_state_dicts=None, collect_logs=False, checkpoint_rate=0.0, pfsp=True):
+                            mulligan_state_dicts=None, collect_logs=False, checkpoint_rate=0.0, pfsp=True,
+                            pfsp_power=None):
     """Runs in a SEPARATE PROCESS (spawned fresh -- Windows only supports
     the "spawn" start method, no fork, so this re-imports the whole module
     graph from scratch rather than inheriting any parent-process memory).
@@ -115,7 +116,11 @@ def _league_rollout_worker(training_deck_name, all_state_dicts, all_trunk_hidden
     # built, so mirroring its keys here is what keeps this worker's own opponent
     # pool scoped the same way, without needing a separate parameter to carry the
     # restriction across the process boundary redundantly.
-    pool = LeaguePool(league_root_dir, list(all_state_dicts.keys()))  # read-only here -- this worker never calls register_snapshot
+    # pfsp_power MUST cross the process boundary: each worker builds its own
+    # LeaguePool, so a power left at the module default here would silently keep
+    # n_workers-1 of every n_workers games on the old weighting.
+    pool_kwargs = {} if pfsp_power is None else {"pfsp_power": pfsp_power}
+    pool = LeaguePool(league_root_dir, list(all_state_dicts.keys()), **pool_kwargs)  # read-only here -- this worker never calls register_snapshot
     rng = random.Random(seed)
 
     mulligan_nets = None
@@ -147,7 +152,8 @@ def _league_rollout_worker(training_deck_name, all_state_dicts, all_trunk_hidden
 
 def collect_rollout_league_parallel(training_deck_name, live_nets, reward_fn_name, league_root_dir, horizon, n_games,
                                      executor, n_workers, shared_hparams, shared_state_dict, all_trunk_hidden,
-                                     mulligan_state_dicts=None, game_logs=None, checkpoint_rate=0.0, pfsp=True):
+                                     mulligan_state_dicts=None, game_logs=None, checkpoint_rate=0.0, pfsp=True,
+                                     pfsp_power=None):
     """Orchestrator (runs in the MAIN process): splits n_games across
     n_workers, submits one _league_rollout_worker task per worker via the
     given (already-created, reused-across-calls) ProcessPoolExecutor --
@@ -183,7 +189,8 @@ def collect_rollout_league_parallel(training_deck_name, live_nets, reward_fn_nam
     futures = [
         executor.submit(_league_rollout_worker, training_deck_name, all_state_dicts, all_trunk_hidden,
                          shared_state_dict, shared_hparams, reward_fn_name, league_root_dir, horizon, chunk,
-                         random.randrange(2 ** 31), mulligan_state_dicts, collect_logs, checkpoint_rate, pfsp)
+                         random.randrange(2 ** 31), mulligan_state_dicts, collect_logs, checkpoint_rate, pfsp,
+                         pfsp_power)
         for chunk in chunks if chunk > 0
     ]
     buffers_by_deck = {}   # deck name -> merged RolloutBuffer across workers

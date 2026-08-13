@@ -177,6 +177,108 @@ def _read_cumulative_games(league_dir):
     return json.loads(path.read_text()).get("cumulative_games_per_deck", 0)
 
 
+def _rollback_hint(league_dir, deck, rows, peak_at):
+    """"snapshot_116 (~23,200 games)" for the reading that scored best, or None
+    if the records predate `cumulative_games` being written.
+
+    Snapshots are numbered by the league's own counter and taken every
+    `snapshot_every_games`, so the id is cumulative_games // snapshot_every --
+    read off the session_start record rather than assumed, since it is a
+    per-league config value."""
+    pts = [r for r in rows if r.get("games")]
+    if peak_at is None or peak_at >= len(pts):
+        return None
+    cumulative = pts[peak_at].get("cumulative_games")
+    if not cumulative:
+        return None  # record predates the field; nothing to compute from
+    every = _snapshot_every_games(league_dir)
+    if not every:
+        return f"the checkpoint at ~{cumulative:,} games/deck"
+    return f"snapshot_{cumulative // every} (~{cumulative:,} games/deck)"
+
+
+def _snapshot_every_games(league_dir):
+    """This league's own snapshot cadence, from the most recent session_start
+    record. None if nothing recorded it (pre-2026-08-13 records)."""
+    import report_metrics
+    path = Path(league_dir) / "metrics.jsonl"
+    if not path.exists():
+        return None
+    starts = [r for r in report_metrics.load(str(path)) if r.get("kind") == "session_start"]
+    for r in reversed(starts):
+        # snapshot_every is in ITERATIONS; multiply back up to games/deck.
+        if r.get("snapshot_every") and r.get("games_per_iteration"):
+            return r["snapshot_every"] * r["games_per_iteration"]
+    return None
+
+
+def learning_health(league_dir, min_records=10):
+    """(verdict, [human-readable line per deck]) for a league's own
+    metrics.jsonl -- "is this run still buying anything," which is a completely
+    different question from _batch_healthy's "did the process crash."
+
+    Verdict is the WORST across decks: "regressed" > "stalled" > "ok", or
+    "unknown" when there is not yet enough history to say. Delegates the
+    statistics to report_metrics.peak_comparison / trend_z rather than
+    reimplementing them, so the gate and the report can never disagree.
+
+    Why this exists: `total_games: 600000` in run_default.json is ~10.3 days of
+    wall clock at measured throughput. Nothing in this loop could tell a run
+    that was learning from one that was not, so a 60,001-games/deck run
+    continued for weeks while three of its four decks were getting WORSE --
+    each of them ending up weaker than a snapshot already sitting on disk
+    (RL_METHODOLOGY_PLAN.md section 1A.3). Crash-free is not the same as
+    healthy."""
+    import report_metrics
+    path = Path(league_dir) / "metrics.jsonl"
+    if not path.exists():
+        return "unknown", []
+    records = report_metrics.load(str(path))
+    by_deck = {}
+    for r in records:
+        # archive_oldest specifically: it is pinned to snapshot_0 forever, which
+        # makes it the one FIXED reference in the file. active_oldest moves as
+        # the pool rolls, so a change in it is ambiguous between the policy
+        # improving and the reference getting stronger.
+        if r.get("kind") == "vs_history" and r.get("label") == "archive_oldest":
+            by_deck.setdefault(r.get("deck", "?"), []).append(r)
+
+    states, lines = [], []
+    for deck in sorted(by_deck):
+        rows = sorted(by_deck[deck], key=lambda r: (r.get("session", 0), r.get("iteration", 0)))
+        if len(rows) < min_records:
+            continue
+        peak_z, peak_at, crit = report_metrics.peak_comparison(rows)
+        t_z = report_metrics.trend_z(rows)
+        if peak_z <= -crit:
+            state = "regressed"
+            detail = f"REGRESSING ({abs(peak_z):.1f} sigma below its own peak)"
+            # Name the actual file to roll back to. Without this the gate says
+            # "a better policy is on disk" and leaves the operator to work out
+            # WHICH -- which previously meant reconstructing the session ->
+            # games mapping by hand from PPO iteration counts.
+            hint = _rollback_hint(league_dir, deck, rows, peak_at)
+            if hint:
+                detail += f" -- best was ~{hint}"
+        elif t_z <= -2:
+            state, detail = "regressed", f"REGRESSING (trend z={t_z:+.2f})"
+        elif t_z >= 2:
+            state, detail = "ok", f"ok (trend z={t_z:+.2f})"
+        else:
+            state, detail = "stalled", f"stalled (trend z={t_z:+.2f})"
+        states.append(state)
+        lines.append(f"{deck}: {detail}")
+    if not states:
+        return "unknown", lines
+    # Worst deck decides: one regressing deck makes the RUN unhealthy even if
+    # the others are fine -- which is exactly the real case (mono_red_rally
+    # gained 241 Elo while elves and rakdos both fell below their own past selves).
+    for worst in ("regressed", "stalled", "ok"):
+        if worst in states:
+            return worst, lines
+    return "unknown", lines
+
+
 def _batch_healthy(log_tail):
     """Mirrors the `/train` skill's own health check, NOT the subprocess exit
     code: on Windows, a parallel run (--n-workers > 1) reliably exits 1 from
@@ -330,6 +432,30 @@ class RunManager:
                 return
 
             entry["cumulative_games_per_deck"] = _read_cumulative_games(league_dir)
+
+            # A crash-free batch is not necessarily a USEFUL batch. Check
+            # whether the run is still buying anything before spending another
+            # one (see learning_health).
+            verdict, health_lines = learning_health(league_dir)
+            entry["learning_health"] = verdict
+            entry["learning_health_detail"] = health_lines
+            if health_lines:
+                with open(log_path, "a") as f:
+                    f.write(f"\n=== learning health after batch {batch}: {verdict.upper()} ===\n")
+                    for line in health_lines:
+                        f.write(f"  {line}\n")
+                    if verdict == "regressed":
+                        f.write("  !! At least one deck is now WEAKER than a checkpoint already on disk.\n"
+                                "     Continuing will train further from the degraded policy.\n")
+            # DEFAULT IS WARN, NOT STOP. Stopping automatically is an
+            # operator-policy call the repo owner has not made yet
+            # (RL_METHODOLOGY_PLAN.md section 8, open question 1), and silently
+            # halting someone's overnight run is the more destructive default of
+            # the two. Set stop_on_regression on the run entry to opt in.
+            if verdict == "regressed" and entry.get("stop_on_regression"):
+                entry.update(status="stalled", ended=time.time(), exit_code=0)
+                self._save_registry()
+                return
             self._save_registry()
             # Healthy batch done -- loop back to the top, which re-checks
             # cumulative-vs-target before deciding whether to spawn another.

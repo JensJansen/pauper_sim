@@ -57,6 +57,30 @@ def _save_with_retry(obj, path):
             time.sleep(_SAVE_RETRY_BASE_DELAY * (2 ** attempt))
 
 
+_SHARED_STACK_PREFIX = "shared_stack."
+
+
+def strip_shared_stack(state_dict):
+    """Drops the embedded `shared_stack.*` copy every checkpoint written before
+    2026-08-13 carries.
+
+    DeckNetwork/MulliganNet used to REGISTER the shared perception stack as a
+    child module, so `net.state_dict()` bundled a full copy of it -- 37 of the
+    51 keys in a live.pt. They now hold it as a plain reference
+    (`object.__setattr__`), so a fresh state_dict has no such keys and a
+    strict load_state_dict would reject an old file for having them.
+
+    Stripping happens in the LOADERS below rather than at each call site
+    precisely because every reader routes through them: live.pt, mulligan.pt,
+    and both halves of a snapshot. Forward-compatible -- a no-op on any
+    checkpoint written after the change.
+
+    Dropping these is lossless: every copy on disk is byte-identical to the one
+    frozen stack (`shared_stack_frozen.pt`), which the caller loads separately
+    and passes in. It was never independent state."""
+    return {k: v for k, v in state_dict.items() if not k.startswith(_SHARED_STACK_PREFIX)}
+
+
 def load_optimizer_if_present(optimizer, ckpt, key="optimizer"):
     """Loads optimizer state from ckpt[key] iff present, else leaves
     `optimizer` at whatever fresh state the caller already constructed it
@@ -93,7 +117,7 @@ def load_deck_checkpoint(path, net, optimizer=None):
     if not os.path.exists(path):
         return False
     ckpt = torch.load(path, weights_only=True)
-    net.load_state_dict(ckpt["net"])
+    net.load_state_dict(strip_shared_stack(ckpt["net"]))
     if optimizer is not None:
         load_optimizer_if_present(optimizer, ckpt)
     return True
@@ -119,8 +143,16 @@ def load_snapshot(path):
     mulligan_state_dict/mulligan_hidden) -- unlike load_deck_checkpoint, does
     NOT build the net itself: the caller needs trunk_hidden to construct a
     DeckNetwork of the right shape BEFORE state_dict can be loaded into it
-    (see rl.league.LeaguePool.load_snapshot_agent)."""
-    return torch.load(path, weights_only=True)
+    (see rl.league.LeaguePool.load_snapshot_agent).
+
+    Both weight entries are passed through strip_shared_stack, so a snapshot
+    written while the stack was still a registered child module still loads
+    into a net that no longer expects those keys."""
+    saved = torch.load(path, weights_only=True)
+    saved["state_dict"] = strip_shared_stack(saved["state_dict"])
+    if "mulligan_state_dict" in saved:
+        saved["mulligan_state_dict"] = strip_shared_stack(saved["mulligan_state_dict"])
+    return saved
 
 
 def save_frozen_stack(path, shared, vocab_size, d_model):

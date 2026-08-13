@@ -14,10 +14,10 @@ import time
 
 import torch
 
-from rl.rewards import deploy_reward_v5
+from rl.rewards import deploy_reward_v6
 from rl.arch import SetTransformer
 from rl.deck import DeckNetwork
-from rl.league import LeaguePool
+from rl.league import LeaguePool, PFSP_POWER
 from rl.pool import build_pool
 from rl.agent import HeuristicAgent, SeatAgent
 from rl.train import batch_size_for_iteration, collect_rollout, collect_rollout_league, _constant_pairing, ent_coef_schedule
@@ -31,6 +31,59 @@ FROZEN_STACK = CHECKPOINTS_DIR / "shared_stack_frozen.pt"
 LEAGUE_DIR = CHECKPOINTS_DIR / "league"
 D_MODEL = 64
 SHARED_HPARAMS = {"d_model": D_MODEL, "n_heads": 4, "n_layers": 2, "dim_feedforward": 128}
+
+# Games per in-training eval check (vs_history / vs_gauntlet / vs_heuristic).
+# Was a hardcoded 20 at each of the three call sites, giving SE 11.2pp and a
+# 95% CI of +/-21.9pp -- wide enough that no realistic single-session change
+# could ever clear it, while still costing ~19% of total compute across the
+# thirteen such readings taken per session. Nothing was learnable from any
+# individual one; the trend across many was the only usable signal, and nothing
+# computed that trend until report_metrics was rewritten.
+#
+# Raising this trades reading FREQUENCY for PRECISION at fixed cost:
+# eval_games=200 with eval_every_sessions=4 costs the same compute and drops
+# per-reading SE to 3.5pp. Config-driven (run-config "eval_games" /
+# "eval_every_sessions") because the right point on that trade depends on
+# session size.
+EVAL_GAMES = 20
+EVAL_EVERY_SESSIONS = 1
+
+# Optimizer/PPO knobs, previously hardcoded at their use sites and therefore
+# unchangeable without a code edit -- `lr` sat as a literal 3e-4 inside the Adam
+# construction, and gamma/gae_lambda/target_kl/n_epochs were only ever
+# ppo_update's own signature defaults, so no config file could reach them and
+# nothing recorded which values a given run used.
+#
+# These defaults are EXACTLY the values every run to date used. Exposing them
+# changes no behavior; it makes changing them a config edit instead of a code
+# edit, and makes the value that was actually in force appear in metrics.jsonl's
+# session_start record. Override per league via a run-config "ppo" object.
+PPO_DEFAULTS = {
+    "lr": 3e-4,            # league_runner's per-deck Adam
+    # Minibatch ramp, PINNED OFF (start == cap == 32, so no doubling ever fires).
+    # BUG 1 kept cumulative_games at 0, which held batch_size at 32 for all
+    # 40,104 iterations of the 60,001-games/deck run. Fixing the counter
+    # (run_league.py) would have switched the ramp on for the first time as a
+    # SIDE EFFECT of a bug fix -- and it is not a small change: ppo.py slices
+    # range(0, total, batch_size), so batch_size >= buffer collapses the update
+    # to a single full-batch minibatch. At the old ~777-transition buffer that
+    # is 2.74 Adam steps per iteration instead of 67, a 24x cut. Whether that
+    # ramp is even wanted is a separate experiment, designed under a diagnosis
+    # RL_METHODOLOGY_PLAN.md overturns. Raise batch_size_cap to run it.
+    "batch_size_start": 32,
+    "batch_size_cap": 32,
+    "mulligan_lr": 1e-3,   # the mulligan net's own, deliberately separate optimizer
+    "gamma": 0.99,
+    "gae_lambda": 0.95,    # with gamma, a 0.9405/step advantage decay -- see
+                           # RL_METHODOLOGY_PLAN.md section 4.1 on the horizon this implies
+    "target_kl": 0.03,
+    "n_epochs": 4,
+    # Floor on the advantage-normalization divisor (rl.ppo.ppo_update). 0.0 is
+    # exactly the historical behavior; see that function for why a nonzero value
+    # is wanted and why it is not being guessed. Set it from the adv_std
+    # distribution `report_metrics` now prints, after a session of real data.
+    "adv_norm_floor": 0.0,
+}
 
 
 def load_frozen_stack(vocab_size):
@@ -48,6 +101,60 @@ def load_frozen_stack(vocab_size):
         p.requires_grad = False
     shared.eval()
     return shared
+
+
+def stack_id(shared):
+    """A short content hash of the frozen perception stack's weights.
+
+    Every cross-population comparison in this repo silently assumes both sides
+    were built on the SAME stack: _run_eval_vs_gauntlet loads the gauntlet
+    league's saved per-deck weights onto a DeckNetwork wrapping whatever stack
+    the CALLING population currently holds. If the two stacks differ, the
+    resulting number is meaningless -- and nothing errors, nothing warns, the
+    win rate just quietly measures nonsense.
+
+    That is not hypothetical. It already happened: the gauntlet league was not
+    retrained during the 2026-08-06 restart, its own stack was deleted, and
+    every vs_gauntlet reading across sessions 0-14 (24,579 games/deck) was
+    confounded before anyone noticed (run_default.json's own
+    _gauntlet_disabled_note records the post-mortem). This is the check that
+    would have caught it on the first session."""
+    import hashlib
+    h = hashlib.sha256()
+    for key, tensor in sorted(shared.state_dict().items()):
+        h.update(key.encode())
+        h.update(tensor.detach().cpu().numpy().tobytes())
+    return h.hexdigest()[:16]
+
+
+def write_stack_id(league_dir, shared):
+    """Records which stack this league's checkpoints were trained against.
+    Written on every session so a league that predates this check acquires one
+    the next time it trains."""
+    os.makedirs(league_dir, exist_ok=True)
+    with open(f"{league_dir}/stack_id.txt", "w") as f:
+        f.write(stack_id(shared))
+
+
+def stack_id_matches(league_dir, shared):
+    """True if league_dir was trained against `shared`, or if it has no
+    stack_id.txt at all.
+
+    WARNS rather than asserts on a missing file, and returns True: every league
+    on disk today predates this check, and hard-failing them all would make the
+    guard's first act be to break working setups. A present-and-DIFFERENT id is
+    the real signal and returns False."""
+    path = f"{league_dir}/stack_id.txt"
+    if not os.path.exists(path):
+        return True  # legacy league, nothing to compare against
+    with open(path) as f:
+        recorded = f.read().strip()
+    if recorded == stack_id(shared):
+        return True
+    print(f"  !! STACK MISMATCH: {league_dir} was trained against shared stack {recorded}, "
+          f"current stack is {stack_id(shared)} -- any cross-population comparison against it "
+          f"is meaningless and is being SKIPPED", flush=True)
+    return False
 
 
 def build_fresh_stack(vocab_size):
@@ -114,6 +221,35 @@ def _append_metric(league_dir, **fields):
         f.write(json.dumps(fields) + "\n")
 
 
+def advance_progress(league_dir, n_iterations, games_per_iteration, auto_sizing):
+    """Record what a finished batch did. Returns the new progress dict.
+
+    Two separate things live in progress.json and only ONE of them belongs to
+    auto-sizing:
+
+      last_batch_size            the doubling ladder's feedback. STAYS gated on
+                                 auto_sizing -- --n-iterations' documented
+                                 contract is that a forced size never perturbs
+                                 the ladder, so a one-off 3000-game debug run
+                                 cannot become the next auto-sized batch's base.
+      cumulative_games_per_deck  how much this league has EVER trained. Nothing
+                                 to do with the ladder. It is the horizon that
+                                 batch_size_for_iteration and ent_coef_schedule
+                                 ramp against, so it must advance ALWAYS.
+
+    Gating both on auto_sizing was BUG 1: the /train skill and the webapp
+    escalation loop both always pass --n-iterations, so progress.json was never
+    written, _load_progress returned 0 forever, and both schedules restarted at
+    their origin every session for the entire run. Extracted from
+    run_league.main() so the invariant is testable without spawning training."""
+    progress = _load_progress(league_dir)
+    played = n_iterations * games_per_iteration
+    last_batch_size = played if auto_sizing else progress["last_batch_size"]
+    cumulative = progress["cumulative_games_per_deck"] + played
+    _save_progress(league_dir, last_batch_size, cumulative)
+    return {"last_batch_size": last_batch_size, "cumulative_games_per_deck": cumulative}
+
+
 def _next_batch_games(league_dir, total_games):
     """The next auto-sized batch's games-per-deck: doubles from the last real
     batch this league actually ran (1 if none yet), never overshooting
@@ -142,7 +278,9 @@ def _run_session(n_iterations, games_per_iteration, snapshot_every, executor, n_
                   fresh_stack=False, league_dir=None, seed=None,
                   train_deck=True, train_mulligan=True, train_decks=None,
                   matchup=None, game_logs=None, checkpoint_rate=0.0, roster=None, pfsp=True,
-                  gauntlet_league_dir=None, heuristic_decks=(), cumulative_games=0):
+                  gauntlet_league_dir=None, heuristic_decks=(), cumulative_games=0,
+                  ppo_hparams=None, eval_games=EVAL_GAMES, eval_every_sessions=EVAL_EVERY_SESSIONS,
+                  pfsp_power=PFSP_POWER):
     # cumulative_games: this league's games/deck ALREADY played before this
     # session started (progress.json, threaded in by run_league.py's main())
     # -- the horizon batch_size_for_iteration and ent_coef_schedule (rl.train)
@@ -194,12 +332,21 @@ def _run_session(n_iterations, games_per_iteration, snapshot_every, executor, n_
     train_decks = list(train_decks) if train_decks is not None else deck_names
     assert set(train_decks) <= set(deck_names), f"train_decks {train_decks} not all in roster {deck_names}"
     train_set = set(train_decks)
+    # ppo_hparams: a partial override of PPO_DEFAULTS (run-config "ppo" object).
+    # Unknown keys are a hard error rather than a silent no-op -- a typo'd
+    # hyperparameter that quietly does nothing is exactly the failure mode that
+    # left two anti-plateau schedules un-executed for 40,104 iterations.
+    hp = {**PPO_DEFAULTS, **(ppo_hparams or {})}
+    unknown = set(hp) - set(PPO_DEFAULTS)
+    assert not unknown, f"unknown ppo hyperparameter(s) {sorted(unknown)}; known: {sorted(PPO_DEFAULTS)}"
     shared = build_fresh_stack(vocab.size) if fresh_stack else load_frozen_stack(vocab.size)
+    if league_dir is not None and not fresh_stack:
+        write_stack_id(league_dir, shared)
 
     live_nets, optimizers = {}, {}
     for name in deck_names:
         net = DeckNetwork(shared, film_condition_dim=D_MODEL, non_targeting_n_actions=len(fixed_tables[name]))
-        optimizer = torch.optim.Adam([p for p in net.parameters() if p.requires_grad], lr=3e-4)
+        optimizer = torch.optim.Adam([p for p in net.parameters() if p.requires_grad], lr=hp["lr"])
         live_path = f"{league_dir}/{name}/live.pt"
         ckpt_io.load_deck_checkpoint(live_path, net, optimizer)  # no-op if live_path doesn't exist yet; optimizer load is migration-guarded (a migrated live.pt dropping "optimizer" -> fresh Adam)
         live_nets[name] = net
@@ -219,13 +366,13 @@ def _run_session(n_iterations, games_per_iteration, snapshot_every, executor, n_
     mulligan_nets, mulligan_optimizers = {}, {}
     for name in deck_names:
         mnet = MulliganNet(shared)
-        mopt = torch.optim.Adam([p for p in mnet.parameters() if p.requires_grad], lr=1e-3)
+        mopt = torch.optim.Adam([p for p in mnet.parameters() if p.requires_grad], lr=hp["mulligan_lr"])
         mull_path = f"{league_dir}/{name}/mulligan.pt"
         ckpt_io.load_deck_checkpoint(mull_path, mnet, mopt)  # same migration-guarded optimizer load as the live-net path above
         mulligan_nets[name] = mnet
         mulligan_optimizers[name] = mopt
 
-    pool = LeaguePool(league_dir, deck_names)
+    pool = LeaguePool(league_dir, deck_names, pfsp_power=pfsp_power)
     session_path = f"{league_dir}/session.txt"
     session = int(open(session_path).read()) + 1 if os.path.exists(session_path) else 0
     if session > 0:
@@ -233,8 +380,8 @@ def _run_session(n_iterations, games_per_iteration, snapshot_every, executor, n_
               f"{ {name: len(pool.snapshots[name]) for name in deck_names} }")
 
     rng = random.Random(seed)  # seed=None -> nondeterministic, identical to the prior random.Random()
-    reward_fn = deploy_reward_v5
-    reward_fn_name = "deploy_reward_v5"
+    reward_fn = deploy_reward_v6
+    reward_fn_name = "deploy_reward_v6"
     horizon = 120
 
     mode = []
@@ -247,6 +394,20 @@ def _run_session(n_iterations, games_per_iteration, snapshot_every, executor, n_
     print(f"League session {session}: n_iterations={n_iterations} games_per_iteration={games_per_iteration} "
           f"snapshot_every={snapshot_every} checkpoint_rate={checkpoint_rate} decks={deck_names} n_workers={n_workers}"
           f"{' [' + ', '.join(mode) + ']' if mode else ''}")
+    # metrics.jsonl was not self-describing: a reader had no way to tell which
+    # reward, roster, or config produced a given stretch of records, and no
+    # record carried the league's cumulative games/deck at all -- reconstructing
+    # "which snapshot era is session 34" meant counting PPO iterations by hand
+    # and multiplying by games_per_iteration. One header per session fixes both.
+    _append_metric(league_dir, kind="session_start", session=session,
+                   cumulative_games=cumulative_games, reward_fn=reward_fn_name,
+                   roster=list(deck_names), train_decks=sorted(train_set),
+                   n_iterations=n_iterations, games_per_iteration=games_per_iteration,
+                   snapshot_every=snapshot_every, checkpoint_rate=checkpoint_rate,
+                   pfsp=pfsp, n_workers=n_workers, horizon=horizon,
+                   gauntlet=gauntlet_league_dir is not None,
+                   eval_games=eval_games, eval_every_sessions=eval_every_sessions,
+                   pfsp_power=pfsp_power, **hp)
     t0 = time.time()
     total_games = 0
     collect_time_total = 0.0
@@ -271,7 +432,8 @@ def _run_session(n_iterations, games_per_iteration, snapshot_every, executor, n_
         # tracking was replaced. games_per_iteration is the per-deck games
         # count each iteration adds, regardless of how many decks train.
         games_so_far_this_session = iteration * games_per_iteration
-        batch_size = batch_size_for_iteration(cumulative_games + games_so_far_this_session)
+        batch_size = batch_size_for_iteration(cumulative_games + games_so_far_this_session,
+                                              start=hp["batch_size_start"], cap=hp["batch_size_cap"])
         ent_coef = ent_coef_schedule(cumulative_games + games_so_far_this_session)
         # Snapshot the mulligan nets for the workers now (ALL decks -- a frozen
         # opponent still needs its mulligan net to play). Updated once after the
@@ -296,6 +458,7 @@ def _run_session(n_iterations, games_per_iteration, snapshot_every, executor, n_
                     name, live_nets, reward_fn_name, league_dir, horizon, games_per_iteration,
                     executor, n_workers, SHARED_HPARAMS, shared_state_dict, all_trunk_hidden,
                     mulligan_state_dicts, game_logs=game_logs, checkpoint_rate=checkpoint_rate, pfsp=pfsp,
+                    pfsp_power=pfsp_power,
                 )
             else:
                 buffers_by_deck, mull_by_deck, played, outcomes = collect_rollout_league(
@@ -346,11 +509,17 @@ def _run_session(n_iterations, games_per_iteration, snapshot_every, executor, n_
                     if not len(buf) or deck_name not in train_set:
                         continue
                     if deck_name == name:
-                        policy_loss, value_loss, entropy, approx_kl, clip_fraction, epochs_run = ppo_update(
-                            live_nets[name], [optimizers[name]], buf, "cpu", batch_size=batch_size, ent_coef=ent_coef)
+                        (policy_loss, value_loss, entropy, approx_kl, clip_fraction,
+                         epochs_run, explained_variance, adv_std) = ppo_update(
+                            live_nets[name], [optimizers[name]], buf, "cpu", batch_size=batch_size,
+                            ent_coef=ent_coef, gamma=hp["gamma"], gae_lambda=hp["gae_lambda"],
+                            target_kl=hp["target_kl"], n_epochs=hp["n_epochs"],
+                            adv_norm_floor=hp["adv_norm_floor"])
                     else:
                         ppo_update(live_nets[deck_name], [optimizers[deck_name]], buf, "cpu",
-                                   batch_size=batch_size, ent_coef=ent_coef)
+                                   batch_size=batch_size, ent_coef=ent_coef, gamma=hp["gamma"],
+                                   gae_lambda=hp["gae_lambda"], target_kl=hp["target_kl"],
+                                   n_epochs=hp["n_epochs"], adv_norm_floor=hp["adv_norm_floor"])
                         salvaged += len(buf)
             update_time_total += time.time() - t_update0
             buffer_size = len(buffers_by_deck.get(name, ()))
@@ -370,9 +539,12 @@ def _run_session(n_iterations, games_per_iteration, snapshot_every, executor, n_
             # section 4 for the entropy-collapse investigation this exists to
             # let the owner actually check going forward, instead of guessing.
             _append_metric(league_dir, kind="ppo", session=session, iteration=iteration, deck=name,
+                           cumulative_games=cumulative_games + games_so_far_this_session,
                            games=played, buffer_size=buffer_size, batch_size=batch_size, salvaged=salvaged,
                            ent_coef=ent_coef, policy_loss=policy_loss, value_loss=value_loss, entropy=entropy,
-                           approx_kl=approx_kl, clip_fraction=clip_fraction, epochs_run=epochs_run)
+                           approx_kl=approx_kl, clip_fraction=clip_fraction, epochs_run=epochs_run,
+                           explained_variance=explained_variance, adv_std=adv_std,
+                           target_kl=hp["target_kl"])
 
         # Mulligan-model REINFORCE: one step per TRAIN deck on transitions
         # accumulated across the last MULLIGAN_UPDATE_EVERY iterations (see
@@ -390,6 +562,7 @@ def _run_session(n_iterations, games_per_iteration, snapshot_every, executor, n_
                 if mull_by_deck_accum[name]:
                     mull_stats[name] = mulligan_update(mulligan_nets[name], mulligan_optimizers[name], mull_by_deck_accum[name])
                     _append_metric(league_dir, kind="mulligan", session=session, iteration=iteration, deck=name,
+                                   cumulative_games=cumulative_games + games_so_far_this_session,
                                    n=mull_stats[name]["n"], loss=mull_stats[name]["loss"])
                     mull_by_deck_accum[name] = []
         if mull_stats:  # readout so the mulligan subsystem is visible while it trains
@@ -429,11 +602,24 @@ def _run_session(n_iterations, games_per_iteration, snapshot_every, executor, n_
     # training batch was (confirmed empirically: a 16-game training session
     # in this repo's own checkpoints/4_deck_subleague_test/metrics.jsonl paid
     # 80 additional vs_history eval games alone). See _play_eval_games.
-    if matchup is None:
+    # Per-deck games/deck as of these evals: every deck advances by
+    # games_per_iteration each iteration regardless of roster size, so this is
+    # the same quantity progress.json's cumulative_games_per_deck tracks -- NOT
+    # total_games, which sums across decks.
+    cumulative_at_session_end = cumulative_games + n_iterations * games_per_iteration
+    # eval_every_sessions > 1 spends the SAME total eval compute on fewer,
+    # bigger, more precise readings (see EVAL_GAMES). Session 0 always evals so
+    # a fresh league is never left with no reference at all.
+    run_evals = eval_every_sessions <= 1 or session % eval_every_sessions == 0
+    if not run_evals:
+        print(f"  (evals skipped: session {session} % eval_every_sessions={eval_every_sessions} != 0)", flush=True)
+    if matchup is None and run_evals:
         for name in train_decks:
             for r in _run_eval_vs_history(name, live_nets[name], mulligan_nets[name], deck_ctxs[name],
-                                          decklists[name], shared, league_dir, horizon, seed=seed):
-                _append_metric(league_dir, kind="vs_history", session=session, iteration=iteration, deck=name, **r)
+                                          decklists[name], shared, league_dir, horizon,
+                                          games_per_snapshot=eval_games, seed=seed):
+                _append_metric(league_dir, kind="vs_history", session=session, iteration=iteration, deck=name,
+                               cumulative_games=cumulative_at_session_end, **r)
                 print(f"  vs-history [{name}] vs {r['label']}: {r['live_wins']}/{r['games']} live wins "
                       f"({r['snapshot_wins']} snapshot wins, {r['no_winner']} no-winner)", flush=True)
             # The gauntlet check (an INDEPENDENTLY-trained twin population, see
@@ -441,9 +627,11 @@ def _run_session(n_iterations, games_per_iteration, snapshot_every, executor, n_
             # training has reached this deck, or no gauntlet_league_dir is configured
             # for this league at all (most leagues won't have one).
             r = _run_eval_vs_gauntlet(name, live_nets[name], mulligan_nets[name], deck_ctxs[name],
-                                      decklists[name], shared, gauntlet_league_dir, horizon, seed=seed)
+                                      decklists[name], shared, gauntlet_league_dir, horizon,
+                                      games=eval_games, seed=seed)
             if r is not None:
-                _append_metric(league_dir, kind="vs_gauntlet", session=session, iteration=iteration, deck=name, **r)
+                _append_metric(league_dir, kind="vs_gauntlet", session=session, iteration=iteration, deck=name,
+                               cumulative_games=cumulative_at_session_end, **r)
                 print(f"  vs-gauntlet [{name}]: {r['live_wins']}/{r['games']} live wins "
                       f"({r['gauntlet_wins']} gauntlet wins, {r['no_winner']} no-winner)", flush=True)
             # The tier-1 gauntlet member (a hand-authored HeuristicAgent) --
@@ -451,8 +639,9 @@ def _run_session(n_iterations, games_per_iteration, snapshot_every, executor, n_
             # name none; see _run_eval_vs_heuristic's own docstring).
             if name in heuristic_decks:
                 r = _run_eval_vs_heuristic(name, live_nets[name], mulligan_nets[name], deck_ctxs[name],
-                                           decklists[name], horizon, seed=seed)
-                _append_metric(league_dir, kind="vs_heuristic", session=session, iteration=iteration, deck=name, **r)
+                                           decklists[name], horizon, games=eval_games, seed=seed)
+                _append_metric(league_dir, kind="vs_heuristic", session=session, iteration=iteration, deck=name,
+                               cumulative_games=cumulative_at_session_end, **r)
                 print(f"  vs-heuristic [{name}]: {r['live_wins']}/{r['games']} live wins "
                       f"({r['heuristic_wins']} heuristic wins, {r['no_winner']} no-winner)", flush=True)
 
@@ -540,7 +729,86 @@ def _list_snapshot_ids(dir_path):
                   if fn.startswith("snapshot_") and fn.endswith(".pt"))
 
 
-def _play_eval_games(live_agent, opp_agent, decklist, n_games, horizon, rng, opp_wins_key):
+def league_roster(league_dir):
+    """The deck names this league has actually trained, sorted -- i.e. those
+    with a live.pt on disk. build_pool() deliberately spans the WHOLE manifest
+    (all 11 decks, so vocab indices line up regardless of roster), so any
+    eval script that iterates its decklists directly will try to load
+    checkpoints a 4-deck league never wrote."""
+    if not os.path.isdir(league_dir):
+        return []
+    return sorted(d for d in os.listdir(league_dir)
+                  if os.path.exists(os.path.join(league_dir, d, "live.pt")))
+
+
+def load_vintage_agent(league_dir, deck_name, vintage, shared, deck_ctx, pool=None):
+    """A frozen SeatAgent for ONE historical point of deck_name: an int/str
+    snapshot id, or "live" for the current checkpoint pair.
+
+    Path resolution is the only thing this adds over
+    LeaguePool.load_snapshot_agent, which already does the loading: a snapshot
+    sits either directly in the deck dir (still inside the active sampling
+    window) or under archive/ once evicted, since LeaguePool.register_snapshot
+    MOVES rather than deletes. Callers that walk many vintages should pass a
+    single reused `pool` -- load_snapshot_agent caches by path, so the same
+    snapshot is only ever read off disk once.
+
+    NOTE: for a snapshot vintage this inherits load_snapshot_agent's BUG 3
+    behavior (RL_METHODOLOGY_PLAN.md section 3) -- DeckNetwork registers the
+    shared stack as a child module, so that loader's requires_grad=False sweep
+    and state_dict load both reach `shared`. Harmless for read-only eval
+    against an already-frozen stack (every embedded copy is byte-identical),
+    which is all this is used for; it is NOT safe once the stack is trainable.
+    """
+    _vocab, fixed_table = deck_ctx
+    deck_dir = os.path.join(league_dir, deck_name)
+    if vintage == "live":
+        net = DeckNetwork(shared, film_condition_dim=D_MODEL, non_targeting_n_actions=len(fixed_table))
+        ckpt_io.load_deck_checkpoint(os.path.join(deck_dir, "live.pt"), net)
+        net.eval()
+        mull = MulliganNet(shared)
+        ckpt_io.load_deck_checkpoint(os.path.join(deck_dir, "mulligan.pt"), mull)
+        mull.eval()
+        return SeatAgent(net, mull, deck_ctx)
+    for sub in ("", "archive"):
+        path = os.path.join(deck_dir, sub, f"snapshot_{int(vintage)}.pt")
+        if os.path.exists(path):
+            return (pool or LeaguePool(league_dir, [deck_name])).load_snapshot_agent(path, shared, deck_ctx)
+    raise FileNotFoundError(f"no snapshot_{vintage}.pt for {deck_name} under {deck_dir} or its archive/")
+
+
+def _play_paired_eval_games(live_agent, opp_agent, decklist, n_games, horizon, seed, opp_wins_key,
+                            greedy=True):
+    """_play_eval_games with COMMON RANDOM NUMBERS: half the games with
+    live_agent at seat 0, half with the sides swapped, both halves driven from
+    the SAME seed.
+
+    Because collect_rollout draws starting_idx per game from that rng
+    (train.py), replaying the identical seed with the seats exchanged hands the
+    play/draw to the OTHER agent on the very same shuffles. On-the-play is then
+    balanced EXACTLY rather than in expectation, and the deck-order variance
+    that dominates a card game largely cancels between the paired halves --
+    worth an estimated 2-4x effective sample size for no extra games.
+
+    The unpaired _play_eval_games always seats live at 0 and leaves both to
+    chance. That is unbiased but noisy, and at the n=20 per check this project
+    ran, noise was the binding constraint on every conclusion drawn."""
+    half = n_games // 2
+    fwd = _play_eval_games(live_agent, opp_agent, decklist, half, horizon,
+                           random.Random(seed), opp_wins_key, greedy=greedy)
+    rev = _play_eval_games(opp_agent, live_agent, decklist, n_games - half, horizon,
+                           random.Random(seed), opp_wins_key, greedy=greedy)
+    # rev is scored from the OPPONENT's seat, so live's wins there are rev's
+    # opp_wins_key column and vice versa.
+    return {"games": fwd["games"] + rev["games"],
+            "live_wins": fwd["live_wins"] + rev[opp_wins_key],
+            opp_wins_key: fwd[opp_wins_key] + rev["live_wins"],
+            "no_winner": fwd["no_winner"] + rev["no_winner"],
+            "paired": True}
+
+
+def _play_eval_games(live_agent, opp_agent, decklist, n_games, horizon, rng, opp_wins_key,
+                     greedy=True):
     """Shared tail for every vs_history/vs_gauntlet/vs_heuristic eval pass:
     plays a fixed live_agent-vs-opp_agent pairing greedily (no training,
     matching _run_eval's own eval convention), scores winners via
@@ -548,11 +816,18 @@ def _play_eval_games(live_agent, opp_agent, decklist, n_games, horizon, rng, opp
     {"games", "live_wins", <opp_wins_key>, "no_winner"} tally shape every
     caller already builds by hand. opp_wins_key names the opponent side in
     the returned dict (e.g. "snapshot_wins"/"gauntlet_wins"/"heuristic_wins")
-    since each caller's opponent is a different kind of thing."""
+    since each caller's opponent is a different kind of thing.
+
+    greedy defaults to True -- the eval convention every in-training caller
+    uses (measure the policy's actual best play, not an exploration sample).
+    run_anchor_eval.py overrides it: argmax over a RANDOMLY initialized head
+    is a degenerate constant-ish policy rather than an honest untrained
+    baseline, so the random-init anchor wants sampling. collect_rollout takes
+    one flag for the whole rollout, so this applies to BOTH seats."""
     pairing = _constant_pairing([live_agent, opp_agent], [decklist, decklist], [None, None], [None, None])
     game_logs = []
     _bufs, _mull, played = collect_rollout(pairing, n_games, horizon, rng, device="cpu",
-                                           record=False, greedy=True, game_logs=game_logs)
+                                           record=False, greedy=greedy, game_logs=game_logs)
     outcomes = [e for ev in game_logs for e in ev if e["kind"] == "game_over"]
     live_wins = sum(1 for e in outcomes if e["winner"] == 0)
     opp_wins = sum(1 for e in outcomes if e["winner"] == 1)
@@ -561,7 +836,7 @@ def _play_eval_games(live_agent, opp_agent, decklist, n_games, horizon, rng, opp
 
 
 def _run_eval_vs_history(deck_name, live_net, mulligan_net, deck_ctx, decklist, shared, league_dir,
-                          horizon, games_per_snapshot=20, seed=None):
+                          horizon, games_per_snapshot=EVAL_GAMES, seed=None):
     """Plays deck_name's CURRENT live net against its own past selves: the
     oldest snapshot still in the active LeaguePool sampling window, plus (once
     LeaguePool.register_snapshot has evicted anything) the oldest ARCHIVED
@@ -584,26 +859,35 @@ def _run_eval_vs_history(deck_name, live_net, mulligan_net, deck_ctx, decklist, 
     milestones = []
     archive_ids = _list_snapshot_ids(os.path.join(deck_dir, "archive"))
     if archive_ids:
-        milestones.append(("archive_oldest", os.path.join(deck_dir, "archive", f"snapshot_{archive_ids[0]}.pt")))
+        milestones.append(("archive_oldest", archive_ids[0], True,
+                           os.path.join(deck_dir, "archive", f"snapshot_{archive_ids[0]}.pt")))
     active_ids = _list_snapshot_ids(deck_dir)
     if active_ids:
-        milestones.append(("active_oldest", os.path.join(deck_dir, f"snapshot_{active_ids[0]}.pt")))
+        milestones.append(("active_oldest", active_ids[0], False,
+                           os.path.join(deck_dir, f"snapshot_{active_ids[0]}.pt")))
     if not milestones:
         return []
 
     pool = LeaguePool(league_dir, [deck_name])  # only its load_snapshot_agent loader is used here
     live_agent = SeatAgent(live_net, mulligan_net, deck_ctx)
-    rng = random.Random(seed)
     results = []
-    for label, snapshot_path in milestones:
+    for label, snapshot_id, is_archive, snapshot_path in milestones:
         hist_agent = pool.load_snapshot_agent(snapshot_path, shared, deck_ctx)
-        result = _play_eval_games(live_agent, hist_agent, decklist, games_per_snapshot, horizon, rng, "snapshot_wins")
-        results.append({"label": label, **result})
+        result = _play_paired_eval_games(live_agent, hist_agent, decklist, games_per_snapshot, horizon,
+                                         seed, "snapshot_wins")
+        # snapshot_id/is_archive recorded (2026-08-13) because the two labels
+        # are NOT comparable and were being read as one number. archive_oldest
+        # is pinned to snapshot_0 forever -- eviction is oldest-first and this
+        # takes the archive minimum -- so it is a FIXED ~200-game reference,
+        # while active_oldest tracks a rolling ~6,400-game-old self. Without
+        # the id on the record there is no way to tell from metrics.jsonl which
+        # policy a given win rate was measured against.
+        results.append({"label": label, "snapshot_id": snapshot_id, "is_archive": is_archive, **result})
     return results
 
 
 def _run_eval_vs_gauntlet(deck_name, live_net, mulligan_net, deck_ctx, decklist, shared, gauntlet_league_dir,
-                           horizon, games=20, seed=None):
+                           horizon, games=EVAL_GAMES, seed=None):
     """Plays deck_name's CURRENT live net against the SAME-NAMED deck from an
     INDEPENDENTLY-trained population (gauntlet_league_dir -- see
     training_configs/run_gauntlet.json's own _note) -- a genuinely EXTERNAL
@@ -626,6 +910,11 @@ def _run_eval_vs_gauntlet(deck_name, live_net, mulligan_net, deck_ctx, decklist,
     play, not an exploration sample."""
     if gauntlet_league_dir is None:
         return None
+    # A gauntlet trained against a DIFFERENT frozen stack produces a number
+    # that looks fine and means nothing -- see stack_id's docstring for the
+    # 24,579-games/deck precedent. Skip rather than report garbage.
+    if not stack_id_matches(gauntlet_league_dir, shared):
+        return None
     gauntlet_live_path = f"{gauntlet_league_dir}/{deck_name}/live.pt"
     if not os.path.exists(gauntlet_live_path):
         return None
@@ -641,11 +930,11 @@ def _run_eval_vs_gauntlet(deck_name, live_net, mulligan_net, deck_ctx, decklist,
 
     live_agent = SeatAgent(live_net, mulligan_net, deck_ctx)
     gauntlet_agent = SeatAgent(gauntlet_net, gauntlet_mull, deck_ctx)
-    rng = random.Random(seed)
-    return _play_eval_games(live_agent, gauntlet_agent, decklist, games, horizon, rng, "gauntlet_wins")
+    return _play_paired_eval_games(live_agent, gauntlet_agent, decklist, games, horizon, seed, "gauntlet_wins")
 
 
-def _run_eval_vs_heuristic(deck_name, live_net, mulligan_net, deck_ctx, decklist, horizon, games=20, seed=None):
+def _run_eval_vs_heuristic(deck_name, live_net, mulligan_net, deck_ctx, decklist, horizon,
+                            games=EVAL_GAMES, seed=None):
     """Plays deck_name's CURRENT live net against a HeuristicAgent (rl.agent)
     for the SAME deck -- the gauntlet's tier-1 member: a hand-authored, non-
     self-play reference opponent, distinct from _run_eval_vs_gauntlet's tier-2
@@ -656,8 +945,7 @@ def _run_eval_vs_heuristic(deck_name, live_net, mulligan_net, deck_ctx, decklist
     roster."""
     live_agent = SeatAgent(live_net, mulligan_net, deck_ctx)
     heuristic_agent = HeuristicAgent(deck_ctx)
-    rng = random.Random(seed)
-    return _play_eval_games(live_agent, heuristic_agent, decklist, games, horizon, rng, "heuristic_wins")
+    return _play_paired_eval_games(live_agent, heuristic_agent, decklist, games, horizon, seed, "heuristic_wins")
 
 
 def _json_default(obj):

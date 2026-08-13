@@ -3,6 +3,8 @@
 own docstring for why. Marked slow: importing rl.league_runner pulls in torch/rl.*.
 """
 import json
+import os
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -199,3 +201,109 @@ def test_run_eval_vs_heuristic_plays_real_games(tmp_path, monkeypatch):
     )
     assert result["games"] == 3
     assert result["live_wins"] + result["heuristic_wins"] + result["no_winner"] == 3
+
+
+# --- Wave 1 instrumentation (2026-08-13) ---
+
+
+@pytest.mark.slow
+def test_paired_eval_balances_the_play_exactly_not_just_on_average():
+    """_play_paired_eval_games replays the SAME seed with the seats exchanged,
+    so collect_rollout's per-game starting_idx draw hands the play to the other
+    agent on identical shuffles. On-the-play is then balanced exactly rather
+    than in expectation -- the variance reduction the n=20 checks needed."""
+    import inspect
+    src = inspect.getsource(league_runner._play_paired_eval_games)
+    assert src.count("random.Random(seed)") == 2, \
+        "both halves must be driven from the SAME seed, or the pairing is lost"
+    # live's wins in the swapped half come from the OPPONENT column
+    assert 'rev[opp_wins_key]' in src
+
+
+@pytest.mark.slow
+def test_stack_id_detects_a_different_stack_but_tolerates_a_legacy_league(tmp_path):
+    """The failure this exists for: a gauntlet league trained against a stack
+    that no longer exists, compared against the current one, reporting a
+    plausible number that means nothing (24,579 games/deck of vs_gauntlet were
+    confounded exactly this way)."""
+    a = league_runner.build_fresh_stack(12)
+    b = league_runner.build_fresh_stack(12)  # same architecture, different weights
+    assert league_runner.stack_id(a) != league_runner.stack_id(b)
+    assert league_runner.stack_id(a) == league_runner.stack_id(a), "must be deterministic"
+
+    league = str(tmp_path / "some_league")
+    os.makedirs(league, exist_ok=True)
+    # No stack_id.txt yet -> legacy league, tolerated (every league on disk
+    # today predates the check; failing them all would be the guard's first act)
+    assert league_runner.stack_id_matches(league, a)
+
+    league_runner.write_stack_id(league, a)
+    assert league_runner.stack_id_matches(league, a)
+    assert not league_runner.stack_id_matches(league, b), "a DIFFERENT stack must be caught"
+
+
+@pytest.mark.slow
+def test_unknown_ppo_hyperparameter_is_a_hard_error():
+    """A typo'd hyperparameter that silently does nothing is precisely how two
+    anti-plateau schedules went un-executed for 40,104 iterations."""
+    with pytest.raises(AssertionError, match="unknown ppo hyperparameter"):
+        league_runner._run_session(1, 1, 1, None, 1, league_dir=str(tempfile.mkdtemp()),
+                                    roster=["elves"], ppo_hparams={"learning_rate": 1e-4})
+
+
+@pytest.mark.slow
+def test_rollback_restores_a_snapshot_and_backs_up_the_replaced_live(tmp_path):
+    """Rolling back must itself be reversible: the live pair it replaces is
+    copied aside, and a SECOND rollback refuses to clobber that backup (which
+    would destroy the only copy of the pre-rollback state -- the exact mistake
+    the backup exists to prevent)."""
+    import torch
+    import run_rollback
+    from rl.deck import DeckNetwork
+    from rl.mulligan import MulliganNet
+    from rl import checkpoint as ckpt_io
+
+    shared = league_runner.build_fresh_stack(12)
+    deck_ctx = (None, list(range(4)))
+    deck_dir = tmp_path / "elves"
+    (deck_dir / "archive").mkdir(parents=True)
+
+    old = DeckNetwork(shared, film_condition_dim=shared.d_model, non_targeting_n_actions=4)
+    ckpt_io.save_snapshot(str(deck_dir / "archive" / "snapshot_58.pt"), old, MulliganNet(shared))
+    current = DeckNetwork(shared, film_condition_dim=shared.d_model, non_targeting_n_actions=4)
+    with torch.no_grad():
+        current.critic_head.weight.add_(5.0)  # make "now" clearly different from the snapshot
+    ckpt_io.save_deck_checkpoint(str(deck_dir / "live.pt"), current)
+    ckpt_io.save_deck_checkpoint(str(deck_dir / "mulligan.pt"), MulliganNet(shared))
+
+    run_rollback.rollback_deck(str(tmp_path), "elves", 58, shared, deck_ctx)
+
+    restored = DeckNetwork(shared, film_condition_dim=shared.d_model, non_targeting_n_actions=4)
+    ckpt_io.load_deck_checkpoint(str(deck_dir / "live.pt"), restored)
+    assert torch.equal(restored.critic_head.weight, old.critic_head.weight), "live.pt must be the snapshot"
+
+    backed_up = DeckNetwork(shared, film_condition_dim=shared.d_model, non_targeting_n_actions=4)
+    ckpt_io.load_deck_checkpoint(str(deck_dir / ("live.pt" + run_rollback.BACKUP_SUFFIX)), backed_up)
+    assert torch.equal(backed_up.critic_head.weight, current.critic_head.weight), \
+        "the replaced live.pt must be recoverable"
+
+    with pytest.raises(FileExistsError):
+        run_rollback.rollback_deck(str(tmp_path), "elves", 58, shared, deck_ctx)
+    run_rollback.rollback_deck(str(tmp_path), "elves", 58, shared, deck_ctx, force=True)  # opt in
+
+
+@pytest.mark.slow
+def test_rollback_dry_run_changes_nothing(tmp_path):
+    import run_rollback
+    from rl.deck import DeckNetwork
+    from rl.mulligan import MulliganNet
+    from rl import checkpoint as ckpt_io
+
+    shared = league_runner.build_fresh_stack(12)
+    deck_dir = tmp_path / "elves"
+    (deck_dir / "archive").mkdir(parents=True)
+    ckpt_io.save_snapshot(str(deck_dir / "archive" / "snapshot_3.pt"),
+                          DeckNetwork(shared, film_condition_dim=shared.d_model, non_targeting_n_actions=4),
+                          MulliganNet(shared))
+    run_rollback.rollback_deck(str(tmp_path), "elves", 3, shared, (None, list(range(4))), dry_run=True)
+    assert not (deck_dir / "live.pt").exists(), "a dry run must not write anything"

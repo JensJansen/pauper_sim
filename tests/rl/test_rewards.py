@@ -4,7 +4,7 @@ import pytest
 from game.state import GameState, PlayerState
 from rl.rewards import (
     action_count_win_reward, deploy_reward, deploy_reward_v2, deploy_reward_v3,
-    deploy_reward_v4, deploy_reward_v5, flat_win_loss_reward,
+    deploy_reward_v4, deploy_reward_v5, deploy_reward_v6, flat_win_loss_reward,
     with_dense_mana_burn_penalty, with_mana_mistake_penalty,
 )
 
@@ -596,6 +596,7 @@ def test_deploy_reward_v5_is_winner_only_and_v4_is_not():
     # is what makes collect_rollout defer charges instead of applying them --
     # a regression here would silently change v2/v3/v4's semantics.
     assert getattr(deploy_reward_v5, "mana_burn_winner_only", False) is True
+    assert getattr(deploy_reward_v6, "mana_burn_winner_only", False) is True
     for older in (deploy_reward_v2, deploy_reward_v3, deploy_reward_v4):
         assert getattr(older, "mana_burn_winner_only", False) is False
 
@@ -638,3 +639,102 @@ def test_deploy_reward_v5_guarantee_and_no_discard_dependence():
     assert _loss_score(0, 0) == pytest.approx(-1.0)      # passive loss
     assert _loss_score(100, 50) == pytest.approx(-1.0)   # active, sloppy loss
     assert _loss_score(0, 0) == _loss_score(100, 50)     # no gradation to exploit
+
+
+def _charge_for(reward_fn, pips):
+    s = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
+    s.players[0].mana_burnt_this_turn_single_pip = pips
+    return reward_fn.charge_single_pip_burn(s.players[0])
+
+
+def _turns_to_saturate(reward_fn, pips_per_turn, cap=1.5):
+    """How many consecutive `pips_per_turn` turns it takes to fully exhaust
+    the whole-game cap, after which every further burnt pip is charged 0.0."""
+    p = PlayerState(True)
+    p.mana_burnt_this_turn_single_pip = pips_per_turn
+    for turn in range(1, 100):
+        p.mana_burn_penalty_credited = 0.0  # game.turn resets this each turn
+        reward_fn.charge_single_pip_burn(p)
+        if p.mana_burn_penalty_charged_total >= cap - 1e-9:
+            return turn
+    return None
+
+
+@pytest.mark.slow
+def test_deploy_reward_v6_curve_is_v5_shape_scaled_to_weight_half():
+    # v6 (2026-08-11) moves exactly ONE constant from v5: mana_burn_weight
+    # 1.5 -> 0.5. Same c=2.9/p=4.0 shape, same cap. Locks the documented
+    # per-turn numbers, and pins them to v5's curve scaled by 1/3 so a future
+    # edit can't reshape one without the other.
+    assert _charge_for(deploy_reward_v6, 1) == pytest.approx(0.007, abs=1e-3)  # first pip still nearly free
+    assert _charge_for(deploy_reward_v6, 2) == pytest.approx(0.092, abs=1e-3)
+    assert _charge_for(deploy_reward_v6, 3) == pytest.approx(0.267, abs=1e-3)
+    assert _charge_for(deploy_reward_v6, 4) == pytest.approx(0.392, abs=1e-3)
+    assert _charge_for(deploy_reward_v6, 5) == pytest.approx(0.449, abs=1e-3)  # ~90% of the 0.5 weight
+    assert _charge_for(deploy_reward_v6, 50) < 0.5  # asymptotic: approaches the weight, never reaches it
+    for pips in (1, 2, 3, 4, 5, 6):
+        assert _charge_for(deploy_reward_v6, pips) == pytest.approx(
+            _charge_for(deploy_reward_v5, pips) / 3.0, abs=1e-6)
+
+
+@pytest.mark.slow
+def test_deploy_reward_v6_one_bad_turn_no_longer_eats_the_whole_budget():
+    # THE POINT OF v6. Under v5 a single 5-pip turn charged 1.348 of a 1.5
+    # cap -- 90% of the whole-game budget -- so two such turns saturated it
+    # and every later burnt pip that game was free. Measured over v5's
+    # 10,003-games/deck logs, dmir_terror/elves hit that in 64%/69% of games,
+    # ~2/3 of the way through; a maxed-out penalty is a flat toll, not a
+    # gradient. v6 keeps the cap (the guarantee depends on it) and shrinks
+    # the curve under it instead, so the charge stays proportional to actual
+    # waste for far longer.
+    cap = 1.5
+    assert _charge_for(deploy_reward_v5, 5) / cap > 0.85   # v5: one turn ~= the entire budget
+    assert _charge_for(deploy_reward_v6, 5) / cap < 0.35   # v6: one turn is a real fraction of it
+    assert _turns_to_saturate(deploy_reward_v5, 5) == 2
+    assert _turns_to_saturate(deploy_reward_v6, 5) == 4
+    # Ordinary (not disastrous) turns: v5 saturated in a handful, v6 does not
+    # saturate on anything like a realistic count. 2.8 pips was the measured
+    # mean over turns that burnt anything at all, so 3 is the typical case.
+    assert _turns_to_saturate(deploy_reward_v5, 3) == 2
+    assert _turns_to_saturate(deploy_reward_v6, 3) == 6
+
+
+@pytest.mark.slow
+def test_deploy_reward_v6_guarantee_is_unchanged_from_v5():
+    # game_penalty_cap and the base band are byte-identical to v5, so the
+    # guarantee needs no re-derivation -- but assert it directly rather than
+    # by inspection, since v6 is the version the league will actually run.
+    # Worst win = 1.0 - cap = -0.5; every loss = -1.0 exactly.
+    s = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
+    s.active_idx = 0
+
+    s.winner = 0
+    assert _effective_episode_score(deploy_reward_v6, s) == pytest.approx(1.0)  # clean win
+
+    # Worst case needs SEVERAL bad turns to reach, not one -- _effective_
+    # episode_score charges once, which was enough to saturate v5's cap but
+    # deliberately isn't under v6. That gap IS the fix, so the worst case is
+    # summed over turns here instead of taken from a single charge.
+    p = s.players[0]
+    p.mana_burnt_this_turn_single_pip = 50
+    charged = 0.0
+    for _turn in range(10):
+        p.mana_burn_penalty_credited = 0.0  # game.turn resets this each turn
+        charged += deploy_reward_v6.charge_single_pip_burn(p)
+    assert charged == pytest.approx(1.5)  # the cap is still reachable, just not in one turn
+    worst_win = deploy_reward_v6(s, done=True, horizon=99) - charged
+    assert worst_win == pytest.approx(-0.5, abs=1e-2)
+    assert worst_win > -1.0  # margin of 0.5 preserved -- v6 deliberately did NOT spend it on a bigger cap
+
+    # Losses stay flat and ungraded, same as v5 (this is what fixed the
+    # passive-loss asymmetry; v6 must not reintroduce a gradient here).
+    def _loss_score(discard_turns, burnt):
+        st = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
+        st.active_idx = 0
+        st.winner = 1
+        st.players[0].cleanup_discard_turns = discard_turns
+        st.players[0].mana_burnt_this_turn_single_pip = burnt
+        return deploy_reward_v6(st, done=True, horizon=99)
+
+    assert _loss_score(0, 0) == pytest.approx(-1.0)
+    assert _loss_score(0, 0) == _loss_score(100, 50)

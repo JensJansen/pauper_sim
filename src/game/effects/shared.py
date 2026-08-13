@@ -91,6 +91,28 @@ def mill(state, n, player_idx=None):
     return milled
 
 
+def shuffle_library(state, player_idx=None):
+    """Shuffle a player's library. THE one place a library gets shuffled.
+
+    Exists to be a choke point rather than for the shuffle itself: shuffling
+    destroys any knowledge the player had of their own library order, so
+    PlayerState.known_top (see game.state.known_top_prefix) must be cleared at
+    exactly the same moment. Seven call sites used to invoke rng.shuffle
+    directly; routing them all through here means a future eighth cannot
+    silently skip the clear.
+
+    game.state.known_top_prefix already validates known_top against the real
+    library, so a missed clear could not make the agent believe a card is on
+    top that isn't. What it could do is let a post-shuffle coincidence (~7%
+    with 4 copies in 60 cards) hand the agent a fact it is TRUE but that a real
+    player would have no way to know. Clearing here closes that leak."""
+    idx = state.active_idx if player_idx is None else player_idx
+    player = state.players[idx]
+    state.rng.shuffle(player.library)
+    player.known_top = []
+    player.known_top_library_len = 0
+
+
 def find_and_remove_by_name(state, name):
     """Search state.library for the first card matching `name`, remove and
     return it (or None if absent). Does not shuffle -- callers shuffle per
@@ -109,7 +131,7 @@ def find_to_hand(state, name):
     searched/revealed the library at all, matching every one of these
     cards' own precedent -- just finds nothing."""
     found = find_and_remove_by_name(state, name) if name is not None else None
-    state.rng.shuffle(state.library)
+    shuffle_library(state)
     if found:
         state.hand.append(found)
         # Log the library->hand move (real Magic: the card physically enters hand).

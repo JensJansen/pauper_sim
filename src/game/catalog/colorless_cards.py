@@ -82,6 +82,7 @@ from ..effects.casting import (
 from ..effects.stack import push_ability_to_stack, push_to_stack
 from ..effects.shared import (
     affinity_reduction, discard_from_hand_to_graveyard, find_and_remove_by_name, find_to_hand, fire_sacrifice_triggers,
+ shuffle_library,
 )
 from ..effects.state_based import check_state_based_actions, sacrifice_to_graveyard
 from ..effects.stats import can_be_targeted, permanent_power
@@ -237,7 +238,7 @@ def lembas_dies(state, permanent):
     if inst is not None and inst in state.graveyard:
         state.graveyard.remove(inst)
         state.library.append(inst.card_def)  # library is DEFERRED (CardDefs)
-        state.rng.shuffle(state.library)
+        shuffle_library(state)
         state.log_event("zone_move", card=inst.name, from_zone="graveyard", to_zone="library", reason="lembas_shuffle")
 
 
@@ -264,7 +265,7 @@ def activate_twisted_landscape_fetch(state, permanent):
     def _effect(st):
         def _on_fetch(st, land_name):
             found = find_and_remove_by_name(st, land_name)
-            st.rng.shuffle(st.library)
+            shuffle_library(st)
             if found:
                 enters_battlefield(st, found, force_tapped=True)
 

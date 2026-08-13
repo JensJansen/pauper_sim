@@ -32,11 +32,15 @@ def build_arg_parser(description=None):
     # "zero" -- so a config-backed value can still validly BE 0 or empty
     # without being mistaken for "not given" (e.g. checkpoint_opponent_rate=0.0).
     parser.add_argument("--n-iterations", type=int, default=None,
-                         help="Force this exact number of iterations, bypassing auto-sizing entirely (debugging / "
-                              "one-off runs only -- never written to progress.json, never fed back into the "
-                              "doubling sequence). Omit this for normal training: the size is computed from "
-                              "--league-config's total_games and how far that league has already "
-                              "gotten (checkpoints/<league_name>/progress.json).")
+                         help="Force this exact number of iterations, bypassing auto-SIZING (debugging / "
+                              "one-off runs only). Never fed back into the doubling ladder, so a forced "
+                              "size cannot become the next auto-sized batch's base -- but the league's "
+                              "cumulative_games_per_deck DOES still advance, since that is the horizon the "
+                              "PPO minibatch/entropy schedules ramp against and has nothing to do with the "
+                              "ladder (gating it here was BUG 1: it froze both schedules at their origin "
+                              "for an entire 60,001-games/deck run). Omit this for normal training: the "
+                              "size is computed from --league-config's total_games and how far that league "
+                              "has already gotten (checkpoints/<league_name>/progress.json).")
     parser.add_argument("--snapshot-every", type=int, default=None,
                          help="Snapshot cadence in ITERATIONS. Prefer --run-config's snapshot_every_games (a fixed "
                               "games-count, independent of games_per_iteration) -- this raw flag is a lower-level "

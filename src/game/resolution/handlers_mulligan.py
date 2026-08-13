@@ -2,6 +2,7 @@
 bottom-N-cards placement. Re-exported via game.resolution so
 `from ..resolution import X` in the catalogs keeps resolving."""
 
+from ..effects.shared import shuffle_library
 from ._core import begin_resolution, complete_resolution
 
 
@@ -50,7 +51,7 @@ def execute_mulligan_take(state):
     mulliganed = [c.name for c in state.hand]
     state.library.extend(state.hand)
     state.hand = []
-    state.rng.shuffle(state.library)
+    shuffle_library(state)
     state.mulligans_taken += 1
     state.log_event("zone_move", cards=mulliganed, from_zone="hand", to_zone="library", reason="mulligan_take")
     on_complete = state.pending_resolution["on_complete"]

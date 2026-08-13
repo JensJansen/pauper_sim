@@ -8,6 +8,8 @@ resolving."""
 from .. import registry
 from ..cards import CardType
 from ._core import begin_resolution, complete_resolution
+from ..effects.shared import shuffle_library
+from ..state import known_top_prefix
 from .handlers_targeting import begin_choose_permanent
 
 
@@ -336,6 +338,15 @@ def put_on_top_options(state):
 def _finish_put_on_top(state):
     pending = state.pending_resolution
     state.library[0:0] = pending["placed"]  # placed[0] on top
+    # The controller chose these and obviously remembers them -- record it so
+    # the agent's observation matches what a real player knows. Prepended, not
+    # assigned: an earlier Brainstorm's cards may still be sitting underneath
+    # these, and they are still known. game.state.known_top_prefix validates the
+    # whole list against the real library at read time, so a stale tail can
+    # never produce a false claim.
+    placer = state.players[state.active_idx]
+    placer.known_top = list(pending["placed"]) + known_top_prefix(placer)
+    placer.known_top_library_len = len(placer.library)
     state.log_event("put_on_top", cards=[c.name for c in pending["placed"]])
     complete_resolution(state)
 
@@ -384,7 +395,7 @@ def execute_ponder_shuffle(state):
     own legality gate)."""
     pending = state.pending_resolution
     state.library.extend(pending["remaining"])  # order irrelevant -- about to shuffle
-    state.rng.shuffle(state.library)
+    shuffle_library(state)
     state.log_event("ponder", shuffled=True)
     complete_resolution(state)
 

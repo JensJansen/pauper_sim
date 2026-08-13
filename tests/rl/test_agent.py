@@ -105,8 +105,11 @@ def test_scalar_features_library_hand_size_and_stack_targets():
     sf0 = _scalar_features(sf_state, 0, horizon=40)
     sf1 = _scalar_features(sf_state, 1, horizon=40)
     # Tail layout (see _scalar_features's own append order): [..., my_library,
-    # opp_library, opp_hand, stack_targets_me, stack_targets_opponent].
-    my_lib_i, opp_lib_i, opp_hand_i, targets_me_i, targets_opp_i = -5, -4, -3, -2, -1
+    # opp_library, opp_hand, stack_targets_me, stack_targets_opponent,
+    # on_the_play, opp_mulligans, opp_cleanup_discards]. The last three were
+    # appended 2026-08-13, which shifted every index here by 3 -- these are
+    # counted from the END on purpose, so a future append shifts them again.
+    my_lib_i, opp_lib_i, opp_hand_i, targets_me_i, targets_opp_i = -8, -7, -6, -5, -4
     assert sf0[my_lib_i] == 40 / DECK_SIZE_CAP and sf0[opp_lib_i] == 10 / DECK_SIZE_CAP
     assert sf1[my_lib_i] == 10 / DECK_SIZE_CAP and sf1[opp_lib_i] == 40 / DECK_SIZE_CAP, (
         "library-size scalars must flip with perspective, not stay pinned to seat 0/1"
@@ -342,3 +345,55 @@ def test_blocker_worth_assigning_checks_power_vs_attacker_toughness():
 
     strong_blocker = _make_creature(state, 1, "Strong Blocker", power=2, toughness=1)
     assert _blocker_worth_assigning(state, strong_blocker) is True, "2 power meets the 2-toughness attacker's kill threshold"
+
+
+# --- three public scalars the policy could not see (2026-08-13) ---
+
+
+@pytest.mark.slow
+def test_scalar_features_length_matches_the_declared_dim():
+    """The one invariant that silently corrupts everything if broken: the
+    vector _scalar_features builds must be exactly SCALAR_FEATURE_DIM long, or
+    the trunk's first Linear is fed misaligned values with no error."""
+    from rl.deck import SCALAR_FEATURE_DIM
+    decklist = game.parse_decklist_file("../data/mono_red_madness.txt")
+    state = game.new_multiplayer_game_state([decklist, decklist], 0, random.Random(0))
+    for seat in (0, 1):
+        vec = _scalar_features(state, seat, horizon=20)
+        assert len(vec) == SCALAR_FEATURE_DIM, f"seat {seat}: {len(vec)} != {SCALAR_FEATURE_DIM}"
+        assert all(0.0 <= v <= 1.0 for v in vec), "every scalar is cap-then-normalized into [0, 1]"
+
+
+@pytest.mark.slow
+def test_on_the_play_is_seat_specific_and_actually_reaches_the_policy():
+    """It was a plain oversight: MulliganNet has always received on_the_play
+    while the main policy never did. Exactly one seat is on the play."""
+    from rl.deck import SCALAR_FEATURE_DIM
+    decklist = game.parse_decklist_file("../data/mono_red_madness.txt")
+    state = game.new_multiplayer_game_state([decklist, decklist], 0, random.Random(0))
+    idx = SCALAR_FEATURE_DIM - 3  # on_the_play, then opp mulligans, then opp cleanup discards
+    seat0 = _scalar_features(state, 0, horizon=20)[idx]
+    seat1 = _scalar_features(state, 1, horizon=20)[idx]
+    assert {seat0, seat1} == {0.0, 1.0}, f"exactly one seat is on the play, got {seat0}/{seat1}"
+    assert seat0 == 1.0, "starting_player_idx=0 means seat 0 is on the play"
+
+
+@pytest.mark.slow
+def test_opponent_mulligans_and_cleanup_discards_are_read_from_the_OTHER_seat():
+    """Both are public information in real Magic (you watch an opponent
+    mulligan, and cleanup discards happen in the open), which is what makes
+    them compliant observations rather than hidden-information leaks. They must
+    read the opponent's counters, not the reader's own."""
+    from rl.deck import SCALAR_FEATURE_DIM
+    decklist = game.parse_decklist_file("../data/mono_red_madness.txt")
+    state = game.new_multiplayer_game_state([decklist, decklist], 0, random.Random(0))
+    state.players[1].mulligans_taken = 3
+    state.players[1].cleanup_discard_turns = 5
+    mull_idx, discard_idx = SCALAR_FEATURE_DIM - 2, SCALAR_FEATURE_DIM - 1
+
+    seat0 = _scalar_features(state, 0, horizon=20)  # opponent is player 1
+    assert seat0[mull_idx] == pytest.approx(3 / 7)
+    assert seat0[discard_idx] == pytest.approx(5 / 7)
+
+    seat1 = _scalar_features(state, 1, horizon=20)  # opponent is player 0, untouched
+    assert seat1[mull_idx] == 0.0 and seat1[discard_idx] == 0.0

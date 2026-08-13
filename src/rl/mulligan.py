@@ -56,7 +56,9 @@ class MulliganNet(nn.Module):
 
     def __init__(self, shared_stack, hidden=64):
         super().__init__()
-        self.shared_stack = shared_stack  # reference; its embeddings are frozen upstream
+        # Plain reference, not a registered child -- see rl.deck.DeckNetwork's
+        # own comment for why nn.Module.__setattr__ is avoided here.
+        object.__setattr__(self, "shared_stack", shared_stack)
         d = shared_stack.d_model
         self.trunk = nn.Sequential(
             nn.Linear(d + self.N_SCALAR, hidden), nn.Tanh(),

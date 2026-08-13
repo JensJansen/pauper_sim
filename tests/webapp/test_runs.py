@@ -7,6 +7,7 @@ subprocess (a plain `sleep`, not a training script) since "did it actually
 verify the kill" is exactly the kind of thing that's cheap to check for
 real rather than trust a mock to get right.
 """
+import json
 import subprocess
 import sys
 
@@ -233,3 +234,61 @@ def test_stop_on_an_already_finished_process_reports_true_without_mislabeling_it
     assert isolated_manager.stop(run_id) is True
     assert isolated_manager._registry[run_id]["status"] == "finished"
     assert isolated_manager._registry[run_id]["exit_code"] == 0
+
+
+# --- learning-health gate (2026-08-13) ---
+
+
+def _vs_history_records(deck, win_counts, games=20):
+    return [{"kind": "vs_history", "session": s, "iteration": 1, "deck": deck,
+             "label": "archive_oldest", "games": games, "live_wins": w,
+             "snapshot_wins": games - w, "no_winner": 0}
+            for s, w in enumerate(win_counts)]
+
+
+def _write_metrics(league_dir, records):
+    league_dir.mkdir(parents=True, exist_ok=True)
+    with open(league_dir / "metrics.jsonl", "w") as f:
+        for r in records:
+            f.write(json.dumps(r) + "\n")
+
+
+def test_learning_health_flags_a_deck_that_fell_below_its_own_peak(tmp_path):
+    """The real failure: a crash-free run continuing for weeks while decks got
+    worse. _batch_healthy sees a clean log and says fine; this must not."""
+    rise_then_fall = [6, 8, 10, 12, 14, 16, 18, 16, 14, 12, 10, 8, 6, 4]
+    _write_metrics(tmp_path, _vs_history_records("elves", rise_then_fall))
+    verdict, lines = runs_module.learning_health(tmp_path)
+    assert verdict == "regressed", lines
+    assert any("elves" in l and "REGRESSING" in l for l in lines)
+
+
+def test_learning_health_worst_deck_decides(tmp_path):
+    """mono_red_rally gained 241 Elo over the same run in which elves and
+    rakdos fell below their own past selves. One healthy deck must not mask
+    the others."""
+    _write_metrics(tmp_path,
+                   _vs_history_records("mono_red_rally", [4, 5, 6, 8, 10, 12, 14, 15, 16, 17, 18, 18])
+                   + _vs_history_records("elves", [6, 8, 10, 12, 14, 16, 18, 16, 14, 12, 10, 8, 6, 4]))
+    verdict, lines = runs_module.learning_health(tmp_path)
+    assert verdict == "regressed", lines
+    assert any("mono_red_rally" in l and "ok" in l for l in lines), lines
+
+
+def test_learning_health_is_unknown_without_enough_history(tmp_path):
+    _write_metrics(tmp_path, _vs_history_records("elves", [10, 11, 9]))
+    assert runs_module.learning_health(tmp_path)[0] == "unknown"
+
+
+def test_learning_health_ignores_active_oldest(tmp_path):
+    """active_oldest moves as the snapshot pool rolls, so a change in it is
+    ambiguous between the policy improving and the reference getting stronger.
+    Only archive_oldest (pinned to snapshot_0 forever) is a fixed yardstick."""
+    moving = [dict(r, label="active_oldest") for r in
+              _vs_history_records("elves", [6, 8, 10, 12, 14, 16, 18, 16, 14, 12, 10, 8, 6, 4])]
+    _write_metrics(tmp_path, moving)
+    assert runs_module.learning_health(tmp_path)[0] == "unknown"
+
+
+def test_learning_health_no_metrics_file_is_unknown_not_a_crash(tmp_path):
+    assert runs_module.learning_health(tmp_path) == ("unknown", [])

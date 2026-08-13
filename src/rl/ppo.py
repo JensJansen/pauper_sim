@@ -56,16 +56,17 @@ def _precompute_frozen_shared(net, token_lists, device, chunk_size=256):
 
 
 def ppo_update(net, optimizers, buf, device, n_epochs=4, batch_size=64, gamma=0.99, gae_lambda=0.95,
-                clip_range=0.2, ent_coef=0.01, vf_coef=0.5, max_grad_norm=0.5, target_kl=0.03):
+                clip_range=0.2, ent_coef=0.01, vf_coef=0.5, max_grad_norm=0.5, target_kl=0.03,
+                adv_norm_floor=0.0):
     # ent_coef default 0.01: with no entropy bonus the main policy collapses
     # onto a narrow low-branching behavior (pass, shrink its own board) -- the
     # action-space-minimization pathology; see rl.rewards.deploy_reward_v2's own
-    # comment. Still the relevant risk under deploy_reward_v5 (what league
-    # training uses as of 2026-08-11), which has no efficiency scaling either:
+    # comment. Still the relevant risk under deploy_reward_v6 (what league
+    # training uses as of 2026-08-12), which has no efficiency scaling either:
     # its flat_win_loss_reward base is a flat +1/-1, so nothing in the terminal
     # reward rewards taking FEWER actions, and this bonus stays the thing
-    # bounding pointless ones. v5 was itself a response to a related but
-    # distinct failure -- passivity that the LOSS band made cheaper than
+    # bounding pointless ones. v5/v6 were themselves a response to a related
+    # but distinct failure -- passivity that the LOSS band made cheaper than
     # trying, which an entropy bonus alone could not have fixed. The
     # mulligan model has its own ENTROPY_COEF; this is the DeckNetwork policy's.
     # 0.01 is this function's own fallback for callers that don't schedule it
@@ -109,17 +110,61 @@ def ppo_update(net, optimizers, buf, device, n_epochs=4, batch_size=64, gamma=0.
     ever touches this net's own params) still works unchanged.
 
     Returns (policy_loss, value_loss, entropy, approx_kl, clip_fraction,
-    epochs_run) -- the last 3 are 2026-08-06 additions (see target_kl above)
-    giving callers visibility into how hard each update is pushing the
-    policy, previously invisible (only entropy was ever logged, and a fixed
-    ent_coef gave no signal on WHY it was collapsing). epochs_run < n_epochs
-    means target_kl triggered early stopping that update."""
+    epochs_run, explained_variance, adv_std) -- approx_kl/clip_fraction/
+    epochs_run are 2026-08-06 additions (see target_kl above) giving callers
+    visibility into how hard each update is pushing the policy, previously
+    invisible (only entropy was ever logged, and a fixed ent_coef gave no
+    signal on WHY it was collapsing). epochs_run < n_epochs means target_kl
+    triggered early stopping that update. adv_std (2026-08-13) is the RAW
+    advantage spread before normalization -- the number adv_norm_floor has to
+    be set from, and previously discarded.
+
+    explained_variance (2026-08-13) is 1 - Var(ret - value) / Var(ret),
+    measured BEFORE the update. value_loss alone is uninterpretable: it is a
+    raw MSE with no scale attached, so a critic that has genuinely learned and
+    one whose targets have simply collapsed to a constant both report a small
+    number. On this project's own 60,001-game run value_loss sat at 0.01-0.03
+    and flat, which was read as a healthy critic; the competing explanation --
+    that gamma/gae_lambda discount early-game returns to ~0, making them
+    trivially predictable -- fits the same number and has the opposite
+    implication. Explained variance separates them (a constant predictor
+    scores 0 however small its MSE) and is the acceptance check for any
+    future change to the credit-assignment horizon."""
     values = np.array(buf.value, dtype=np.float32)
     rewards_ = np.array(buf.reward, dtype=np.float32)
     dones = np.array(buf.done, dtype=np.float32)
     adv = _compute_gae(rewards_, values, dones, gamma, gae_lambda)
     ret = adv + values
-    adv = (adv - adv.mean()) / (adv.std() + 1e-8)
+    ret_var = float(ret.var())
+    # 0.0 rather than 1.0 when the targets are constant: no variance to explain
+    # means the critic has demonstrated nothing, which is the honest reading.
+    explained_variance = (1.0 - float(((ret - values) ** 2).mean()) / ret_var) if ret_var > 1e-12 else 0.0
+
+    # Advantage normalization, with a FLOOR on the divisor.
+    #
+    # The unguarded form -- (adv - mean) / (std + 1e-8) -- rescales every batch
+    # to unit variance no matter how little real signal it contains. That is
+    # fine when outcomes differ, and actively harmful when they do not: in a
+    # matchup lost ~96% of the time nearly every trajectory returns -1, so the
+    # raw spread is dominated by critic error rather than by anything the
+    # policy did, and dividing by that tiny std promotes pure noise to a
+    # full-scale gradient before ~67 Adam steps run on it. Measured at 60,001
+    # games/deck, three of four decks spent 58-77% of training in exactly such
+    # matchups (RL_METHODOLOGY_PLAN.md section 1A.4), and flattening PFSP only
+    # takes the worst case to ~56% -- the floor is structural, since two of
+    # elves' four opponents are unwinnable.
+    #
+    # With a floor, a batch whose advantages are genuinely tiny STAYS tiny and
+    # produces a proportionally small update instead of a confident one.
+    #
+    # DEFAULT 0.0 = exactly the previous behavior, deliberately. The right
+    # value depends on this reward's actual advantage scale, which nothing has
+    # ever recorded -- so adv_std is now returned and logged, and the floor gets
+    # set from that distribution rather than from a guess. Picking it blind is
+    # the mistake that made PFSP_POWER=2.0 the leading cause of a 60,001-game
+    # regression; not repeating it here.
+    adv_std = float(adv.std())
+    adv = (adv - adv.mean()) / (max(adv_std, adv_norm_floor) + 1e-8)
 
     # A FROZEN shared stack (league) produces the SAME per-transition outputs
     # every epoch, so precompute them ONCE and reuse -- skipping n_epochs-1
@@ -141,7 +186,14 @@ def ppo_update(net, optimizers, buf, device, n_epochs=4, batch_size=64, gamma=0.
     # net's parameter set is fixed for this whole call -- listing it once
     # avoids re-walking the module tree (net.parameters() -> named_modules())
     # on every one of the n_epochs * n_minibatches clip_grad_norm_ calls below.
+    # shared_stack is deliberately NOT a registered child of net (see
+    # rl.deck.DeckNetwork), so net.parameters() excludes it. That is what we
+    # want when it is frozen -- but PRETRAIN trains it, and it must stay in the
+    # clip set there or its gradients would silently go unclipped. cache_shared
+    # is False exactly when it is trainable, so it is the right gate.
     all_params = list(net.parameters())
+    if not cache_shared:
+        all_params += list(net.shared_stack.parameters())
     for _epoch in range(n_epochs):
         epochs_run += 1
         epoch_kl_sum, epoch_kl_n = 0.0, 0
@@ -234,4 +286,5 @@ def ppo_update(net, optimizers, buf, device, n_epochs=4, batch_size=64, gamma=0.
         # actually executed a full pass, never a partial one.
         if target_kl is not None and epoch_kl_n and (epoch_kl_sum / epoch_kl_n) > target_kl:
             break
-    return last_policy_loss, last_value_loss, last_entropy, last_approx_kl, last_clip_fraction, epochs_run
+    return (last_policy_loss, last_value_loss, last_entropy, last_approx_kl, last_clip_fraction,
+            epochs_run, explained_variance, adv_std)
