@@ -1,0 +1,39 @@
+{
+  "_experiment": "LR DOSE-RESPONSE, middle point (2026-08-15, RL_METHODOLOGY_PLAN.md section 1A.12). Exactly ONE variable differs from run_default.json: ppo.lr = 2e-4, sitting between the baseline's 3e-4 and run_lr_ab.json's 1.5e-4. Everything else copied verbatim. Third arm of the same protocol, same 10,000-game budget, so all four runs compare to each other and not only to the baseline.",
+
+  "_why": "run_lr_ab.json (1.5e-4) was the first intervention that clearly worked -- truncation eliminated (0% vs 99%), 2.6x the aggregate elo gain, 45% against a baseline with TWICE the budget vs the ent_coef arm's 27.5% (z=2.30). But it is not adoptable as-is: the per-deck response splits by meta position. The two decks LOWER in the power ordering (mono_red > rakdos > dmir > elves) gain enormously at low lr, and the top two get worse.",
+
+  "_dose_response": "Per-deck elo gain, snapshot 25 -> ~10k, at the two lr values measured so far. This run fills in the middle so each deck's response curve has three points and can be checked for monotonicity. lr 3e-4 -> 1.5e-4: dmir -80 -> +184, elves 0 -> +168, rakdos +76 -> -71, mono_red +108 -> -10. If the responses are monotone, per-deck lr is indicated and a single global value cannot serve all four; if they are not, 2e-4 may sit above the whole curve.",
+
+  "_why_not_a_decay": "A decay from 3e-4 to 1.5e-4 was the obvious alternative and is rejected on this run's own evidence: the baseline gained +76 on rakdos in the LATE window (4,800 -> 9,600 games) at 3e-4, so a decay would hand rakdos a low lr in exactly the phase where a high one is serving it well. The observed split is by DECK, not by training phase, and a time-based schedule cannot express that. Revisit only if the dose-response comes back non-monotone in time-correlated ways.",
+
+  "_success_criterion": "PRE-REGISTERED, judge against these and do not move them afterward. (1) ADOPTABILITY, the one that decides the outcome: is there NO deck whose 25 -> live elo gain is materially negative (worse than about -30)? A value where all four decks hold flat or gain is adoptable as the new default even if its aggregate trails 1.5e-4; a value that merely moves the regression to a different deck is not, which is the trap Wave 2b fell into. (2) AGGREGATE: total elo gain across the four decks, against baseline +104, ent_coef +119, lr1.5e-4 +271. (3) COMMON-REFERENCE STRENGTH: vs_gauntlet against the identical baseline live @20,016, against lr1.5e-4's 36/80 = 45.0% and ent_coef's 22/80 = 27.5%. This is the check that must accompany any within-league elo claim -- elves gained +168 within its own series at 1.5e-4 while sitting at only 35% here, i.e. mostly catching up from a weaker snapshot 25 rather than surpassing.",
+
+  "_stop_at": "10,000 games/deck, matching both other A/B arms exactly.",
+
+  "_gauntlet_note": "Points at the baseline, same as the other arms. Budget-confounded in the baseline's favour (10k vs 20,016) and reads low by construction -- but it is directly comparable ACROSS arms, since all three are measured against the identical reference. That cross-arm comparison, not the absolute number, is what criterion (3) uses.",
+
+  "snapshot_every_games": 200,
+  "n_workers": 6,
+  "games_per_iteration": 24,
+  "pfsp_power": 0.5,
+  "checkpoint_opponent_rate": 0.15,
+  "pfsp": true,
+
+  "ppo": {
+    "lr": 0.0002
+  },
+
+  "league_name": "4_deck_subleague_lr2e4_ab",
+  "roster": [
+    "rakdos_madness",
+    "dmir_terror",
+    "elves",
+    "mono_red_rally"
+  ],
+  "total_games": 10000,
+  "gauntlet_league_name": "4_deck_subleague_test",
+  "heuristic_decks": [
+    "mono_red_rally"
+  ]
+}

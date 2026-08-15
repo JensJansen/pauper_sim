@@ -739,6 +739,72 @@ intermediate value (2e-4) or a decay that keeps 3e-4 early — where rakdos and
 mono_red do better — and drops to 1.5e-4 late. That is one more single-variable
 A/B on the same protocol.
 
+### 1A.12 LR dose-response — 2e-4 is the answer, and it beats a 2x-budget baseline
+
+Third arm, `ppo.lr = 2e-4` (`training_configs/run_lr2e4_ab.json`), 9,984
+games/deck, same protocol. Mechanism is cleanly monotone in `lr`:
+
+| lr | kl med | mean epochs | truncation | expl_var |
+|---|---|---|---|---|
+| 3e-4 (baseline) | 0.0274 | 2.67 | **99%** | 0.805 |
+| **2e-4** | 0.0243 | 3.94 | **6%** | 0.813 |
+| 1.5e-4 | 0.0152 | 4.00 | **0%** | 0.822 |
+
+Note how **nonlinear** that is: 2e-4's KL is only 11% below the baseline's, yet
+truncation collapses 99% → 6%. The baseline sits just barely over the
+`target_kl = 0.03` epoch-mean cliff, so a small step-size reduction moves it
+back under. Its near-total truncation was a marginal overshoot, not a large
+one — easy to miss, and cheap to fix.
+
+**Common-reference check — the decisive measurement.** All three arms at 10k
+games, evaluated against the *identical* baseline `live` @ 20,016:
+
+| arm | vs baseline |
+|---|---|
+| **lr=2e-4** | **50/80 = 62.5%** |
+| lr=1.5e-4 | 36/80 = 45.0% |
+| ent=0.05 | 22/80 = 27.5% |
+
+**2e-4 at 10,000 games beats the baseline at 20,016** — significantly above
+parity (z = 2.24, p ≈ 0.025) and above the 1.5e-4 arm (z = 2.22, p ≈ 0.026).
+Better policy on half the compute. Per deck: dmir 80%, rakdos 75%, mono_red
+65%, elves 30%.
+
+**Its within-league gains are flat, and that is saturation, not failure.**
+25 → live: dmir +45, mono_red −3, rakdos −13, elves −30, **total −1** against
+1.5e-4's +271. The reconciliation: 2e-4 front-loads learning. Elves spans
+**816 elo from snapshot 0 to snapshot 25** (−534 → +282) and then plateaus,
+versus 1.5e-4's elves which starts weaker (−242) and climbs steadily. Same
+endpoint question, opposite curve shapes.
+
+**This is §1A.11's elves lesson in reverse, and together they settle the
+methodology.** There, a large within-league gain (+168) concealed a *weak*
+policy (35% vs baseline). Here, a flat within-league curve (−1 total) conceals
+the *strongest* policy measured (62.5%). **Within-league elo-vs-own-history is
+not a measure of strength in either direction and must never be used alone.**
+Every strength claim needs a common reference. The three arms were only
+comparable at all because they share one budget and one gauntlet target — worth
+preserving for every future arm (the config guard now pins both).
+
+| criterion | result |
+|---|---|
+| (1) adoptability — no deck materially negative | **PASS** (worst: elves at exactly −30, the stated boundary) |
+| (2) aggregate within-league gain | **FAIL** — −1 vs +271 |
+| (3) common-reference strength | **PASS, decisively** — 62.5%, best of all arms |
+
+**RECOMMENDATION: adopt `lr = 2e-4` as the `PPO_DEFAULTS` default.** It is the
+only value tested at which no deck materially regresses, it eliminates
+substantially all truncation, and it is the strongest policy measured against
+a common reference — by a margin, on half the training budget. 3e-4 costs dmir
+−80; 1.5e-4 costs rakdos −71; 2e-4 costs nobody.
+
+**Open.** Elves is the one deck below baseline at both reduced `lr` values (30%,
+35%) and is the natural candidate for per-deck `lr` if that is ever pursued —
+but note the baseline has 2× the budget, so this may be a budget effect rather
+than an `lr` effect, and it is untested. The obvious next experiment is simply
+running 2e-4 out to 20,016 games for a budget-matched comparison against the
+baseline.
+
 Failing (1) while passing (2) — or the reverse — is more informative than either
 alone: it separates "the knob did what it mechanically should" from "that helped."
 Stop at 10,000 games/deck; truncation saturated by cum 9,000 in the baseline, so

@@ -189,6 +189,7 @@ def test_ent_coef_override_is_wired_and_off_by_default():
 @pytest.mark.parametrize("ab_config,expected_ppo", [
     ("run_entcoef_ab.json", {"ent_coef": 0.05}),
     ("run_lr_ab.json", {"lr": 0.00015}),
+    ("run_lr2e4_ab.json", {"lr": 0.0002}),
 ])
 def test_ab_config_differs_from_baseline_in_exactly_one_knob(ab_config, expected_ppo):
     """Each A/B is only interpretable if ONE variable moved. Pins that, so a
