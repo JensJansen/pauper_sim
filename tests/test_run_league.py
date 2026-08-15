@@ -186,21 +186,32 @@ def test_ent_coef_override_is_wired_and_off_by_default():
     assert resolve(pinned, 20_016) == 0.05, "a pinned constant must not decay"
 
 
-def test_entcoef_ab_config_differs_from_baseline_in_exactly_one_knob():
-    """The A/B is only interpretable if ONE variable moved. Pins that, so a
-    later well-meaning edit to either config is caught here instead of silently
-    confounding the experiment."""
+@pytest.mark.parametrize("ab_config,expected_ppo", [
+    ("run_entcoef_ab.json", {"ent_coef": 0.05}),
+    ("run_lr_ab.json", {"lr": 0.00015}),
+])
+def test_ab_config_differs_from_baseline_in_exactly_one_knob(ab_config, expected_ppo):
+    """Each A/B is only interpretable if ONE variable moved. Pins that, so a
+    later well-meaning edit to any of these configs is caught here instead of
+    silently confounding the experiment.
+
+    Parametrized rather than duplicated: every future single-variable A/B
+    against run_default.json should be added to the list above, and gets the
+    same guard for free."""
     from repo_paths import REPO_ROOT
     cfgs = REPO_ROOT / "training_configs"
     base = json.loads((cfgs / "run_default.json").read_text())
-    ab = json.loads((cfgs / "run_entcoef_ab.json").read_text())
+    ab = json.loads((cfgs / ab_config).read_text())
 
     shared = ["snapshot_every_games", "n_workers", "games_per_iteration",
               "pfsp_power", "checkpoint_opponent_rate", "pfsp", "roster", "heuristic_decks"]
     for k in shared:
         assert base[k] == ab[k], f"{k} must match the baseline; got {base[k]!r} vs {ab[k]!r}"
 
-    assert ab["ppo"] == {"ent_coef": 0.05}, "exactly one PPO knob may move"
+    assert ab["ppo"] == expected_ppo, "exactly one PPO knob may move"
     assert "ppo" not in base, "baseline must use PPO_DEFAULTS untouched"
     assert ab["league_name"] != base["league_name"], "must not train into the baseline's checkpoints"
     assert ab["gauntlet_league_name"] == base["league_name"], "gauntlet should point at the baseline"
+    # Every A/B must stop at the same budget, or the runs are not comparable
+    # to each other -- only to the baseline. 10,000 is the Wave 2b window.
+    assert ab["total_games"] == 10_000, "all A/Bs share one budget so they compare to each other too"

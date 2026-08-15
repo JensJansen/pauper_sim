@@ -1,0 +1,37 @@
+{
+  "_experiment": "LR A/B (2026-08-15, RL_METHODOLOGY_PLAN.md section 1A.11). Exactly ONE variable differs from run_default.json: ppo.lr is halved, 3e-4 -> 1.5e-4. Everything else is copied verbatim. No code change was needed -- lr has been configurable since Wave 1.6 and has never been swept. Do not 'improve' anything else in this file; a second changed knob destroys the attribution.",
+
+  "_why": "Last standing hypothesis for the KL inflation. Over the baseline's 20,016 games, median approx_kl rose 2.7x (0.0099 -> 0.0274) while Adam steps per iteration FELL 4x (874 -> 226, because the buffer shrinks as games end faster) and adv_std stayed flat at 0.19-0.22. Per-step policy movement therefore grew ~10x with every measurable input holding flat or moving the wrong way. Adam normalizes by gradient magnitude, so per-step parameter movement is ~lr regardless of gradient scale -- which makes lr the direct lever on KL per step even though the root cause is the policy sharpening. Three other candidates are already falsified by measurement: entropy (the Wave 2b intervention held it +25% with KL unchanged, section 1A.9), Adam-step count, and advantage scale.",
+
+  "_reframing": "IMPORTANT, and it is why the criteria below are outcome-first. Sections 1A.8-1A.10 treated epochs_run < 4 as a pathology. It may simply be PPO working as designed -- KL early stopping is standard practice, 4 epochs is a BUDGET not a target, and stopping at the trust region is the point of having one. The correlation those sections were built on (learning saturates ~5,000 games; truncation begins ~5,000 games) has an obvious common cause: a policy nearing its optimum both improves more slowly AND starts hitting the trust region. This A/B discriminates. Lower lr -> less truncation, so: outcomes IMPROVE means truncation was really costing learning; outcomes WORSEN means truncation was benign and halving lr just slowed the policy down. A mechanism-only criterion could not tell those apart, which is the mistake Wave 2b made.",
+
+  "_success_criterion": "PRE-REGISTERED, judge against these and do not move them afterward. (1) OUTCOME, the one that matters: elo gain snapshot 25 (~4,800) -> live (~10,000) must beat the baseline's gain over the SAME window at IDENTICAL 3-point vintage structure (0, 25, endpoint), which is +76 rakdos / 0 elves / -80 dmir / +108 mono_red. Note these are the RE-FIT numbers, not section 1A.8's original +82/+38/-70/+98 -- re-fitting at matched structure moved elves by 38 elo, and Bradley-Terry elo is only defined relative to the players in the fit. (2) MECHANISM: median approx_kl below the baseline's 0.0274 and mean epochs_run above its 2.67, both at cum ~10,000. Expected to pass almost trivially -- halving the step size should halve the KL -- so passing (2) while failing (1) is the informative outcome, and would mean truncation was benign. (3) ZERO-SUM PROBE: total elo gain summed across all four decks. Baseline +104, Wave 2b A/B +119 -- statistically identical despite a completely different per-deck distribution. If this run also lands near +104-120, three independent configurations conserving the total is real evidence that per-deck improvement in a closed 4-deck meta is zero-sum, and that per-deck elo-vs-own-history is the wrong objective to be optimizing.",
+
+  "_stop_at": "10,000 games/deck, matching the Wave 2b A/B exactly so all three runs are comparable over the same window.",
+
+  "_gauntlet_note": "Points at the baseline, same as run_entcoef_ab.json. Budget-confounded in the baseline's favour (10k vs 20,016 games) and will read low throughout -- a drift detector and sanity check, NOT the A/B readout. The readout is criterion (1), measured within this population's own snapshot series. Both populations train from the same unchanged checkpoints/shared_stack_frozen.pt, satisfying _run_eval_vs_gauntlet's precondition.",
+
+  "snapshot_every_games": 200,
+  "n_workers": 6,
+  "games_per_iteration": 24,
+  "pfsp_power": 0.5,
+  "checkpoint_opponent_rate": 0.15,
+  "pfsp": true,
+
+  "ppo": {
+    "lr": 0.00015
+  },
+
+  "league_name": "4_deck_subleague_lr_ab",
+  "roster": [
+    "rakdos_madness",
+    "dmir_terror",
+    "elves",
+    "mono_red_rally"
+  ],
+  "total_games": 10000,
+  "gauntlet_league_name": "4_deck_subleague_test",
+  "heuristic_decks": [
+    "mono_red_rally"
+  ]
+}

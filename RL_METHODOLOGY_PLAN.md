@@ -661,6 +661,84 @@ objective to optimize and the plan needs a population-level one. Untested;
 the cheapest probe is whether total elo gain across the four decks is
 conserved across further interventions, as it was here (+119 vs +104).
 
+### 1A.11 LR A/B — the first intervention that worked, and the zero-sum idea dies
+
+`ppo.lr` 3e-4 → **1.5e-4**, single variable, 9,984 games/deck
+(`training_configs/run_lr_ab.json`). No code change: `lr` has been configurable
+since Wave 1.6 and had never been swept.
+
+**Mechanism (criterion 2): PASS, decisively.** Truncation eliminated outright.
+
+| run | cum | entropy | kl med | mean epochs | stop% | expl_var |
+|---|---|---|---|---|---|---|
+| **lr=1.5e-4** | 9,960 | 0.554 | **0.0152** | **4.00** | **0%** | 0.822 |
+| baseline | 9,024 | 0.543 | 0.0274 | 2.67 | **99%** | 0.805 |
+
+Zero early stopping across the whole run, against the baseline's 99%, with the
+critic slightly *better*. Note entropy is essentially identical (0.554 vs
+0.543) — so this run lowered KL without raising entropy, while Wave 2b raised
+entropy without lowering KL. The two are independent, confirming §1A.9's
+falsification from both directions.
+
+**Outcome (criterion 1): mixed per-deck, strongly positive in aggregate.**
+Elo gain over the matched window (snapshot 25 → ~10k), identical 3-point
+structure, 100 games/pair:
+
+| deck | lr=1.5e-4 | baseline | ent=0.05 |
+|---|---|---|---|
+| dmir_terror | **+184** | −80 | +72 |
+| elves | **+168** | 0 | +30 |
+| mono_red_rally | −10 | +108 | +54 |
+| rakdos_madness | −71 | +76 | −37 |
+| **total** | **+271** | +104 | +119 |
+
+lr's dmir beats its own snapshot 25 at **77%** and elves at **74%** (100 games,
+~5.4σ and ~4.8σ). Nothing in either earlier run exceeded 2.6σ.
+
+**Zero-sum hypothesis (criterion 3): FALSIFIED.** Two configurations conserved
+the total (+104, +119); this one produced **2.6×** as much. Aggregate elo gain
+is *not* conserved, so §1A.10's redistribution reading does not generalize — it
+described those two runs, not a property of the meta.
+
+**Cross-league check, and it changes the per-deck story.** Both A/Bs evaluated
+against the *identical* reference (baseline `live` @ 20,016):
+
+| run | vs baseline live |
+|---|---|
+| **lr=1.5e-4** @10k | **36/80 = 45.0%** |
+| ent=0.05 @10k | 22/80 = 27.5% |
+
+Two-proportion **z = 2.30, p ≈ 0.02**. lr is genuinely stronger in absolute
+terms, and reaches 45% against a baseline with **twice** the training budget —
+a large sample-efficiency gain.
+
+| deck | within-league 25→live | vs baseline, same deck |
+|---|---|---|
+| dmir_terror | +184 | 60% |
+| mono_red_rally | −10 | 65% |
+| **elves** | **+168** | **35%** |
+| **rakdos_madness** | **−71** | **20%** |
+
+**Elves is a warning about within-league elo.** Its +168 is largely *catching up
+from a weaker snapshot 25* — slower early learning under lower `lr` — not
+surpassing; it remains 35% against the baseline's elves. A within-league gain
+measures improvement relative to a run's own past, which is not the same as
+strength, and reading the +168 alone would have overstated it badly. **Always
+pair within-league elo with a common-reference check.**
+
+**rakdos is the consistent loser** under lower `lr` on both measures (−71, 20%).
+The two decks that benefit (dmir, elves) are the two *lower* in the meta power
+ordering (mono_red > rakdos > dmir > elves); the two that suffer are the top
+two. Untested, and n=4, but it suggests the right `lr` may be deck-dependent
+rather than global.
+
+**Recommendation: do not blanket-adopt yet.** The aggregate case is strong
+(z=2.30 against a common reference, 2.6× the elo gain, truncation gone, critic
+unharmed), but rakdos regresses materially. The cheap next step is an
+intermediate value (2e-4) or a decay that keeps 3e-4 early — where rakdos and
+mono_red do better — and drops to 1.5e-4 late. That is one more single-variable
+A/B on the same protocol.
+
 Failing (1) while passing (2) — or the reverse — is more informative than either
 alone: it separates "the knob did what it mechanically should" from "that helped."
 Stop at 10,000 games/deck; truncation saturated by cum 9,000 in the baseline, so
