@@ -402,10 +402,17 @@ removal site for why.
 never actually executed** — see the warning under **Instrumentation**.
 
 Optimizer/PPO knobs (`lr`, `mulligan_lr`, `gamma`, `gae_lambda`, `target_kl`,
-`n_epochs`) come from `rl.league_runner.PPO_DEFAULTS` and are overridable per
-league via a run-config `"ppo"` object; an unknown key is a hard error rather
-than a silent no-op. Eval budget (`eval_games`, `eval_every_sessions`) is
-config-driven the same way.
+`n_epochs`, `adv_norm_floor`, `ent_coef`) come from
+`rl.league_runner.PPO_DEFAULTS` and are overridable per league via a run-config
+`"ppo"` object; an unknown key is a hard error rather than a silent no-op. Eval
+budget (`eval_games`, `eval_every_sessions`) is config-driven the same way.
+
+`ent_coef` defaults to `None`, meaning "use `rl.train.ent_coef_schedule`'s
+0.02 → 0.005 anneal"; a float pins it constant for the whole run instead.
+Setting it to 0.05 was run as a controlled single-variable A/B
+(`training_configs/run_entcoef_ab.json`) and **was not adopted** — it held
+policy entropy 25% higher but left `approx_kl` unchanged and merely
+redistributed elo between decks. See RL_METHODOLOGY_PLAN.md §1A.8–§1A.10.
 
 Training runs on **CPU** by design — the model is small (~200–250K params) and
 a batch-size sweep found no GPU crossover at this size.
@@ -414,14 +421,24 @@ a batch-size sweep found no GPU crossover at this size.
 
 Every league session (`_run_session`, both league and `--matchup` modes)
 appends to `checkpoints/<league>/metrics.jsonl`, one JSON line per record:
-> ⚠️ **The minibatch ramp and `ent_coef` anneal have never run.** Across all
+> ⚠️ **BUG 1 (fixed 2026-08-13): both schedules used to be inert.** Across all
 > 40,104 PPO iterations of the 60,001-games/deck run, `batch_size` was 32 on
-> every iteration and `ent_coef` stayed in [0.0191, 0.0200]. `--n-iterations`
-> leaves `auto_sizing` False → `_save_progress` is never called → `progress.json`
-> never exists → the horizon both schedules ramp against reads 0 every session.
-> See `tests/test_run_league.py` and RL_METHODOLOGY_PLAN.md BUG 1. Any
-> hyperparameter conclusion drawn since 2026-08-06 is against a configuration
-> that is not the one described here.
+> every iteration and `ent_coef` stayed in [0.0191, 0.0200], because
+> `--n-iterations` left `auto_sizing` False → `_save_progress` was never called
+> → `progress.json` never existed → the horizon both schedules ramp against read
+> 0 every session. `advance_progress` now advances it unconditionally
+> (`tests/test_run_league.py` pins this). **Any hyperparameter conclusion drawn
+> between 2026-08-06 and 2026-08-13 is against a configuration that is not the
+> one described here.**
+>
+> Current state, measured over the 20,016-games/deck run that followed:
+> the **`ent_coef` anneal now genuinely executes** (0.0200 → 0.0140), while the
+> **minibatch ramp stays deliberately pinned off** (`batch_size_start ==
+> batch_size_cap == 32`) so that fixing the counter did not switch a 24× cut in
+> Adam steps on as a side effect — raise `batch_size_cap` to run it as its own
+> experiment. Note the anneal running correctly is not the same as it being
+> *right*: it was measured moving the wrong way relative to policy entropy, and
+> the fix attempted for it did not pan out (RL_METHODOLOGY_PLAN.md §1A.8–§1A.10).
 
 - `kind: "session_start"` — one header per session recording the reward
   function, roster, cumulative games/deck, and every resolved PPO/eval
@@ -954,9 +971,9 @@ snapshots) has a real but looser rationale and was left alone.
 
 ### Game replay viewer (`/replay`)
 
-Step through a logged game's board state one event at a time. MVP scope per
-`todo/game_visualization.md`: retroactive viewing of an already-completed
-`--log` file only (no live game viewing).
+Step through a logged game's board state one event at a time. MVP scope:
+retroactive viewing of an already-completed `--log` file only (no live game
+viewing).
 
 - **The webapp parses the raw event-log JSON directly** — no intermediate
   replay format involved. `replay_engine.py`'s `GameReducer` folds the event
@@ -1077,8 +1094,7 @@ Step through a logged game's board state one event at a time. MVP scope per
   having happened — an empty phase, dropped rather than shown as a bare
   "— Upkeep —" the player never actually did anything in.
 - Deferred, not in MVP scope: live re-inference against an arbitrary
-  checkpoint (the decision-point overlay above has shipped) — tracked in
-  `todo/game_visualization.md`.
+  checkpoint (the decision-point overlay above has shipped).
 
 ---
 

@@ -26,7 +26,7 @@ import json
 
 import pytest
 
-from rl.league_runner import _load_progress, _next_batch_games, _save_progress, advance_progress
+from rl.league_runner import _load_progress, _next_batch_games, _save_progress, advance_progress, should_snapshot
 from rl.train import batch_size_for_iteration, ent_coef_schedule
 
 
@@ -121,3 +121,86 @@ def test_the_minibatch_ramp_is_pinned_off_by_default():
     pinned = PPO_DEFAULTS["batch_size_cap"]
     assert batch_size_for_iteration(0, start=32, cap=pinned) == 32
     assert batch_size_for_iteration(50_000, start=32, cap=pinned) == 32, "the ramp must not fire"
+
+
+def test_snapshot_cadence_survives_short_sessions():
+    """BUG 1's sibling, found 2026-08-13 on the live restart: the snapshot gate
+    read `(iteration + 1) % snapshot_every == 0` off the SESSION-LOCAL
+    iteration index. The escalation ladder opens with sessions of 1, 2 and 4
+    iterations against snapshot_every=8, so the counter reset three times and
+    no session ever reached it -- the league passed 168 games/deck with an
+    empty opponent pool, which also makes checkpoint_opponent_rate a silent
+    no-op (nothing to sample). Replays that exact ladder."""
+    gpi, snapshot_every = 24, 8  # run_default.json: 200 // 24 -> every 192 games/deck
+    cumulative, snapshots = 0, 0
+    for n_iterations in (1, 2, 4, 8, 16, 32):
+        for iteration in range(n_iterations):
+            if should_snapshot(cumulative + iteration * gpi, gpi, snapshot_every):
+                snapshots += 1
+        cumulative += n_iterations * gpi
+    assert cumulative == 1512
+    assert snapshots == cumulative // (snapshot_every * gpi) == 7, (
+        f"expected one snapshot per 192 games/deck, got {snapshots}"
+    )
+
+
+def test_snapshot_fires_once_per_interval_never_twice():
+    """The gate must be edge-triggered on the crossing, not `games % N == 0`:
+    with a games_per_iteration that does not divide the interval, a modulo
+    test silently skips intervals it steps over."""
+    gpi, snapshot_every = 5, 4  # every 20 games, and 20 % 5 == 0 is NOT guaranteed in general
+    fired = [g for g in range(0, 200, gpi) if should_snapshot(g, gpi, snapshot_every)]
+    assert fired == [15, 35, 55, 75, 95, 115, 135, 155, 175, 195]
+    # A gpi that strides OVER the boundary must still fire exactly once per interval.
+    gpi = 7
+    fired = [g for g in range(0, 210, gpi) if should_snapshot(g, gpi, 3)]  # every 21 games
+    assert len(fired) == 210 // 21 == 10, fired
+
+
+def test_ent_coef_override_is_wired_and_off_by_default():
+    """Wave 2b's knob. PPO_DEFAULTS["ent_coef"]=None must reproduce the anneal
+    exactly (this is the baseline 20,016-game run's behavior and changing it
+    silently would invalidate every comparison against that run), while a float
+    pins a constant and bypasses the schedule.
+
+    Worth a test rather than trusting the plumbing: a config key that is
+    accepted but never read would leave the A/B looking like it ran while
+    actually re-running the baseline. The `unknown` assert in _run_session
+    catches a MISSPELLED key; nothing else catches a correctly-spelled but
+    unconsumed one."""
+    from rl.league_runner import PPO_DEFAULTS
+    from rl.train import ent_coef_schedule
+    assert PPO_DEFAULTS["ent_coef"] is None, "the anneal must stay the default"
+
+    # The exact expression _run_session evaluates, both branches.
+    def resolve(hp, cumulative):
+        return hp["ent_coef"] if hp["ent_coef"] is not None else ent_coef_schedule(cumulative)
+
+    anneal = {**PPO_DEFAULTS}
+    assert resolve(anneal, 0) == ent_coef_schedule(0) == 0.02
+    assert resolve(anneal, 20_016) == ent_coef_schedule(20_016)
+    assert resolve(anneal, 0) > resolve(anneal, 20_016), "default must still anneal DOWNWARD"
+
+    pinned = {**PPO_DEFAULTS, "ent_coef": 0.05}
+    assert resolve(pinned, 0) == 0.05
+    assert resolve(pinned, 20_016) == 0.05, "a pinned constant must not decay"
+
+
+def test_entcoef_ab_config_differs_from_baseline_in_exactly_one_knob():
+    """The A/B is only interpretable if ONE variable moved. Pins that, so a
+    later well-meaning edit to either config is caught here instead of silently
+    confounding the experiment."""
+    from repo_paths import REPO_ROOT
+    cfgs = REPO_ROOT / "training_configs"
+    base = json.loads((cfgs / "run_default.json").read_text())
+    ab = json.loads((cfgs / "run_entcoef_ab.json").read_text())
+
+    shared = ["snapshot_every_games", "n_workers", "games_per_iteration",
+              "pfsp_power", "checkpoint_opponent_rate", "pfsp", "roster", "heuristic_decks"]
+    for k in shared:
+        assert base[k] == ab[k], f"{k} must match the baseline; got {base[k]!r} vs {ab[k]!r}"
+
+    assert ab["ppo"] == {"ent_coef": 0.05}, "exactly one PPO knob may move"
+    assert "ppo" not in base, "baseline must use PPO_DEFAULTS untouched"
+    assert ab["league_name"] != base["league_name"], "must not train into the baseline's checkpoints"
+    assert ab["gauntlet_league_name"] == base["league_name"], "gauntlet should point at the baseline"

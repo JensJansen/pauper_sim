@@ -289,6 +289,384 @@ problem" on n=4 decks. What makes this more than a correlation is that the
 mechanism is independently verified in code and BUG 2 was found independently
 of these results. The falsification test is Step 0.2's own mechanism check.
 
+### 1A.5 Post-restart readings — the league splits in two (2026-08-13)
+
+Wave 0's measurements above are all from the **pre-wipe** run. These are from
+the fresh restart under Wave 2a + Phase 4, and they say something different.
+
+**Acceptance round robins** (`analysis/run_snapshot_round_robin.py`, 5 vintages
+× 10 pairs × 40 games, side-swapped, seed 12345):
+
+| | cum 1512 | | cum 6048 | |
+|---|---|---|---|---|
+| deck | span / rising | live rank | span / rising | live rank |
+| rakdos_madness | +512 / 4-4 | 1st | **+635 / 4-4** | **1st** |
+| dmir_terror | +229 / 3-4 | 2nd | **+424 / 3-4** | **1st** |
+| elves | +190 / 1-4 | 3rd | +173 / 2-4 | **4th (−45)** |
+| mono_red_rally | +103 / 2-4 | 3rd | +68 / 1-4 | **4th (−17)** |
+
+Transitive at both scales, **0 significant 3-cycles in all 80 triples** —
+cycling stays ruled out, consistent with §1A.3. But the population has split:
+two decks improve strongly with `live` on top, two do not. mono_red is the
+sharper case — **snapshot 0 is its highest-rated vintage after 6,000 games**,
+while it simultaneously beats the hand-authored heuristic 20/20 (saturated, so
+useless as a discriminator).
+
+**The `adv_std` hypothesis is falsified.** §1A.4's mechanism predicted that low
+`adv_std` drives the regression, via normalization rescaling noise. Measured:
+
+| deck | adv_std (median) | outcome |
+|---|---|---|
+| elves | 0.151 | regressing |
+| dmir_terror | 0.189 | healthy |
+| rakdos_madness | 0.224 | healthy |
+| mono_red_rally | 0.240 | regressing |
+
+The two regressing decks are at **opposite ends** of the range. `adv_norm_floor`
+was the pre-registered lever and was **not** pulled, because acting on it here
+would mean acting on a story the data contradicts. It stays at 0.0.
+
+**What the training distribution shows instead** (`opponent_stats.json` at cum
+6048). The meta has a hard power ordering — mono_red > rakdos > dmir > elves —
+and the two regressing decks sit at its extremes:
+
+| deck | largest matchups (share, win rate) | degenerate share |
+|---|---|---|
+| elves | mono_red 25.2% @ **2.6%**, rakdos 23.8% @ **7.7%** | 49% near-certain **losses** |
+| mono_red_rally | mirror 37.6% @ 51.7%, rakdos 20.7% @ **82.2%**, dmir 16.9% @ **92.9%**, elves 12.4% @ **97.0%** | 50% near-certain **wins** |
+| dmir_terror | mono_red 26.3% @ 7.7%, rakdos 25.2% @ 14.0% | 51% near-certain losses |
+| rakdos_madness | mono_red 31.8% @ **19.5%**, mirror 24.9% @ 52.2% | 32%, and its hardest matchup is genuinely competitive |
+
+Degenerate reward signal in *either* direction is the candidate cause: a batch
+that is 97% wins carries as little gradient as one that is 97% losses. It also
+explains why `adv_std` failed as a discriminator — it is a buffer-level
+aggregate that mixes degenerate and competitive matchups together, so it does
+not measure the quantity that actually varies.
+
+**This explanation is incomplete and must not be treated as established.**
+dmir_terror has the *same* 51% degenerate share as elves and is the second
+healthiest deck. Extremity may be what matters (elves' 2.6% vs dmir's 7.7%),
+but n=4 decks cannot establish that. PFSP cannot fix it either way: it
+redistributes games, it does not create competitive ones — §1A.4 already found
+that uniform sampling floors at ~50% for elves.
+
+**Pre-registered prediction, to be judged at cum ~12,048.** Owner decision was
+to continue unchanged rather than intervene at 30% of the run, which preserves
+Wave 2a's attribution. If the degenerate-signal reading is right:
+
+- rakdos and dmir keep rising, `live` stays on top, spans grow;
+- elves and mono_red stay flat or regress, mono_red's span stays **< ~150**
+  with snapshot 0 still near the top.
+
+If instead all four rise, the cum-6048 split was transient and no intervention
+was ever warranted. Recording this *before* the run so the next round robin is
+a test rather than a reinterpretation.
+
+### 1A.6 Verdict at cum 12,048 — the prediction failed, and that is the finding
+
+| deck | span 6048 → 12048 | rising | live rank 6048 → 12048 |
+|---|---|---|---|
+| rakdos_madness | +635 → +558 | 3/4 | 1st → **2nd** |
+| dmir_terror | +424 → +353 | 3/4 | 1st → **3rd** |
+| elves | +173 → **+261** | 3/4 | 4th → **1st** |
+| mono_red_rally | +68 → +90 | 2/4 | 4th → 2nd |
+
+**§1A.5's degenerate-signal prediction failed on three of four decks.** It said
+rakdos and dmir would keep `live` on top (both lost the top slot) and that elves
+would stay flat or worse (elves improved to best-in-series, +173 → +261). It
+held only for mono_red. The transient branch — "all four rise" — is not clean
+either.
+
+**What happened is the third outcome, flagged before the data landed: the split
+did not resolve, it ROTATED.** Elves went worst → best while rakdos and dmir
+slipped. Which decks look healthy is itself unstable across ~6,000 games, so
+the cum-6048 diagnosis was measuring noise, not structure. **The
+degenerate-matchup hypothesis is not supported and must not be retrofitted onto
+whichever decks happen to be down in a given matrix.**
+
+Concretely, the resolution was never adequate for the question: snapshots 20 /
+40 / 60 / live sit within ±60 elo of one another while a single 40-game cell has
+~8pp SE. `live`'s rank among *recent* vintages is not measurable at this
+sample size. Note what this would have cost: the pre-registered response to
+cum-6048 was to ship `adv_norm_floor`, which would have been **a fix applied to
+noise**, with Wave 2a's attribution destroyed to pay for it. The value of
+continuing unchanged was that it made the next matrix a test.
+
+**What IS robust, across all three round robins (cum 1512 / 6048 / 12048):**
+
+1. **No cycling. 0 significant 3-cycles in 120 triples**, every matrix
+   transitive, residuals at or below the sampling-noise floor. This is now
+   firmly established and closes the original plateau hypothesis.
+2. **Three decks genuinely improved** — rakdos +558, dmir +353, elves +261, all
+   with snapshot 0 crushed (−415, −247, −178 elo).
+3. **`live` vs *recent* snapshots is noise-dominated** at 40 games/pair and
+   should not be read. The final test at cum 20,000 runs 100 games/pair.
+
+**mono_red_rally — the standing hypothesis is now CONVERGED, not failing.**
+Its span is 68 / 103 / 90 across three measurements with snapshot 0 always near
+the top, which read as "not learning." But its matrix is *entirely* 40–60%
+cells, where rakdos's snapshot 0 loses 95–98% — i.e. every mono_red vintage
+plays near-identically. Together with: it beats every other deck 82–97%, beats
+the hand-authored heuristic 20/20 (saturated), and holds the lowest policy
+entropy in the league (0.527). The reading that fits all of it is that mono_red
+converged inside its first ~200 games and has sat at a fixed point since — a
+shallow skill ceiling, not a training failure. A mirror also cannot exceed 50%
+against itself by construction, so mirror win rate can never show improvement
+either way. Support, not proof; the direct test is action-distribution
+divergence between its snapshots, which has not been run.
+
+### 1A.7 FINAL — cum 20,016, 100 games/pair (2026-08-14)
+
+The run reached target: **20,016 games/deck**, 13 league rungs, sessions 0–12,
+**zero tracebacks across all 23 batches** (10 pretrain + 13 league). Final test
+is 6 vintages × 15 pairs × **100 games**, side-swapped, seed 12345 — 2.5× the
+resolution of every earlier matrix, which is what finally settles the top of
+the ranking.
+
+| deck | span | rising | live rank | live elo | best vintage |
+|---|---|---|---|---|---|
+| rakdos_madness | **+569** | 4/5 | **1st** | +134 | **live** |
+| elves | **+422** | 4/5 | **1st** | +117 | **live** |
+| dmir_terror | +335 | 2/5 | 4th | +31 | **snapshot 25** (+96) |
+| mono_red_rally | +98 | 2/5 | 3rd | +22 | snapshot 50 (+30) |
+
+**1. Cycling is ruled out — definitively.** 0 significant 3-cycles in **200
+triples** across the four round robins (40 + 40 + 40 + 80), every matrix
+transitive, every residual at or below the noise floor. The self-play-cycling
+diagnosis that motivated this plan is dead. It was never the mechanism.
+
+**2. Two decks improved for the full 20,000 games.** rakdos and elves both rate
+`live` as their single strongest vintage, snapshot 0 at −435 / −305. **Elves is
+the case that matters methodologically**: it was diagnosed as regressing at cum
+6048 (live 4th, −45), which triggered the §1A.5 decision point, and it finished
+**best-in-series**. Every intervention considered at that point would have been
+applied to noise.
+
+**3. dmir_terror is a REAL late regression — the first one that survived
+higher-powered measurement.** Snapshot 25 (~5,000 games) beats `live` **65–35
+over 100 games** (~3σ) and beats every other vintage (83/62/55/57%). dmir
+peaked near 5,000 games and shed ~65 elo afterward. Unlike the cum-6048 flags,
+this does not dissolve under resolution — it is the one finding that got
+*stronger*.
+
+**4. mono_red_rally: converged, per §1A.6.** Span 98 over six vintages spanning
+20,000 games, no trend, every cell 34–66%. Fourth consecutive measurement
+agreeing. The direct test (action-distribution divergence between snapshots)
+remains unrun.
+
+**Against §11's acceptance criterion ("rising 5/5"): not met literally by any
+deck** — best is 4/5. All four spans are positive and two decks have `live` on
+top. Wave 2a is therefore *partially* vindicated: it fixed the critic
+(`explained_variance` 0.05 → 0.77–0.85), fixed the trust region (median
+`approx_kl` 0.010–0.016 vs `target_kl` 0.03, `epochs_run` 4 throughout, versus
+0.044 and a 3.8→2.8 decay pre-wipe), and reversed the *population-level*
+descent §1A.3 found — but it did not make every deck monotonically improve.
+
+**Methodological lesson, worth more than any single number here.** Three
+separate "regressions" were diagnosed at 40 games/pair (elves at 6048; rakdos
+and dmir at 12048) and **all three dissolved** under more games or more time,
+while the one real regression (dmir) only became visible at 100 games/pair.
+Adjacent late vintages sit within ±60 elo; a 40-game cell has ~8pp SE. **Any
+`live`-vs-recent-vintage claim below 100 games/pair should be treated as
+unmeasured.** The 20-game in-training `vs_history` check is weaker still and is
+useful only against `archive_oldest`, never for ranking recent policies.
+
+**Open, not addressed by this run:** dmir's post-5,000-game decline; whether
+mono_red's flatness is truly a skill ceiling; and `vs_gauntlet`, silent for the
+entire run because the twin population was wiped and never regrown.
+
+### 1A.8 The actual binding constraint — and Wave 2b as a controlled A/B (2026-08-14)
+
+**Correction to §1A.7.** It reported Wave 2a as having fixed the trust region,
+`epochs_run = 4` throughout. That was measured on **session 5 only** and does
+not hold for the run:
+
+| session | cum games | ent_coef | entropy | median approx_kl | mean epochs_run | KL stop fired |
+|---|---|---|---|---|---|---|
+| 0 | 0 | 0.0200 | 0.985 | 0.0099 | 4.00 | 0/4 |
+| 5 | 1,488 | 0.0196 | 0.567 | 0.0127 | 4.00 | 0/128 |
+| 7 | 6,024 | 0.0182 | 0.572 | 0.0253 | 3.21 | 366/500 |
+| 8 | 9,024 | 0.0173 | 0.539 | 0.0274 | 2.67 | 495/500 |
+| 12 | 19,992 | 0.0140 | 0.450 | 0.0207 | **2.24** | 328/328 |
+
+**The pre-wipe failure signature reproduced, and ended worse.** The 2026-08-06
+restart was motivated by `epochs_run` decaying 3.8 → 2.8; this run ended at
+**2.24**, with KL early stopping truncating ~100% of updates from cum 9,000 on.
+It simply took ~6,000 games to appear instead of showing up immediately, and
+§1A.7 stopped looking after the early sessions confirmed what it expected —
+verifying a fix at the point most likely to flatter it.
+
+**Mechanism, entirely from this run's telemetry.** `ent_coef` anneals **down**
+(0.0200 → 0.0140) while entropy falls (0.985 → 0.450). A more deterministic
+policy moves probability ratios further per unit parameter change, so median
+`approx_kl` doubles (0.0099 → 0.0274), the epoch-mean crosses
+`target_kl = 0.03`, early stopping truncates nearly every update, and effective
+learning per batch drops ~45%. **The anneal cuts the entropy bonus exactly when
+low entropy is what is breaking the updates.**
+
+This also explains the two §1A.7 findings left open. Elo gain from snapshot 25
+(~4,800 games) to `live`: **+128 rakdos / +73 elves / −65 dmir** — i.e. ~80% of
+all learning happens in the first ~5,000 games, which is precisely where
+truncation begins. **dmir's regression is not a separate mystery; it is this.**
+
+**Why NOT the alternatives considered.** Loosening `target_kl` would stop the
+truncation by permitting the large updates rather than preventing them — fixing
+why KL is large is the better lever. Decaying `lr` addresses the consequence
+(oversized steps) but not the cause (determinism). `adv_norm_floor` stays
+falsified per §1A.5.
+
+**Why NOT a plain gauntlet twin** (the earlier recommendation, retracted): two
+populations with *identical* config drift together, so `vs_gauntlet` reports
+~50% by construction and cannot detect common drift — exactly what it was being
+recommended for. The pre-2026-08-05 population sat flat at 46–48% against its
+twin for its entire life, confirming this empirically. Fixed external references
+already exist in `archive_oldest` and the snapshot round robin.
+
+**The experiment.** `training_configs/run_entcoef_ab.json` — `ppo.ent_coef`
+pinned **constant at 0.05**, every other knob copied verbatim from
+`run_default.json`, trained into its own `league_name` so the baseline's 20k
+checkpoints survive. `gauntlet_league_name` points at the baseline: two
+populations differing in **exactly one hyperparameter** is the one configuration
+where that mechanism is informative, so `vs_gauntlet` now reads directly as the
+A/B. Both train from the same unchanged `shared_stack_frozen.pt`, satisfying
+`_run_eval_vs_gauntlet`'s own precondition — and BUG 3's fix (Wave 1 item 0.3)
+is what makes cross-population weight loading safe at all.
+
+Plumbing: `PPO_DEFAULTS["ent_coef"]` added, **default `None` = the existing
+anneal, bit-for-bit**, so the baseline is unchanged. Two tests pin it — one that
+a float bypasses the schedule and `None` does not (a config key that is accepted
+but never read would leave the A/B looking like it ran while actually re-running
+the baseline; the `unknown` assert catches a misspelled key, nothing catches a
+correctly-spelled unconsumed one), and one that the two configs differ in
+exactly one knob.
+
+**Pre-registered success criteria — judge against these, do not move them.**
+
+1. **Mechanism:** mean `epochs_run` stays **≥ 3.5** through cum 10,000. This
+   passes or fails on its own, independent of any win rate.
+2. **Outcome, budget-matched:** elo gain snapshot 25 (~4,800) → live (~10,008)
+   must beat the baseline's gain over the **same cumulative-game window**,
+   snapshot 25 → snapshot 50 (~9,600): **+82 rakdos / +38 elves / −70 dmir /
+   +98 mono_red**. By `run_snapshot_round_robin` at 100 games/pair, run on each
+   league separately.
+3. **dmir specifically stops regressing** — well targeted, since the baseline
+   sheds 70 elo inside exactly this window.
+
+**Budget-matching correction, made 2026-08-14 before the run finished.** The
+first draft of (2) used the baseline's snapshot-25 → *live* gain
+(+128 / +73 / −65). But baseline `live` is at 20,016 games and this run stops at
+10,008, so that would have charged the experiment for 10,000 games of training
+it never ran — and would have made a *successful* intervention look like a
+failure. The same trap applies to `vs_gauntlet`, which compares this run's live
+against the baseline's live: it is budget-confounded in the baseline's favour
+and will read low throughout (dmir 0/20, elves 5/20, mono_red 4/20 at cum 216).
+**`vs_gauntlet` here is a sanity check and drift detector, not the A/B readout.**
+For a genuinely matched head-to-head, play this run's live against the
+baseline's snapshot ~52, not its live. Every cross-run comparison in this
+experiment must be over a matched cumulative-game window.
+
+### 1A.9 Criterion (1) FAILED — the entropy mechanism is falsified
+
+Measured at matched budget:
+
+| | cum | ent_coef | entropy | kl med | mean epochs | stop% |
+|---|---|---|---|---|---|---|
+| **A/B** | 6,960 | 0.0500 | **0.679** | 0.0260 | **3.34** | 65% |
+| baseline | 6,024 | 0.0182 | 0.575 | 0.0253 | 3.21 | 73% |
+
+**The knob worked on its target and changed nothing downstream.** Entropy held
+**18% higher** and roughly flat (1.004 → 0.679 over 7,000 games, against the
+baseline's decay to 0.575), which is exactly what pinning `ent_coef` at 0.05 was
+supposed to do. Yet median `approx_kl` is the *same or slightly worse*
+(0.0260 vs 0.0253), and truncation is barely moved (3.34 vs 3.21) — both far
+below the pre-registered 3.5 threshold, at only 7,000 of the 10,000 games.
+
+**§1A.8's mechanism chain is therefore wrong.** "Lower entropy → larger
+probability-ratio moves → higher KL → truncation" fit every correlation in the
+baseline run, and the intervention severs the correlation without the effect
+following. This is the value of an A/B over a plausible story: the story
+survived four sessions of confirming telemetry and died in one controlled test.
+
+**Two further candidates eliminated by measurement, not argument:**
+
+| hypothesis | verdict | evidence |
+|---|---|---|
+| low entropy drives KL | **falsified** | intervention: entropy +18%, KL unchanged |
+| more Adam steps drive KL | **falsified** | buffer shrinks 6,988 → 2,709 as play improves, so steps/iteration fall **874 → 226 (4×)** while KL rises **0.0099 → 0.0274 (2.7×)** |
+| advantage scale drives KL | **falsified** | `adv_std` flat at 0.19–0.22 throughout |
+| **`lr` fixed at 3e-4** | **standing** | the one PPO knob never varied |
+
+Per-step policy movement grew ~10× while every input we can measure either held
+flat or moved the wrong way. That points at the step size itself. `lr` has been
+configurable since Wave 1.6 and has never been swept; a decay schedule, or
+simply a lower constant late in training, is the next experiment — and it should
+be run the same way, as a single-variable A/B against this same baseline with
+pre-registered criteria.
+
+**Criteria (2) and (3) were still run to completion.** They are independent of
+(1) — an intervention can improve outcomes through a pathway other than the
+predicted one — and dmir's regression is a concrete defect worth measuring
+regardless. Abandoning a pre-registered test the moment its favoured hypothesis
+dies is the same selection error as stopping when it looks good.
+
+### 1A.10 Wave 2b verdict — 1 of 3 criteria passed; DO NOT adopt as default
+
+Both leagues re-measured at **identical 3-point structure** (`0, 25, endpoint`),
+100 games/pair, seed 12345, over the same cum 4,800 → ~9,900 window.
+
+| deck | A/B (ent_coef 0.05) | baseline (anneal) | Δ |
+|---|---|---|---|
+| **dmir_terror** | **+72** | **−80** | **A/B +152** |
+| elves | +30 | 0 | A/B +30 |
+| mono_red_rally | +54 | +108 | baseline +54 |
+| **rakdos_madness** | **−37** | **+76** | **baseline +113** |
+| **total** | **+119** | **+104** | ~equal |
+
+| criterion | result |
+|---|---|
+| (1) mean `epochs_run` ≥ 3.5 through cum 10,000 | **FAIL** — 3.01 (baseline 2.67) |
+| (2) beat baseline's 25→endpoint gain on the matched window | **FAIL** — split 2–2, totals equal |
+| (3) dmir stops regressing | **PASS** — +72 vs −80, live is its best vintage |
+
+**The effect is REDISTRIBUTION, not improvement.** Aggregate elo gain is
+statistically indistinguishable (+119 vs +104). Fixing dmir appears to have cost
+rakdos a comparable amount: rakdos goes +76 → −37 and its `live` becomes its
+*worst* vintage. **Recommendation: do not adopt `ent_coef=0.05` as the default.**
+The knob stays in `PPO_DEFAULTS` with `None` (the anneal) as default; the A/B
+config remains for reference.
+
+**Statistical honesty.** At 100 games/pair only three cells clear 2σ — baseline
+rakdos (63%), baseline mono_red (62%), baseline dmir (60%). The A/B's dmir
+result is ~1.8σ and rakdos's −37 is ~1.2σ. The dmir/rakdos *contrast* is the
+robust part; the per-deck magnitudes are not.
+
+**Method note that changed the answer.** The baseline was re-run at matched
+3-point structure rather than reusing §1A.7's 6-point matrix, because
+Bradley-Terry elo is only defined relative to the players in the fit. Elves'
+baseline gain came out **0**, not the **+38** pre-registered from the 6-point
+fit — a 38-elo shift from fit structure alone. Comparing against the old number
+would have manufactured a win for the A/B on elves. **Any cross-run elo
+comparison must use an identical vintage structure, not just a matched game
+budget.**
+
+**The rotation, now with four instances.** Which deck is regressing keeps
+moving: elves+mono_red (cum 6048) → rakdos+dmir slipping while elves leads
+(12048) → dmir (20016) → rakdos (this A/B). Four measurements, four different
+answers, each internally transitive with no significant cycles. The standing
+hypothesis is no longer "some deck has a bug" but that **per-deck improvement in
+a closed 4-deck self-play meta is substantially zero-sum** — the population
+shares one training distribution, so a deck that gains does so partly at
+another's expense. If that is right, per-deck elo-vs-own-history is the wrong
+objective to optimize and the plan needs a population-level one. Untested;
+the cheapest probe is whether total elo gain across the four decks is
+conserved across further interventions, as it was here (+119 vs +104).
+
+Failing (1) while passing (2) — or the reverse — is more informative than either
+alone: it separates "the knob did what it mechanically should" from "that helped."
+Stop at 10,000 games/deck; truncation saturated by cum 9,000 in the baseline, so
+the effect lives well inside that range and the baseline has a matched snapshot
+every 192 games across it.
+
 ---
 
 ## 2. Critical assessment of the existing methodology
@@ -403,6 +781,49 @@ byte-identical — but the instant the stack is trainable, three call sites
 silently corrupt it, most severely `league.load_snapshot_agent`, which rewinds
 the live stack to a snapshot's era *and* sets `requires_grad=False` on it
 permanently. This is a latent landmine under any future unfreeze.
+
+### BUG 4 — the snapshot cadence was session-local, so short sessions never snapshotted
+*Found 2026-08-13 on the post-wipe restart, while watching the escalation ladder.*
+
+`league_runner.py` gated snapshots on `(iteration + 1) % snapshot_every == 0`.
+`iteration` is **session-local** — it restarts at 0 on every process
+invocation — so any session shorter than `snapshot_every` never snapshotted at
+all, and every session boundary discarded the remainder.
+
+The escalation ladder opens with exactly those short sessions. Against
+`snapshot_every = 8` (= `snapshot_every_games 200 // gpi 24`):
+
+| session | iterations | cum games/deck | snapshots |
+|---|---|---|---|
+| 0 | 1 | 24 | 0 |
+| 1 | 2 | 72 | 0 |
+| 2 | 4 | 168 | 0 |
+
+Three consequences, in increasing order of severity:
+
+1. `vs_history` stays silent — no archived self to measure against.
+2. **`checkpoint_opponent_rate = 0.15` is a silent no-op.** There is nothing in
+   the opponent pool to sample, so 100% of games are live-vs-live rather than
+   the configured 85/15. The run's actual opponent distribution differs from
+   the configured one with no error and no log line.
+3. The *effective* cadence was never "every 200 games/deck" as the config field
+   names and the README both claim — it was a function of how the ladder
+   happened to be chopped into sessions.
+
+Same class as BUG 1 (and as the `ent_coef`/`batch_size` ramps before it): a
+counter that resets per process invocation standing in for one that should
+accumulate across the run. Fixed by gating on cumulative games crossing a
+multiple of the cadence (`league_runner.should_snapshot`, pinned by two tests
+in `tests/test_run_league.py` that replay the real ladder). This is why that
+whole family is worth grepping for rather than fixing one at a time.
+
+**It does not contaminate §1 or §1A.** The pre-wipe run's sessions were long —
+the ladder's upper rungs run 3000 games/deck at `gpi = 6`, i.e. 500 iterations
+against `snapshot_every = 33` — so each session took ~15 snapshots and lost
+only the remainder at its boundary. That run had a deep snapshot series, which
+is what §1A.1/§1A.3 measured. BUG 4 bites hardest at the *start* of a fresh
+league, where the sessions are short by construction, which is exactly where it
+was found and why it had never surfaced before.
 
 ---
 

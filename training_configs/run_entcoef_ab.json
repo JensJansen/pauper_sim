@@ -1,0 +1,39 @@
+{
+  "_experiment": "WAVE 2b A/B (2026-08-14, RL_METHODOLOGY_PLAN.md section 1A.8). Exactly ONE variable differs from run_default.json: ppo.ent_coef is pinned CONSTANT at 0.05 instead of letting rl.train.ent_coef_schedule anneal 0.02 -> 0.005. Everything else -- roster, pfsp_power, games_per_iteration, checkpoint_opponent_rate, snapshot_every_games, n_workers -- is copied verbatim so the comparison is clean. Do not 'improve' anything else in this file; a second changed knob destroys the attribution this run exists to provide.",
+
+  "_why": "The completed 20,016-games/deck run under run_default.json measured the anneal running the wrong way. ent_coef 0.0200 -> 0.0140 while policy entropy fell 0.985 -> 0.450; a more deterministic policy moves probability ratios further per unit parameter change, so median approx_kl doubled 0.0099 -> 0.0274, the epoch-mean crossed target_kl=0.03, and KL early stopping truncated nearly every update. Mean epochs_run went 4.00 (session 5) -> 2.24 (session 12) -- worse than the 3.8 -> 2.8 decay that motivated the 2026-08-06 restart in the first place. Elo gain from snapshot 25 (~4,800 games) to live was +128 rakdos / +73 elves / -65 dmir: the league does ~80% of its learning in its first 5,000 games and then stalls, and dmir actively regresses. 0.05 is Wave 2b's own proposed value (section 4.3 option (a)), consistent with section 1's evidence row 7 (arXiv:2502.08938: ent_coef 2.5-10x below the empirically best range).",
+
+  "_success_criterion": "PRE-REGISTERED, judge against these and do not move them afterward. (1) MECHANISM: mean epochs_run stays >= 3.5 through cum 10,000 -- the direct test, passes or fails on its own independent of any win rate. (2) OUTCOME, BUDGET-MATCHED: elo gain from snapshot 25 (~4,800 games) to live (~10,008) must beat the baseline's gain over the SAME cumulative-game window, snapshot 25 -> snapshot 50 (~9,600 games), which was +82 rakdos / +38 elves / -70 dmir / +98 mono_red. Measured by analysis/run_snapshot_round_robin.py at 100 games/pair on each league separately. (3) dmir_terror specifically stops regressing -- well targeted, since the baseline sheds 70 elo inside exactly this window. Failing (1) means the knob did not do what it mechanically should, which is a different and more interesting failure than failing (2).",
+
+  "_budget_match_warning": "CORRECTED 2026-08-14, before the run finished. The first draft of criterion (2) used the baseline's snapshot-25 -> live gain (+128 / +73 / -65), but baseline live is at 20,016 games and this run stops at 10,008 -- comparing them would have charged this experiment for 10,000 games of training it never ran. Every cross-run comparison here must be over a matched cumulative-game window. Same trap applies to vs_gauntlet below.",
+
+  "_vs_gauntlet_caveat": "vs_gauntlet compares this run's live against the baseline's LIVE at 20,016 games, so it is budget-confounded in the baseline's favour and will read low throughout -- it is a sanity check and a drift detector, NOT the A/B readout. The A/B readout is criterion (2), measured within each population's own snapshot series over a matched window. For a genuinely matched head-to-head, play this run's live against the baseline's snapshot ~52 (~9,984 games) rather than its live.",
+
+  "_stop_at": "10,000 games/deck. Early stopping saturated by cum 9,000 in the baseline, so the effect lives well inside that; 20,000 would cost ~5 extra hours for little added information. The baseline has a snapshot every 192 games over the same range, so every comparison point is matched.",
+
+  "_gauntlet_note": "gauntlet_league_name points at the COMPLETED baseline run, which is the one configuration in which the gauntlet mechanism is genuinely informative. Two identically-configured populations drift together and report ~50% forever -- which is exactly what the pre-2026-08-05 population did against its twin (flat 46-48% for its whole life). Two populations differing in exactly ONE hyperparameter do not have that problem: vs_gauntlet here reads directly as the A/B. Precondition from _run_eval_vs_gauntlet's own docstring is satisfied -- both populations train from the SAME checkpoints/shared_stack_frozen.pt, which is unchanged since the 2026-08-13 freeze and must NOT be re-frozen while this experiment runs.",
+
+  "snapshot_every_games": 200,
+  "n_workers": 6,
+  "games_per_iteration": 24,
+  "pfsp_power": 0.5,
+  "checkpoint_opponent_rate": 0.15,
+  "pfsp": true,
+
+  "ppo": {
+    "ent_coef": 0.05
+  },
+
+  "league_name": "4_deck_subleague_entcoef_ab",
+  "roster": [
+    "rakdos_madness",
+    "dmir_terror",
+    "elves",
+    "mono_red_rally"
+  ],
+  "total_games": 10000,
+  "gauntlet_league_name": "4_deck_subleague_test",
+  "heuristic_decks": [
+    "mono_red_rally"
+  ]
+}

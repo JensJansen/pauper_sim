@@ -91,6 +91,20 @@ PPO_DEFAULTS = {
     # is wanted and why it is not being guessed. Set it from the adv_std
     # distribution `report_metrics` now prints, after a session of real data.
     "adv_norm_floor": 0.0,
+    # Entropy bonus. None = use rl.train.ent_coef_schedule's 0.02 -> 0.005
+    # anneal (the historical behavior, unchanged). A float pins it CONSTANT for
+    # the whole run, which is Wave 2b (RL_METHODOLOGY_PLAN.md section 1A.8).
+    #
+    # Why the knob exists: on the 20,016-games/deck run the anneal was measured
+    # running the wrong way. ent_coef fell 0.0200 -> 0.0140 while policy entropy
+    # fell 0.985 -> 0.450; a more deterministic policy moves probability ratios
+    # further per unit parameter change, so median approx_kl doubled
+    # (0.0099 -> 0.0274) until the epoch-mean crossed target_kl and KL early
+    # stopping truncated nearly every update -- mean epochs_run 4.00 (session 5)
+    # -> 2.24 (session 12), BELOW the 2.8 that motivated the restart in the
+    # first place. The anneal cuts the entropy bonus exactly when low entropy is
+    # what is breaking the updates.
+    "ent_coef": None,
 }
 
 
@@ -187,7 +201,9 @@ def _save_live_checkpoints(live_nets, optimizers, deck_names, session, session_p
     games into a 3000-game batch is exactly how this was learned) would
     otherwise discard the whole session's live-net training, since only the
     periodic snapshots (historical opponents) get written incrementally.
-    With this, a crash loses at most snapshot_every iterations."""
+    With this, a crash loses at most snapshot_every_games games/deck (the
+    snapshot cadence is cumulative-games-based, not session-local -- see the
+    `crossed` gate in _run_session)."""
     os.makedirs(league_dir, exist_ok=True)
     for name in deck_names:
         deck_dir = f"{league_dir}/{name}"
@@ -227,6 +243,32 @@ def _append_metric(league_dir, **fields):
     before the first call ever lands here."""
     with open(f"{league_dir}/metrics.jsonl", "a") as f:
         f.write(json.dumps(fields) + "\n")
+
+
+def should_snapshot(games_before, games_per_iteration, snapshot_every):
+    """True when the iteration about to be trained -- which takes this league
+    from `games_before` to `games_before + games_per_iteration` games/deck --
+    crosses a multiple of the snapshot cadence.
+
+    `games_before` is CUMULATIVE across every session this league has ever run
+    (progress.json), not session-local. That is the whole point: `iteration`
+    restarts at 0 every process invocation, so the old
+    `(iteration + 1) % snapshot_every == 0` test never fired for a session
+    shorter than snapshot_every and threw away the remainder at every session
+    boundary. The escalation ladder runs exactly those short sessions early on
+    (1, 2, 4 iterations against snapshot_every=8), so a fresh league reached
+    168 games/deck with an empty opponent pool -- which also makes
+    checkpoint_opponent_rate a silent no-op, since there is nothing to sample.
+    Same class of bug as BUG 1 (see advance_progress) and as the ent_coef /
+    batch_size ramps before it.
+
+    snapshot_every is in ITERATIONS (run_league.py converts run-config's
+    snapshot_every_games by floor division); multiplying back recovers the
+    games-count, so a raw --snapshot-every override still behaves identically.
+    Extracted so the multi-session invariant is testable without spawning
+    training."""
+    snapshot_every_games = snapshot_every * games_per_iteration
+    return (games_before + games_per_iteration) // snapshot_every_games > games_before // snapshot_every_games
 
 
 def advance_progress(league_dir, n_iterations, games_per_iteration, auto_sizing):
@@ -433,7 +475,9 @@ def _run_session(n_iterations, games_per_iteration, snapshot_every, executor, n_
     mull_by_deck_accum = {name: [] for name in train_decks}
     for iteration in range(n_iterations):
         # PPO minibatch ramp (32 -> 2048 over 6 steps) and entropy-coefficient
-        # anneal: both tracked against TRUE cumulative games/deck (this
+        # anneal (the latter only when hp["ent_coef"] is None -- a configured
+        # constant bypasses the schedule): both tracked against TRUE cumulative
+        # games/deck (this
         # session's own starting point, cumulative_games, plus games played so
         # far THIS session) -- see batch_size_for_iteration's and
         # ent_coef_schedule's own docstrings (rl.train) for why session-local
@@ -442,7 +486,11 @@ def _run_session(n_iterations, games_per_iteration, snapshot_every, executor, n_
         games_so_far_this_session = iteration * games_per_iteration
         batch_size = batch_size_for_iteration(cumulative_games + games_so_far_this_session,
                                               start=hp["batch_size_start"], cap=hp["batch_size_cap"])
-        ent_coef = ent_coef_schedule(cumulative_games + games_so_far_this_session)
+        # hp["ent_coef"] pins a CONSTANT and skips the anneal entirely (Wave 2b);
+        # None keeps the 0.02 -> 0.005 schedule. See PPO_DEFAULTS for the measured
+        # reason the anneal is suspect.
+        ent_coef = (hp["ent_coef"] if hp["ent_coef"] is not None
+                    else ent_coef_schedule(cumulative_games + games_so_far_this_session))
         # Snapshot the mulligan nets for the workers now (ALL decks -- a frozen
         # opponent still needs its mulligan net to play). Updated once after the
         # deck-loop (on-policy within the iteration, same as the main nets).
@@ -579,7 +627,24 @@ def _run_session(n_iterations, games_per_iteration, snapshot_every, executor, n_
             print(f"  iter {iteration}: mulligan model -- {total_n} transitions across {len(mull_stats)} decks, "
                   f"mean REINFORCE loss {mean_loss:.4f}", flush=True)
 
-        if matchup is None and (iteration + 1) % snapshot_every == 0:  # matchup: no historical snapshots
+        # Snapshot cadence is CUMULATIVE, not session-local (2026-08-13). This
+        # used to read `(iteration + 1) % snapshot_every == 0`, but `iteration`
+        # restarts at 0 every process invocation, so a session SHORTER than
+        # snapshot_every never snapshotted at all and every session boundary
+        # discarded the remainder -- the escalation ladder's early rungs (1, 2,
+        # 4 iterations against snapshot_every=8) reached 168 games/deck without
+        # ever registering one, leaving the opponent pool empty and
+        # checkpoint_opponent_rate silently inoperative. Same session-local
+        # counter flaw as BUG 1 (see advance_progress) and as the ent_coef /
+        # batch_size ramps before them; gated on cumulative games crossing a
+        # multiple of snapshot_every_games instead, which is what the
+        # run-config field this is derived from actually names.
+        # snapshot_every arrives in ITERATIONS (run_league.py converts), so
+        # multiplying back recovers the games-count without a signature change
+        # and keeps a raw --snapshot-every override behaving identically.
+        games_before = cumulative_games + iteration * games_per_iteration
+        crossed = should_snapshot(games_before, games_per_iteration, snapshot_every)
+        if matchup is None and crossed:  # matchup: no historical snapshots
             for name in train_decks:  # only TRAIN decks change -> only they need new snapshots
                 pool.register_snapshot(name, live_nets[name], mulligan_nets[name])
             _save_live_checkpoints(live_nets, optimizers, deck_names, session, session_path, league_dir,
