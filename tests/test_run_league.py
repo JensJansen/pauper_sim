@@ -186,10 +186,36 @@ def test_ent_coef_override_is_wired_and_off_by_default():
     assert resolve(pinned, 20_016) == 0.05, "a pinned constant must not decay"
 
 
+def test_the_adopted_lr_matches_the_arm_that_justified_it():
+    """lr 3e-4 -> 2e-4 (2026-08-15) is the first PPO_DEFAULTS value changed on a
+    controlled experiment rather than a guess. This ties the shipped default to
+    the config of the arm that earned it, so the two cannot drift apart and so
+    changing the default is a deliberate act with a visible test to update.
+
+    Evidence, three arms at 10,000 games/deck scored against the identical
+    20,016-game baseline: 2e-4 -> 62.5%, 1.5e-4 -> 45.0%, ent_coef arm -> 27.5%.
+    2e-4 wins on half the baseline's budget and is the only value at which no
+    deck materially regresses. RL_METHODOLOGY_PLAN.md section 1A.12."""
+    from rl.league_runner import PPO_DEFAULTS
+    from repo_paths import REPO_ROOT
+    winning_arm = json.loads((REPO_ROOT / "training_configs" / "run_lr2e4_ab.json").read_text())
+    assert PPO_DEFAULTS["lr"] == winning_arm["ppo"]["lr"] == 0.0002
+
+    # run_pretrain.py keeps its own 3e-4 -- the experiment covered LEAGUE
+    # training only, so the two are legitimately different and "consistency"
+    # is not a reason to change it.
+    pretrain = (REPO_ROOT / "src" / "run_pretrain.py").read_text()
+    assert "lr=3e-4" in pretrain, "pretrain lr was never tested; do not sync it to the league default"
+
+
 @pytest.mark.parametrize("ab_config,expected_ppo", [
     ("run_entcoef_ab.json", {"ent_coef": 0.05}),
     ("run_lr_ab.json", {"lr": 0.00015}),
-    ("run_lr2e4_ab.json", {"lr": 0.0002}),
+    # run_lr2e4_ab.json is deliberately ABSENT: its value was adopted as the
+    # PPO_DEFAULTS default, so it no longer differs from the baseline and the
+    # "exactly one knob" guard below would be vacuous for it. It is pinned by
+    # test_the_adopted_lr_matches_the_arm_that_justified_it instead, and kept
+    # on disk as the record of the run that justified the change.
 ])
 def test_ab_config_differs_from_baseline_in_exactly_one_knob(ab_config, expected_ppo):
     """Each A/B is only interpretable if ONE variable moved. Pins that, so a
@@ -211,6 +237,12 @@ def test_ab_config_differs_from_baseline_in_exactly_one_knob(ab_config, expected
 
     assert ab["ppo"] == expected_ppo, "exactly one PPO knob may move"
     assert "ppo" not in base, "baseline must use PPO_DEFAULTS untouched"
+    # ...and that knob must actually DIFFER from the shipped default, or the arm
+    # is silently a re-run of the baseline. This is what catches an arm whose
+    # value has since been adopted as the default (as run_lr2e4_ab.json's was).
+    from rl.league_runner import PPO_DEFAULTS
+    for k, v in ab["ppo"].items():
+        assert PPO_DEFAULTS[k] != v, f"{ab_config} sets {k}={v}, which IS the default -- not an A/B"
     assert ab["league_name"] != base["league_name"], "must not train into the baseline's checkpoints"
     assert ab["gauntlet_league_name"] == base["league_name"], "gauntlet should point at the baseline"
     # Every A/B must stop at the same budget, or the runs are not comparable

@@ -62,12 +62,38 @@ EVAL_EVERY_SESSIONS = 1
 # ppo_update's own signature defaults, so no config file could reach them and
 # nothing recorded which values a given run used.
 #
-# These defaults are EXACTLY the values every run to date used. Exposing them
-# changes no behavior; it makes changing them a config edit instead of a code
-# edit, and makes the value that was actually in force appear in metrics.jsonl's
-# session_start record. Override per league via a run-config "ppo" object.
+# These defaults were EXACTLY the values every run used up to 2026-08-15 (see
+# `lr` below for the one that has since changed on measured evidence). Exposing
+# them made changing them a config edit instead of a code edit, and made the
+# value actually in force appear in metrics.jsonl's session_start record.
+# Override per league via a run-config "ppo" object.
 PPO_DEFAULTS = {
-    "lr": 3e-4,            # league_runner's per-deck Adam
+    # league_runner's per-deck Adam. 3e-4 -> 2e-4 (2026-08-15), the first
+    # default in this file changed on a controlled experiment rather than a
+    # guess -- three single-variable arms at 10,000 games/deck each, scored
+    # against the IDENTICAL reference (the 20,016-game baseline's live nets):
+    #
+    #     lr        kl med  epochs  truncation   vs baseline
+    #     3e-4      0.0274   2.67       99%        (is the baseline)
+    #     2e-4      0.0243   3.94        6%        50/80 = 62.5%
+    #     1.5e-4    0.0152   4.00        0%        36/80 = 45.0%
+    #
+    # 2e-4 wins on half the baseline's training budget (z=2.24 above parity),
+    # and is the only value tested at which NO deck materially regresses: 3e-4
+    # costs dmir_terror -80 elo, 1.5e-4 costs rakdos_madness -71, 2e-4 costs
+    # nobody. The curve is sharply nonlinear -- 2e-4's KL is only 11% under
+    # 3e-4's, but that is enough to drop back under the target_kl=0.03
+    # epoch-mean cliff, collapsing truncation 99% -> 6%. See
+    # RL_METHODOLOGY_PLAN.md section 1A.12.
+    #
+    # Scope: LEAGUE training only. run_pretrain.py has its own 3e-4 and was
+    # never part of the experiment -- do not "make it consistent" without
+    # running the same test on the pretrain phase.
+    #
+    # Resuming a league trained at 3e-4 (checkpoints/4_deck_subleague_test)
+    # now picks this up and silently changes its optimizer mid-run. Pin
+    # "ppo": {"lr": 0.0003} in that league's config if it is ever continued.
+    "lr": 2e-4,
     # Minibatch ramp, PINNED OFF (start == cap == 32, so no doubling ever fires).
     # BUG 1 kept cumulative_games at 0, which held batch_size at 32 for all
     # 40,104 iterations of the 60,001-games/deck run. Fixing the counter

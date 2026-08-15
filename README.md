@@ -414,6 +414,27 @@ Setting it to 0.05 was run as a controlled single-variable A/B
 policy entropy 25% higher but left `approx_kl` unchanged and merely
 redistributed elo between decks. See RL_METHODOLOGY_PLAN.md §1A.8–§1A.10.
 
+**`lr` changed 3e-4 → 2e-4 (2026-08-15)** — the first default here set by a
+controlled experiment rather than a guess. Three single-variable arms at 10,000
+games/deck, each scored against the *identical* reference (the 20,016-game
+baseline's live nets):
+
+| `lr` | median `approx_kl` | mean `epochs_run` | truncation | vs baseline |
+|---|---|---|---|---|
+| 3e-4 | 0.0274 | 2.67 | 99% | *is the baseline* |
+| **2e-4** | 0.0243 | 3.94 | **6%** | **62.5%** |
+| 1.5e-4 | 0.0152 | 4.00 | 0% | 45.0% |
+
+2e-4 wins on **half** the baseline's training budget (z=2.24 above parity) and
+is the only value at which no deck materially regresses — 3e-4 costs
+dmir_terror −80 elo, 1.5e-4 costs rakdos_madness −71. The curve is sharply
+nonlinear: 2e-4's KL is only 11% below 3e-4's, but that is enough to drop back
+under the `target_kl=0.03` epoch-mean cliff and collapse truncation from 99% to
+6%. Scope is **league training only** — `run_pretrain.py` keeps its own 3e-4,
+which was never part of the experiment. Resuming a league trained at 3e-4 now
+picks up the new default; pin `"ppo": {"lr": 0.0003}` in its config to continue
+it unchanged. See RL_METHODOLOGY_PLAN.md §1A.11–§1A.12.
+
 Training runs on **CPU** by design — the model is small (~200–250K params) and
 a batch-size sweep found no GPU crossover at this size.
 
