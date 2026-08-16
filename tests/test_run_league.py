@@ -208,43 +208,77 @@ def test_the_adopted_lr_matches_the_arm_that_justified_it():
     assert "lr=3e-4" in pretrain, "pretrain lr was never tested; do not sync it to the league default"
 
 
-@pytest.mark.parametrize("ab_config,expected_ppo", [
-    ("run_entcoef_ab.json", {"ent_coef": 0.05}),
-    ("run_lr_ab.json", {"lr": 0.00015}),
+@pytest.mark.parametrize("ab_config,expected_diff", [
+    ("run_entcoef_ab.json", {"ppo": {"ent_coef": 0.05}}),
+    ("run_lr_ab.json", {"ppo": {"lr": 0.00015}}),
+    ("run_trunk512_ab.json", {"trunk_hidden": [512, 512], "total_games": 8000}),
     # run_lr2e4_ab.json is deliberately ABSENT: its value was adopted as the
-    # PPO_DEFAULTS default, so it no longer differs from the baseline and the
-    # "exactly one knob" guard below would be vacuous for it. It is pinned by
+    # PPO_DEFAULTS default, so it no longer differs from the baseline and this
+    # guard would be vacuous for it. It is pinned by
     # test_the_adopted_lr_matches_the_arm_that_justified_it instead, and kept
     # on disk as the record of the run that justified the change.
 ])
-def test_ab_config_differs_from_baseline_in_exactly_one_knob(ab_config, expected_ppo):
+def test_ab_config_differs_from_baseline_in_exactly_one_knob(ab_config, expected_diff):
     """Each A/B is only interpretable if ONE variable moved. Pins that, so a
     later well-meaning edit to any of these configs is caught here instead of
     silently confounding the experiment.
 
-    Parametrized rather than duplicated: every future single-variable A/B
-    against run_default.json should be added to the list above, and gets the
-    same guard for free."""
+    Compares the FULL key set rather than a hand-listed subset, so an arm that
+    moves a knob nobody thought to list is still caught. `expected_diff` is the
+    complete set of training-relevant differences the arm is allowed to have --
+    identity fields (league_name, the _-prefixed prose) are exempt because they
+    must differ, and total_games is listed per-arm since budgets are chosen per
+    experiment."""
     from repo_paths import REPO_ROOT
     cfgs = REPO_ROOT / "training_configs"
     base = json.loads((cfgs / "run_default.json").read_text())
     ab = json.loads((cfgs / ab_config).read_text())
 
-    shared = ["snapshot_every_games", "n_workers", "games_per_iteration",
-              "pfsp_power", "checkpoint_opponent_rate", "pfsp", "roster", "heuristic_decks"]
-    for k in shared:
-        assert base[k] == ab[k], f"{k} must match the baseline; got {base[k]!r} vs {ab[k]!r}"
+    IDENTITY = {"league_name", "gauntlet_league_name", "total_games"}
+    def training_keys(cfg):
+        return {k: v for k, v in cfg.items() if not k.startswith("_") and k not in IDENTITY}
 
-    assert ab["ppo"] == expected_ppo, "exactly one PPO knob may move"
-    assert "ppo" not in base, "baseline must use PPO_DEFAULTS untouched"
-    # ...and that knob must actually DIFFER from the shipped default, or the arm
-    # is silently a re-run of the baseline. This is what catches an arm whose
-    # value has since been adopted as the default (as run_lr2e4_ab.json's was).
-    from rl.league_runner import PPO_DEFAULTS
-    for k, v in ab["ppo"].items():
-        assert PPO_DEFAULTS[k] != v, f"{ab_config} sets {k}={v}, which IS the default -- not an A/B"
+    b, a = training_keys(base), training_keys(ab)
+    allowed = {k: v for k, v in expected_diff.items() if k not in IDENTITY}
+    actual = {k: a.get(k) for k in set(b) | set(a) if b.get(k) != a.get(k)}
+    assert actual == allowed, f"{ab_config} must differ in exactly {allowed}, but differs in {actual}"
+
+    # The moved knob must actually differ from what the code ships, or the arm
+    # is silently a re-run of the baseline. Catches an arm whose value has since
+    # been adopted as the default (as run_lr2e4_ab.json's was).
+    from rl.league_runner import PPO_DEFAULTS, TRUNK_HIDDEN
+    for k, v in ab.get("ppo", {}).items():
+        assert PPO_DEFAULTS[k] != v, f"{ab_config} sets ppo.{k}={v}, which IS the default -- not an A/B"
+    if "trunk_hidden" in ab:
+        assert tuple(ab["trunk_hidden"]) != TRUNK_HIDDEN, f"{ab_config} sets the default trunk width -- not an A/B"
+
     assert ab["league_name"] != base["league_name"], "must not train into the baseline's checkpoints"
-    assert ab["gauntlet_league_name"] == base["league_name"], "gauntlet should point at the baseline"
-    # Every A/B must stop at the same budget, or the runs are not comparable
-    # to each other -- only to the baseline. 10,000 is the Wave 2b window.
-    assert ab["total_games"] == 10_000, "all A/Bs share one budget so they compare to each other too"
+    assert ab["gauntlet_league_name"] == base["league_name"], (
+        "every arm must score against the SAME fixed reference, or the arms cannot be compared to each other")
+
+
+def test_trunk_width_is_read_off_an_existing_checkpoint_not_the_config():
+    """trunk_hidden became per-league configurable (2026-08-15) to test whether
+    the plateau is a capacity ceiling. The hazard that creates: a config edit
+    silently shape-mismatching a league already on disk, or -- worse -- a
+    cross-league load (_run_eval_vs_gauntlet pulling ANOTHER population's
+    live.pt) building the wrong shape and either erroring or, if the shapes
+    happened to line up, loading garbage.
+
+    The rule is that an existing checkpoint is the sole authority on its own
+    width and the config applies only to a deck with no live.pt yet. This pins
+    that the inference actually reads the tensors, using the real 20,016-game
+    baseline as the fixture."""
+    from rl.checkpoint import trunk_hidden_from_deck_checkpoint
+    from rl.league_runner import TRUNK_HIDDEN
+    from repo_paths import CHECKPOINTS_DIR
+
+    baseline = CHECKPOINTS_DIR / "4_deck_subleague_test" / "elves" / "live.pt"
+    if not baseline.exists():
+        pytest.skip("baseline checkpoints not present")
+    assert trunk_hidden_from_deck_checkpoint(str(baseline)) == (128, 128)
+    assert TRUNK_HIDDEN == (128, 128), "the default must stay the width every existing league was trained at"
+
+    # A path that does not exist reads as None so callers can fall back to the
+    # configured width -- that is exactly how a FRESH deck picks up a new value.
+    assert trunk_hidden_from_deck_checkpoint(str(CHECKPOINTS_DIR / "nope" / "live.pt")) is None

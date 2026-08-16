@@ -196,3 +196,29 @@ def load_pretrain_checkpoint(path):
     if not os.path.exists(path):
         return None
     return torch.load(path, weights_only=True)
+
+
+def trunk_hidden_from_deck_checkpoint(path):
+    """The DeckNetwork trunk widths a live.pt was saved with, read straight off
+    its tensor shapes. Returns None if the file does not exist.
+
+    save_deck_checkpoint stores only {"net": state_dict} -- unlike save_snapshot,
+    which records "trunk_hidden" explicitly -- so a caller that must CONSTRUCT
+    the net before loading into it has no other way to learn the shape. Inferring
+    it works for checkpoints written before this function existed, which storing
+    a new field would not, and keeps one mechanism instead of two.
+
+    Needed because trunk_hidden became per-league configurable (2026-08-15, the
+    capacity experiment): a loader can no longer assume DeckNetwork's default,
+    and cross-league loads -- _run_eval_vs_gauntlet pulling another population's
+    live.pt -- may legitimately face a different width than the running league's.
+    """
+    if not os.path.exists(path):
+        return None
+    sd = torch.load(path, map_location="cpu", weights_only=False)["net"]
+    widths, i = [], 0
+    while f"trunk_layers.{i}.weight" in sd:
+        widths.append(sd[f"trunk_layers.{i}.weight"].shape[0])
+        i += 1
+    assert widths, f"{path} has no trunk_layers.* -- not a DeckNetwork checkpoint?"
+    return tuple(widths)

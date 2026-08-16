@@ -56,6 +56,19 @@ SHARED_HPARAMS = {"d_model": D_MODEL, "n_heads": 4, "n_layers": 2, "dim_feedforw
 EVAL_GAMES = 20
 EVAL_EVERY_SESSIONS = 1
 
+# DeckNetwork trunk widths -- the TRAINABLE half of the model, per deck. The
+# frozen SetTransformer encoder is 117,056 params; this trunk at (128, 128) is
+# 82,877, so 59% of the model is frozen at whatever the pretrain phase produced.
+# Made per-league configurable 2026-08-15 to test whether the late-training
+# plateau (RL_METHODOLOGY_PLAN.md section 1A.13 -- reached by ~4,000 games/deck
+# and NOT caused by KL truncation, entropy, advantage scale or Adam-step count)
+# is a capacity ceiling. (512, 512) is 515,261 params, 6.2x this.
+#
+# Changing it invalidates existing live.pt/snapshot shapes, so it only applies
+# to a FRESH league: _run_session reads the width back off an existing live.pt
+# when resuming and uses this only for a deck that has none yet.
+TRUNK_HIDDEN = (128, 128)
+
 # Optimizer/PPO knobs, previously hardcoded at their use sites and therefore
 # unchangeable without a code edit -- `lr` sat as a literal 3e-4 inside the Adam
 # construction, and gamma/gae_lambda/target_kl/n_epochs were only ever
@@ -370,7 +383,7 @@ def _run_session(n_iterations, games_per_iteration, snapshot_every, executor, n_
                   matchup=None, game_logs=None, checkpoint_rate=0.0, roster=None, pfsp=True,
                   gauntlet_league_dir=None, heuristic_decks=(), cumulative_games=0,
                   ppo_hparams=None, eval_games=EVAL_GAMES, eval_every_sessions=EVAL_EVERY_SESSIONS,
-                  pfsp_power=PFSP_POWER):
+                  pfsp_power=PFSP_POWER, trunk_hidden=TRUNK_HIDDEN):
     # cumulative_games: this league's games/deck ALREADY played before this
     # session started (progress.json, threaded in by run_league.py's main())
     # -- the horizon batch_size_for_iteration and ent_coef_schedule (rl.train)
@@ -435,9 +448,18 @@ def _run_session(n_iterations, games_per_iteration, snapshot_every, executor, n_
 
     live_nets, optimizers = {}, {}
     for name in deck_names:
-        net = DeckNetwork(shared, film_condition_dim=D_MODEL, non_targeting_n_actions=len(fixed_tables[name]))
-        optimizer = torch.optim.Adam([p for p in net.parameters() if p.requires_grad], lr=hp["lr"])
+        # Trunk width: whatever this deck's existing live.pt was built with when
+        # RESUMING, the configured width only for a genuinely fresh deck. Reading
+        # it back off the checkpoint rather than trusting the config is what keeps
+        # a config edit from silently shape-mismatching a league already on disk
+        # -- the same failure mode as the vocab/feature-dim asserts, but for a
+        # value that is now per-league tunable (see trunk_hidden's own docstring
+        # in run_league.py and RL_METHODOLOGY_PLAN.md section 1A.14).
         live_path = f"{league_dir}/{name}/live.pt"
+        width = ckpt_io.trunk_hidden_from_deck_checkpoint(live_path) or trunk_hidden
+        net = DeckNetwork(shared, film_condition_dim=D_MODEL, non_targeting_n_actions=len(fixed_tables[name]),
+                          trunk_hidden=width)
+        optimizer = torch.optim.Adam([p for p in net.parameters() if p.requires_grad], lr=hp["lr"])
         ckpt_io.load_deck_checkpoint(live_path, net, optimizer)  # no-op if live_path doesn't exist yet; optimizer load is migration-guarded (a migrated live.pt dropping "optimizer" -> fresh Adam)
         live_nets[name] = net
         optimizers[name] = optimizer
@@ -796,8 +818,9 @@ def _run_eval(eval_decks, games_per_pairing, greedy, seed, game_logs, matchup=No
 
     live_nets, mulligan_nets = {}, {}
     for name in set(eval_decks):
-        net = DeckNetwork(shared, film_condition_dim=D_MODEL, non_targeting_n_actions=len(fixed_tables[name]))
         live_path = f"{league_dir}/{name}/live.pt"
+        net = DeckNetwork(shared, film_condition_dim=D_MODEL, non_targeting_n_actions=len(fixed_tables[name]),
+                          trunk_hidden=ckpt_io.trunk_hidden_from_deck_checkpoint(live_path) or TRUNK_HIDDEN)
         ckpt_io.load_deck_checkpoint(live_path, net)  # optimizer=None: eval only ever needs inference weights
         net.eval()
         live_nets[name] = net
@@ -876,8 +899,10 @@ def load_vintage_agent(league_dir, deck_name, vintage, shared, deck_ctx, pool=No
     _vocab, fixed_table = deck_ctx
     deck_dir = os.path.join(league_dir, deck_name)
     if vintage == "live":
-        net = DeckNetwork(shared, film_condition_dim=D_MODEL, non_targeting_n_actions=len(fixed_table))
-        ckpt_io.load_deck_checkpoint(os.path.join(deck_dir, "live.pt"), net)
+        live_path = os.path.join(deck_dir, "live.pt")
+        net = DeckNetwork(shared, film_condition_dim=D_MODEL, non_targeting_n_actions=len(fixed_table),
+                          trunk_hidden=ckpt_io.trunk_hidden_from_deck_checkpoint(live_path) or TRUNK_HIDDEN)
+        ckpt_io.load_deck_checkpoint(live_path, net)
         net.eval()
         mull = MulliganNet(shared)
         ckpt_io.load_deck_checkpoint(os.path.join(deck_dir, "mulligan.pt"), mull)
@@ -1033,7 +1058,11 @@ def _run_eval_vs_gauntlet(deck_name, live_net, mulligan_net, deck_ctx, decklist,
         return None
 
     _vocab, fixed_table = deck_ctx
-    gauntlet_net = DeckNetwork(shared, film_condition_dim=D_MODEL, non_targeting_n_actions=len(fixed_table))
+    # The gauntlet is a DIFFERENT population and may legitimately have been
+    # trained at a different trunk width than the league calling this, so its
+    # own checkpoint is the only authority on the shape to build.
+    gauntlet_net = DeckNetwork(shared, film_condition_dim=D_MODEL, non_targeting_n_actions=len(fixed_table),
+                               trunk_hidden=ckpt_io.trunk_hidden_from_deck_checkpoint(gauntlet_live_path))
     ckpt_io.load_deck_checkpoint(gauntlet_live_path, gauntlet_net)  # existence already checked above
     gauntlet_net.eval()
     gauntlet_mull = MulliganNet(shared)

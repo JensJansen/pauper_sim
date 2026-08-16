@@ -59,7 +59,7 @@ from repo_paths import CHECKPOINTS_DIR
 from rl.league import PFSP_POWER
 from rl.league_cli_spec import build_arg_parser
 from rl.league_runner import (
-    EVAL_EVERY_SESSIONS, EVAL_GAMES, advance_progress,
+    EVAL_EVERY_SESSIONS, EVAL_GAMES, TRUNK_HIDDEN, advance_progress,
     _load_progress, _next_batch_games, _run_eval, _run_session, _save_progress, _write_event_log,
 )
 
@@ -197,7 +197,14 @@ def main():
                             ppo_hparams=run_cfg.get("ppo"),
                             eval_games=run_cfg.get("eval_games", EVAL_GAMES),
                             eval_every_sessions=run_cfg.get("eval_every_sessions", EVAL_EVERY_SESSIONS),
-                            pfsp_power=run_cfg.get("pfsp_power", PFSP_POWER))
+                            pfsp_power=run_cfg.get("pfsp_power", PFSP_POWER),
+                            # trunk_hidden: DeckNetwork's TRAINABLE trunk widths. Applies
+                            # only to a deck with no live.pt yet -- _run_session reads the
+                            # width back off an existing checkpoint when resuming, so
+                            # editing this cannot shape-mismatch a league already on disk,
+                            # it just does nothing. JSON gives a list; DeckNetwork wants a
+                            # tuple.
+                            trunk_hidden=tuple(run_cfg.get("trunk_hidden", TRUNK_HIDDEN)))
 
     sequential = matchup is not None or n_workers <= 1  # matchup uses collect_rollout directly (no worker path)
     if not sequential:

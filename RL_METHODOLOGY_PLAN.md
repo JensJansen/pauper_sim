@@ -862,6 +862,69 @@ stack limiting representable policy (unfreezing is Phase 3, never run), the
 4-deck meta's own structural ceiling (§1A.5), and mono_red's suspected skill
 ceiling dragging the whole population (§1A.6, direct test still unrun).
 
+### 1A.14 Capacity is not the ceiling either — 6.2× trainable params, same plateau
+
+`trunk_hidden` (128,128) → **(512,512)**, the TRAINABLE per-deck trunk:
+82,877 → 515,261 params. Single variable, 8,016 games/deck
+(`training_configs/run_trunk512_ab.json`). Everything else inherits the
+defaults, including the newly adopted `lr=2e-4`.
+
+The split that motivated it: the frozen SetTransformer encoder is 117,056
+params against the trunk's 82,877, so **59% of the model is frozen** at whatever
+500 games/deck of near-random pretrain play produced, and the trainable half is
+small. The trunk is the cheap half to test — `d_model` is unchanged, so the
+frozen-stack interface is untouched and no re-pretrain is needed.
+
+`vs_gauntlet` against the same fixed reference (baseline live @20,016):
+
+| cum | trunk512 (6.2×) | trunk128 |
+|---|---|---|
+| 984 | 37.5% | 31.2% |
+| 3,984 | **32.5%** | 47.5% |
+| 6,984 | 51.2% | 55.0% |
+| 8,016 | **55.0%** | ~51% band |
+
+**Null.** 6.2× capacity lands in the same ~45–60% band the small net oscillates
+in. It led marginally to cum 984, dipped, recovered, and converged to the same
+level — **slower, not higher.** Criterion (2) fails: the late plateau does not
+sit above trunk128's band.
+
+**Caveat that bounds the claim, found in the final diagnostics.** trunk512 ran
+`epochs_run = 2.01` against trunk128's 3.94 at identical `lr`: the larger net
+**reintroduced KL truncation**, because more parameters means more policy
+movement per Adam step. So this is a null for *capacity at lr=2e-4*, not for
+capacity in general — a clean test would re-tune `lr` downward for the larger
+net, and the two knobs are evidently coupled through model size. Worth recording
+as a limit on the result rather than banking the null harder than it earns.
+
+**Where that leaves the plateau.** Five mechanisms now tested and none of them
+is it:
+
+| hypothesis | verdict |
+|---|---|
+| self-play cycling | ruled out, 200+ triples, 0 significant |
+| advantage scale (`adv_std`) | falsified — regressors at opposite ends of the range |
+| degenerate matchups | not supported — dmir has the same share and thrived |
+| policy entropy | falsified by intervention — +25% entropy, KL unchanged |
+| Adam-step count | falsified — steps fall 4× while KL rises 2.7× |
+| KL truncation / trust region | real defect, fixed, and **not** the plateau (§1A.13) |
+| trainable capacity | **null at this lr (this section)** |
+
+**The frozen encoder is now the prime suspect by elimination** — the same way
+`lr` was identified. It is 59% of the model, it was frozen after 500 games/deck
+of near-random play, and it has never seen the state distribution these agents
+now inhabit; every per-deck head since has been fitting on top of features
+learned from a policy that no longer exists. Testing it costs either a full
+re-pretrain at a much larger budget then re-freeze (~5h, no code change), or
+making the stack trainable during league play — which is NOT a flag, because
+the stack is shared across four per-deck Adam optimizers and unfreezing means
+four optimizers mutating one set of tensors with independent momentum.
+
+The remaining non-model candidate is the **4-deck meta's own structure**
+(§1A.5): three of four matchups are near-deterministic, so the population may
+simply be at the ceiling this meta can express, in which case no optimizer or
+architecture change will move it and only adding decks will.
+
 Failing (1) while passing (2) — or the reverse — is more informative than either
 alone: it separates "the knob did what it mechanically should" from "that helped."
 Stop at 10,000 games/deck; truncation saturated by cum 9,000 in the baseline, so
