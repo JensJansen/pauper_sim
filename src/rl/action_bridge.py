@@ -83,7 +83,7 @@ def pointer_legal_mask(state, identities_row):
     state.mana_subdecision's own docstring), and its own choose_target stage
     is itself a pointer choice, so it needs to win the dispatch here, not
     fall through to whatever pending_resolution's own branch would offer."""
-    mana_sub = state.mana_subdecision
+    mana_sub = state.active_mana_subdecision
     if mana_sub is not None:
         mask = [False] * len(identities_row)
         if mana_sub["stage"] == "choose_target":
@@ -195,7 +195,7 @@ def any_pointer_legal(state):
     identities/mask work entirely on the (common) steps where it's not
     even relevant, same "cheap gate before the expensive check" shape
     drl_env's own _pending_gate convention already uses throughout."""
-    mana_sub = state.mana_subdecision
+    mana_sub = state.active_mana_subdecision
     if mana_sub is not None:
         return mana_sub["stage"] == "choose_target"
     pending = state.pending_resolution
@@ -214,7 +214,7 @@ def pointer_kind(state):
     name instead of a legality mask. For decision-weight logging only
     (rl.agent/rl.mulligan); execution and legality never need this, only the
     display label a replay viewer attaches to a pointer candidate."""
-    mana_sub = state.mana_subdecision
+    mana_sub = state.active_mana_subdecision
     if mana_sub is not None:
         return "mana_subdecision" if mana_sub["stage"] == "choose_target" else None
     pending = state.pending_resolution
@@ -241,7 +241,7 @@ def execute_pointer_choice(state, chosen):
     battlefield target (addressed by its own (name, slot), exactly what those
     closures already expect) -- just sourced from a pointer-head selection
     instead of a fixed-table lookup."""
-    mana_sub = state.mana_subdecision
+    mana_sub = state.active_mana_subdecision
     if mana_sub is not None and mana_sub["stage"] == "choose_target":
         # `chosen` is the exact Permanent to tap -- passed through directly
         # (same identity-object shape _ID_MATCHED_KINDS below already uses),

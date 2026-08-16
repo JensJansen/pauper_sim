@@ -234,7 +234,11 @@ def begin_mana_subdecision(state, source, target_predicate):
     choose_color stage (begin_mana_color_choice/execute_mana_subdecision_
     color) needed generalizing to serve both."""
     state.mana_subdecision = {
+        # owner: the seat opening this. A subdecision claims EXCLUSIVE priority,
+        # and without an owner that lands on whoever is asked next rather than
+        # the opener -- see GameState.active_mana_subdecision.
         "stage": "choose_target", "source": source, "target_predicate": target_predicate, "target": None,
+        "owner": state.active_idx,
     }
     state.log_event("mana_subdecision_begin", source=(source.card_def.name, source.slot))
 
@@ -304,7 +308,10 @@ def begin_mana_color_choice(state, can_produce, on_choose_color):
     primitive never inspects that context itself."""
     sub = state.mana_subdecision
     if sub is None:
-        sub = {}
+        # A filter opens straight into this stage with no prior one, so this is
+        # also an OPEN site and must stamp the owner (see
+        # GameState.active_mana_subdecision).
+        sub = {"owner": state.active_idx}
         state.mana_subdecision = sub
     sub["stage"] = "choose_color"
     sub["can_produce"] = can_produce

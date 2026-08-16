@@ -895,3 +895,54 @@ def test_mana_ability_legal_mid_any_pending_resolution():
     game.execute_discard_option(mid_state, "Lightning Bolt")
     assert discard_completed == [[game.CARD_DEFS["Lightning Bolt"]]]
     assert mid_state.pending_resolution is None
+
+
+def test_mana_subdecision_does_not_hijack_the_other_seat():
+    """A mana subdecision claims EXCLUSIVE priority -- its owner may take no
+    other action until it completes, which is how the engine models a mana
+    ability being atomic. state.mana_subdecision is a single global slot, so
+    before it carried an owner that exclusivity landed on whichever seat was
+    asked NEXT rather than the one that opened it.
+
+    Live consequence, 2026-08-16: the DEFENDER opened a Saruli Caretaker
+    subdecision and never completed it; the ATTACKER was then asked to assign
+    combat damage, rl.action_bridge built the pointer mask for the defender's
+    tap-target choice instead of the attacker's blockers, nothing matched, and
+    the all-False mask crashed an 11-deck training run twice.
+
+    Pins both halves: the non-owner is unaffected, and the owner still gets
+    exclusive priority (i.e. is forced to finish)."""
+    saruli_decklist = [("Saruli Caretaker", 2), ("Slippery Bogle", 2)]
+    actions = build_action_table(saruli_decklist, game.EFFECT_REGISTRY)
+
+    saruli = Permanent(game.CARD_DEFS["Saruli Caretaker"])
+    saruli.summoning_sick = False
+    bogle = Permanent(game.CARD_DEFS["Slippery Bogle"])
+    state = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
+    state.players[1].battlefield = [saruli, bogle]
+
+    # Seat 1 opens the subdecision while it is the active seat.
+    state.active_idx = 1
+    tap_idx = _action_index(actions, "Tap Saruli Caretaker")
+    assert actions[tap_idx][1](state)
+    actions[tap_idx][2](state)
+    assert state.mana_subdecision is not None
+    assert state.mana_subdecision["owner"] == 1
+
+    # Owner's view: still exclusive, still forced to finish.
+    assert state.active_mana_subdecision is state.mana_subdecision
+    assert not legal_action_mask(state, actions)[tap_idx], "owner keeps exclusive priority"
+
+    # The OTHER seat must not see it at all -- this is the crash.
+    state.active_idx = 0
+    assert state.active_mana_subdecision is None, "a subdecision must never govern another seat's decision"
+    assert state.mana_subdecision is not None, "...while still being genuinely open for its owner"
+
+    # And the other seat's own action legality is evaluated normally rather
+    # than being suppressed by someone else's exclusive priority.
+    from rl.action_bridge import any_pointer_legal
+    state.active_idx = 0
+    assert any_pointer_legal(state) is False, (
+        "with no pending of its own, seat 0 has no pointer decision -- and must NOT "
+        "inherit the choose_target answer from seat 1's subdecision"
+    )

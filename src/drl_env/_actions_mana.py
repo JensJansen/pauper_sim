@@ -170,7 +170,7 @@ def _mana_subdecision_color_legal(color):
     begin_mana_color_choice's own docstring for what each real caller
     binds). Generic: this function has no idea which ability is asking."""
     def legal(state):
-        return state.mana_subdecision["can_produce"](state, color)
+        return state.active_mana_subdecision["can_produce"](state, color)
     legal._mana_subdecision_gate = "choose_color"
     return legal
 

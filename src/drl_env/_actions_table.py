@@ -1129,7 +1129,7 @@ def legal_action_mask(state, actions):
     _actions_mana._mana_source_cache = None
     _actions_mana._filter_source_cache = None
     game.reset_mana_cache()
-    mana_sub = state.mana_subdecision
+    mana_sub = state.active_mana_subdecision
     sub_rows = _mana_subdecision_rows(actions)
     try:
         if not sub_rows:

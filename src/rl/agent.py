@@ -150,7 +150,7 @@ def _hand_cost_reduction_deltas(state, seat_idx):
 _Decision = namedtuple("_Decision", "tokens scalar full_mask identities fixed_table n_fixed n_legal sole_action")
 
 
-def _raise_all_false(state, seat):
+def _raise_all_false(state, seat, deck_vocab=None):
     # DIAGNOSTIC (temporary): an all-False mask means the engine reached a
     # decision state the action space can't represent AT ALL -- a real gap.
     # masked_fill(-1e8) then Categorical would otherwise sample UNIFORMLY over
@@ -166,6 +166,46 @@ def _raise_all_false(state, seat):
             if k in pend:
                 v = pend[k]
                 print(f"    pending[{k}]={[getattr(c, 'name', c) for c in v] if isinstance(v, list) else v}", flush=True)
+    # A live mana_subdecision SHORT-CIRCUITS any_pointer_legal -- it returns
+    # `stage == "choose_target"` and never looks at pending_resolution at all,
+    # so any other stage forces the whole pointer half of the mask to False no
+    # matter what the pending wants. That is correct only while the FIXED color
+    # actions cover the decision; if can_produce rejects every color at the same
+    # moment, both halves are empty and this fires. Invisible from the pending
+    # alone, so print it (2026-08-16: two assign_combat_damage all-Falses whose
+    # blockers were all alive, i.e. NOT the 510.1a case turn.py now filters).
+    sub = state.mana_subdecision
+    if sub is None:
+        print("    mana_subdecision=None", flush=True)
+    else:
+        src, tgt = sub.get("source"), sub.get("target")
+        print(f"    mana_subdecision stage={sub.get('stage')!r} "
+              f"source={(src.card_def.name, src.slot, 'T' if src.tapped else 'U') if src is not None else None} "
+              f"target={(tgt.card_def.name, tgt.slot) if tgt is not None else None} "
+              f"keys={list(sub.keys())}", flush=True)
+        cp = sub.get("can_produce")
+        if cp is not None:
+            producible = []
+            for color in ("W", "U", "B", "R", "G"):
+                try:
+                    if cp(state, color):
+                        producible.append(color)
+                except Exception as exc:
+                    producible.append(f"{color}:<{type(exc).__name__}>")
+            print(f"    mana_subdecision can_produce -> {producible or 'NOTHING (this is the all-False)'}", flush=True)
+    # The pending's own targets, and whether each is still reachable: a blocker
+    # that is alive but NOT in build_token_set cannot be addressed by the
+    # pointer head even though it is a legal choice.
+    if pend and "blockers" in pend:
+        from rl.features import build_token_set
+        try:
+            ids = {id(i) for _v, _r, i in build_token_set(state, seat, deck_vocab, include_rows=False) if i is not None}
+        except Exception as exc:
+            ids = f"<{type(exc).__name__}>"
+        for b in pend["blockers"]:
+            on_bf = any(b in p.battlefield for p in state.players)
+            tok = (id(b) in ids) if isinstance(ids, set) else ids
+            print(f"    blocker {b.card_def.name}#{b.slot} on_battlefield={on_bf} tokenized={tok}", flush=True)
     # A STRANDED PAYMENT (pending_kind=pay_cost) is the one all-False shape whose
     # cause is invisible from the pending alone: it depends on what mana is
     # floating and what could still be tapped. Float-first mana has no "Abandon
@@ -244,7 +284,7 @@ def _build_decision(state, seat, deck_ctx, horizon):
 
     legal = np.flatnonzero(full_mask)
     if legal.size == 0:
-        _raise_all_false(state, seat)
+        _raise_all_false(state, seat, vocab)
     sole = int(legal[0]) if legal.size == 1 else None
     if sole is not None:
         return _Decision(None, None, full_mask, identities, fixed_table, len(fixed_table), int(legal.size), sole)

@@ -673,6 +673,18 @@ class GameState:
         # begin_mana_subdecision/execute_mana_subdecision_target -- a mana
         # filter has no equivalent first stage; it opens straight into
         # choose_color from its own flat fixed-table row's execute.
+        # Every subdecision additionally carries {"owner": seat index} --
+        # whoever was active when it opened. It is a single GLOBAL slot, and
+        # its whole point is exclusive priority ("suppress everything except
+        # the matching-stage closures", see _actions_table.legal_action_mask),
+        # so without an owner that exclusivity lands on whichever seat is asked
+        # NEXT rather than the one that opened it. A Saruli Caretaker
+        # subdecision left open by the DEFENDER did exactly that on 2026-08-16:
+        # the ATTACKER was then asked to assign combat damage, got a pointer
+        # mask built for the defender's tap-target choice instead, and crashed
+        # with an all-False action mask. Read it through
+        # active_mana_subdecision, never raw, from anywhere that is deciding
+        # what a given seat may legally do.
         self.mana_subdecision = None
 
         # True for the duration of game.turn.Phase.END's own CLEANUP portion
@@ -759,6 +771,30 @@ class GameState:
         called) in a 2-player game; game.effects.win_check.deal_damage_to_opponent
         guards every call with len(state.players) > 1 first."""
         return self.players[1 - self.active_idx]
+
+    @property
+    def active_mana_subdecision(self):
+        """mana_subdecision, but only when the ACTIVE seat is the one that
+        opened it -- otherwise None.
+
+        A mana subdecision claims exclusive priority: while one is open its
+        owner may take no other action, which is how the engine models a mana
+        ability being atomic (real Magic never interleaves anything between
+        announcing one and its resolution). That exclusivity is correct for the
+        owner and wrong for everyone else, and the raw slot cannot tell the
+        difference -- it is global, with no stack. Anything asking "what may
+        THIS seat legally do right now" must read this property; only the
+        execute_* handlers, which by construction run as the owner, may touch
+        the raw slot.
+
+        Without this, a subdecision the defender left open silently governed
+        the attacker's next decision instead (2026-08-16: an all-False action
+        mask during assign_combat_damage, which is a hard crash -- see
+        mana_subdecision's own comment in __init__)."""
+        sub = self.mana_subdecision
+        if sub is None or sub.get("owner") != self.active_idx:
+            return None
+        return sub
 
     def draw(self, n=1):
         # Single generic draw-logging hook: every card that enters a hand
