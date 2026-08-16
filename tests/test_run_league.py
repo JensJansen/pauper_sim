@@ -311,3 +311,29 @@ def test_main_league_mechanics_match_the_validated_config():
     # The full manifest, not a subset -- this league's whole point is the 11-deck meta.
     manifest = json.loads((REPO_ROOT / "data" / "league_decks.json").read_text())
     assert set(main["roster"]) == set(manifest), "main league must carry the full manifest roster"
+
+
+def test_pretrain_cross_deck_pairing_is_opt_in_and_actually_varies():
+    """The shared encoder had only ever seen MIRROR board states -- both players
+    on the same decklist -- while ~10/11 of real league games are cross-deck. Its
+    attention was therefore asked at league time to encode card co-occurrences it
+    never saw during pretraining. --cross-deck fixes that.
+
+    Two things pinned. (1) Default stays mirror, bit-for-bit: the frozen stack
+    currently in use came from mirror-only pretraining and the baseline
+    populations were all trained against it, so flipping the default would
+    silently change what a re-pretrain reproduces. (2) --cross-deck really does
+    sample other decks, and still leaves SOME mirrors (it samples the whole
+    roster including self), which is roughly the mix a real league produces."""
+    import random
+    from run_pretrain import pretrain_opponent
+
+    decks = ["a", "b", "c", "d", "e"]
+    rng = random.Random(0)
+    assert all(pretrain_opponent(decks, d, False, rng) == d for d in decks), "default must stay mirror"
+
+    drawn = [pretrain_opponent(decks, "a", True, rng) for _ in range(400)]
+    assert set(drawn) == set(decks), "cross-deck must be able to draw every deck, self included"
+    non_mirror = sum(1 for d in drawn if d != "a")
+    assert 0.6 < non_mirror / len(drawn) < 0.95, (
+        f"expected roughly (n-1)/n = {(len(decks)-1)/len(decks):.0%} cross-deck, got {non_mirror/len(drawn):.0%}")
