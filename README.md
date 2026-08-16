@@ -425,15 +425,28 @@ baseline's live nets):
 | **2e-4** | 0.0243 | 3.94 | **6%** | **62.5%** |
 | 1.5e-4 | 0.0152 | 4.00 | 0% | 45.0% |
 
-2e-4 wins on **half** the baseline's training budget (z=2.24 above parity) and
-is the only value at which no deck materially regresses — 3e-4 costs
-dmir_terror −80 elo, 1.5e-4 costs rakdos_madness −71. The curve is sharply
-nonlinear: 2e-4's KL is only 11% below 3e-4's, but that is enough to drop back
-under the `target_kl=0.03` epoch-mean cliff and collapse truncation from 99% to
-6%. Scope is **league training only** — `run_pretrain.py` keeps its own 3e-4,
-which was never part of the experiment. Resuming a league trained at 3e-4 now
-picks up the new default; pin `"ppo": {"lr": 0.0003}` in its config to continue
-it unchanged. See RL_METHODOLOGY_PLAN.md §1A.11–§1A.12.
+The curve is sharply nonlinear: 2e-4's KL is only 11% below 3e-4's, but that is
+enough to drop back under the `target_kl=0.03` epoch-mean cliff and collapse
+truncation from 99% to 6%.
+
+> **The 62.5% is a peak, not a level** (§1A.13). Extending 2e-4 to a
+> budget-matched 20,016 games showed that reading was the highest of eight
+> samples on an oscillating series; at matched budget it is 43.8%, i.e. parity.
+> The "better final policy" claim is **withdrawn**.
+
+2e-4 is kept as the default on what survived: it reaches parity with the
+baseline's **final** policy at cum ~3,984 — a **~5× sample-efficiency gain** —
+it eliminates truncation, and it is still the only value at which no deck
+materially regresses (3e-4 costs dmir_terror −80 elo, 1.5e-4 costs
+rakdos_madness −71). It converges much faster to the same place; it does not end
+up stronger. Note that 2e-4 plateaus and oscillates exactly as 3e-4 does despite
+having no truncation, so **the late-training plateau is not a trust-region
+problem** and lowering `lr` further will not fix it.
+
+Scope is **league training only** — `run_pretrain.py` keeps its own 3e-4, which
+was never part of the experiment. Resuming a league trained at 3e-4 now picks up
+the new default; pin `"ppo": {"lr": 0.0003}` in its config to continue it
+unchanged. See RL_METHODOLOGY_PLAN.md §1A.11–§1A.13.
 
 Training runs on **CPU** by design — the model is small (~200–250K params) and
 a batch-size sweep found no GPU crossover at this size.

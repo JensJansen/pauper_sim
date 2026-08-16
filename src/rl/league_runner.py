@@ -78,13 +78,27 @@ PPO_DEFAULTS = {
     #     2e-4      0.0243   3.94        6%        50/80 = 62.5%
     #     1.5e-4    0.0152   4.00        0%        36/80 = 45.0%
     #
-    # 2e-4 wins on half the baseline's training budget (z=2.24 above parity),
-    # and is the only value tested at which NO deck materially regresses: 3e-4
-    # costs dmir_terror -80 elo, 1.5e-4 costs rakdos_madness -71, 2e-4 costs
-    # nobody. The curve is sharply nonlinear -- 2e-4's KL is only 11% under
-    # 3e-4's, but that is enough to drop back under the target_kl=0.03
-    # epoch-mean cliff, collapsing truncation 99% -> 6%. See
-    # RL_METHODOLOGY_PLAN.md section 1A.12.
+    # The curve is sharply nonlinear -- 2e-4's KL is only 11% under 3e-4's, but
+    # that is enough to drop back under the target_kl=0.03 epoch-mean cliff,
+    # collapsing truncation 99% -> 6%.
+    #
+    # CORRECTED (section 1A.13): the 62.5% above is 2e-4 measured at cum 9,984,
+    # which extending it to a budget-matched 20,016 showed was the HIGHEST of
+    # eight samples on an oscillating series (47.5 / 55.0 / 62.5 / 47.5 / 51.2 /
+    # 53.8 / 43.8 from cum 3,984 on). At matched budget it is 43.8%, i.e. parity
+    # (z=-1.12). The "better final policy" claim is WITHDRAWN.
+    #
+    # 2e-4 is kept as the default on what survived: it reaches parity with the
+    # baseline's FINAL policy at cum ~3,984 (z=-0.45 from parity), a ~5x
+    # sample-efficiency gain, it eliminates truncation, and it is still the only
+    # value tested at which no deck materially regresses (3e-4 costs dmir_terror
+    # -80 elo, 1.5e-4 costs rakdos_madness -71). It converges much faster to the
+    # same place; it does not end up stronger.
+    #
+    # Note for anyone tuning further: 2e-4 plateaus and oscillates exactly as
+    # 3e-4 does despite having no truncation at all, so the late-training
+    # plateau is NOT a trust-region problem and lowering lr further will not fix
+    # it. See RL_METHODOLOGY_PLAN.md sections 1A.12-1A.13.
     #
     # Scope: LEAGUE training only. run_pretrain.py has its own 3e-4 and was
     # never part of the experiment -- do not "make it consistent" without

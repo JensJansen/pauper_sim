@@ -805,6 +805,63 @@ than an `lr` effect, and it is untested. The obvious next experiment is simply
 running 2e-4 out to 20,016 games for a budget-matched comparison against the
 baseline.
 
+### 1A.13 CORRECTION to §1A.12 — the 62.5% was a peak, not a level
+
+2e-4 extended to **20,016 games/deck**, budget-matched to the baseline. Full
+`vs_gauntlet` trajectory against a *fixed* reference (baseline live @20,016):
+
+| cum | total vs baseline |
+|---|---|
+| 984 | 31.2% |
+| 3,984 | **47.5%** |
+| 6,984 | 55.0% |
+| **9,984** | **62.5%** ← where §1A.12 measured |
+| 12,984 | 47.5% |
+| 15,984 | 51.2% |
+| 18,984 | 53.8% |
+| **20,016** | **43.8%** |
+
+**§1A.12's headline — "beats a 2× budget baseline" — does not survive.** At
+matched budget 2e-4 sits at 43.8%, statistically indistinguishable from parity
+(z = −1.12) and significantly below its own 9,984 reading (z = 2.38, p ≈ 0.017).
+That reading was the highest of eight samples; from cum 3,984 the series
+oscillates around ~51% with no upward trend. **Measuring a single point on an
+oscillating series and reporting it as a level is the error**, and it is the
+same class of mistake as §1A.7's "epochs_run 4 throughout" (measured at session
+5) — a favourable point sampled and generalized.
+
+**What survives, and it is still worth having.** 2e-4 reaches statistical parity
+with the baseline's FINAL policy at **cum 3,984** (47.5%, z = −0.45 from
+parity): baseline-final strength in ~4,000 games rather than 20,016, a **~5×
+sample-efficiency gain**, then a plateau. That is a real and useful result — it
+is just "converges much faster to the same place", not "ends up stronger".
+
+**The negative finding is the more important one.** 2e-4 eliminated truncation
+outright (99% → 6%) and **still plateaus and oscillates exactly as the baseline
+does.** So the late-training plateau is NOT a trust-region problem. §1A.8–§1A.12
+spent three sections and three training runs treating KL truncation as the
+binding constraint; it is not. It was a real defect, it is now fixed, and fixing
+it bought convergence speed and nothing else.
+
+**Adoption stands, on the corrected rationale.** `lr = 2e-4` remains the default
+because it converges ~5× faster to the same strength, eliminates truncation, and
+is still the only value tested at which no deck materially regresses. It is NOT
+retained on the "better final policy" claim, which is withdrawn.
+
+**Practical consequence.** If final strength is what matters and the plateau is
+real, the marginal 16,000 games/deck after cum ~4,000 buy nothing measurable.
+Either stop there, or select checkpoints on a common reference rather than
+assuming the newest is best — the whole run has now produced three separate
+cases (baseline dmir, §1A.11 elves, this trajectory) where the newest policy was
+not the strongest.
+
+**Next question, and it is a different one from the last three.** What causes
+the plateau, given it is not the trust region, not entropy, not advantage
+scaling, and not Adam-step count? Candidates not yet tested: the frozen shared
+stack limiting representable policy (unfreezing is Phase 3, never run), the
+4-deck meta's own structural ceiling (§1A.5), and mono_red's suspected skill
+ceiling dragging the whole population (§1A.6, direct test still unrun).
+
 Failing (1) while passing (2) — or the reverse — is more informative than either
 alone: it separates "the knob did what it mechanically should" from "that helped."
 Stop at 10,000 games/deck; truncation saturated by cum 9,000 in the baseline, so
