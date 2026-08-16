@@ -531,3 +531,61 @@ def test_initiative_transfer_not_masked_by_simultaneous_lifelink_gain():
     resolve_top_of_stack(state)  # the take_initiative trigger itself
     assert state.initiative_idx == 0  # still stolen -- Hitter DID deal combat damage to the holder
     assert any(e["type"] == "venture" for e in state.players[0].trigger_queue)
+
+
+def test_free_damage_assignment_skips_blockers_that_already_left():
+    """Rule 510.1a: an attacker assigns combat damage only among creatures
+    CURRENTLY blocking it.
+
+    combat_damage_step's auto path already handled dead blockers (see
+    test_trample_all_through_when_every_blocker_already_gone). The FREE
+    assignment path -- 2+ blockers, where the attacker's controller chooses the
+    split -- did not: it captured state.blocked_by at declaration and offered
+    the whole list, including any blocker killed by removal in the priority
+    round that game.turn gives both players right after blocks.
+
+    That was a hard crash, not a rules nicety. A dead blocker is not in
+    build_token_set (which walks the battlefield), so rl.action_bridge's
+    pointer mask -- an identity match against the pending's blocker list --
+    could not address it, and with no trample option either the whole action
+    mask came back all-False. Hit on turn 79 of an 11-deck league game,
+    2026-08-16.
+    """
+    from game.turn import _assign_combat_damage_gen
+
+    _card_defs_backup = dict(registry.CARD_DEFS)
+    try:
+        state = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
+        attacker = Permanent(CardDef("Ganged2", CardType.CREATURE, None, EffectId.FILLER, power=4, toughness=4))
+        attacker.summoning_sick = False
+        registry.CARD_DEFS["Ganged2"] = attacker.card_def
+        state.players[0].battlefield = [attacker]
+
+        def blocker(name):
+            return Permanent(CardDef(name, CardType.CREATURE, None, EffectId.FILLER, power=1, toughness=2))
+
+        alive, dead = blocker("Alive"), blocker("Dead")
+        state.players[1].battlefield = [alive]  # `dead` deliberately on NO battlefield
+
+        declare_attackers_step(state)
+        declare_attacker(state, attacker)
+        state.blocked_by[attacker] = [alive, dead]
+
+        # Two blockers declared, but only one still alive -> no free choice
+        # remains, so the generator must finish WITHOUT asking for a decision.
+        # It previously opened a pending whose only addressable option was gone.
+        assert list(_assign_combat_damage_gen(state)) == []
+        assert state.pending_resolution is None
+
+        # And with two survivors out of three, the decision IS offered -- over
+        # the living pair only, never the corpse.
+        alive2 = blocker("Alive2")
+        state.players[1].battlefield = [alive, alive2]
+        state.blocked_by[attacker] = [alive, dead, alive2]
+        gen = _assign_combat_damage_gen(state)
+        assert next(gen) is None, "should pause for the controller's assignment"
+        assert state.pending_resolution["kind"] == "assign_combat_damage"
+        assert state.pending_resolution["blockers"] == [alive, alive2]
+    finally:
+        registry.CARD_DEFS.clear()
+        registry.CARD_DEFS.update(_card_defs_backup)

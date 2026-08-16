@@ -453,7 +453,25 @@ def _assign_combat_damage_gen(state):
     finishes in exactly `power` picks -- it cannot loop. On the (unreachable)
     cap exhaustion, abandon and let combat_damage_step auto-assign."""
     for attacker, blockers, power, has_trample in attackers_needing_damage_assignment(state):
-        begin_assign_combat_damage(state, attacker, blockers, power, has_trample, on_complete=lambda s: None)
+        # Rule 510.1a: an attacker assigns its combat damage only among the
+        # creatures CURRENTLY blocking it. A blocker can leave the battlefield
+        # between the block declaration and this point (removal cast in the
+        # post-declare-blockers priority round), and blocked_by still holds it.
+        # Offering a dead blocker is doubly wrong: it is not a legal assignment
+        # target, and it is no longer in build_token_set (which walks the
+        # battlefield), so the pointer mask could not address it even if it
+        # were -- an all-False action mask, which is a hard crash. Seen on turn
+        # 79 of an 11-deck game, 2026-08-16.
+        #
+        # Below 2 living blockers there is no free choice left to make, which
+        # is the same condition attackers_needing_damage_assignment screens on:
+        # combat_damage_step's _default_damage_assignment handles 1 (all damage
+        # to it) and 0 (assigns NO damage -- the attacker is still blocked, per
+        # 509.1h, so nothing spills to the defending player without trample).
+        living = [b for b in blockers if b in state.opponent.battlefield]
+        if len(living) < 2:
+            continue
+        begin_assign_combat_damage(state, attacker, living, power, has_trample, on_complete=lambda s: None)
         for _ in range(PRIORITY_ROUND_ACTION_CAP):
             if state.pending_resolution is None:
                 break
