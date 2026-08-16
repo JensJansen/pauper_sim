@@ -282,3 +282,32 @@ def test_trunk_width_is_read_off_an_existing_checkpoint_not_the_config():
     # A path that does not exist reads as None so callers can fall back to the
     # configured width -- that is exactly how a FRESH deck picks up a new value.
     assert trunk_hidden_from_deck_checkpoint(str(CHECKPOINTS_DIR / "nope" / "live.pt")) is None
+
+
+def test_main_league_mechanics_match_the_validated_config():
+    """league_main.json had silently drifted: it predated all of Wave 2a and
+    carried no games_per_iteration (so run_league would have derived
+    max(1, n_workers)=6 instead of the validated 24), checkpoint_opponent_rate
+    0.0 instead of 0.15, and no pfsp_power. Running the main league on it would
+    have trained under mechanics nothing had ever validated, while looking like
+    a normal config-driven run -- the stale-config trap the /train skill warns
+    about, and the same class as BUG 1 and BUG 4: a setting that is wrong in a
+    way nothing errors on.
+
+    Run MECHANICS must match run_default.json. Deck identity (roster,
+    league_name, total_games, gauntlet) is deliberately different and exempt."""
+    from repo_paths import REPO_ROOT
+    cfgs = REPO_ROOT / "training_configs"
+    default = json.loads((cfgs / "run_default.json").read_text())
+    main = json.loads((cfgs / "league_main.json").read_text())
+
+    MECHANICS = ["snapshot_every_games", "n_workers", "games_per_iteration",
+                 "pfsp_power", "checkpoint_opponent_rate", "pfsp"]
+    for k in MECHANICS:
+        assert k in main, f"league_main.json is missing {k}; it would silently fall back to a default"
+        assert main[k] == default[k], (
+            f"league_main.json {k}={main[k]!r} but the validated config uses {default[k]!r}")
+
+    # The full manifest, not a subset -- this league's whole point is the 11-deck meta.
+    manifest = json.loads((REPO_ROOT / "data" / "league_decks.json").read_text())
+    assert set(main["roster"]) == set(manifest), "main league must carry the full manifest roster"

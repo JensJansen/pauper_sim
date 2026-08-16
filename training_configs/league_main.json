@@ -1,9 +1,25 @@
 {
-  "_note": "The original full-roster league (checkpoints/league/). max_batch_size removed 2026-07-31 -- the doubling ladder's own safety property (never jump from a small verified batch to a huge one) is now enforced by whatever repeatedly re-invokes run_league.py and health-checks between calls (the /train skill, or the webapp's auto-escalation), not a separate hand-picked ceiling.",
+  "_note": "The full 11-deck league (checkpoints/league/). max_batch_size removed 2026-07-31 -- the doubling ladder's own safety property (never jump from a small verified batch to a huge one) is now enforced by whatever repeatedly re-invokes run_league.py and health-checks between calls (the /train skill, or the webapp's auto-escalation), not a separate hand-picked ceiling.",
+
+  "_brought_current": "UPDATED 2026-08-16. This file had drifted badly: it predated all of Wave 2a and carried no games_per_iteration (so it would have silently used max(1, n_workers)=6 instead of the validated 24), checkpoint_opponent_rate 0.0, no pfsp_power, no gauntlet, and total_games 3000. Running the main league on it would have trained under mechanics nothing had ever validated -- exactly the stale-config trap the /train skill warns about. Every run-mechanics field below is now copied from run_default.json, the config all four 2026-08 experiments used. tests/test_run_league.py pins that they stay in sync.",
+
+  "_why_now": "The 4-deck sub-league plateaus by ~4,000 games/deck and seven hypotheses for that plateau have been tested and falsified (RL_METHODOLOGY_PLAN.md sections 1A.5-1A.14). The two survivors are the frozen encoder and the META ITSELF: section 1A.5 measured that three of four matchups in the sub-league are near-deterministic (win rates 2.6%-97%), so PFSP can only redistribute games, never create competitive ones. Eleven decks gives every deck ten opponents instead of three, which is the direct test of that -- and it needs NO re-pretrain, because run_pretrain.py calls build_pool() with no roster restriction, so the frozen stack was already trained across all 11 decks (500 games/deck x 11) and the vocab already spans them.",
+
+  "_measurement": "gauntlet_league_name points at the 4-deck baseline. vs_gauntlet will report for the four OVERLAPPING decks (rakdos_madness, dmir_terror, elves, mono_red_rally) and is a documented no-op for the other seven, which have no checkpoint there. That preserves a common external reference for a third of the roster, which matters because sections 1A.11-1A.12 established that within-league elo-vs-own-history does not measure strength in either direction and must never be used alone. Both populations train from the same unchanged shared_stack_frozen.pt, satisfying _run_eval_vs_gauntlet's precondition -- do NOT re-freeze the stack while this run is the thing being measured.",
+
+  "_what_would_count": "If the plateau is the sub-league meta's structure, this run should show (a) a materially less degenerate matchup distribution in opponent_stats.json -- the sub-league's decks spent ~50% of training in matchups they win <8% or >82% of -- and (b) continued improvement past the ~4,000 games/deck point where every 4-deck run went flat. If it plateaus at the same point anyway, the meta is NOT the ceiling and the frozen encoder is what remains, which then justifies the ~9h of a much larger re-pretrain.",
+
   "league_name": "league",
   "roster": ["mono_red_madness", "rakdos_madness", "spy_combo", "boggles", "monster_tron", "dmir_terror", "elves", "grixis_affinity", "jund_wildfire", "mono_blue_terror", "mono_red_rally"],
-  "total_games": 3000,
+  "total_games": 8000,
+
   "snapshot_every_games": 200,
   "n_workers": 6,
-  "checkpoint_opponent_rate": 0.0
+  "games_per_iteration": 24,
+  "pfsp_power": 0.5,
+  "checkpoint_opponent_rate": 0.15,
+  "pfsp": true,
+
+  "gauntlet_league_name": "4_deck_subleague_test",
+  "heuristic_decks": ["mono_red_rally"]
 }
