@@ -41,7 +41,9 @@ to the specific Tap actions that caused it via rl.train's on_single_pip_burn
 hook (2026-08-10 second iteration; see with_dense_mana_burn_penalty's own
 docstring for why the first version's naive "charge inside reward_fn"
 approach didn't actually achieve that attribution despite claiming to,
-confirmed via rl/check_credit_assignment.py). reward_fn itself is now a
+confirmed by direct measurement against the real production reward -- the
+numbers are quoted in that docstring; the one-off probe that produced them
+was retired 2026-08-17). reward_fn itself is now a
 plain passthrough of the base reward_fn -- the dense charge is applied as a
 direct correction to already-recorded buffer entries, not through reward_fn's
 own return value. deploy_reward_v3's and deploy_reward_v4's own comments
@@ -383,8 +385,8 @@ def with_dense_mana_burn_penalty(base_reward_fn, mana_burn_c=3.3, mana_burn_p=4.
     clear had already happened by the time the seat was asked to decide
     again -- almost always that seat's own end-of-phase Pass, never the
     taps that actually produced the float. Measured directly against
-    dmir_terror's real production reward function (rl/
-    check_credit_assignment.py, 2026-08-10 session): only 1.8% of recorded
+    dmir_terror's real production reward function (one-off probe, 2026-08-10
+    session; script retired 2026-08-17): only 1.8% of recorded
     transitions (36/1968 across 25 games) ever carried a nonzero charge,
     and a Tap action received it no more often than Pass or anything else
     (3.2% vs. 2.2% vs. 3.4%) -- the charge was landing almost independently
@@ -784,7 +786,8 @@ deploy_reward_v5 = with_dense_mana_burn_penalty(
 
 # League self-play's CURRENT reward (run_league.py, 2026-08-12), replacing
 # deploy_reward_v5 above. Staged 2026-08-11 behind an explicit gate -- apply
-# only if analyze_burn_saturation.py still showed dmir_terror/elves
+# only if a saturation replay (analyze_burn_saturation.py, since retired)
+# still showed dmir_terror/elves
 # saturating the cap in >50% of games at the 20,000-games/deck checkpoint,
 # since a self-correcting v5 would have made the swap a pure confound.
 # GATE RESULT (20,065 games/deck, 400 logged games): saturation went UP, not

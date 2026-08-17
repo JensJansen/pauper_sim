@@ -391,8 +391,8 @@ def test_dense_mana_burn_credit_lands_on_the_tap_not_the_pass():
     # rl.train's on_single_pip_burn hook + open_taps bookkeeping: the whole
     # phase's dense mana-burn charge must land on the Tap action that
     # produced the float, not on the Pass that happened to be pending when
-    # the phase boundary crossed -- the mis-attribution rl/
-    # check_credit_assignment.py found against the real production reward
+    # the phase boundary crossed -- the mis-attribution a 2026-08-10 one-off
+    # probe (since retired) found against the real production reward
     # (see with_dense_mana_burn_penalty's own docstring: only 1.8% of real
     # transitions ever carried a nonzero charge, and Tap wasn't preferred
     # over Pass at all). Scripted mono-Mountain deck (nothing ever castable,

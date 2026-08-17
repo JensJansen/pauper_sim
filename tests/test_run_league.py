@@ -188,18 +188,21 @@ def test_ent_coef_override_is_wired_and_off_by_default():
 
 def test_the_adopted_lr_matches_the_arm_that_justified_it():
     """lr 3e-4 -> 2e-4 (2026-08-15) is the first PPO_DEFAULTS value changed on a
-    controlled experiment rather than a guess. This ties the shipped default to
-    the config of the arm that earned it, so the two cannot drift apart and so
-    changing the default is a deliberate act with a visible test to update.
+    controlled experiment rather than a guess, so changing it back is a
+    deliberate act with a visible test to update.
 
     Evidence, three arms at 10,000 games/deck scored against the identical
-    20,016-game baseline: 2e-4 -> 62.5%, 1.5e-4 -> 45.0%, ent_coef arm -> 27.5%.
-    2e-4 wins on half the baseline's budget and is the only value at which no
-    deck materially regresses. RL_METHODOLOGY_PLAN.md section 1A.12."""
+    20,016-game baseline: 2e-4 reached the plateau band on roughly half the
+    baseline's budget, and was the only value at which no deck materially
+    regressed. It buys convergence SPEED, not a better final policy -- the
+    stronger claim was measured and withdrawn.
+
+    The arm's config (run_lr2e4_ab.json) was deleted in the 2026-08-17 cleanup
+    along with every other concluded A/B, so the value is pinned as a literal
+    here instead of read back from it."""
     from rl.league_runner import PPO_DEFAULTS
     from repo_paths import REPO_ROOT
-    winning_arm = json.loads((REPO_ROOT / "training_configs" / "run_lr2e4_ab.json").read_text())
-    assert PPO_DEFAULTS["lr"] == winning_arm["ppo"]["lr"] == 0.0002
+    assert PPO_DEFAULTS["lr"] == 0.0002
 
     # run_pretrain.py keeps its own 3e-4 -- the experiment covered LEAGUE
     # training only, so the two are legitimately different and "consistency"
@@ -208,53 +211,13 @@ def test_the_adopted_lr_matches_the_arm_that_justified_it():
     assert "lr=3e-4" in pretrain, "pretrain lr was never tested; do not sync it to the league default"
 
 
-@pytest.mark.parametrize("ab_config,expected_diff", [
-    ("run_entcoef_ab.json", {"ppo": {"ent_coef": 0.05}}),
-    ("run_lr_ab.json", {"ppo": {"lr": 0.00015}}),
-    ("run_trunk512_ab.json", {"trunk_hidden": [512, 512], "total_games": 8000}),
-    # run_lr2e4_ab.json is deliberately ABSENT: its value was adopted as the
-    # PPO_DEFAULTS default, so it no longer differs from the baseline and this
-    # guard would be vacuous for it. It is pinned by
-    # test_the_adopted_lr_matches_the_arm_that_justified_it instead, and kept
-    # on disk as the record of the run that justified the change.
-])
-def test_ab_config_differs_from_baseline_in_exactly_one_knob(ab_config, expected_diff):
-    """Each A/B is only interpretable if ONE variable moved. Pins that, so a
-    later well-meaning edit to any of these configs is caught here instead of
-    silently confounding the experiment.
-
-    Compares the FULL key set rather than a hand-listed subset, so an arm that
-    moves a knob nobody thought to list is still caught. `expected_diff` is the
-    complete set of training-relevant differences the arm is allowed to have --
-    identity fields (league_name, the _-prefixed prose) are exempt because they
-    must differ, and total_games is listed per-arm since budgets are chosen per
-    experiment."""
-    from repo_paths import REPO_ROOT
-    cfgs = REPO_ROOT / "training_configs"
-    base = json.loads((cfgs / "run_default.json").read_text())
-    ab = json.loads((cfgs / ab_config).read_text())
-
-    IDENTITY = {"league_name", "gauntlet_league_name", "total_games"}
-    def training_keys(cfg):
-        return {k: v for k, v in cfg.items() if not k.startswith("_") and k not in IDENTITY}
-
-    b, a = training_keys(base), training_keys(ab)
-    allowed = {k: v for k, v in expected_diff.items() if k not in IDENTITY}
-    actual = {k: a.get(k) for k in set(b) | set(a) if b.get(k) != a.get(k)}
-    assert actual == allowed, f"{ab_config} must differ in exactly {allowed}, but differs in {actual}"
-
-    # The moved knob must actually differ from what the code ships, or the arm
-    # is silently a re-run of the baseline. Catches an arm whose value has since
-    # been adopted as the default (as run_lr2e4_ab.json's was).
-    from rl.league_runner import PPO_DEFAULTS, TRUNK_HIDDEN
-    for k, v in ab.get("ppo", {}).items():
-        assert PPO_DEFAULTS[k] != v, f"{ab_config} sets ppo.{k}={v}, which IS the default -- not an A/B"
-    if "trunk_hidden" in ab:
-        assert tuple(ab["trunk_hidden"]) != TRUNK_HIDDEN, f"{ab_config} sets the default trunk width -- not an A/B"
-
-    assert ab["league_name"] != base["league_name"], "must not train into the baseline's checkpoints"
-    assert ab["gauntlet_league_name"] == base["league_name"], (
-        "every arm must score against the SAME fixed reference, or the arms cannot be compared to each other")
+# test_ab_config_differs_from_baseline_in_exactly_one_knob lived here. It pinned
+# that each concluded A/B arm (run_entcoef_ab / run_lr_ab / run_trunk512_ab)
+# moved exactly ONE knob off run_default.json, so an experiment could not be
+# silently confounded by a well-meaning config edit. All three arms were null
+# results and their configs were deleted in the 2026-08-17 cleanup, leaving the
+# test with nothing to parametrize over. Reinstate it if a new A/B is started --
+# the single-variable property is what made those runs interpretable.
 
 
 def test_trunk_width_is_read_off_an_existing_checkpoint_not_the_config():

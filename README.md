@@ -168,13 +168,12 @@ src/
                            training change.
     run_cross_league_eval.py
                            Live weights of one league vs another, per deck.
-    _shared.py             Helpers several analysis scripts import (DEFAULT_ROSTER,
-                           _load_deck, _per_turn_tagged_burn).
-    analyze_*.py           Per-question forensics: burn saturation, hoarding, land
-                           patterns, decision entropy, target fizzles.
-    check_credit_assignment.py
-                           Where the dense mana-burn charge actually lands in the PPO
-                           buffer relative to the taps that caused it.
+                           (The per-question forensics scripts -- analyze_*.py for burn
+                           saturation, hoarding, land patterns, decision entropy and
+                           target fizzles, check_credit_assignment.py, and the _shared.py
+                           helpers they imported -- were deleted in the 2026-08-17
+                           cleanup once their investigations closed. The conclusions they
+                           reached are recorded in rl/rewards.py's own comments.)
   benchmarking/            training_run.py (benchmarks the real league loop under
                            different collection configs) + _common.py (path/stdout
                            bootstrap it imports for its side effect).
@@ -410,7 +409,8 @@ budget (`eval_games`, `eval_every_sessions`) is config-driven the same way.
 `ent_coef` defaults to `None`, meaning "use `rl.train.ent_coef_schedule`'s
 0.02 → 0.005 anneal"; a float pins it constant for the whole run instead.
 Setting it to 0.05 was run as a controlled single-variable A/B
-(`training_configs/run_entcoef_ab.json`) and **was not adopted** — it held
+(config since deleted with the rest of the concluded arms) and
+**was not adopted** — it held
 policy entropy 25% higher but left `approx_kl` unchanged and merely
 redistributed elo between decks. See RL_METHODOLOGY_PLAN.md §1A.8–§1A.10.
 
@@ -826,8 +826,7 @@ wired only through `--matchup` mode.)
   cleanup-discard turns per game came out at `0.87`/`2.39`/`3.00`/`0.10`
   (rakdos/dmir/elves/mono_red) against v4's `7.75`/`10.09` on the two worst
   decks — hoarding got *better* without its penalty, because it was a symptom
-  of passivity rather than an independent problem. Standing check:
-  `src/analysis/analyze_hoarding.py`.
+  of passivity rather than an independent problem.
 
   `deploy_reward_v6` (2026-08-12) supersedes `deploy_reward_v5`, moving
   **one** constant: `mana_burn_weight` `1.5 → 0.5`. Band, winner-only
@@ -860,9 +859,7 @@ wired only through `--matchup` mode.)
   `64% → 42%`, and when the cap does die it dies at 81% through the game
   instead of 66%. Per-turn charge by pips burnt: `1→0.007`, `2→0.092`,
   `3→0.267`, `4→0.392`, `5→0.449`, asymptoting toward `0.5`. One 5-pip turn
-  now costs 30% of the whole-game budget instead of 90%. Standing check:
-  `src/analysis/analyze_burn_saturation.py` (replays the reward's own
-  `charge_single_pip_burn`, so it cannot drift from `rl/rewards.py`).
+  now costs 30% of the whole-game budget instead of 90%.
 
   `deploy_reward_v1`-`v5` are all kept unchanged for reference/comparison.
 - **Win condition**: the engine's real one — an opponent's life total hitting

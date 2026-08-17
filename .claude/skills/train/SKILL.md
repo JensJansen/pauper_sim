@@ -268,7 +268,7 @@ Never claim a run succeeded without having seen its "done" line and exit 0 in th
   one throughout. `deploy_reward_v6` also wraps a dense, per-transition mana-burn penalty
   (`with_dense_mana_burn_penalty`, whole-game cap 1.5 against a per-turn curve weighted to
   0.5 — v5 used 1.5 and saturated that cap in 64-71% of games, making the penalty a flat
-  toll rather than a gradient; check it with `src/analysis/analyze_burn_saturation.py`), charged to
+  toll rather than a gradient), charged to
   the WINNER only — a losing seat pays exactly -1.0 however it played,
   which is what fixed the "losing quietly is cheaper than trying" asymmetry that drove
   agents into doing nothing. It reads
