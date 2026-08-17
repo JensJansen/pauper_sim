@@ -35,7 +35,7 @@ from rl.agent import SeatAgent
 from rl.pool import build_pool
 from rl.train import _constant_pairing, collect_rollout
 from rl import checkpoint as ckpt_io
-from rl.league_runner import HORIZON, load_frozen_stack, D_MODEL
+from rl.league_runner import HORIZON, load_frozen_stack, load_vintage_agent, D_MODEL
 
 DEFAULT_ROSTER = ["rakdos_madness", "dmir_terror", "elves", "mono_red_rally"]
 
@@ -73,6 +73,14 @@ def main():
                     help="Frozen stack league_a was trained against (default: the current one).")
     p.add_argument("--stack-b", type=str, default=None, metavar="PATH",
                     help="Frozen stack league_b was trained against (default: the current one).")
+    # Vintages make the comparison BUDGET-MATCHED. Without them the only
+    # available head-to-head is live-vs-live, and two populations are rarely at
+    # the same games/deck at the same wall-clock moment -- section 1A.13 is the
+    # standing reminder of what an unmatched budget does to a conclusion.
+    p.add_argument("--vintage-a", type=str, default="live", metavar="N|live",
+                    help="Snapshot id for league_a (default live). snapshot N ~ N*192 games/deck.")
+    p.add_argument("--vintage-b", type=str, default="live", metavar="N|live",
+                    help="Snapshot id for league_b (default live).")
     args = p.parse_args()
 
     roster = args.roster.split(",") if args.roster else DEFAULT_ROSTER
@@ -82,8 +90,23 @@ def main():
     if args.stack_a != args.stack_b:
         print(f"cross-stack: A={args.stack_a or 'current'}  B={args.stack_b or 'current'}", flush=True)
 
-    live_a, mull_a = _load_deck_nets(CHECKPOINTS_DIR / args.league_a, roster, shared_a, fixed_tables)
-    live_b, mull_b = _load_deck_nets(CHECKPOINTS_DIR / args.league_b, roster, shared_b, fixed_tables)
+    def _load_side(league, vintage, shared):
+        if vintage == "live":
+            return _load_deck_nets(CHECKPOINTS_DIR / league, roster, shared, fixed_tables)
+        # load_vintage_agent owns snapshot path resolution (active dir vs
+        # archive/, which register_snapshot MOVES between) and returns a ready
+        # SeatAgent, so unwrap it back into the (net, mulligan) pair this
+        # script's own pairing builder wants.
+        vid = int(vintage)
+        nets, mulls = {}, {}
+        for name in roster:
+            ag = load_vintage_agent(str(CHECKPOINTS_DIR / league), name, vid, shared, deck_ctxs[name])
+            nets[name], mulls[name] = ag.main, ag.mulligan
+        return nets, mulls
+
+    live_a, mull_a = _load_side(args.league_a, args.vintage_a, shared_a)
+    live_b, mull_b = _load_side(args.league_b, args.vintage_b, shared_b)
+    print(f"vintages: A={args.vintage_a}  B={args.vintage_b}", flush=True)
 
     rng = random.Random(args.seed)
     results = []
