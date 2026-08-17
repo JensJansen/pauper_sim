@@ -246,19 +246,39 @@ def begin_pay_cost(state, cost, on_complete):
         complete_resolution(state)
 
 
+def tappable_for_mana(state, permanent):
+    """Can `permanent` be tapped for mana RIGHT NOW? Untapped, not
+    summoning-locked (302.6), and its own extra availability condition (Wall of
+    Roots' once-per-turn) satisfied.
+
+    THE one place these gates live. mana_ability_options (which abilities are
+    offered) and source_mana_units (how much mana is available to pay with) both
+    ask it, so the action space and the affordability check cannot drift into
+    disagreeing about what is usable -- they previously re-implemented the same
+    four conditions side by side, with the guarantee stated only in a comment.
+
+    Excludes mana_extra_choose (Saruli Caretaker's "tap another creature"),
+    whose activation needs a choice enumerated atomically alongside it rather
+    than through either caller's plain shape -- and which source_mana_units must
+    exclude anyway, since its cost CONSUMES another source (see there)."""
+    if permanent.tapped or tap_summoning_locked(state, permanent):
+        return False
+    entry = registry.EFFECT_REGISTRY.get(permanent.card_def.effect_id, {})
+    if entry.get("mana_extra_choose") is not None:
+        return False
+    extra = entry.get("mana_extra_available")
+    return extra is None or extra(state, permanent)
+
+
 def mana_ability_options(state):
     """Every (name, color_choice) mana ability the active player can activate
     RIGHT NOW via this GENERIC (name, color) shape, one per
     distinct source name -- a top-level action legal in ANY priority window,
     even mid-resolution of anything else (605.1a/605.3b: a mana ability never
     uses the stack and doesn't require priority to activate). Lists only what
-    CAN produce mana now (untapped/available, not summoning-locked, extra cost
-    payable), leaving spending it for a later cast/payment step. Filters
-    (filter_mana) are a separate pool->pool conversion, not listed here.
-    Sources whose activation needs an extra CHOICE (mana_extra_choose --
-    Saruli Caretaker's "tap another creature") are also excluded: that choice
-    must be enumerated atomically alongside it (drl_env's own dedicated
-    action), not exposed via this plain (name, color) shape."""
+    CAN produce mana now (tappable_for_mana), leaving spending it for a later
+    cast/payment step. Filters (filter_mana) are a separate pool->pool
+    conversion, not listed here."""
     options, seen = [], set()
 
     def _add(key):
@@ -267,27 +287,23 @@ def mana_ability_options(state):
             options.append(key)
 
     for p in state.battlefield:
-        if p.tapped or tap_summoning_locked(state, p):
+        if not tappable_for_mana(state, p):
             continue
         spec = registry.EFFECT_REGISTRY.get(p.card_def.effect_id, {}).get("mana")
-        if spec is None:
-            continue
-        if registry.EFFECT_REGISTRY.get(p.card_def.effect_id, {}).get("mana_extra_choose") is not None:
-            continue
-        extra = registry.EFFECT_REGISTRY.get(p.card_def.effect_id, {}).get("mana_extra_available")
-        if extra is not None and not extra(state, p):
-            continue
-        kind = spec[0]
+        kind = spec[0] if spec is not None else None
         if kind in ("fixed", "fixed_multi", "tron", "count", "count_all"):
             _add((p.card_def.name, None))
         elif kind == "flexible":
             for color in spec[1]:
                 _add((p.card_def.name, color))
-    # Abundant Growth's granted colors -- a runtime per-instance fact (every
-    # Forest shares one effect_id), so it can't fold into the spec branch above.
-    for p in state.battlefield:
-        if p.tapped:
-            continue
+        # Abundant Growth's granted colors -- a runtime per-instance fact (every
+        # Forest shares one effect_id), so it can't fold into the spec branch
+        # above. Folded into this loop rather than a second pass over the
+        # battlefield: the second pass only checked `tapped`, so it could offer
+        # a granted color on a summoning-locked source the first pass had
+        # already refused. Unreachable today (Abundant Growth enchants lands,
+        # and tap_summoning_locked is False for anything non-creature), which is
+        # why this is a consistency fix rather than a behavior change.
         for color in _granted_mana_colors(state, p):
             _add((p.card_def.name, color))
     return options
@@ -453,26 +469,9 @@ def execute_pool_spend(state, color):
         complete_resolution(state)
 
 
-def _reduce_cost_by_pool(pool, cost):
-    """Pure: how much of `cost` the floating pool alone could already cover
-    (own-color pips first, then any leftover pool color against generic),
-    returned as the remaining cost still needing a tap. Used only for
-    legality (plan_payment/_cast_legal etc.) -- actually spending pool mana
-    during a real payment is always the model's own execute_pool_spend
-    action, never decided here."""
-    remaining = dict(cost)
-    spare = dict(pool)
-    for color in POOL_COLORS:
-        need = remaining.get(color, 0)
-        have = spare.get(color, 0)
-        used = min(need, have)
-        if used:
-            remaining[color] = need - used
-            spare[color] = have - used
-    leftover = sum(spare.values())
-    generic_needed = remaining.get("generic", 0)
-    remaining["generic"] = max(0, generic_needed - leftover)
-    return remaining
+def _pool_units(pool):
+    """A floating pool as can_pay units: one singleton entry per pip."""
+    return [frozenset({color}) for color, n in pool.items() for _ in range(n)]
 
 
 def pool_can_pay(pool, cost):
@@ -481,9 +480,16 @@ def pool_can_pay(pool, cost):
 
     Not the affordability gate: that is plan_payment, which also counts what is
     still tappable. This is the narrower "could I pay without touching another
-    source?" question, kept because it is genuinely a different question and is
-    directly tested. Pure (no mutation)."""
-    return _cost_satisfied(_reduce_cost_by_pool(pool, cost))
+    source?" question, kept because it is genuinely a different one.
+
+    Answered by can_pay over pool-only units rather than by its own cost-
+    reduction walk. That walk (own-color pips first, then leftovers against
+    generic) was a second, independent implementation of the same feasibility
+    question, and on singleton units can_pay reduces to exactly it -- Hall's
+    condition per colour collapses to "enough pips of each colour", and the
+    count check covers generic. One algorithm, not two that can drift.
+    Pure (no mutation)."""
+    return can_pay(_pool_units(pool), cost)
 
 
 def source_mana_units(state, permanent):
@@ -492,14 +498,13 @@ def source_mana_units(state, permanent):
     frozenset of colors that symbol could be -- singleton for anything with a
     determined output, wider for a color CHOICE.
 
-    Mirrors mana_ability_options' own per-permanent gates exactly (tapped,
-    summoning-lock, mana_extra_available), so the affordability check and the
-    list of abilities actually offered can never disagree about what is
-    available.
+    Shares tappable_for_mana with mana_ability_options, so the affordability
+    check and the list of abilities actually offered cannot disagree about what
+    is usable.
 
-    mana_extra_choose (Saruli Caretaker) is EXCLUDED, matching
-    mana_ability_options' own exclusion, and here that is load-bearing rather
-    than incidental: Saruli's cost taps ANOTHER creature, which in spy_combo is
+    That shared gate excludes mana_extra_choose (Saruli Caretaker), and here the
+    exclusion is load-bearing rather than incidental: Saruli's cost taps ANOTHER
+    creature, which in spy_combo is
     usually itself a mana source (Overgrown Battlement, Wall of Roots, Lotus
     Petal). Counting Saruli as free supply would say two units are available
     where only one is -- Saruli CONSUMES the other creature -- and an
@@ -507,55 +512,47 @@ def source_mana_units(state, permanent):
     line where Saruli upgrades a mana creature's fixed color into any color
     (owner-accepted 2026-08-17, recorded as a known false negative). The agent
     can still float Saruli by hand in its own main phase and then cast."""
-    if permanent.tapped or tap_summoning_locked(state, permanent):
+    if not tappable_for_mana(state, permanent):
         return ()
-    entry = registry.EFFECT_REGISTRY.get(permanent.card_def.effect_id, {})
-    spec = entry.get("mana")
+    spec = registry.EFFECT_REGISTRY.get(permanent.card_def.effect_id, {}).get("mana")
     granted = _granted_mana_colors(state, permanent)
     if spec is None and not granted:
         return ()
-    if entry.get("mana_extra_choose") is not None:
-        return ()
-    extra = entry.get("mana_extra_available")
-    if extra is not None and not extra(state, permanent):
-        return ()
 
     # Utopia Sprawl's bonus rides along with ANY tap of this permanent, so it
-    # is added to whichever alternative below is taken, never chosen against.
+    # is added to whatever the native ability produced, never chosen against.
     bonus = [frozenset({c}) for c in _bonus_mana_symbols(state, permanent)]
-    if spec is None:  # a grant with no native mana ability of its own
-        return [frozenset(granted)] + bonus
-    if spec[0] == "flexible":
-        # One symbol either way, so the native choices and any granted color
-        # collapse into a single unit exactly -- no information is lost.
-        return [frozenset(set(spec[1]) | granted)] + bonus
 
-    # Every other kind produces a DETERMINED multiset (fixed/fixed_multi/tron/
-    # count/count_all). Ask mana_output rather than approximating, so Rakdos
-    # Carnarium's two DIFFERENT symbols both count and an online Tron land's
-    # three do -- the pre-float-first solver's fixed-at-1 undercount is exactly
-    # the bug that costs. mana_output already appends the bonus, so strip it
-    # back off and re-add it once at the end.
-    full = mana_output(permanent, state)
-    native = full[:len(full) - len(bonus)] if bonus else full
-    if not granted:
-        return [frozenset({s}) for s in native] + bonus
-    if len(native) == 1:
-        # One symbol either way -- native color or a granted one -- so this is
-        # still exact.
-        return [frozenset(set(native) | granted)] + bonus
-    # A grant on a MULTI-symbol source (Abundant Growth on a Tron land or
-    # Rakdos Carnarium) is a genuine either/or: all of the native symbols, OR
-    # one symbol of a granted color -- never a mix. A flat unit list cannot
-    # express that alternative, and widening one native unit would claim both
-    # at once (Tron Tower would read as "{C}{C}{C}, one of which may be {G}"),
-    # which OVERSTATES supply and would strand a payment. Credit the native
-    # output alone: never wrong about the count, and only ever hides the line
-    # where the grant's color was the point. No card pairing in the current
-    # catalog reaches this -- Abundant Growth enchants a land, and every land
-    # here is single-symbol -- so it is an unreachable-today safety floor
-    # rather than a live approximation.
-    return [frozenset({s}) for s in native] + bonus
+    if spec is None:  # a grant with no native mana ability of its own
+        native = [granted]
+    elif spec[0] == "flexible":
+        # One symbol either way, so the native choices and any granted color
+        # collapse into one unit exactly -- no information is lost.
+        native = [set(spec[1]) | granted]
+    else:
+        # Every other kind produces a DETERMINED multiset (fixed/fixed_multi/
+        # tron/count/count_all). Ask mana_output rather than approximating, so
+        # Rakdos Carnarium's two DIFFERENT symbols both count and an online Tron
+        # land's three do -- the pre-float-first solver's fixed-at-1 undercount
+        # is exactly the bug that costs. mana_output already appends the bonus,
+        # so strip it back off and re-add it once at the end.
+        full = mana_output(permanent, state)
+        symbols = full[:len(full) - len(bonus)] if bonus else full
+        if granted and len(symbols) == 1:
+            native = [set(symbols) | granted]  # one symbol either way -- still exact
+        else:
+            # No grant, or a grant on a MULTI-symbol source. The latter is a
+            # genuine either/or -- all the native symbols, OR one symbol of a
+            # granted color, never a mix -- and a flat unit list cannot express
+            # that. Widening one native unit would claim both at once (Tron
+            # Tower reading as "{C}{C}{C}, one of which may be {G}"), which
+            # OVERSTATES supply and would strand a payment, so the grant is
+            # dropped instead: never wrong about the count, and it only hides
+            # the line where the grant's color was the point. Unreachable in
+            # the current catalog anyway -- Abundant Growth enchants a land,
+            # and every land here is single-symbol.
+            native = [{s} for s in symbols]
+    return [frozenset(colors) for colors in native] + bonus
 
 
 def available_mana_units(state):
@@ -578,7 +575,7 @@ def available_mana_units(state):
     just-floated pool as still empty. Measured at ~1.5x the sweep cost of the
     pool-only check it replaces, which is not worth a correctness hazard.
     Pure (no mutation)."""
-    units = [frozenset({color}) for color, n in state.mana_pool.items() for _ in range(n)]
+    units = _pool_units(state.mana_pool)
     for p in state.battlefield:
         units.extend(source_mana_units(state, p))
     return units
@@ -639,9 +636,25 @@ PAYMENT_PENDING_KINDS = frozenset({"pay_cost", "pay_unless"})
 # announcing and paying could leave EVERY option unpayable and the mask empty
 # (found live: Gurmag Angler's delve step with the black source tapped for blue
 # after announcing, every "Delve N" button illegal).
-CASTING_STEP_PENDING_KINDS = frozenset({
+_CASTING_STEP_PENDING_KINDS = frozenset({
     "choose_cast_mode", "choose_cast_x", "choose_delve_amount", "choose_cast_copy",
 })
+
+
+def mid_cast(state):
+    """Is a cast in flight and not yet at 601.2f? No mana ability may be
+    activated while this holds.
+
+    Two sources, because the answer is not always derivable from the pending
+    KIND. The kinds above only ever occur mid-cast. choose_graveyard_card does
+    not -- it is equally a resolution-time choice (Masked Vandal's ETB, Relic of
+    Progenitus), where mana abilities are perfectly legal -- so delve's exile
+    stamps `mid_cast` on its own pendings instead
+    (resolution.begin_exile_n_from_graveyard)."""
+    pending = state.pending_resolution
+    return pending is not None and (
+        pending["kind"] in _CASTING_STEP_PENDING_KINDS or bool(pending.get("mid_cast"))
+    )
 
 
 def payment_in_progress(state):
@@ -673,8 +686,8 @@ def outstanding_cost(state):
     Only "pay_cost". The gap between committing to a cast and the payment
     actually opening (choosing modes, X, a delve amount, which graveyard copy)
     used to need protecting here too, because mana abilities were legal across
-    it; CASTING_STEP_PENDING_KINDS now makes them illegal there outright, per
-    601.2f, so nothing can consume supply in that gap for this to defend."""
+    it; mid_cast now makes them illegal there outright, per 601.2f, so nothing
+    can consume supply in that gap for this to defend."""
     pending = state.pending_resolution
     if pending is not None and pending["kind"] == "pay_cost":
         return pending["remaining"]

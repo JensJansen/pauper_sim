@@ -130,7 +130,7 @@ def _graveyard_instance(state, name):
     return inst
 
 
-def _with_chosen_copy(state, name, proceed, reserved_cost=None):
+def _with_chosen_copy(state, name, proceed):
     """Run `proceed(state, inst)` on the graveyard copy of `name` being cast.
 
     With 2+ same-named copies this is a REAL agent choice (MTG 601.2a -- the
@@ -143,14 +143,6 @@ def _with_chosen_copy(state, name, proceed, reserved_cost=None):
     would auto-resolve a one-option pending anyway; skipping it avoids a
     pointless token-set build + mask sweep on the common path).
 
-    reserved_cost: the mana cost `proceed` will pay via begin_pay_cost once a
-    copy is chosen (None if there is none, e.g. a life-only flashback cost) --
-    threaded straight through to begin_choose_cast_copy, whose own docstring
-    explains why a not-yet-open payment still needs strand protection during
-    this choice. Irrelevant on the single-copy fast path: nothing else gets a
-    turn to filter mana away between this call and begin_pay_cost when there's
-    no intervening pending resolution at all.
-
     Also called from drl_env._actions_cast._graveyard_ability_execute (Bramble
     Wurm's own graveyard-activated ability) -- same identity-recovery need as
     a graveyard cast, just not a cast at all."""
@@ -158,7 +150,7 @@ def _with_chosen_copy(state, name, proceed, reserved_cost=None):
     if len(copies) <= 1:
         proceed(state, _graveyard_instance(state, name))
         return
-    game.begin_choose_cast_copy(state, name, on_complete=proceed, reserved_cost=reserved_cost)
+    game.begin_choose_cast_copy(state, name, on_complete=proceed)
 
 
 def _flashback_execute(name, resolve, cost=None):
@@ -181,7 +173,7 @@ def _flashback_execute(name, resolve, cost=None):
                 resolve(state, inst)
             game.begin_pay_cost(state, cost, on_complete=_after_pay)
 
-        _with_chosen_copy(state, name, _proceed, reserved_cost=cost)
+        _with_chosen_copy(state, name, _proceed)
     return execute
 
 

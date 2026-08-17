@@ -35,8 +35,9 @@ _combat/_resolution/_mana for the category boundaries themselves):
      kind that picks a plain card name (search_fetch, ancient_stirrings,
      discard, and scry/surveil's ordering phase), dispatched by
      pending_resolution["kind"]. Paying a cost never appears here -- once a
-     cost is announced, the only legal actions are "Spend <color> from
-     pool" (below), spending mana already floated via a Tap action.
+     cost is announced, the only legal actions are the A2 mana abilities
+     (601.2f, producing the mana) and "Spend <color> from pool" (below,
+     spending it).
      NOT sacrifice (see category K) -- a battlefield permanent is never
      just a name, unlike a hand/library/graveyard card.
   H. Keep / Dispose (scry/surveil)
@@ -891,9 +892,8 @@ def build_action_table(decklist, registry, token_card_defs=(),
     #      own source, and Conduit Pylons is also a {C} source. Saruli's cost
     #      taps another creature that may itself be a mana source.
     # Mana abilities are additionally illegal for the whole of an in-flight cast
-    # before 601.2f (game.mana.CASTING_STEP_PENDING_KINDS and the mid_cast flag
-    # on the delve exile), which is both faithful and removes a whole class of
-    # these hazards rather than guarding each one.
+    # before 601.2f (game.mid_cast), which is both faithful and removes a whole
+    # class of these hazards rather than guarding each one.
     #
     # Any FUTURE action that can reduce available mana mid-payment must add the
     # same payment_survives gate.

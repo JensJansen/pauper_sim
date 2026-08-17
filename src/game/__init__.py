@@ -103,7 +103,6 @@ from .effects.tokens import (
 )
 from .effects.triggers import promote_triggers_to_stack
 from .mana import (
-    CASTING_STEP_PENDING_KINDS,
     COLORS,
     POOL_COLORS,
     TRON_TYPES,
@@ -116,7 +115,7 @@ from .mana import (
     float_mana,
     mana_ability_options,
     mana_output,
-    outstanding_cost,
+    mid_cast,
     payment_in_progress,
     payment_survives,
     plan_payment,

@@ -565,7 +565,7 @@ def _graveyard_ability_execute(name, cost_key, resolve):
             # the ability's own resolve exiles that exact instance as its cost.
             game.begin_pay_cost(state, cost, on_complete=lambda s, inst=inst: resolve(s, inst))
 
-        _with_chosen_copy(state, name, _proceed, reserved_cost=cost)
+        _with_chosen_copy(state, name, _proceed)
     return execute
 
 

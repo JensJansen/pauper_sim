@@ -10,7 +10,7 @@ from .. import registry
 from ._core import begin_resolution, complete_resolution
 
 
-def begin_choose_cast_copy(state, name, on_complete, reserved_cost=None):
+def begin_choose_cast_copy(state, name, on_complete):
     """WHICH physical copy of `name` in your own graveyard is being cast (or
     having its graveyard ability activated) -- Flashback/Escape/graveyard-ability.
 
@@ -31,29 +31,19 @@ def begin_choose_cast_copy(state, name, on_complete, reserved_cost=None):
     adds ZERO fixed action rows (see rl.action_bridge), so no deck's action-space
     width changes.
 
-    reserved_cost: the mana cost (a plain {color: n} dict, or None) that
-    on_complete is ABOUT to pay via begin_pay_cost once a copy is chosen --
-    known in full up front (drl_env._actions_cast._graveyard_ability_execute /
-    drl_env._actions_cast_altzone._flashback_execute already read it off the
-    registry/card_def before this ever opens). Stashed on the pending purely
-    so drl_env._actions_mana._filter_
-    would_strand_payment can protect it: mana abilities/filters stay legal
-    "in ANY priority window" (605.1a/605.3b) DURING this choice, same as
-    during an already-open pay_cost, so the agent could otherwise filter away
-    the exact colored pip this ability is guaranteed to need one step later,
-    leaving pay_cost to open already unpayable with an all-False mask. Only
-    choose_cast_copy needs this: every other pointer
-    pending in this pool (choose_permanent, choose_any_target, ...) either
-    can't precede a cost payment at all, or (choose_graveyard_card feeding
-    Dread Return's own creature-sacrifice cost) pays with a non-mana resource
-    a filter can't touch.
+    This used to also carry a `reserved_cost` -- the cost on_complete was about
+    to pay -- stashed so a mana filter taken DURING this choice could be checked
+    against it, mana abilities being legal in any priority window (605.1a).
+    Removed 2026-08-17: this pending is one of game.mana's mid-cast steps, so no
+    mana ability is legal here at all any more (601.2f activates them after the
+    copy is chosen, not before), and nothing read the field.
 
     Always the caster's OWN graveyard (state.graveyard, active-idx proxied) --
     no card in this pool casts from an opponent's graveyard. on_complete receives
     the exact chosen CardInstance. Callers only open this when 2+ copies exist;
     with one copy there is no choice to make (drl_env._actions_cast_altzone._graveyard_instance
     resolves it directly)."""
-    begin_resolution(state, "choose_cast_copy", on_complete, name=name, reserved_cost=reserved_cost)
+    begin_resolution(state, "choose_cast_copy", on_complete, name=name)
 
 
 def choose_cast_copy_options(state):

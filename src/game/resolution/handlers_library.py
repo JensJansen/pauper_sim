@@ -185,7 +185,7 @@ def begin_exile_n_from_graveyard(state, n, on_complete, predicate=None, mid_cast
     delve-reduced {B} unpayable). The flag is a per-CALL fact, not a property of
     the pending KIND: choose_graveyard_card is equally used at resolution time
     (Masked Vandal's ETB, Relic of Progenitus), where mana abilities are
-    perfectly legal, so it cannot simply be added to CASTING_STEP_PENDING_KINDS."""
+    perfectly legal, so the KIND alone cannot say -- see game.mana.mid_cast."""
     pred = predicate or (lambda c: True)
 
     def _step(remaining):

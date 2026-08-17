@@ -505,7 +505,7 @@ def test_no_mana_ability_during_a_casting_step_before_601_2f():
     # phase at all, which would fail that gate before reaching what this
     # test is actually about.
     bw_state.phase = game.turn.Phase.MAIN1
-    bw_state.mana_pool.update({"C": 2, "G": 1})  # 2 C pays the generic, G pays the G -- plan_payment/pool_can_pay would say yes
+    bw_state.mana_pool.update({"C": 2, "G": 1})  # 2 C pays the generic, G pays the G -- fully funded before the cast
     bw_decklist = game.parse_decklist_file("../data/monster_tron.txt")
     bw_table = drl_env.build_action_table(bw_decklist, game.EFFECT_REGISTRY)
     bw_filt_idx = next(i for i, (n, _l, _e) in enumerate(bw_table)
@@ -517,7 +517,6 @@ def test_no_mana_ability_during_a_casting_step_before_601_2f():
         bw_state, "Bramble Wurm",
         on_complete=lambda s, inst: game.begin_pay_cost(
             s, bw_def.extra["gy_ability_cost"], on_complete=lambda s2: resolve_calls.append(inst)),
-        reserved_cost=bw_def.extra["gy_ability_cost"],
     )
     assert bw_state.pending_resolution["kind"] == "choose_cast_copy"
     # The cast is committed but 601.2f has not been reached: NO mana ability is

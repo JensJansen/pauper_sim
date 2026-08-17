@@ -63,14 +63,11 @@ def _mana_timing_legal(state):
     # cleanup is not a main phase, and no payment is open there, so both
     # windows already exclude it and the special case is gone.
 
-    Neither window is open mid-cast, before 601.2f -- see
-    game.mana.CASTING_STEP_PENDING_KINDS. That case has to be refused ahead of
-    the main-phase test rather than folded into it, because a cast announced in
-    a main phase is still in a main phase while its modes/X/delve/copy are being
-    chosen."""
-    pending = state.pending_resolution
-    if pending is not None and (pending["kind"] in game.CASTING_STEP_PENDING_KINDS
-                                or pending.get("mid_cast")):
+    Neither window is open mid-cast, before 601.2f (game.mid_cast). That case
+    has to be refused ahead of the main-phase test rather than folded into it,
+    because a cast announced in a main phase is still in a main phase while its
+    modes/X/delve/copy are being chosen."""
+    if game.mid_cast(state):
         return False
     return (
         game.payment_in_progress(state)
@@ -357,48 +354,27 @@ def _filter_would_strand_payment(state, name, input_color):
     BEGUN payment -- or one about to begin the instant the current choice
     resolves -- impossible to finish?
 
-    The engine's standing guarantee is that a payment, once begun, can always be
-    completed -- there is no "Abandon payment" action (it was deliberately
-    removed, having existed to escape exactly this), so a payment the agent
-    cannot finish is unescapable BY CONSTRUCTION: every cast/activate action is illegal while a
-    pending is open, Pass is illegal, and the only remaining actions are
-    spending pool mana and tapping sources. That guarantee was never enforced
-    for filters, and a real pretrain run found the hole (monster_tron, turn 10:
+    A filter changes THREE things, and only asking about all three is correct:
+    the input pip is spent, the filter's own SOURCE is tapped, and one pip of
+    its output colors arrives (which color is a later agent choice, gated in
+    turn by _mana_subdecision_color_legal). So rebuild the unit list as it would
+    be afterwards and ask game.payment_survives, rather than reasoning about any
+    one of the three.
+
+    The middle one is the trap. A filter is one pip in and one pip out, so the
+    POOL's size is invariant -- which is why the float-first version of this
+    check looked only at whether the pool would still hold enough of the owed
+    color. But Conduit Pylons is both a filter AND a plain {C} mana source, and
+    under cast-then-pay an untapped Pylons is counted toward affordability, so
+    filtering with it deletes a unit the cast was allowed on: pool {U}, owing
+    {2}, Pylons the only other source -- payable on 2 units, and 1 left after.
+    The old check saw `remaining["U"] == 0` and allowed exactly that.
+
+    Both windows a payment can be pending in are covered, because
+    game.payment_survives asks game.outstanding_cost: an open pay_cost, and the
+    real pretrain crash that first motivated this check (monster_tron, turn 10:
     tap Forest for the only {G}, cast Crop Rotation for {G}, then filter that
-    same {G} into {U} -- remaining {'G': 1}, no untapped green source, all-False
-    action mask, RuntimeError).
-
-    A SECOND, later hole in the same guarantee: choose_cast_copy (WHICH
-    graveyard copy to cast/activate, MTG 601.2a) sits BETWEEN the moment a
-    flashback/escape/graveyard-ability action is chosen (its own legality
-    already required plan_payment to confirm the cost was payable) and the
-    begin_pay_cost that actually opens once a copy is picked -- and mana
-    abilities/filters stay legal "in ANY priority window" (605.1a/605.3b)
-    during that gap too, same as mid-pay_cost. So filtering away the very pip
-    the not-yet-open payment is guaranteed to need is exactly as breaking here
-    as it is once pay_cost has already begun -- confirmed live (monster_tron,
-    turn 44: 2 Bramble Wurms in the graveyard, activated the {2}{G} graveyard
-    ability, filtered the floating {G} away while still choosing WHICH copy;
-    pay_cost then opened already unpayable, all-False mask). Both windows are
-    covered because game.outstanding_cost reports both.
-
-    THREE things change, and the version of this check written for float-first
-    only modelled one of them. It reasoned that a filter is one pip in, one pip
-    out, so the pool's SIZE is invariant and only a COLORED requirement could
-    break -- true of the pool, but the filter also TAPS ITS OWN SOURCE, and
-    Conduit Pylons is both a filter and a plain {C} mana source. Under
-    cast-then-pay an untapped Pylons is counted toward affordability, so
-    filtering with it silently deletes a unit the cast was allowed on:
-    pool {U}, owing {2}, Pylons the only other source -> plan_payment says
-    payable (2 units), filter it and only 1 unit remains. The old check looked
-    at `remaining["U"]`, saw 0, and allowed exactly that.
-
-    So ask the real question instead of a proxy for it: rebuild the unit list as
-    it would be after the conversion -- input pip spent, filter source tapped,
-    one pip of the filter's own output colors added (which color is the agent's
-    later choice, gated in turn by _mana_subdecision_color_legal) -- and check
-    whether the payment still survives. Shorter than the reasoning it replaces,
-    exact in both directions, and it covers generic requirements too."""
+    {G} into {U} -- all-False mask, RuntimeError)."""
     source = _cached_filter_source(state, name)
     if source is None:
         return False
