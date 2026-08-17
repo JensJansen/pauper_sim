@@ -36,10 +36,9 @@ import os
 import shutil
 
 from repo_paths import CHECKPOINTS_DIR
-from rl.deck import DeckNetwork
 from rl.mulligan import MulliganNet
 from rl.pool import build_pool
-from rl.league_runner import D_MODEL, league_roster, load_frozen_stack
+from rl.league_runner import build_deck_net, league_roster
 from rl import checkpoint as ckpt_io
 
 BACKUP_SUFFIX = ".before_rollback"
@@ -55,9 +54,9 @@ def _snapshot_path(deck_dir, snapshot_id):
     raise FileNotFoundError(f"no snapshot_{snapshot_id}.pt under {deck_dir} or its archive/")
 
 
-def rollback_deck(league_dir, deck, snapshot_id, shared, deck_ctx, force=False, dry_run=False):
+def rollback_deck(league_dir, deck, snapshot_id, deck_ctx, force=False, dry_run=False):
     """Returns a one-line description of what was (or would be) done."""
-    _vocab, fixed_table = deck_ctx
+    vocab, fixed_table = deck_ctx
     deck_dir = os.path.join(league_dir, deck)
     src = _snapshot_path(deck_dir, snapshot_id)
     live_path = os.path.join(deck_dir, "live.pt")
@@ -77,16 +76,14 @@ def rollback_deck(league_dir, deck, snapshot_id, shared, deck_ctx, force=False, 
                     f"Move or delete it, or pass --force if you are sure.")
             shutil.copy2(path, backup)
 
-    saved = ckpt_io.load_snapshot(src)  # strips any embedded shared_stack copy
-    net = DeckNetwork(shared, film_condition_dim=D_MODEL,
-                      non_targeting_n_actions=len(fixed_table),
-                      trunk_hidden=saved["trunk_hidden"])
+    saved = ckpt_io.load_snapshot(src)
+    net = build_deck_net(vocab.size, len(fixed_table), saved["trunk_hidden"])
     net.load_state_dict(saved["state_dict"])
     ckpt_io.save_deck_checkpoint(live_path, net)  # optimizer=None -> re-warms fresh
 
     note = ""
     if "mulligan_state_dict" in saved:
-        mull = MulliganNet(shared, hidden=saved.get("mulligan_hidden", 64))
+        mull = MulliganNet(net.encoder, hidden=saved.get("mulligan_hidden", 64))
         mull.load_state_dict(saved["mulligan_state_dict"])
         ckpt_io.save_deck_checkpoint(mull_path, mull)
     else:
@@ -125,10 +122,9 @@ def main():
     assert not unknown, f"deck(s) {sorted(unknown)} not in {args.league} (has {roster})"
 
     decklists, vocab, deck_ctxs, _fixed = build_pool()
-    shared = load_frozen_stack(vocab.size)
     print(f"{'DRY RUN: ' if args.dry_run else ''}rollback in {args.league}\n")
     for deck, sid in sorted(targets.items()):
-        print(" ", rollback_deck(league_dir, deck, sid, shared, deck_ctxs[deck],
+        print(" ", rollback_deck(league_dir, deck, sid, deck_ctxs[deck],
                                  force=args.force, dry_run=args.dry_run))
     if not args.dry_run:
         print(f"\nOptimizer state intentionally not restored (re-warms fresh). "

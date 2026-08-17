@@ -1,12 +1,18 @@
 ---
 name: train
-description: Run monitored, escalating self-play training for this repo's MTG deck agents (the pretrain shared stack and/or the per-deck league DeckNetworks). Use when the user asks to train, run training, train the agents/models, start a training run, or "/train". Parses the invocation message for "fresh start" (wipe all checkpoints, run the full pipeline from scratch) and "per-deck only"/"league only" (train just the per-deck models). Default with no flag is league-only. Starts every phase with a tiny batch, verifies it is healthy, then doubles the batch each clean step.
+description: Run monitored, escalating self-play training for this repo's MTG deck agents (the per-deck league DeckNetworks). Use when the user asks to train, run training, train the agents/models, start a training run, or "/train". Parses the invocation message for "fresh start" (wipe the league's checkpoints and train from scratch). Starts with a tiny batch, verifies it is healthy, then doubles the batch each clean step.
 ---
 
 # train — monitored, escalating agent training
 
-Orchestrates the EXISTING training scripts (`src/run_pretrain.py`, `src/run_league.py`).
-Never reimplements training. All commands run from `src/`.
+Orchestrates the EXISTING training script (`src/run_league.py`). Never reimplements
+training. All commands run from `src/`.
+
+There is ONE training phase. Until 2026-08-17 there were two -- `run_pretrain.py`
+built and froze a single shared perception stack that the league then trained
+per-deck heads on top of. Each deck now owns its encoder and trains it with its
+policy, so that script, `checkpoints/shared_stack_frozen.pt`, and the whole
+pretrain/freeze step no longer exist.
 
 The whole point is **safety through small, monitored, escalating batches**: start
 each phase tiny, confirm it ran clean (exit 0, expected "done" line, no traceback,
@@ -17,21 +23,16 @@ specifically for that failure again before growing.
 ## 1. Parse the invocation message
 
 - **`fresh start`** (also "from scratch", "start over", "wipe", "retrain everything")
-  → MODE = `fresh`: wipe checkpoints and run the FULL pipeline (regenerate vocab →
-  pretrain → `--freeze` → league).
-- **`per-deck only`** / **"league only"** / "only the deck models" → MODE = `league`.
-- **No flag** → MODE = `league` (the default). Never wipes anything.
+  → MODE = `fresh`: wipe the league's checkpoints (and `vocab.json`), then train.
+- **No flag** (or "per-deck only" / "league only", which now mean the same thing)
+  → MODE = `resume`: train from whatever checkpoints exist. Never wipes anything.
 - **Per-deck game target**: the LEAGUE trains until each deck has played ~this many
   games. If the message names a count ("train each deck 8000 games", "8000 per deck")
   use it as `TARGET_PER_DECK`; default `TARGET_PER_DECK = 3000`. Stop as soon as ANY
   deck's cumulative game count reaches it (in league mode the decks advance together and
   arrive ~simultaneously; "any" just guards against one racing ahead).
-- **Pretrain budget** (fresh only): per-deck games the shared stack sees before it is
-  frozen — a prerequisite, not the goal. If named ("pretrain 300 per deck") use it;
-  default `PRETRAIN_PER_DECK = 100`.
-
-Restate the parsed MODE / TARGET_PER_DECK / PRETRAIN_PER_DECK (and N_DECKS) back to the
-user in one line before starting.
+Restate the parsed MODE / TARGET_PER_DECK (and N_DECKS) back to the user in one line
+before starting.
 
 ## 2. Preconditions
 
@@ -44,10 +45,11 @@ user in one line before starting.
   and use it wherever a TOTAL game count or run-time estimate is needed. Never hardcode a
   deck count. Adding a deck (edit league_decks.json + its data/*.txt) needs no change to
   this skill — but it changes the vocab, so a new deck requires a `fresh start`.
-- **League needs a frozen stack.** If MODE = `league` and
-  `../checkpoints/shared_stack_frozen.pt` does NOT exist, stop and tell the user:
-  "No frozen shared stack — run `/train fresh start` (or pretrain) first." Do not try
-  to run the league without it (`rl.league_runner.load_frozen_stack` hard-asserts it).
+- **Nothing has to exist before the first run.** A deck with no `live.pt` starts
+  from a freshly-initialized net, encoder included, and `vocab.json` is written on
+  demand by `build_pool()`. (There used to be a hard precondition here: the league
+  could not start without `checkpoints/shared_stack_frozen.pt` from a prior pretrain
+  phase.)
 - **Which league/config — check BEFORE the first command, not after.** List
   `../training_configs/*.json` and check which checkpoint directories already have
   content (`../checkpoints/<name>/session.txt` or any `live.pt` under it). If the
@@ -76,14 +78,15 @@ user in one line before starting.
   `STATIC_FEATURE_DIM`; a code change to the per-token dynamic layout (e.g. the
   own-hand-tokenization + `cost_reduction_delta` feature added 2026-08) grows
   `DYNAMIC_FEATURE_DIM` instead — either way `TOKEN_FEATURE_DIM` → the per-card
-  feature vector → the frozen stack's `input_proj.weight` changes shape, but
-  `vocab_size` stays unchanged, so the vocab assert does NOT catch it and league
-  crashes at startup with `size mismatch for input_proj.weight`. If a league run
-  aborts that way, either the catalog changed since the freeze or `rl/features.py`'s
-  own feature dim did → a `fresh start` is required (re-pretrain rebuilds the stack
-  at the new feature dim).
+  feature vector → each encoder's `input_proj.weight` changes shape, but
+  `vocab_size` stays unchanged, so the vocab assert does NOT catch it and the league
+  crashes on the first checkpoint LOAD with `size mismatch for input_proj.weight`.
+  If a league run aborts that way, either the catalog changed or `rl/features.py`'s
+  own feature dim did → a `fresh start` is required. Note this now surfaces when
+  RESUMING an existing league (its `live.pt` files carry the stale shapes), not at
+  startup against a single frozen-stack file.
 
-## 3. `fresh start`: wipe, then full pipeline
+## 3. `fresh start`: wipe, then train
 
 Wipe **the resolved league_dir** for this invocation (per the config precondition above
 — `checkpoints/league/` ONLY in the genuine config-less case; e.g.
@@ -99,8 +102,7 @@ would bias opponent sampling against a freshly reset, randomly-initialized polic
 history from the policy that no longer exists:
 
 ```
-rm -f ../checkpoints/vocab.json ../checkpoints/pretrain_shared_stack.pt \
-      ../checkpoints/shared_stack_frozen.pt
+rm -f ../checkpoints/vocab.json \
 rm -f ../<league_dir>/*/live.pt ../<league_dir>/*/mulligan.pt \
       ../<league_dir>/*/snapshot_*.pt ../<league_dir>/*/opponent_stats.json \
       ../<league_dir>/session.txt ../<league_dir>/progress.json \
@@ -108,39 +110,29 @@ rm -f ../<league_dir>/*/live.pt ../<league_dir>/*/mulligan.pt \
 rm -rf ../<league_dir>/*/archive/
 ```
 
-Then, in order:
-1. **Pretrain phase** — escalate to `PRETRAIN_PER_DECK` games/deck (§5, phase=`pretrain`).
-2. **Freeze** — once pretrain is healthy and at/near budget, freeze the shared stack:
-   `python -u run_pretrain.py 1 1 --freeze` (a tiny final session that also writes
-   `../checkpoints/shared_stack_frozen.pt`). Confirm that file now exists.
-3. **League phase** — escalate to `TARGET_PER_DECK` games/deck (§5, phase=`league`).
+Then run the escalation loop (§5) to `TARGET_PER_DECK` games/deck.
 
-## 4. `league` (default): league phase only
+## 4. `resume` (default)
 
-Just run the League phase (§5, phase=`league`) to `TARGET_PER_DECK` games/deck, resuming
-from whatever league checkpoints already exist (they self-resume; sessions increment).
+The same loop without the wipe — league checkpoints self-resume and sessions increment.
 
-## 5. The monitored escalation loop (used by both phases)
+## 5. The monitored escalation loop
 
-Track `per_deck_cumulative = 0` (games EACH deck has played this phase). Batch ladder,
-measured in **games per deck per session**: `batch = 1, 2, 4, 8, 16, ...`, each step
-`batch = min(batch * 2, 3000, TARGET - per_deck_cumulative)` where TARGET is
-`PRETRAIN_PER_DECK` or `TARGET_PER_DECK` for the phase. The first batch is the tiny
-**shakeout**. Stop the phase when `per_deck_cumulative >= TARGET` (i.e. as soon as any
-deck reaches TARGET). The 3000 cap is the max games-per-deck in a single batch.
+Track `per_deck_cumulative = 0` (games EACH deck has played). Batch ladder, measured in
+**games per deck per session**: `batch = 1, 2, 4, 8, 16, ...`, each step
+`batch = min(batch * 2, 3000, TARGET_PER_DECK - per_deck_cumulative)`. The first batch
+is the tiny **shakeout**. Stop when `per_deck_cumulative >= TARGET_PER_DECK` (i.e. as
+soon as any deck reaches it). The 3000 cap is the max games-per-deck in a single batch.
 
 For each batch:
 
-1. **Map `batch` (games PER DECK this session) to script args.** Each script gives every
+1. **Map `batch` (games PER DECK this session) to script args.** The script gives every
    deck `n_iterations × games_per_iteration` games per session — the per-deck number,
    independent of how many decks there are — and plays `n_iterations × N_DECKS ×
    games_per_iteration` games in TOTAL. The total (not the per-deck number) is what sets
    run time, so estimate duration with `N_DECKS`. Read the ACTUAL per-deck counts back
    from the log afterward.
-   - **pretrain**: `python -u run_pretrain.py <n_iter> <gpi>`, choosing `n_iter`, `gpi`
-     so `n_iter * gpi ≈ batch`. Shakeout / small: `n_iter = 1`, `gpi = batch`. Large:
-     `n_iter = 4`, `gpi = max(1, round(batch / 4))` (spreads updates).
-   - **league**: `python -u run_league.py --n-iterations <n_iter> --snapshot-every <snap>
+   - `python -u run_league.py --n-iterations <n_iter> --snapshot-every <snap>
      --n-workers <W>`, PLUS `--run-config <path> --league-config <path>` whenever a
      matching `training_configs/*.json` exists (see the precondition above) -- a config's
      own `checkpoint_opponent_rate` and `snapshot_every_games` then apply automatically;
@@ -187,7 +179,7 @@ For each batch:
    detaches from the harness and loses the notification. One batch at a time; wait for
    the completion notification before starting the next.
 3. **On the completion notification, health-check the log** (log content, NOT exit code):
-   - a `session N done` (pretrain) or league end-of-session summary line IS present,
+   - the league's end-of-session summary line IS present,
      `session.txt` advanced, AND no `Traceback` / `Error` / `Exception` / `ALL-FALSE`.
      (Trailing `[target fizzle]` lines are normal late-flushed worker gameplay output.)
    - Read the actual PER-DECK games from the log (the per-mirror/per-deck `games=`
@@ -195,7 +187,7 @@ For each batch:
    - **Hang check**: if a run runs far longer than the per-game rate implies (≈10–15 s/
      game CPU) with no new log lines, treat it as a stall — inspect, and if truly hung,
      kill it and investigate before retrying.
-4. **League phase only — log a double round-robin snapshot.** Once the batch
+4. **Log a double round-robin snapshot.** Once the batch
    is confirmed healthy (step 3) and `per_deck_cumulative` is updated, pause
    before escalating and run (foreground — it's fast relative to a training
    batch, and the loop is already sequential):
@@ -211,9 +203,7 @@ For each batch:
    same way as a training batch (no Traceback/Exception/ALL-FALSE in its
    output) — a failure here is treated exactly like a training-batch
    failure (step 6 below): it's exercising the same engine and the same
-   live checkpoints, so it's just as real a bug. Skip this step for the
-   pretrain phase — pretrain has no cross-deck round-robin concept (mirror-
-   only self-play into one shared stack, nothing to pair decks against).
+   live checkpoints, so it's just as real a bug.
    Note the log path so it can be reported at the end (§6). Each game in the
    written log is self-labeled (`deck_a`/`deck_b` fields, not just a bare
    `game_index`) — open it in the webapp's `/replay` file picker to watch
@@ -229,12 +219,12 @@ For each batch:
 
 ## 6. Report
 
-When the phase(s) reach their target (or you stop on a blocking error), summarize:
-mode, N_DECKS, per-deck games trained per phase, number of sessions/batches, any errors
+When training reaches its target (or you stop on a blocking error), summarize:
+mode, N_DECKS, per-deck games trained, number of sessions/batches, any errors
 found + fixed, `per_deck_cumulative` vs target, where the checkpoints live (the resolved
-league_dir -- `checkpoints/shared_stack_frozen.pt`, `<league_dir>/<deck>/live.pt`; do NOT
-assume `checkpoints/league/` when a config's own `league_name` pointed elsewhere), and
-(league phase) two DIFFERENT log sources, both worth reporting:
+league_dir -- `<league_dir>/<deck>/live.pt`; do NOT assume `checkpoints/league/` when a
+config's own `league_name` pointed elsewhere), and two DIFFERENT log sources, both worth
+reporting:
 - the double round-robin snapshot logs written by §5 step 4
   (`logs/<league_name>_double_round_robin_<per_deck_cumulative>games.json`) -- manual,
   triggered once per escalation step by this skill, for the replay viewer;
@@ -258,14 +248,11 @@ Never claim a run succeeded without having seen its "done" line and exit 0 in th
   runtime, so a changed roster needs no change here (only a `fresh start` if it's the
   FULL vocab-defining roster that changed, since that changes the vocab). There is no
   per-deck selection flag beyond a config's `roster`/`train_decks` -- training always
-  covers every deck in whatever roster is in effect. "Per-deck only" means the league
-  DeckNetworks vs. the pretrain shared stack, NOT a subset of decks.
+  covers every deck in whatever roster is in effect.
 - Reward is terminal (near-zero early is expected, not a failure — watch losses moving
-  and games completing instead): pretrain uses `action_count_win_reward_200_floor02`
-  (plain win/loss); league play uses `deploy_reward_v6` (a FLAT +1 win / -1 loss — the
+  and games completing instead): league play uses `deploy_reward_v6` (a FLAT +1 win / -1 loss — the
   cleanup-discard sloppiness penalty `q` that v3/v4 carried is gone from both bands as of
-  2026-08-11 — see `rl/rewards.py`). Different reward fns for the two phases, not the same
-  one throughout. `deploy_reward_v6` also wraps a dense, per-transition mana-burn penalty
+  2026-08-11 — see `rl/rewards.py`). `deploy_reward_v6` also wraps a dense, per-transition mana-burn penalty
   (`with_dense_mana_burn_penalty`, whole-game cap 1.5 against a per-turn curve weighted to
   0.5 — v5 used 1.5 and saturated that cap in 64-71% of games, making the penalty a flat
   toll rather than a gradient), charged to

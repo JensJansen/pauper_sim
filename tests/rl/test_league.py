@@ -10,6 +10,7 @@ import os
 import random
 
 import pytest
+from types import SimpleNamespace
 
 from rl.arch import SetTransformer
 from rl.agent import AlwaysKeep, SeatAgent
@@ -29,9 +30,12 @@ def _registered_pool(tmp_path):
     of 3), plus the shared/fake net+mulligan-net used to register them --
     the shared setup most of this module's checks build on."""
     pool = _fresh_pool(tmp_path)
-    shared = SetTransformer(vocab_size=5, d_model=8, n_heads=2, n_layers=1, dim_feedforward=16)
-    fake_net = DeckNetwork(shared, film_condition_dim=8, non_targeting_n_actions=4)
-    fake_mull = MulliganNet(shared, hidden=8)  # snapshots are whole agents now (deck + mulligan)
+    # Production encoder architecture, not a shrunken one: load_snapshot_agent
+    # rebuilds the encoder at SetTransformer's own defaults (see its assert),
+    # so a snapshot written at a custom width could never be loaded back.
+    shared = SetTransformer(vocab_size=5)
+    fake_net = DeckNetwork(shared, film_condition_dim=shared.d_model, non_targeting_n_actions=4)
+    fake_mull = MulliganNet(fake_net.encoder, hidden=8)  # snapshots are whole agents now (deck + mulligan)
     for _ in range(5):
         pool.register_snapshot("deck_a", fake_net, fake_mull)
     return pool, shared, fake_net, fake_mull
@@ -122,10 +126,10 @@ def test_sample_opponent_checkpoint_rate_half_tracks_requested_fraction(tmp_path
 def test_load_snapshot_agent_loads_and_caches(tmp_path):
     pool, shared, _fake_net, _fake_mull = _registered_pool(tmp_path)
     # load_snapshot_agent must load a frozen SeatAgent (deck + mulligan) and be cached.
-    deck_ctx = (None, [("Pass", None, None)] * 4)
+    deck_ctx = (SimpleNamespace(size=5), [("Pass", None, None)] * 4)  # .size sizes the encoder the snapshot loads into
     _sid, path = pool.snapshots["deck_a"][0]
-    loaded = pool.load_snapshot_agent(path, shared, deck_ctx)
-    loaded_again = pool.load_snapshot_agent(path, shared, deck_ctx)
+    loaded = pool.load_snapshot_agent(path, deck_ctx)
+    loaded_again = pool.load_snapshot_agent(path, deck_ctx)
     assert loaded is loaded_again, "repeat loads of the same snapshot must hit the cache, not reconstruct"
     assert isinstance(loaded, SeatAgent), "a loaded snapshot is a frozen SeatAgent"
     assert isinstance(loaded.mulligan, MulliganNet), "a snapshot saved WITH a mulligan net must round-trip it"
@@ -138,13 +142,13 @@ def test_load_snapshot_agent_legacy_deck_only_falls_back_to_always_keep(tmp_path
     import torch
 
     pool, shared, fake_net, _fake_mull = _registered_pool(tmp_path)
-    deck_ctx = (None, [("Pass", None, None)] * 4)
+    deck_ctx = (SimpleNamespace(size=5), [("Pass", None, None)] * 4)  # .size sizes the encoder the snapshot loads into
     # A deck-only snapshot (no mulligan state) must still load, falling back to AlwaysKeep.
     legacy_path = os.path.join(str(tmp_path), "deck_b", "snapshot_0.pt")
     os.makedirs(os.path.dirname(legacy_path), exist_ok=True)
     torch.save({"state_dict": fake_net.state_dict(),
                 "trunk_hidden": tuple(l.out_features for l in fake_net.trunk_layers)}, legacy_path)
-    legacy = pool.load_snapshot_agent(legacy_path, shared, deck_ctx)
+    legacy = pool.load_snapshot_agent(legacy_path, deck_ctx)
     assert isinstance(legacy, SeatAgent) and isinstance(legacy.mulligan, AlwaysKeep), \
         "a deck-only snapshot must load with an AlwaysKeep pregame decider"
 
@@ -152,9 +156,9 @@ def test_load_snapshot_agent_legacy_deck_only_falls_back_to_always_keep(tmp_path
 @pytest.mark.slow
 def test_register_snapshot_eviction_invalidates_load_cache(tmp_path):
     pool, shared, fake_net, fake_mull = _registered_pool(tmp_path)
-    deck_ctx = (None, [("Pass", None, None)] * 4)
+    deck_ctx = (SimpleNamespace(size=5), [("Pass", None, None)] * 4)  # .size sizes the encoder the snapshot loads into
     _sid, path = pool.snapshots["deck_a"][0]
-    pool.load_snapshot_agent(path, shared, deck_ctx)  # populate the cache
+    pool.load_snapshot_agent(path, deck_ctx)  # populate the cache
     assert path in pool._net_cache
 
     # A freshly-registered snapshot that evicts `path` must invalidate its cache entry.

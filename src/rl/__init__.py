@@ -5,5 +5,5 @@ fixed/pointer action-table bridge (action_bridge), the shared deck pool
 (train), and the win/loss reward (rewards).
 
 Sits on top of the `game` engine and the `drl_env` action layer (both imported
-absolutely, since they live at src/ root). The entry-point scripts
-run_pretrain.py / run_league.py stay at src/ root and import from here."""
+absolutely, since they live at src/ root). The entry-point script
+run_league.py stays at src/ root and imports from here."""

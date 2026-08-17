@@ -20,8 +20,8 @@ more than the last -- the model mulligans a hand iff doing so raises its win
 probability by more than that (rising) marginal cost, and mulliganing toward zero
 is strongly discouraged. The reward goes NEGATIVE on a mulligan-heavy loss.
 
-It reuses the frozen shared stack's card embeddings to represent the hand (so it
-inherits the card semantics the stack already learned); everything else is a
+It reuses its own deck's encoder card embeddings to represent the hand (so it
+inherits the card semantics that encoder has learned); everything else is a
 small per-deck head. Card indices come from rl.features.CardVocab.
 """
 from __future__ import annotations
@@ -48,18 +48,35 @@ def mulligan_reward(won, mulligans_taken):
 
 
 class MulliganNet(nn.Module):
-    """One per deck. Reuses shared_stack.embedding (frozen) to encode the hand;
-    a small trunk feeds three heads: keep/mulligan logits, a value baseline, and
-    a pointer query used to score bottom candidates against their embeddings."""
+    """One per deck. Reuses its deck's own encoder embedding to represent the
+    hand; a small trunk feeds three heads: keep/mulligan logits, a value
+    baseline, and a pointer query used to score bottom candidates against
+    those embeddings.
+
+    The encoder is held as a PLAIN REFERENCE, not a registered child, so this
+    net's own REINFORCE optimizer never trains it -- the main PPO update owns
+    it (rl.deck.DeckNetwork registers it). That is a deliberate asymmetry: a
+    mulligan decision is one near-bandit sample per game, far too little
+    signal to be steering a 117k-parameter perception encoder that ~100
+    in-game decisions per game are also steering.
+
+    Known consequence, accepted 2026-08-17: PPO now MOVES that embedding
+    between mulligan updates (it used to be frozen for the whole run), so
+    this net's input representation is non-stationary under it. The mulligan
+    trunk retrains against the drift, and the drift is slow relative to how
+    long a mulligan policy takes to converge. If mulligan quality is ever
+    seen to degrade over a long run, giving this net its own small embedding
+    table is the fix."""
 
     N_SCALAR = 2  # mulligans_taken/HAND, on_the_play
 
-    def __init__(self, shared_stack, hidden=64):
+    def __init__(self, encoder, hidden=64):
         super().__init__()
-        # Plain reference, not a registered child -- see rl.deck.DeckNetwork's
-        # own comment for why nn.Module.__setattr__ is avoided here.
-        object.__setattr__(self, "shared_stack", shared_stack)
-        d = shared_stack.d_model
+        # Plain reference, NOT a registered child -- see the class docstring:
+        # keeps the encoder out of this net's optimizer and out of its
+        # state_dict (the DeckNetwork checkpoint already carries it).
+        object.__setattr__(self, "encoder", encoder)
+        d = encoder.d_model
         self.trunk = nn.Sequential(
             nn.Linear(d + self.N_SCALAR, hidden), nn.Tanh(),
             nn.Linear(hidden, hidden), nn.Tanh(),
@@ -72,7 +89,7 @@ class MulliganNet(nn.Module):
     def _encode(self, hand_idx):
         """hand_idx: LongTensor [B, H] (0 = padding). Returns pooled hand
         embedding [B, d] (mean over real cards), masking padding."""
-        embs = self.shared_stack.embedding(hand_idx)          # [B, H, d]
+        embs = self.encoder.embedding(hand_idx)               # [B, H, d]
         real = (hand_idx != 0).float().unsqueeze(-1)          # [B, H, 1]
         return (embs * real).sum(1) / real.sum(1).clamp(min=1.0)
 
@@ -90,7 +107,7 @@ class MulliganNet(nn.Module):
         [B,K] bool (real candidate). Returns ([B,K] masked scores, [B] value)."""
         h = self.trunk_out(hand_idx, scalars)
         query = self.bottom_query(h).unsqueeze(1)              # [B, 1, d]
-        cand_embs = self.shared_stack.embedding(cand_idx)      # [B, K, d]
+        cand_embs = self.encoder.embedding(cand_idx)            # [B, K, d]
         scores = torch.bmm(query, cand_embs.transpose(1, 2)).squeeze(1) / (self.d_model ** 0.5)
         return scores.masked_fill(~cand_mask, -1e8), self.value_head(h).squeeze(-1)
 

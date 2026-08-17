@@ -94,23 +94,15 @@ def mill(state, n, player_idx=None):
 def shuffle_library(state, player_idx=None):
     """Shuffle a player's library. THE one place a library gets shuffled.
 
-    Exists to be a choke point rather than for the shuffle itself: shuffling
-    destroys any knowledge the player had of their own library order, so
-    PlayerState.known_top (see game.state.known_top_prefix) must be cleared at
-    exactly the same moment. Nine call sites used to invoke rng.shuffle
-    directly; routing them all through here means a future tenth cannot
-    silently skip the clear.
-
-    game.state.known_top_prefix already validates known_top against the real
-    library, so a missed clear could not make the agent believe a card is on
-    top that isn't. What it could do is let a post-shuffle coincidence (~7%
-    with 4 copies in 60 cards) hand the agent a fact it is TRUE but that a real
-    player would have no way to know. Clearing here closes that leak."""
+    Kept as a single choke point even though the shuffle itself is one line:
+    nine call sites used to invoke rng.shuffle directly, and routing them all
+    through here is what let a cross-cutting concern be added in one place. It
+    carried exactly one such concern -- clearing PlayerState.known_top, since
+    shuffling destroys any knowledge of library order -- which went away with
+    known_top itself (2026-08-17, when the recurrent policy replaced remembered
+    facts with remembered observations)."""
     idx = state.active_idx if player_idx is None else player_idx
-    player = state.players[idx]
-    state.rng.shuffle(player.library)
-    player.known_top = []
-    player.known_top_library_len = 0
+    state.rng.shuffle(state.players[idx].library)
 
 
 def find_and_remove_by_name(state, name):

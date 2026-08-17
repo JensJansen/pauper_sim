@@ -16,9 +16,9 @@ framework dependencies beyond PyTorch.
 | **Game engine** | `src/game/` | A self-contained MTG-subset simulator: zones, turn/phase loop, priority, the stack, mana, combat, and 150+ card/token effects. No ML dependency. |
 | **Card catalog** | `src/game/catalog/` | Card definitions grouped by color. Decks are just decklists resolved against this shared catalog — adding a deck from already-implemented cards needs no code. |
 | **Action space** | `src/drl_env/` | Turns a decklist + `EFFECT_REGISTRY` into a flat action table with per-action legality + execute closures and legal masks. Not a gym `Env`, just the assembly between engine and training loop. |
-| **DRL system** | `src/rl/` | A shared Set-Transformer + FiLM perception stack, per-deck trunk/critic/pointer-network action heads, and a PPO self-play + league training loop. |
+| **DRL system** | `src/rl/` | A per-deck Set-Transformer + FiLM perception encoder, trunk/critic/pointer-network action heads, and a PPO self-play + league training loop. |
 | **Decks** | `data/*.txt` + `league_decks.json` | An 11-deck roster (see below). |
-| **Training drivers** | `src/run_pretrain.py`, `src/run_league.py` | Two-phase pipeline: pretrain & freeze the shared stack, then train every deck continuously in a league. |
+| **Training drivers** | `src/run_league.py` | Trains every deck continuously in a league, encoder and policy together. |
 | **Training-ops UI** | `src/webapp/` | A local Flask web app to start/stop/configure training runs and watch their logs live in a browser, instead of hand-building CLI invocations. |
 
 **Roster** (`data/league_decks.json`): `mono_red_madness`, `rakdos_madness`,
@@ -40,9 +40,13 @@ framework dependencies beyond PyTorch.
   learned identity embedding + a hand-authored static feature vector), and a
   Set Transformer lets tokens attend to one another so relative valuations
   (an attacker's threat depends on what can block it) are learnable.
-- **One policy per deck, sharing one perception stack.** The embedding +
-  attention layers are pretrained across all decks and frozen; each deck then
-  trains its own lightweight head on top.
+- **One policy per deck, each with its own perception encoder.** Embedding,
+  attention and head all train together under the same PPO update, so a
+  checkpoint is self-contained: any two populations can be played against each
+  other with no compatibility bookkeeping. Until 2026-08-17 there was instead
+  ONE shared encoder, pretrained across all decks by a separate phase and then
+  frozen for the whole run — 59% of the model, trained on ~2,000 games/deck of
+  the weakest play and never updated across the 12,000+ that followed.
 - **Continuous league training**, not a fixed curriculum: every deck trains
   every round against opponents resampled from a pool of historical snapshots
   of every deck, so a policy can't quietly forget how to beat an opponent's
@@ -118,9 +122,9 @@ src/
     features.py              CardVocab (stable card->index) + static per-token feature
                              vectors + build_token_set.
     arch.py                  SetTransformer (embeddings + self-attention + two PMA
-                             pooling heads) and FiLM — the shared perception stack.
-    deck.py                  DeckNetwork: per-deck trunk + critic + pointer-net action
-                             head on top of a shared stack.
+                             pooling heads) and FiLM — the perception encoder.
+    deck.py                  DeckNetwork: one deck's own encoder + trunk + critic +
+                             pointer-net action head, trained end to end.
     mulligan.py              Per-deck pregame mulligan model + its REINFORCE trainer.
     agent.py                 SeatAgent: per-seat decision dispatch (pregame ->
                              mulligan model, everything else -> DeckNetwork).
@@ -146,7 +150,6 @@ src/
                              training_run.py instead of importing run_league.py itself.
     rewards.py               Reward functions (win/loss with a speed tiebreaker).
 
-  run_pretrain.py          Pretrain + freeze the shared stack.
   run_league.py            Thin CLI wrapper (arg resolution + main()) around
                            rl/league_runner.py.
   run_rollback.py          Promote a historical snapshot back to live.pt (the archive
@@ -161,8 +164,8 @@ src/
     report_metrics.py      Plain-text summary of a league's metrics.jsonl -- per-record
                            trends first, then pooled stats with IMPROVING/FLAT/
                            REGRESSING/PAST PEAK verdicts and CIs.
-    run_anchor_eval.py     Absolute scale: checkpoints vs an UNTRAINED DeckNetwork on
-                           the real frozen stack (a floor, saturates fast).
+    run_anchor_eval.py     Absolute scale: checkpoints vs a fully UNTRAINED
+                           DeckNetwork, encoder included (a floor, saturates fast).
     run_snapshot_round_robin.py
                            Round robin among a deck's own snapshots -- 3-cycle count,
                            Bradley-Terry Elo + residual vs noise floor, monotonicity.
@@ -188,8 +191,8 @@ checkpoints/               Trained weights + vocab.json (gitignored; see below).
 logs/                      Game event logs from --log runs (gitignored).
 ```
 
-**Run scripts from `src/`.** The driver/training scripts (`run_pretrain.py`,
-`run_league.py`, `benchmarking/*`) use relative paths like `../data` and
+**Run scripts from `src/`.** The driver/training scripts (`run_league.py`,
+`benchmarking/*`) use relative paths like `../data` and
 `../checkpoints`, and the `rl.*` modules
 import each other and `game`/`drl_env` by name — both of which resolve when
 you run from `src/` (Python puts the script's directory on `sys.path`). The
@@ -224,21 +227,23 @@ and play out matches on its own. Highlights:
   in real Magic either (either player can count a library or a hand), so
   it's surfaced to the agent separately, as a scalar.
 
-  One deliberate addition (2026-08-13): the `known_top` pseudo-zone carries
-  cards a player has **legitimately seen placed on top of their own library**
-  — Brainstorm's "put two cards from your hand on top in any order". It is
-  tokenized for that player ONLY, so it adds nothing a real player lacks; it
-  removes an observation gap that made the placement choice structurally
-  untrainable, since its value only materialized 1–2 draws later with zero
-  observability. `game.state.known_top_prefix` never trusts the stored list:
-  it checks both how many cards have left the top (library length delta since
-  placement) *and* that the remaining cards still match, so a draw/mill/exile
-  degrades it correctly and anything unrecognized clears it. Length tracking is
-  what distinguishes "the Mountain I placed" from "a different Mountain now on
-  top" — library entries are interned CardDefs, so with a 4-of neither `==`
-  nor `is` can tell two copies apart. Shuffles additionally clear it outright
-  at `game.effects.shared.shuffle_library`, the single choke point every
-  library shuffle routes through.
+  The `revealed` pseudo-zone (2026-08-17) carries cards a pending resolution
+  is **currently holding outside every real zone** — a scry/surveil's revealed
+  cards, a Deem Inferior tuck. Tokenized for the DECIDING seat only. This
+  closed a real blindness rather than adding information: `begin_scry_surveil`
+  deletes the cards from the library into `pending["remaining"]`, and the
+  action row is a bare `["keep", "dispose"]`, so the agent was choosing what to
+  bottom **without being able to see any of it**.
+
+  There was also a `known_top` pseudo-zone (2026-08-13 – 2026-08-17), holding
+  what a player had seen placed on top of their own library by Brainstorm. It
+  was removed with the recurrent policy: it is a *computed, persisted fact*,
+  and the agent is meant to learn from what it observes. It does observe the
+  placement — those cards leave its own tokenized hand one at a time — so the
+  sequence carries the information even though no single frame does, which is
+  what the GRU is there to integrate. The agent's own previous action is fed
+  in alongside the observation to make that recoverable as a lookup rather
+  than an inference over hand-token deltas.
 
 ### Mana: cast then pay
 
@@ -310,12 +315,43 @@ tokens**, one per public-zone card for both players plus every card in the
 agent's own hand (own hand is never hidden from the agent itself; the
 opponent's hand stays hidden). Each token = a learned **identity embedding**
 (via `CardVocab`) concatenated with a deterministic **static feature vector**
-(mana cost, type, base P/T, keywords) plus **dynamic per-instance state**
-(a `cost_reduction_delta` — own-hand tokens only, how much cheaper this card
-currently is than its printed cost, e.g. affinity/Tolarian Terror — tapped,
-effective P/T, combat commitments, whether currently targeted by a
-spell/ability on the stack — mine or the opponent's, including a spell
-targeting another spell — zone, mine/theirs side flag).
+plus **dynamic per-instance state**.
+
+The static half has two parts. *Printed stats*: mana cost, type, base P/T,
+keywords. Then *what the card does*, *derived* from `EFFECT_REGISTRY` and
+`CardDef.extra` rather than hand-authored, so a new card is described the
+moment it is registered: mana production (produces-mana, which colors, whether
+the amount is board-scaled, enters-tapped, can-filter), an effect-capability
+multi-hot over every registry spec key, the pending-resolution kinds the card
+can create (its behavioral signature — `choose_any_target` reads as removal,
+`search_fetch` as a tutor), flags (`artifact`/`basic`/`defender`/
+`indestructible`/`devoid`), and creature subtypes.
+
+> Those derived blocks were added 2026-08-17. Before them the static vector
+> was printed stats only, which collapsed the 141-card catalog onto **78
+> distinct vectors** — all 26 lands shared *one*, as did Lightning Bolt /
+> Galvanic Blast / Lava Dart — leaving the learned embedding as the only thing
+> telling them apart. It is now **131 of 141**, and every remaining collision
+> is a genuine near-functional-duplicate pair (Llanowar/Fyndhorn Elves,
+> Gladecover Scout/Slippery Bogle). Two were load-bearing rather than cosmetic:
+> `artifact` (affinity counts artifact *lands*, so `Island` and `Seat of the
+> Synod` were the same card) and the `Elf` subtype (Priest of Titania taps for
+> {G} per Elf, so the elves engine was invisible).
+>
+> This is deliberately the **cheap** end — presence/absence, auto-derived. The
+> richer version is a hand-authored semantic vector per card (effect class,
+> magnitude, what it targets); `rl/features.py` marks it as the upgrade path.
+
+The dynamic half: a `cost_reduction_delta` (own-hand tokens only, how much
+cheaper this card currently is than its printed cost, e.g. affinity/Tolarian
+Terror), tapped, effective P/T, combat commitments — **is-attacking** and
+**summoning-sick**, both added 2026-08-17, without which an *unblocked*
+attacker was feature-identical to a creature that stayed home (combat reads
+`unblocked = [p for p in attackers if p not in blocked_by]`, so it never
+appears in `blocked_by` at all) — how many Auras a permanent carries and
+whether it *is* an attached Aura, per-kind counter counts, whether currently
+targeted by a spell/ability on the stack (mine or the opponent's, including a
+spell targeting another spell), zone, and a mine/theirs side flag.
 
 The second is a **scalar vector** (`rl/agent.py`'s `_scalar_features`) of
 non-tokenized globals: turn number, lands-played, mulligans taken, whose
@@ -328,17 +364,33 @@ all public knowledge in real Magic, unlike hand/library *contents* — see
 "Hidden information is respected" above. The agent's own hand size isn't
 included here (redundant with counting its own hand tokens above).
 
-The network is split into a **shared** stack and a **per-deck** head:
+Every deck has its own network, encoder included — nothing is shared between
+decks but the card *index* mapping:
 
-- **`SetTransformer` (shared, `rl/arch.py`)** — embeds + projects tokens,
+- **`SetTransformer` (`rl/arch.py`)** — embeds + projects tokens,
   runs a joint self-attention encoder over *both* sides' tokens (so a token
   can attend across the mine/theirs boundary), then pools with two
   independent learned-query heads: a "mine" summary (trunk input) and a
   "theirs" summary (FiLM conditioning input). Pre-norm transformer for RL
   stability. Uses `torch.nn.MultiheadAttention`/`TransformerEncoderLayer`
   directly rather than hand-rolling attention.
-- **`FiLM` (shared)** — turns the "theirs" summary into per-layer
-  (gamma, beta) modulations of the trunk, chosen over concatenation.
+- **`FiLM`** — turns the "theirs" summary into per-layer (gamma, beta)
+  modulations of the trunk, chosen over concatenation.
+- **A `GRU` between the trunk and every head** (2026-08-17) — so the critic,
+  the fixed-action head *and* the pointer query are all history-aware. Without
+  it the observation is strictly Markov: it describes the board right now and
+  says nothing about what has happened, which makes "they held two blue up and
+  passed" unrepresentable no matter how rich the per-card features get. Chosen
+  over a transformer over stacked history because recurrence remains stronger
+  and more stable under partial observability, and stacking N observations
+  would multiply each deck's encoder cost by N.
+
+  Two invariants it depends on. The state is keyed **by seat**, because a
+  mirror pairing puts one `SeatAgent` on both seats and a shared state would
+  leak seat 0's hand into seat 1's inputs. And it is cleared **per game**,
+  because `ppo_update` replays every episode from a zero state — a state
+  surviving a game boundary would make the update recompute hidden states that
+  never occurred.
 - **`DeckNetwork` (per-deck, `rl/deck.py`)** — a small trunk + critic +
   a **pointer-network action head**. The action space is the union of a
   **fixed table** of non-targeting actions (play land, cast X, pass, mana
@@ -348,8 +400,11 @@ The network is split into a **shared** stack and a **per-deck** head:
   softmax**, so a masked-categorical sample over the true legal set is
   correct.
 - **Pregame mulligan model (per-deck, `rl/mulligan.py`)** — a separate small
-  head on the same shared stack that owns every pregame keep/mulligan/bottom
-  decision. A `SeatAgent` (`rl/agent.py`) routes pregame decisions to it and
+  head reading its own deck's encoder embeddings, owning every pregame
+  keep/mulligan/bottom decision. It holds that encoder by plain reference, not
+  as a registered child, so its REINFORCE optimizer never steps the encoder
+  PPO owns (one near-bandit sample per game should not be steering a 117k-param
+  perception encoder that ~100 in-game decisions per game are also steering). A `SeatAgent` (`rl/agent.py`) routes pregame decisions to it and
   everything else to the `DeckNetwork`. It trains by its own REINFORCE with a
   direct whole-game reward, decoupled from the main PPO update — a mulligan is a
   near-bandit: one pregame choice, the game's outcome as its number.
@@ -397,33 +452,41 @@ See **Instrumentation** below.
 
 ## Training pipeline
 
-Both phases share one vocabulary/embedding table across all decks
-(`checkpoints/vocab.json`, append-only so old checkpoints stay valid). Run
-everything **from `src/`**.
-
-### 1. Pretrain & freeze the shared perception stack
-
-```
-cd src
-python run_pretrain.py <n_iterations> <games_per_iteration>           # build up the shared stack
-python run_pretrain.py <n_iterations> <games_per_iteration> --freeze  # freeze once satisfied
-```
-
-Runs mirror self-play for **every** deck each iteration, flowing gradients
-from a throwaway per-deck head into the one shared `SetTransformer`+`FiLM`.
-Checkpoints to `checkpoints/pretrain_shared_stack.pt` after every session
-(resumable). `--freeze` additionally writes
-`checkpoints/shared_stack_frozen.pt` — run it only once you're satisfied.
-
-### 2. League training
+One phase. All decks share one vocabulary (`checkpoints/vocab.json`,
+append-only so old checkpoints stay valid) — the card *index* mapping, not any
+learned weights. Run everything **from `src/`**.
 
 ```
 cd src
 python run_league.py --n-iterations N --snapshot-every 15 --n-workers 6
 ```
 
-Every deck trains every iteration against a resampled league opponent, on top
-of the frozen shared stack. Each deck's live net/optimizer persists in
+Every deck trains every iteration against a resampled league opponent. A deck
+with no `live.pt` yet starts from a freshly-initialized net — encoder included
+— so there is nothing to prepare before the first run.
+
+**PPO samples whole episodes, not transitions** (2026-08-17, with the recurrent
+policy): the GRU needs each game replayed in order from its own start, so the
+update segments the buffer on `done` and minibatches over trajectories.
+`seq_batch_size_start`/`seq_batch_size_cap` therefore count **episodes** — they
+replaced `batch_size_start`/`batch_size_cap`, and the rename is deliberate so a
+config carrying the old keys fails on the unknown-key assert rather than being
+read as 32 *episodes* and collapsing every update to one full-batch minibatch.
+
+This used to be a **two-phase** pipeline: `run_pretrain.py` trained one shared
+`SetTransformer`+`FiLM` across all decks via throwaway per-deck heads, froze it
+to `checkpoints/shared_stack_frozen.pt`, and the league then trained per-deck
+heads on top of that fixed encoder. Per-deck encoders (2026-08-17) removed the
+phase entirely — see the architecture note above for why. Two consequences
+worth knowing:
+
+- **PPO is slower per update.** A frozen encoder let `ppo_update` precompute
+  its per-transition outputs once and reuse them across every epoch; a
+  trainable one must be recomputed each minibatch so gradients reach it.
+- **Snapshots are bigger.** A `live.pt`/`snapshot_*.pt` now carries its own
+  117k-parameter encoder (~830 KB rather than ~360 KB).
+
+Each deck's live net/optimizer persists in
 `checkpoints/league/<deck>/live.pt`; snapshots live alongside, and a
 `session.txt` counter makes runs resumable across sessions.
 
@@ -502,8 +565,9 @@ up stronger. Note that 2e-4 plateaus and oscillates exactly as 3e-4 does despite
 having no truncation, so **the late-training plateau is not a trust-region
 problem** and lowering `lr` further will not fix it.
 
-Scope is **league training only** — `run_pretrain.py` keeps its own 3e-4, which
-was never part of the experiment. Resuming a league trained at 3e-4 now picks up
+Scope was **league training only**; the pretrain phase kept its own untested
+3e-4 and was deleted along with `run_pretrain.py` in 2026-08-17's per-deck
+encoder change. Resuming a league trained at 3e-4 now picks up
 the new default; pin `"ppo": {"lr": 0.0003}` in its config to continue it
 unchanged.
 
@@ -625,22 +689,22 @@ reference points, outside that history entirely:
   note for why that config is retired rather than reused to train the (now
   frozen) other side.
 
-  **Currently DISABLED (2026-08-07, `gauntlet_league_name` unset in
-  `run_default.json`):** the 2026-08-06 restart (below) wiped and
-  re-pretrained the shared stack from scratch, but `4_deck_subleague_gauntlet`
-  was never retrained — `_run_eval_vs_gauntlet`'s own precondition ("two runs
-  from the SAME frozen shared stack") is now violated. The comparison code
-  loads gauntlet's saved per-deck weights (trained against the OLD, deleted
-  stack) onto a `DeckNetwork` built on the NEW stack's unrelated embedding
-  space — same tensor shapes, so it doesn't crash, but gauntlet's decisions
-  now run through representations its FiLM/pointer-query layers were never
-  trained on. Every `vs_gauntlet` number collected before this was caught is
-  confounded by that mismatch, not just a real skill gap. Re-enable once a new
-  twin population is grown from the SAME (new) frozen stack, mirroring how the
-  original gauntlet was created — `vs_history` and the PPO
-  `approx_kl`/`clip_fraction`/`epochs_run` diagnostics (`rl/ppo.py`, see the
-  reward/PPO sections below) remain valid in the meantime, since neither
-  depends on gauntlet.
+  **The confound that disabled this in 2026-08-07 is now structurally
+  impossible.** `_run_eval_vs_gauntlet` used to load the gauntlet league's
+  saved per-deck weights onto a `DeckNetwork` built on the CALLING population's
+  frozen shared stack. When the 2026-08-06 restart re-pretrained that stack
+  from scratch without retraining the gauntlet, gauntlet's decisions began
+  running through an embedding space its FiLM/pointer-query layers had never
+  seen — same tensor shapes, so nothing crashed, and every `vs_gauntlet`
+  reading across sessions 0–14 (24,579 games/deck) was confounded before anyone
+  noticed. A `stack_id.txt` guard was added to catch it.
+
+  Per-deck encoders (2026-08-17) removed both the failure and the guard: a
+  checkpoint carries its own encoder, so a gauntlet opponent can only ever be
+  played through the perception it was trained with. `gauntlet_league_name` is
+  still unset in `run_default.json` and both twin populations were deleted in
+  the 2026-08-17 cleanup, so re-enabling it needs a newly grown twin — but
+  nothing about the mechanism is unsafe any more.
 
   **2026-08-06 comprehensive restart**: separately from the swap above, a
   7-agent audit (`TRAINING_IMPROVEMENT_OPTIONS.md` at the repo root) found the
@@ -653,7 +717,8 @@ reference points, outside that history entirely:
   and `PFSP_POWER`; `rl/ppo.py`'s `target_kl` and `rl/train.py`'s
   `ent_coef_schedule`), plus the dense mana-burn reward reverted (see the
   rewards section above) and a substantially larger pretrain budget before the
-  refreeze. `4_deck_subleague_test` restarted from zero under all of it at
+  refreeze (that phase no longer exists). `4_deck_subleague_test` restarted
+  from zero under all of it at
   once; `4_deck_subleague_gauntlet` was left untouched as the (now
   representation-mismatched, see above) stale reference.
 - **Tier 1 — `rl.agent.HeuristicAgent`**: a hand-authored, non-learned
@@ -690,11 +755,7 @@ wired only through `--matchup` mode.)
 
 ### Rewards & win condition
 
-- **Rewards** (`rl/rewards.py`): **pretraining** uses
-  `action_count_win_reward_200_floor02` — loss/draw → `0.0`, win → `1.0` down
-  to a `0.2` floor scaled by the *winning seat's* action count (so a policy
-  can't pad a turn with free actions to inflate its reward). **League** play
-  uses `deploy_reward_v6` (2026-08-12 — supersedes `deploy_reward_v5`, see
+- **Rewards** (`rl/rewards.py`): league play uses `deploy_reward_v6` (2026-08-12 — supersedes `deploy_reward_v5`, see
   below): a **flat `+1.0` on any win, `-1.0` on any loss or no-winner
   timeout** (`flat_win_loss_reward`), with the dense mana-burn penalty below
   applied to the **winner only**. There is no efficiency scaling (the earlier
@@ -931,8 +992,8 @@ wired only through `--matchup` mode.)
 ## Training-ops UI (`src/webapp/`)
 
 A local Flask web app for starting, stopping, configuring, and watching
-training runs from a browser instead of hand-building `run_league.py`/
-`run_pretrain.py` invocations, plus a game replay viewer (below) for
+training runs from a browser instead of hand-building `run_league.py`
+invocations, plus a game replay viewer (below) for
 stepping through a logged game's board state.
 
 ```
@@ -944,8 +1005,8 @@ python app.py          # http://127.0.0.1:5000 -- localhost only, no auth
 described below lives at `/train`, the replay viewer (below) at `/replay`.
 Each page links back to `/` and to the other tool.
 
-- **Runs are plain subprocesses.** Starting one spawns `run_league.py` or
-  `run_pretrain.py` with fully explicit CLI flags built from whatever's in
+- **Runs are plain subprocesses.** Starting one spawns `run_league.py` with
+  fully explicit CLI flags built from whatever's in
   the form — never a `--run-config`/`--league-config` *path*. The league
   form is generated by introspecting `rl.league_cli_spec.build_arg_parser()`
   directly (`webapp/runs.py`'s `argspec_from_parser`) — a torch-free module

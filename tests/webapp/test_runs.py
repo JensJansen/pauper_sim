@@ -30,12 +30,10 @@ def _flag_value(argv, flag):
     return argv[i + 1]
 
 
-def test_build_argv_pretrain_defaults_and_freeze():
-    assert build_argv("pretrain", {}) == ["1", "2"]
-    assert build_argv("pretrain", {"n_iterations": "5", "games_per_iteration": "3"}) == ["5", "3"]
-    assert build_argv("pretrain", {"n_iterations": "5", "games_per_iteration": "3", "freeze": True}) == \
-        ["5", "3", "--freeze"]
-    assert build_argv("pretrain", {"freeze": False}) == ["1", "2"]
+# test_build_argv_pretrain_defaults_and_freeze lived here. build_argv's
+# "pretrain" branch (two positional args plus --freeze) went away with
+# run_pretrain.py when per-deck encoders removed the pretrain phase; run_league
+# is now the only script the webapp can launch.
 
 
 @pytest.mark.slow

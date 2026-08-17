@@ -6,9 +6,12 @@ import json
 import os
 import tempfile
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
+import torch
 
+from rl import checkpoint as ckpt_io
 from rl import league_runner
 from rl.pool import build_pool as _real_build_pool
 
@@ -53,7 +56,8 @@ def test_run_eval_labels_each_game_with_its_real_pairing(tmp_path, monkeypatch):
     returns a (deck_a, deck_b) per game_logs entry, in round-robin order
     (combinations_with_replacement: AA, AB, BB for a 2-deck roster), and that
     _write_event_log round-trips it into the JSON as real deck_a/deck_b
-    fields instead of a bare, unlabeled game_index. fresh_stack=True + a
+    fields instead of a bare, unlabeled game_index. An empty league_dir (so
+    every deck starts from a fresh, untrained net) + a
     tmp_path league_dir sidesteps needing a real frozen_stack/live checkpoint
     (untrained random-init nets play real, complete games -- slow because of
     that, not because anything here is flaky); a private vocab_path keeps
@@ -67,7 +71,7 @@ def test_run_eval_labels_each_game_with_its_real_pairing(tmp_path, monkeypatch):
     game_logs = []
     eval_decks, game_pairings = league_runner._run_eval(
         ["rakdos_madness", "dmir_terror"], games_per_pairing=2, greedy=False, seed=0,
-        game_logs=game_logs, fresh_stack=True, league_dir=str(tmp_path / "league"),
+        game_logs=game_logs, league_dir=str(tmp_path / "league"),
     )
     assert eval_decks == ["rakdos_madness", "dmir_terror"]
     assert len(game_logs) == 6  # 3 pairings (AA, AB, BB) x 2 games
@@ -103,14 +107,12 @@ def test_run_eval_vs_history_finds_archived_and_active_milestones(tmp_path, monk
     league_dir = str(tmp_path / "league")
     decklists, vocab, deck_ctxs, fixed_tables = _real_build_pool(vocab_path=str(tmp_path / "vocab.json"))
     deck_name = "rakdos_madness"
-    shared = league_runner.build_fresh_stack(vocab.size)
-    net = league_runner.DeckNetwork(shared, film_condition_dim=league_runner.D_MODEL,
-                                     non_targeting_n_actions=len(fixed_tables[deck_name]))
-    mnet = MulliganNet(shared)
+    net = league_runner.build_deck_net(vocab.size, len(fixed_tables[deck_name]))
+    mnet = MulliganNet(net.encoder)
 
     # No snapshots at all yet -- nothing to compare against.
     assert league_runner._run_eval_vs_history(
-        deck_name, net, mnet, deck_ctxs[deck_name], decklists[deck_name], shared, league_dir, horizon=20,
+        deck_name, net, mnet, deck_ctxs[deck_name], decklists[deck_name], league_dir, horizon=20,
     ) == []
 
     pool = LeaguePool(league_dir, [deck_name], max_snapshots_per_deck=2)
@@ -118,7 +120,7 @@ def test_run_eval_vs_history_finds_archived_and_active_milestones(tmp_path, monk
         pool.register_snapshot(deck_name, net, mnet)
 
     results = league_runner._run_eval_vs_history(
-        deck_name, net, mnet, deck_ctxs[deck_name], decklists[deck_name], shared, league_dir,
+        deck_name, net, mnet, deck_ctxs[deck_name], decklists[deck_name], league_dir,
         horizon=20, games_per_snapshot=2, seed=0,
     )
     labels = {r["label"] for r in results}
@@ -143,21 +145,19 @@ def test_run_eval_vs_gauntlet_plays_the_independent_twin_and_handles_missing_dec
     )
     deck_name = "rakdos_madness"
     decklists, vocab, deck_ctxs, fixed_tables = _real_build_pool(vocab_path=str(tmp_path / "vocab.json"))
-    shared = league_runner.build_fresh_stack(vocab.size)
-    live_net = league_runner.DeckNetwork(shared, film_condition_dim=league_runner.D_MODEL,
-                                          non_targeting_n_actions=len(fixed_tables[deck_name]))
+    live_net = league_runner.build_deck_net(vocab.size, len(fixed_tables[deck_name]))
     from rl.mulligan import MulliganNet
-    mulligan_net = MulliganNet(shared)
+    mulligan_net = MulliganNet(live_net.encoder)
 
     gauntlet_dir = str(tmp_path / "gauntlet")
     # No gauntlet checkpoint for this deck yet -- must return None, not crash or return an empty dict.
     assert league_runner._run_eval_vs_gauntlet(
-        deck_name, live_net, mulligan_net, deck_ctxs[deck_name], decklists[deck_name], shared,
+        deck_name, live_net, mulligan_net, deck_ctxs[deck_name], decklists[deck_name],
         gauntlet_dir, horizon=20,
     ) is None
     # gauntlet_league_dir=None entirely (the common case -- most leagues have no gauntlet) must also return None.
     assert league_runner._run_eval_vs_gauntlet(
-        deck_name, live_net, mulligan_net, deck_ctxs[deck_name], decklists[deck_name], shared,
+        deck_name, live_net, mulligan_net, deck_ctxs[deck_name], decklists[deck_name],
         None, horizon=20,
     ) is None
 
@@ -169,7 +169,7 @@ def test_run_eval_vs_gauntlet_plays_the_independent_twin_and_handles_missing_dec
     torch.save({"net": live_net.state_dict()}, os.path.join(deck_dir, "live.pt"))
 
     result = league_runner._run_eval_vs_gauntlet(
-        deck_name, live_net, mulligan_net, deck_ctxs[deck_name], decklists[deck_name], shared,
+        deck_name, live_net, mulligan_net, deck_ctxs[deck_name], decklists[deck_name],
         gauntlet_dir, horizon=20, games=2, seed=0,
     )
     assert result["games"] == 2
@@ -189,11 +189,9 @@ def test_run_eval_vs_heuristic_plays_real_games(tmp_path, monkeypatch):
     )
     deck_name = "mono_red_rally"
     decklists, vocab, deck_ctxs, fixed_tables = _real_build_pool(vocab_path=str(tmp_path / "vocab.json"))
-    shared = league_runner.build_fresh_stack(vocab.size)
-    live_net = league_runner.DeckNetwork(shared, film_condition_dim=league_runner.D_MODEL,
-                                          non_targeting_n_actions=len(fixed_tables[deck_name]))
+    live_net = league_runner.build_deck_net(vocab.size, len(fixed_tables[deck_name]))
     from rl.mulligan import MulliganNet
-    mulligan_net = MulliganNet(shared)
+    mulligan_net = MulliganNet(live_net.encoder)
 
     result = league_runner._run_eval_vs_heuristic(
         deck_name, live_net, mulligan_net, deck_ctxs[deck_name], decklists[deck_name],
@@ -221,25 +219,33 @@ def test_paired_eval_balances_the_play_exactly_not_just_on_average():
 
 
 @pytest.mark.slow
-def test_stack_id_detects_a_different_stack_but_tolerates_a_legacy_league(tmp_path):
-    """The failure this exists for: a gauntlet league trained against a stack
-    that no longer exists, compared against the current one, reporting a
-    plausible number that means nothing (24,579 games/deck of vs_gauntlet were
-    confounded exactly this way)."""
-    a = league_runner.build_fresh_stack(12)
-    b = league_runner.build_fresh_stack(12)  # same architecture, different weights
-    assert league_runner.stack_id(a) != league_runner.stack_id(b)
-    assert league_runner.stack_id(a) == league_runner.stack_id(a), "must be deterministic"
+def test_a_checkpoint_carries_its_own_encoder(tmp_path):
+    """The property that replaced the stack_id guard.
 
-    league = str(tmp_path / "some_league")
-    os.makedirs(league, exist_ok=True)
-    # No stack_id.txt yet -> legacy league, tolerated (every league on disk
-    # today predates the check; failing them all would be the guard's first act)
-    assert league_runner.stack_id_matches(league, a)
+    Cross-population comparison used to be silently meaningless whenever the
+    two sides had been trained against different frozen shared stacks -- one
+    population's per-deck weights would be loaded onto the OTHER's encoder and
+    the resulting win rate measured nothing (24,579 games/deck of vs_gauntlet
+    were confounded exactly that way, which is what stack_id.txt existed to
+    catch). Per-deck encoders make it unrepresentable instead of guarded: the
+    encoder ships inside the checkpoint, so a loaded net can only ever be
+    paired with its own perception.
 
-    league_runner.write_stack_id(league, a)
-    assert league_runner.stack_id_matches(league, a)
-    assert not league_runner.stack_id_matches(league, b), "a DIFFERENT stack must be caught"
+    Pinned by round-tripping a net whose encoder has been deliberately moved
+    away from its initialization -- a loader that rebuilt a fresh encoder
+    instead of restoring the saved one would come back at the random init."""
+    from rl.deck import DeckNetwork  # noqa: F401 -- built via build_deck_net below
+
+    net = league_runner.build_deck_net(12, 4)
+    with torch.no_grad():
+        net.encoder.embedding.weight.fill_(0.5)  # unmistakably not a random init
+    path = str(tmp_path / "live.pt")
+    ckpt_io.save_deck_checkpoint(path, net)
+
+    reloaded = league_runner.build_deck_net(12, 4)
+    assert not torch.allclose(reloaded.encoder.embedding.weight, net.encoder.embedding.weight),         "a freshly built net must NOT already match -- otherwise this test proves nothing"
+    ckpt_io.load_deck_checkpoint(path, reloaded)
+    assert torch.allclose(reloaded.encoder.embedding.weight, net.encoder.embedding.weight),         "the encoder must be restored FROM the checkpoint, not rebuilt fresh alongside it"
 
 
 @pytest.mark.slow
@@ -263,33 +269,32 @@ def test_rollback_restores_a_snapshot_and_backs_up_the_replaced_live(tmp_path):
     from rl.mulligan import MulliganNet
     from rl import checkpoint as ckpt_io
 
-    shared = league_runner.build_fresh_stack(12)
-    deck_ctx = (None, list(range(4)))
+    deck_ctx = (SimpleNamespace(size=12), list(range(4)))  # rollback only reads vocab.size + len(fixed_table)
     deck_dir = tmp_path / "elves"
     (deck_dir / "archive").mkdir(parents=True)
 
-    old = DeckNetwork(shared, film_condition_dim=shared.d_model, non_targeting_n_actions=4)
-    ckpt_io.save_snapshot(str(deck_dir / "archive" / "snapshot_58.pt"), old, MulliganNet(shared))
-    current = DeckNetwork(shared, film_condition_dim=shared.d_model, non_targeting_n_actions=4)
+    old = league_runner.build_deck_net(12, 4)
+    ckpt_io.save_snapshot(str(deck_dir / "archive" / "snapshot_58.pt"), old, MulliganNet(old.encoder))
+    current = league_runner.build_deck_net(12, 4)
     with torch.no_grad():
         current.critic_head.weight.add_(5.0)  # make "now" clearly different from the snapshot
     ckpt_io.save_deck_checkpoint(str(deck_dir / "live.pt"), current)
-    ckpt_io.save_deck_checkpoint(str(deck_dir / "mulligan.pt"), MulliganNet(shared))
+    ckpt_io.save_deck_checkpoint(str(deck_dir / "mulligan.pt"), MulliganNet(current.encoder))
 
-    run_rollback.rollback_deck(str(tmp_path), "elves", 58, shared, deck_ctx)
+    run_rollback.rollback_deck(str(tmp_path), "elves", 58, deck_ctx)
 
-    restored = DeckNetwork(shared, film_condition_dim=shared.d_model, non_targeting_n_actions=4)
+    restored = league_runner.build_deck_net(12, 4)
     ckpt_io.load_deck_checkpoint(str(deck_dir / "live.pt"), restored)
     assert torch.equal(restored.critic_head.weight, old.critic_head.weight), "live.pt must be the snapshot"
 
-    backed_up = DeckNetwork(shared, film_condition_dim=shared.d_model, non_targeting_n_actions=4)
+    backed_up = league_runner.build_deck_net(12, 4)
     ckpt_io.load_deck_checkpoint(str(deck_dir / ("live.pt" + run_rollback.BACKUP_SUFFIX)), backed_up)
     assert torch.equal(backed_up.critic_head.weight, current.critic_head.weight), \
         "the replaced live.pt must be recoverable"
 
     with pytest.raises(FileExistsError):
-        run_rollback.rollback_deck(str(tmp_path), "elves", 58, shared, deck_ctx)
-    run_rollback.rollback_deck(str(tmp_path), "elves", 58, shared, deck_ctx, force=True)  # opt in
+        run_rollback.rollback_deck(str(tmp_path), "elves", 58, deck_ctx)
+    run_rollback.rollback_deck(str(tmp_path), "elves", 58, deck_ctx, force=True)  # opt in
 
 
 @pytest.mark.slow
@@ -299,11 +304,9 @@ def test_rollback_dry_run_changes_nothing(tmp_path):
     from rl.mulligan import MulliganNet
     from rl import checkpoint as ckpt_io
 
-    shared = league_runner.build_fresh_stack(12)
     deck_dir = tmp_path / "elves"
     (deck_dir / "archive").mkdir(parents=True)
     ckpt_io.save_snapshot(str(deck_dir / "archive" / "snapshot_3.pt"),
-                          DeckNetwork(shared, film_condition_dim=shared.d_model, non_targeting_n_actions=4),
-                          MulliganNet(shared))
-    run_rollback.rollback_deck(str(tmp_path), "elves", 3, shared, (None, list(range(4))), dry_run=True)
+                          league_runner.build_deck_net(12, 4), MulliganNet(league_runner.build_deck_net(12, 4).encoder))
+    run_rollback.rollback_deck(str(tmp_path), "elves", 3, (SimpleNamespace(size=12), list(range(4))), dry_run=True)
     assert not (deck_dir / "live.pt").exists(), "a dry run must not write anything"

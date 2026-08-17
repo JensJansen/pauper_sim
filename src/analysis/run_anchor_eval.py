@@ -4,8 +4,8 @@ Every existing instrument -- vs_gauntlet, vs_history, vs_heuristic -- reports a
 win rate against ONE opponent of unknown strength, so "51% vs the gauntlet"
 cannot answer whether 60,001 games/deck bought anything at all. Nothing in the
 repo has ever measured against a fixed point whose strength is known by
-construction. This does: an UNTRAINED DeckNetwork -- randomly initialized heads
-on the REAL frozen shared stack -- is the zero of the scale.
+construction. This does: a fully UNTRAINED DeckNetwork -- random encoder and
+random heads alike -- is the zero of the scale.
 
 Default vintages `0,live` DECOMPOSE the run rather than merely scoring it.
 snapshot_0 is a ~200-game policy (snapshot_every_games=200), so:
@@ -47,34 +47,36 @@ import time
 import torch
 
 from repo_paths import CHECKPOINTS_DIR
-from rl.deck import DeckNetwork
 from rl.mulligan import MulliganNet
 from rl.agent import SeatAgent
 from rl.league import LeaguePool
 from rl.pool import build_pool
 from analysis.report_metrics import wilson as _wilson  # same helper, one definition -- both live in analysis/ now
-from rl.league_runner import (D_MODEL, HORIZON, league_roster, load_frozen_stack, load_vintage_agent,
+from rl.league_runner import (HORIZON, build_deck_net, league_roster, load_vintage_agent,
                               _play_eval_games)
 
 
 
 
 
-def _anchor_agent(shared, deck_ctx, seed):
-    """An untrained DeckNetwork + MulliganNet on the REAL frozen stack.
+def _anchor_agent(deck_ctx, seed):
+    """A fully untrained agent -- random encoder, random heads.
 
     Constructed with DeckNetwork's default trunk_hidden, which is what
-    _run_eval_vs_gauntlet also assumes when it loads live.pt -- so the anchor is
-    architecture-matched to the thing it is scoring, and the only difference
-    between them is training. No state_dict is loaded, so `shared` is passed by
-    reference and stays the genuine frozen stack; only the per-deck heads are
-    random.
+    _run_eval_vs_gauntlet also assumes when it loads live.pt, so the anchor is
+    architecture-matched to the thing it is scoring and the only difference
+    between them is training. It is a STRICTLY weaker floor than it used to
+    be: the anchor once sat on the real pretrained frozen stack, so it had
+    trained perception and only random heads. With per-deck encoders there is
+    no pretrained perception to borrow, so the whole network is random -- the
+    scale's zero moved, and anchor win rates are not comparable across that
+    change.
     """
-    _vocab, fixed_table = deck_ctx
-    torch.manual_seed(seed)  # reproducible anchor: same random heads every run
-    net = DeckNetwork(shared, film_condition_dim=D_MODEL, non_targeting_n_actions=len(fixed_table))
+    vocab, fixed_table = deck_ctx
+    torch.manual_seed(seed)  # reproducible anchor: same random weights every run
+    net = build_deck_net(vocab.size, len(fixed_table))
     net.eval()
-    mull = MulliganNet(shared)
+    mull = MulliganNet(net.encoder)
     mull.eval()
     return SeatAgent(net, mull, deck_ctx)
 
@@ -93,7 +95,6 @@ def main():
     args = p.parse_args()
 
     decklists, vocab, deck_ctxs, _fixed = build_pool()
-    shared = load_frozen_stack(vocab.size)
     league_dir = str(CHECKPOINTS_DIR / args.league)
     vintages = args.vintages.split(",")
     modes = ["greedy", "sampled"] if args.mode == "both" else [args.mode]
@@ -101,7 +102,7 @@ def main():
     assert decks, f"no trained decks (no live.pt) under {league_dir}"
 
     print(f"random-init anchor vs {args.league}, {args.games} games/cell, horizon {HORIZON}")
-    print(f"anchor = untrained DeckNetwork on the real frozen stack (torch seed {args.anchor_seed})\n")
+    print(f"anchor = fully untrained DeckNetwork, encoder included (torch seed {args.anchor_seed})\n")
     header = f"{'deck':<16}{'vintage':>9}"
     for m in modes:
         header += f"{m + ' win%':>13}{'95% CI':>16}"
@@ -112,9 +113,9 @@ def main():
     for deck in decks:
         deck_ctx = deck_ctxs[deck]
         pool = LeaguePool(league_dir, [deck])  # reused so each snapshot loads off disk once
-        anchor = _anchor_agent(shared, deck_ctx, args.anchor_seed)
+        anchor = _anchor_agent(deck_ctx, args.anchor_seed)
         for vintage in vintages:
-            agent = load_vintage_agent(league_dir, deck, vintage, shared, deck_ctx, pool=pool)
+            agent = load_vintage_agent(league_dir, deck, vintage, deck_ctx, pool=pool)
             line = f"{deck:<16}{vintage:>9}"
             for mode in modes:
                 # Fresh rng per cell off the same base seed: every (deck, vintage,

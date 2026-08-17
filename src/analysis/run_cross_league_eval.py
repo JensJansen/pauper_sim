@@ -29,25 +29,24 @@ import random
 import time
 
 from repo_paths import CHECKPOINTS_DIR
-from rl.deck import DeckNetwork
 from rl.mulligan import MulliganNet
 from rl.agent import SeatAgent
 from rl.pool import build_pool
 from rl.train import _constant_pairing, collect_rollout
 from rl import checkpoint as ckpt_io
-from rl.league_runner import HORIZON, load_frozen_stack, load_vintage_agent, D_MODEL
+from rl.league_runner import HORIZON, build_deck_net, load_vintage_agent
 
 DEFAULT_ROSTER = ["rakdos_madness", "dmir_terror", "elves", "mono_red_rally"]
 
 
-def _load_deck_nets(league_dir, names, shared, fixed_tables):
+def _load_deck_nets(league_dir, names, vocab, fixed_tables):
     live_nets, mulligan_nets = {}, {}
     for name in names:
-        net = DeckNetwork(shared, film_condition_dim=D_MODEL, non_targeting_n_actions=len(fixed_tables[name]))
+        net = build_deck_net(vocab.size, len(fixed_tables[name]))
         ckpt_io.load_deck_checkpoint(f"{league_dir}/{name}/live.pt", net)  # optimizer=None: eval only needs weights
         net.eval()
         live_nets[name] = net
-        mnet = MulliganNet(shared)
+        mnet = MulliganNet(net.encoder)
         ckpt_io.load_deck_checkpoint(f"{league_dir}/{name}/mulligan.pt", mnet)
         mnet.eval()
         mulligan_nets[name] = mnet
@@ -63,16 +62,11 @@ def main():
     p.add_argument("--games", type=int, default=50, help="Games per matchup (default 50).")
     p.add_argument("--seed", type=int, default=None)
     p.add_argument("--log", type=str, default=None, metavar="PATH", help="Write the summary JSON here.")
-    # Per-side frozen stacks. Two agents PLAYING each other need no shared
-    # encoder -- each encodes the state with its own and picks its own actions.
-    # That is categorically different from _run_eval_vs_gauntlet loading another
-    # population's weights ONTO the calling stack, which stack_id_matches rightly
-    # blocks. These flags are how a cross-population reference survives a
-    # re-freeze (2026-08-16) instead of having to be rebuilt by training a twin.
-    p.add_argument("--stack-a", type=str, default=None, metavar="PATH",
-                    help="Frozen stack league_a was trained against (default: the current one).")
-    p.add_argument("--stack-b", type=str, default=None, metavar="PATH",
-                    help="Frozen stack league_b was trained against (default: the current one).")
+    # --stack-a/--stack-b are gone (2026-08-17). They existed so a population
+    # trained against an older frozen shared stack could still be loaded on it
+    # after a re-freeze. Every checkpoint now carries its own encoder, so each
+    # side is loaded correctly with no flag at all, and a re-freeze can no
+    # longer strand a reference population in the first place.
     # Vintages make the comparison BUDGET-MATCHED. Without them the only
     # available head-to-head is live-vs-live, and two populations are rarely at
     # the same games/deck at the same wall-clock moment -- section 1A.13 is the
@@ -85,14 +79,10 @@ def main():
 
     roster = args.roster.split(",") if args.roster else DEFAULT_ROSTER
     decklists, vocab, deck_ctxs, fixed_tables = build_pool()
-    shared_a = load_frozen_stack(vocab.size, args.stack_a)
-    shared_b = load_frozen_stack(vocab.size, args.stack_b) if args.stack_b != args.stack_a else shared_a
-    if args.stack_a != args.stack_b:
-        print(f"cross-stack: A={args.stack_a or 'current'}  B={args.stack_b or 'current'}", flush=True)
 
-    def _load_side(league, vintage, shared):
+    def _load_side(league, vintage):
         if vintage == "live":
-            return _load_deck_nets(CHECKPOINTS_DIR / league, roster, shared, fixed_tables)
+            return _load_deck_nets(CHECKPOINTS_DIR / league, roster, vocab, fixed_tables)
         # load_vintage_agent owns snapshot path resolution (active dir vs
         # archive/, which register_snapshot MOVES between) and returns a ready
         # SeatAgent, so unwrap it back into the (net, mulligan) pair this
@@ -100,12 +90,12 @@ def main():
         vid = int(vintage)
         nets, mulls = {}, {}
         for name in roster:
-            ag = load_vintage_agent(str(CHECKPOINTS_DIR / league), name, vid, shared, deck_ctxs[name])
+            ag = load_vintage_agent(str(CHECKPOINTS_DIR / league), name, vid, deck_ctxs[name])
             nets[name], mulls[name] = ag.main, ag.mulligan
         return nets, mulls
 
-    live_a, mull_a = _load_side(args.league_a, args.vintage_a, shared_a)
-    live_b, mull_b = _load_side(args.league_b, args.vintage_b, shared_b)
+    live_a, mull_a = _load_side(args.league_a, args.vintage_a)
+    live_b, mull_b = _load_side(args.league_b, args.vintage_b)
     print(f"vintages: A={args.vintage_a}  B={args.vintage_b}", flush=True)
 
     rng = random.Random(args.seed)

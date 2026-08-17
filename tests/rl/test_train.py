@@ -58,9 +58,19 @@ def _base_fixture():
     deck_ctx_a = (vocab, fixed_table_a)
     deck_ctx_b = (vocab, fixed_table_b)
 
-    shared = SetTransformer(vocab.size, d_model=16, n_heads=2, n_layers=1, dim_feedforward=32)
-    net_a = DeckNetwork(shared, film_condition_dim=16, non_targeting_n_actions=len(fixed_table_a), trunk_hidden=(24, 24))
-    net_b = DeckNetwork(shared, film_condition_dim=16, non_targeting_n_actions=len(fixed_table_b), trunk_hidden=(24, 24))
+    # One encoder PER DECK -- passing a single instance to both would put it in
+    # two optimizers, the coupling per-deck encoders exist to remove.
+    #
+    # Built at SetTransformer's DEFAULT architecture rather than a shrunken
+    # one: this fixture's nets get registered as snapshots below, and
+    # LeaguePool.load_snapshot_agent rebuilds an encoder at the default width
+    # to load them into (see its own assert). A narrow test encoder would save
+    # a trivial amount of time here and make that path untestable.
+    def _enc():
+        return SetTransformer(vocab.size)
+    d = _enc().d_model
+    net_a = DeckNetwork(_enc(), film_condition_dim=d, non_targeting_n_actions=len(fixed_table_a), trunk_hidden=(24, 24))
+    net_b = DeckNetwork(_enc(), film_condition_dim=d, non_targeting_n_actions=len(fixed_table_b), trunk_hidden=(24, 24))
     opt_a = torch.optim.Adam(net_a.parameters(), lr=3e-4)
     opt_b = torch.optim.Adam(net_b.parameters(), lr=3e-4)
 
@@ -95,7 +105,7 @@ def test_mirror_selfplay_smoke():
     assert buf.done[-1] is True, "the bucket must end with a flushed terminal transition"
     (policy_loss, value_loss, entropy, approx_kl, clip_fraction,
      epochs_run, explained_variance, adv_std) = ppo_update(
-        net_a, [fx["opt_a"]], buf, DEVICE, n_epochs=2, batch_size=16)
+        net_a, fx["opt_a"], buf, DEVICE, n_epochs=2, batch_size=16)
     assert np.isfinite(policy_loss) and np.isfinite(value_loss) and np.isfinite(entropy)
     assert np.isfinite(approx_kl) and np.isfinite(clip_fraction)
     assert 1 <= epochs_run <= 2
@@ -115,7 +125,7 @@ def test_cross_matchup_smoke():
     train_selfplay(
         fx["net_a"], fx["deck_ctx_a"], fx["decklist_a"], fx["reward_fn"],
         fx["net_b"], fx["deck_ctx_b"], fx["decklist_b"], fx["reward_fn"],
-        [fx["opt_a"]], [fx["opt_b"]], HORIZON, n_iterations=2, games_per_iteration=2, rng=fx["rng"], device=DEVICE,
+        fx["opt_a"], fx["opt_b"], HORIZON, n_iterations=2, games_per_iteration=2, rng=fx["rng"], device=DEVICE,
     )
     for net in (fx["net_a"], fx["net_b"]):
         for p in net.parameters():
@@ -154,44 +164,7 @@ def test_game_logs_smoke():
 
 
 @pytest.mark.slow
-def test_split_optimizer_shared_stack_smoke():
-    # Split-optimizer smoke test -- the actual pattern run_pretrain.py needs:
-    # TWO throwaway heads sharing ONE SetTransformer instance, but only ONE
-    # optimizer (opt_shared2) ever touches the shared stack's own params, so
-    # its Adam momentum stays coherent across both decks' alternating mirror
-    # sessions instead of being split across two unsynchronized Adam
-    # instances (see ppo_update's own docstring).
-    fx = _base_fixture()
-    t0 = time.time()
-    vocab_size = fx["deck_ctx_a"][0].size
-    fixed_table_a, fixed_table_b = fx["fixed_table_a"], fx["fixed_table_b"]
-    shared2 = SetTransformer(vocab_size, d_model=16, n_heads=2, n_layers=1, dim_feedforward=32)
-    net_a2 = DeckNetwork(shared2, film_condition_dim=16, non_targeting_n_actions=len(fixed_table_a), trunk_hidden=(24, 24))
-    net_b2 = DeckNetwork(shared2, film_condition_dim=16, non_targeting_n_actions=len(fixed_table_b), trunk_hidden=(24, 24))
-    opt_shared2 = torch.optim.Adam(shared2.parameters(), lr=3e-4)
-    opt_a2_head = torch.optim.Adam([p for n, p in net_a2.named_parameters() if not n.startswith("shared_stack.")], lr=3e-4)
-    opt_b2_head = torch.optim.Adam([p for n, p in net_b2.named_parameters() if not n.startswith("shared_stack.")], lr=3e-4)
-    shared2_before = [p.clone() for p in shared2.parameters()]
-
-    train_selfplay(net_a2, fx["deck_ctx_a"], fx["decklist_a"], fx["reward_fn"], net_a2, fx["deck_ctx_a"], fx["decklist_a"], fx["reward_fn"],
-                    [opt_shared2, opt_a2_head], [opt_shared2, opt_a2_head], HORIZON,
-                    n_iterations=1, games_per_iteration=2, rng=fx["rng"], device=DEVICE)
-    train_selfplay(net_b2, fx["deck_ctx_b"], fx["decklist_b"], fx["reward_fn"], net_b2, fx["deck_ctx_b"], fx["decklist_b"], fx["reward_fn"],
-                    [opt_shared2, opt_b2_head], [opt_shared2, opt_b2_head], HORIZON,
-                    n_iterations=1, games_per_iteration=2, rng=fx["rng"], device=DEVICE)
-
-    assert id(opt_shared2) == id(opt_shared2), "sanity: the SAME optimizer object must be reused across both decks"
-    assert any(not torch.equal(a, b) for a, b in zip(shared2_before, shared2.parameters())), (
-        "shared stack must have actually moved after two decks' worth of updates through the ONE shared optimizer"
-    )
-    for net in (net_a2, net_b2):
-        for p in net.parameters():
-            assert torch.isfinite(p).all(), "a parameter went non-finite after the split-optimizer PPO update"
-    print(f"rl.train split-optimizer (pretrain pattern) smoke test: OK ({time.time() - t0:.1f}s)")
-
-
-@pytest.mark.slow
-def test_league_smoke_and_frozen_cache_ppo_update():
+def test_league_smoke_and_ppo_update_trains_the_encoder():
     # League smoke test -- collect_rollout_league against a REAL
     # LeaguePool, exercising all three opponent kinds it must handle:
     # true mirror (both seats recorded), another deck's live net (training
@@ -200,14 +173,11 @@ def test_league_smoke_and_frozen_cache_ppo_update():
     # chance, so each path is deterministically exercised instead of
     # hoping enough random games happen to hit all three.
     #
-    # Then (same buffer, same net): frozen shared-stack caching in
-    # ppo_update -- the LEAGUE path. When the shared stack is frozen,
-    # ppo_update precomputes its per-transition outputs ONCE
-    # (_precompute_frozen_shared) and reuses them across epochs instead of
-    # recomputing the SetTransformer. Verifies the cached path runs, trains
-    # the head, and leaves the frozen stack byte-for-byte untouched -- the
-    # mirror/cross-matchup/split-optimizer tests above all used a TRAINABLE
-    # shared stack, so none of them exercise this path.
+    # Then (same buffer, same net): a second ppo_update asserting the ENCODER
+    # trains along with the heads -- the whole point of per-deck encoders, and
+    # the exact opposite of what this used to check. The league's encoder was
+    # a frozen shared stack, so ppo_update precomputed its outputs once and
+    # this asserted it came back byte-for-byte unchanged.
     fx = _base_fixture()
     net_a, net_b, opt_a, reward_fn, rng = fx["net_a"], fx["net_b"], fx["opt_a"], fx["reward_fn"], fx["rng"]
     decklist_a, decklist_b = fx["decklist_a"], fx["decklist_b"]
@@ -260,7 +230,7 @@ def test_league_smoke_and_frozen_cache_ppo_update():
 
         (policy_loss, value_loss, entropy, approx_kl, clip_fraction,
          epochs_run, explained_variance, adv_std) = ppo_update(
-            net_a, [opt_a], buf_self, DEVICE, n_epochs=1, batch_size=16)
+            net_a, opt_a, buf_self, DEVICE, n_epochs=1, batch_size=16)
         assert np.isfinite(policy_loss) and np.isfinite(value_loss)
         assert np.isfinite(approx_kl) and np.isfinite(clip_fraction) and epochs_run == 1
         for p in net_a.parameters():
@@ -271,12 +241,10 @@ def test_league_smoke_and_frozen_cache_ppo_update():
     print(f"rl.train league smoke test: OK (mirror/cross-deck/snapshot opponents all exercised, {time.time() - t0:.1f}s)")
 
     t0 = time.time()
-    for p in net_a.shared_stack.parameters():
-        p.requires_grad = False
-    shared_before = [p.clone() for p in net_a.shared_stack.parameters()]
+    encoder_before = [p.clone() for p in net_a.encoder.parameters()]
     head_before = [p.clone() for p in net_a.non_targeting_head.parameters()]
-    opt_head = torch.optim.Adam([p for p in net_a.parameters() if p.requires_grad], lr=3e-4)
-    pl, vl, ent, akl, cf, ep, ev, astd = ppo_update(net_a, [opt_head], buf_self, DEVICE, n_epochs=2, batch_size=16)
+    opt_all = torch.optim.Adam([p for p in net_a.parameters() if p.requires_grad], lr=3e-4)
+    pl, vl, ent, akl, cf, ep, ev, astd = ppo_update(net_a, opt_all, buf_self, DEVICE, n_epochs=2, batch_size=16)
     assert np.isfinite(pl) and np.isfinite(vl) and np.isfinite(ent)
     assert np.isfinite(akl) and np.isfinite(cf) and 1 <= ep <= 2
     # explained_variance: finite and <= 1 by construction. NOT asserted
@@ -284,13 +252,13 @@ def test_league_smoke_and_frozen_cache_ppo_update():
     # scores below zero (worse than predicting the mean), which is the honest
     # reading and exactly why this is recorded next to the raw value_loss.
     assert np.isfinite(ev) and ev <= 1.0
-    assert all(torch.equal(a, b) for a, b in zip(shared_before, net_a.shared_stack.parameters())), \
-        "a FROZEN shared stack must be byte-for-byte unchanged after a cached ppo_update"
+    assert any(not torch.equal(a, b) for a, b in zip(encoder_before, net_a.encoder.parameters())), \
+        "the per-deck encoder must actually train -- gradients reach it through the registered child"
     assert any(not torch.equal(a, b) for a, b in zip(head_before, net_a.non_targeting_head.parameters())), \
-        "the per-deck head must have actually trained in the cached ppo_update"
+        "the per-deck head must have actually trained"
     for p in net_a.parameters():
-        assert torch.isfinite(p).all(), "a parameter went non-finite after the cached ppo_update"
-    print(f"rl.train frozen-cache ppo_update smoke test: OK (shared stack untouched, head trained, {time.time() - t0:.1f}s)")
+        assert torch.isfinite(p).all(), "a parameter went non-finite after the ppo_update"
+    print(f"rl.train ppo_update smoke test: OK (encoder AND head trained, {time.time() - t0:.1f}s)")
 
 
 @pytest.mark.slow
@@ -541,10 +509,8 @@ def test_explained_variance_is_zero_not_one_when_returns_are_constant():
     live competing explanation for this project's own flat 0.01 value_loss --
     gamma/gae_lambda discounting early-game returns to ~0 makes them trivially
     predictable. A degenerate target must therefore score 0, not 1."""
-    shared = SetTransformer(vocab_size=5, d_model=8, n_heads=2, n_layers=1, dim_feedforward=16)
-    for p in shared.parameters():
-        p.requires_grad = False
-    net = DeckNetwork(shared, film_condition_dim=8, non_targeting_n_actions=4)
+    net = DeckNetwork(SetTransformer(vocab_size=5, d_model=8, n_heads=2, n_layers=1, dim_feedforward=16),
+                      film_condition_dim=8, non_targeting_n_actions=4)
     buf = RolloutBuffer()
     # Every transition identical, reward 0, done immediately -> zero-variance
     # returns. A "perfect" critic here has explained nothing.
@@ -552,7 +518,7 @@ def test_explained_variance_is_zero_not_one_when_returns_are_constant():
         buf.add([], np.zeros(SCALAR_FEATURE_DIM, dtype=np.float32),
                 np.ones(4, dtype=bool), 0, 0.0, 0.0, 0.0, True)
     opt = torch.optim.Adam([p for p in net.parameters() if p.requires_grad], lr=3e-4)
-    *_rest, ev, _astd = ppo_update(net, [opt], buf, DEVICE, n_epochs=1, batch_size=4)
+    *_rest, ev, _astd = ppo_update(net, opt, buf, DEVICE, n_epochs=1, batch_size=4)
     assert ev == 0.0, f"constant returns must explain nothing, got {ev}"
 
 
@@ -606,6 +572,54 @@ def test_ppo_update_reports_raw_adv_std():
     pairing = _constant_pairing([agent_a, agent_a], [fx["decklist_a"]] * 2,
                                 [fx["reward_fn"]] * 2, ["m", "m"])
     bufs, _mull, _played = collect_rollout(pairing, 2, HORIZON, fx["rng"], device=DEVICE)
-    *_rest, _ev, adv_std = ppo_update(fx["net_a"], [fx["opt_a"]], bufs["m"], DEVICE,
+    *_rest, _ev, adv_std = ppo_update(fx["net_a"], fx["opt_a"], bufs["m"], DEVICE,
                                       n_epochs=1, batch_size=16)
     assert np.isfinite(adv_std) and adv_std >= 0.0
+
+
+@pytest.mark.slow
+def test_recurrent_state_is_per_seat_and_cleared_between_games():
+    """Two invariants the recurrent policy depends on, both at the seam that
+    enforces them (collect_rollout's own game loop) rather than by calling
+    reset() directly.
+
+    PER SEAT. A mirror pairing puts ONE SeatAgent object on BOTH seats
+    (collect_rollout_league: `opp_agent = train_agent` for a true mirror). A
+    single shared hidden state would interleave the two seats' histories, so
+    seat 1 would be conditioning on a state that encodes seat 0's own hand --
+    a hidden-information leak. It would also desync replay, since a mirror
+    records each seat as its own contiguous episode and ppo_update replays
+    every episode from zeros.
+
+    CLEARED PER GAME. A SeatAgent is reused across games (LeaguePool caches
+    snapshot agents by path), so without a reset the agent starts a fresh game
+    remembering one it is no longer playing."""
+    fx = _base_fixture()
+    left_over = []
+
+    class _Spy(SeatAgent):
+        def reset(self):
+            left_over.append(self.hidden)  # what the PREVIOUS game left behind
+            super().reset()
+
+    agent = _Spy(fx["net_a"], AlwaysKeep(), fx["deck_ctx_a"])
+    pairing = _constant_pairing([agent, agent], [fx["decklist_a"], fx["decklist_a"]],
+                                [fx["reward_fn"], fx["reward_fn"]], ["a", "a"])
+    collect_rollout(pairing, n_games=2, horizon=HORIZON, rng=fx["rng"], device=DEVICE)
+
+    assert left_over[0] == {}, "the first game must start from a clean state"
+    carried = left_over[-1]
+    assert set(carried) == {0, 1}, (
+        f"both seats must have accumulated their OWN recurrent state, got keys {sorted(carried)} -- "
+        "one shared state would leave a single entry and leak seat 0's history into seat 1"
+    )
+    assert not torch.equal(carried[0], carried[1]), (
+        "the two seats saw different games and must hold different states -- identical states mean "
+        "they are sharing one"
+    )
+    # reset() runs at the START of a game, so the agent legitimately still
+    # holds the final game's state here -- which is exactly what the next
+    # game's reset would clear.
+    assert set(agent.hidden) == {0, 1}
+    agent.reset()
+    assert agent.hidden == {}, "reset must clear every seat, not just the last one written"

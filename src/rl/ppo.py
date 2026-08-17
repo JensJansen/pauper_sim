@@ -26,36 +26,7 @@ def _compute_gae(rewards_, values_, dones_, gamma, gae_lambda):
     return adv
 
 
-def _precompute_frozen_shared(net, token_lists, device, chunk_size=256):
-    """Run the FROZEN shared stack over every transition ONCE, returning
-    per-transition (mine[i], theirs[i], token_reps[i]) so ppo_update can reuse
-    them across all epochs instead of recomputing the SetTransformer n_epochs
-    times per minibatch. token_reps[i] is trimmed to that transition's real
-    token count (min 1, matching pad_token_batch's 0->1 dummy padding), so it
-    can be re-padded to each minibatch's own max later.
-
-    Uses no_grad, NOT inference_mode: the cached tensors are fed back into the
-    trainable head's forward, and inference-mode tensors cannot participate in
-    an autograd graph (it raises) -- no_grad tensors become plain constant
-    leaves, which is exactly what a frozen stack's output is.
-    # ponytail: caches the whole buffer's token_reps at once; chunk the reuse
-    # too if a huge buffer ever OOMs on GPU."""
-    mine_all, theirs_all, reps_all = [], [], []
-    with torch.no_grad():
-        for start in range(0, len(token_lists), chunk_size):
-            chunk = token_lists[start:start + chunk_size]
-            vocab_idx, features, key_padding_mask, _identities = pad_token_batch(chunk, device=device)
-            side_flag = features[:, :, -1]
-            mine, theirs, token_reps = net.shared_stack(vocab_idx, features, key_padding_mask, side_flag)
-            for j, toks in enumerate(chunk):
-                n_tok = max(len(toks), 1)  # a 0-token board pads to ONE dummy slot, same as pad_token_batch
-                mine_all.append(mine[j])
-                theirs_all.append(theirs[j])
-                reps_all.append(token_reps[j, :n_tok])
-    return mine_all, theirs_all, reps_all
-
-
-def ppo_update(net, optimizers, buf, device, n_epochs=4, batch_size=64, gamma=0.99, gae_lambda=0.95,
+def ppo_update(net, optimizer, buf, device, n_epochs=4, batch_size=64, gamma=0.99, gae_lambda=0.95,
                 clip_range=0.2, ent_coef=0.01, vf_coef=0.5, max_grad_norm=0.5, target_kl=0.03,
                 adv_norm_floor=0.0):
     # ent_coef default 0.01: with no entropy bonus the main policy collapses
@@ -97,17 +68,13 @@ def ppo_update(net, optimizers, buf, device, n_epochs=4, batch_size=64, gamma=0.
     entries and padding the WHOLE buffer to its own global max would waste
     memory/compute proportional to the single largest board state seen.
 
-    optimizers: a LIST of optimizers, all zero_grad'd before and step'd
-    after the SAME backward() call -- never one optimizer per net.
-    Needed because a DeckNetwork's shared_stack is a REFERENCE to a module
-    shared across multiple nets (pretraining's per-deck throwaway heads all
-    point at the same SetTransformer+FiLM instance); giving each net's
-    call site its own single optimizer over net.parameters() would create
-    TWO independent Adam instances tracking separate, unsynchronized
-    momentum/variance state for the identical shared_stack tensors, stepping
-    on them in alternation. Passing a single-net-only optimizer as [optimizer]
-    (league training, where the shared stack is frozen and only one optimizer
-    ever touches this net's own params) still works unchanged.
+    optimizer: ONE optimizer over net.parameters(). It used to be a LIST,
+    because a DeckNetwork's encoder was a reference to a SetTransformer
+    shared across several nets, and a shared module needs a single optimizer
+    of its own rather than one per net stepping unsynchronized Adam state on
+    the same tensors. Each deck now owns its encoder outright (rl.deck), so
+    no module is reachable from two nets and every call site passed a
+    one-element list.
 
     Returns (policy_loss, value_loss, entropy, approx_kl, clip_fraction,
     epochs_run, explained_variance, adv_std) -- approx_kl/clip_fraction/
@@ -166,40 +133,69 @@ def ppo_update(net, optimizers, buf, device, n_epochs=4, batch_size=64, gamma=0.
     adv_std = float(adv.std())
     adv = (adv - adv.mean()) / (max(adv_std, adv_norm_floor) + 1e-8)
 
-    # A FROZEN shared stack (league) produces the SAME per-transition outputs
-    # every epoch, so precompute them ONCE and reuse -- skipping n_epochs-1
-    # redundant SetTransformer forwards per minibatch (the bulk of the update's
-    # forward cost, and ~46% of a real training iteration is the update). A
-    # TRAINABLE shared stack (pretrain) must recompute so gradients reach it, so
-    # this is gated on requires_grad and needs no caller change. Fidelity is
-    # exact: the SetTransformer masks padding in attention/pooling, so a
-    # transition's cached reps equal what a fresh per-minibatch forward would
-    # produce.
-    cache_shared = not any(p.requires_grad for p in net.shared_stack.parameters())
-    if cache_shared:
-        cached_mine, cached_theirs, cached_reps = _precompute_frozen_shared(net, buf.token_lists, device)
-
     total = len(buf)
-    indices = np.arange(total)
+    # EPISODE segmentation. collect_rollout appends each seat's per-game
+    # trajectory to its bucket contiguously and flushes it done=True (see its
+    # own docstring), and every merge downstream -- RolloutBuffer.extend, the
+    # worker serialization in rl.rollout_parallel -- preserves order. So the
+    # buffer is already a concatenation of whole episodes and needs no new
+    # bookkeeping to recover them; splitting on `done` is exact.
+    #
+    # This is also why the update can no longer shuffle transitions: the GRU
+    # needs each episode replayed in order, from its own start.
+    bounds, start_idx = [], 0
+    for i in range(total):
+        if buf.done[i]:
+            bounds.append((start_idx, i + 1))
+            start_idx = i + 1
+    if start_idx < total:
+        # A trajectory with no terminal flush. collect_rollout always ends one
+        # with done=True, so this is defensive -- treat the remainder as its
+        # own episode rather than silently dropping transitions.
+        bounds.append((start_idx, total))
+    episodes = np.arange(len(bounds))
     last_policy_loss = last_value_loss = last_entropy = last_approx_kl = last_clip_fraction = 0.0
     epochs_run = 0
     # net's parameter set is fixed for this whole call -- listing it once
     # avoids re-walking the module tree (net.parameters() -> named_modules())
     # on every one of the n_epochs * n_minibatches clip_grad_norm_ calls below.
-    # shared_stack is deliberately NOT a registered child of net (see
-    # rl.deck.DeckNetwork), so net.parameters() excludes it. That is what we
-    # want when it is frozen -- but PRETRAIN trains it, and it must stay in the
-    # clip set there or its gradients would silently go unclipped. cache_shared
-    # is False exactly when it is trainable, so it is the right gate.
+    # The encoder is a registered child of net (rl.deck.DeckNetwork), so this
+    # covers it -- both for the optimizer and for the grad-norm clip.
     all_params = list(net.parameters())
-    if not cache_shared:
-        all_params += list(net.shared_stack.parameters())
     for _epoch in range(n_epochs):
         epochs_run += 1
         epoch_kl_sum, epoch_kl_n = 0.0, 0
-        np.random.shuffle(indices)
-        for start in range(0, total, batch_size):
-            mb = indices[start:start + batch_size]
+        np.random.shuffle(episodes)
+        for start in range(0, len(episodes), batch_size):
+            chunk = [bounds[e] for e in episodes[start:start + batch_size]]
+            # Flat batch laid out EPISODE-MAJOR -- all steps of episode 0, then
+            # all of episode 1 -- which is the layout DeckNetwork.forward's
+            # `seq=(B, T)` reshape assumes. Ragged episodes are padded by
+            # REPEATING the last real index: the padded steps compute a real
+            # forward (cheap, and it keeps every tensor rectangular) and are
+            # then zeroed out of every loss term by `valid` below, so they
+            # contribute no gradient.
+            n_seq = len(chunk)
+            max_steps = max(e - s for s, e in chunk)
+            idx_grid = np.empty((n_seq, max_steps), dtype=np.int64)
+            valid_grid = np.zeros((n_seq, max_steps), dtype=bool)
+            # prev_action is DERIVED, not stored: within an episode the
+            # previous recorded action is simply the previous transition's, and
+            # the first step of an episode has none. That holds exactly because
+            # a forced move advances neither the buffer nor the agent's own
+            # prev_action during collection (rl.agent._seat_step), so the
+            # recorded sequence IS the sequence the agent conditioned on.
+            prev_grid = np.full((n_seq, max_steps), -1, dtype=np.int64)  # -1 == no previous action
+            for row, (s_i, e_i) in enumerate(chunk):
+                n = e_i - s_i
+                idx_grid[row, :n] = np.arange(s_i, e_i)
+                idx_grid[row, n:] = e_i - 1
+                valid_grid[row, :n] = True
+                prev_grid[row, 1:n] = [buf.action[j] for j in range(s_i, e_i - 1)]
+            mb = idx_grid.reshape(-1)
+            prev_action_mb = net.prev_action_symbols(prev_grid.reshape(-1).tolist(), device)
+            valid = torch.as_tensor(valid_grid.reshape(-1), dtype=torch.float32, device=device)
+            n_valid = valid.sum().clamp(min=1.0)
             scalar_mb = torch.as_tensor(np.array([buf.scalar[i] for i in mb]), dtype=torch.float32, device=device)
             act_mb = torch.as_tensor(np.array([buf.action[i] for i in mb]), dtype=torch.int64, device=device)
             old_logp_mb = torch.as_tensor(np.array([buf.logp[i] for i in mb]), dtype=torch.float32, device=device)
@@ -207,26 +203,16 @@ def ppo_update(net, optimizers, buf, device, n_epochs=4, batch_size=64, gamma=0.
             ret_mb = torch.as_tensor(ret[mb], dtype=torch.float32, device=device)
 
             n_fixed = net.non_targeting_head.out_features
-            if cache_shared:
-                # Reuse the frozen shared stack's precomputed per-transition
-                # outputs -- no SetTransformer forward this epoch. Re-pad
-                # token_reps to THIS minibatch's own max token count, exactly as
-                # pad_token_batch would have (real tokens first, dummy/pad after).
-                mine_summary = torch.stack([cached_mine[i] for i in mb])
-                theirs_summary = torch.stack([cached_theirs[i] for i in mb])
-                reps_list = [cached_reps[i] for i in mb]
-                max_tokens = max(r.shape[0] for r in reps_list)
-                token_reps = torch.zeros((len(mb), max_tokens, mine_summary.shape[-1]),
-                                         dtype=mine_summary.dtype, device=device)
-                for row, r in enumerate(reps_list):
-                    token_reps[row, :r.shape[0]] = r
-            else:
-                # Trainable shared stack (pretrain): recompute so gradients flow into it.
-                vocab_idx, features, key_padding_mask, _identities = pad_token_batch(
-                    [buf.token_lists[i] for i in mb], device=device)
-                side_flag = features[:, :, -1]
-                max_tokens = vocab_idx.shape[1]
-                mine_summary, theirs_summary, token_reps = net.shared_stack(vocab_idx, features, key_padding_mask, side_flag)
+            # The encoder trains with the rest of the net, so its forward is
+            # recomputed here every minibatch of every epoch -- gradients have
+            # to reach it. A frozen encoder used to allow one cached forward
+            # per update instead; per-deck trainable encoders gave that up
+            # deliberately (see rl.deck's module docstring).
+            vocab_idx, features, key_padding_mask, _identities = pad_token_batch(
+                [buf.token_lists[i] for i in mb], device=device)
+            side_flag = features[:, :, -1]
+            max_tokens = vocab_idx.shape[1]
+            mine_summary, theirs_summary, token_reps = net.encoder(vocab_idx, features, key_padding_mask, side_flag)
 
             # Full action mask per minibatch entry -- padded to max_tokens (this
             # batch's own max token count, matching the token_reps padding
@@ -245,25 +231,33 @@ def ppo_update(net, optimizers, buf, device, n_epochs=4, batch_size=64, gamma=0.
                 )
 
             pointer_mask_mb = full_mask_mb[:, n_fixed:]
-            logits, values_pred = net(mine_summary, theirs_summary, scalar_mb, token_reps, pointer_mask_mb)
+            # hidden=None -> zeros: every episode is replayed from the SAME
+            # start state collection used, so the recomputed hidden states are
+            # exactly the ones the current weights would have produced. That
+            # is what removes the usual stale-hidden-state problem (and with it
+            # any need to store states or burn in).
+            logits, values_pred, _h = net(mine_summary, theirs_summary, scalar_mb, token_reps,
+                                          pointer_mask_mb, seq=(n_seq, max_steps),
+                                          prev_action=prev_action_mb)
             masked_logits = logits.masked_fill(~full_mask_mb, -1e8)
             dist = torch.distributions.Categorical(logits=masked_logits)
             new_logp = dist.log_prob(act_mb)
-            entropy = dist.entropy().mean()
+            # Every mean below is over REAL steps only -- a plain .mean() would
+            # dilute each term by however much padding this minibatch needed,
+            # which varies with how ragged its episodes happen to be.
+            entropy = (dist.entropy() * valid).sum() / n_valid
 
             ratio = torch.exp(new_logp - old_logp_mb)
             surr1 = ratio * adv_mb
             surr2 = torch.clamp(ratio, 1 - clip_range, 1 + clip_range) * adv_mb
-            policy_loss = -torch.min(surr1, surr2).mean()
-            value_loss = ((values_pred - ret_mb) ** 2).mean()
+            policy_loss = -(torch.min(surr1, surr2) * valid).sum() / n_valid
+            value_loss = (((values_pred - ret_mb) ** 2) * valid).sum() / n_valid
             loss = policy_loss + vf_coef * value_loss - ent_coef * entropy
 
-            for opt in optimizers:
-                opt.zero_grad()
+            optimizer.zero_grad()
             loss.backward()
             torch.nn.utils.clip_grad_norm_(all_params, max_grad_norm)
-            for opt in optimizers:
-                opt.step()
+            optimizer.step()
 
             with torch.no_grad():
                 # k3 estimator (Schulman, http://joschu.net/blog/kl-approx.html):
@@ -272,8 +266,8 @@ def ppo_update(net, optimizers, buf, device, n_epochs=4, batch_size=64, gamma=0.
                 # estimate) -- computed post-step (uses the SAME ratio the
                 # update just used) purely as a diagnostic of how far that step
                 # just moved the policy, not a pre-step gate.
-                approx_kl = ((ratio - 1) - torch.log(ratio)).mean().item()
-                clip_fraction = ((ratio - 1.0).abs() > clip_range).float().mean().item()
+                approx_kl = ((((ratio - 1) - torch.log(ratio)) * valid).sum() / n_valid).item()
+                clip_fraction = ((((ratio - 1.0).abs() > clip_range).float() * valid).sum() / n_valid).item()
             epoch_kl_sum += approx_kl
             epoch_kl_n += 1
             last_policy_loss, last_value_loss, last_entropy = policy_loss.item(), value_loss.item(), entropy.item()

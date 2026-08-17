@@ -10,14 +10,20 @@ this architecture needs:
 - Mirror self-play (net_a is net_b, same object/weights): both seats'
   transitions get pooled into ONE buffer and ONE ppo_update call -- true
   single-policy self-play, not two independently-updated copies of the same
-  weights drifting apart mid-iteration. Used for pretraining (a throwaway
-  DeckNetwork per pool deck, all sharing one SetTransformer+FiLM instance so
-  gradients warm up the shared stack from every deck) and for the league's
-  mirror games (one deck's own real trunk/critic/pointer head, mirror-only,
-  against a FROZEN shared stack).
+  weights drifting apart mid-iteration. Used for the league's mirror games.
+  Each seat's trajectory is still its own contiguous episode in that shared
+  buffer, and each seat keeps its own recurrent state (rl.agent.SeatAgent
+  keys hidden state by seat) -- the two seats are one POLICY, never one
+  history.
 - Cross-matchup (net_a is not net_b): each net keeps its own buffer and gets
   its own independent ppo_update call, both learning from every game. Used
   for the league's cross-deck games.
+
+Recurrent policy (2026-08-17): the per-game GRU state lives on the SeatAgent
+and is cleared once per game by the loop below. That reset is load-bearing,
+not hygiene -- rl.ppo.ppo_update replays every episode from a ZERO state, so
+a state leaking across a game boundary would make the update recompute hidden
+states that never occurred during collection.
 
 Reward attribution is computed directly: 0.0 if drl_env._lost(state, seat)
 else reward_fn(state, done, horizon), _for_player-flipped at the true end.
@@ -230,6 +236,18 @@ def collect_rollout(pairing, n_games, horizon, rng, device="cpu", record=True, g
     try:
         for _ in range(n_games):
             agents, decklists, reward_fns, record_as = pairing(rng)
+            # Clear every agent's recurrent state before the game starts. THE
+            # one place this happens -- see rl.agent.SeatAgent.reset for why it
+            # is mandatory rather than tidy (LeaguePool's snapshot cache hands
+            # the same agent object back game after game). Deduped by identity
+            # because a MIRROR pairing puts one agent on both seats, and reset
+            # is not merely idempotent there: the second call would wipe what
+            # the first one was meant to hand over. Guarded by hasattr since a
+            # pairing may supply an agent with no recurrent state at all --
+            # HeuristicAgent has no network.
+            for agent in {id(a): a for a in agents}.values():
+                if hasattr(agent, "reset"):
+                    agent.reset()
             game_buffers = [RolloutBuffer(), RolloutBuffer()]  # per-game per-seat, kept contiguous
             pending = [None, None]
             mull_game = [[], []]
@@ -494,8 +512,10 @@ def _make_league_pairing(training_deck_name, live_nets, mulligan_nets, deck_ctxs
         else:
             # A frozen snapshot loads as a whole frozen SeatAgent (deck + its
             # era-matched mulligan, or AlwaysKeep for a snapshot with no
-            # mulligan state).
-            opp_agent = pool.load_snapshot_agent(snapshot_path, training_net.shared_stack, deck_ctxs[opp_name])
+            # mulligan state) -- including its own era-matched perception
+            # encoder, which is why no encoder is passed in. This used to hand
+            # over the TRAINING net's shared stack to build the OPPONENT.
+            opp_agent = pool.load_snapshot_agent(snapshot_path, deck_ctxs[opp_name])
 
         training_seat = rng.randint(0, 1)  # randomized so the training net isn't always seat 0/1
         opp_seat = 1 - training_seat
@@ -521,9 +541,11 @@ def _make_league_pairing(training_deck_name, live_nets, mulligan_nets, deck_ctxs
     return pairing
 
 
-def batch_size_for_iteration(cumulative_games, horizon_games=50_000, start=32, cap=2048, n_steps=6):
-    """Small, granular minibatches early in training, doubling toward a
-    larger cap as training progresses -- the "increase batch size instead
+def batch_size_for_iteration(cumulative_games, horizon_games=50_000, start=4, cap=16, n_steps=6):
+    """Minibatch size for this point in the run, in EPISODES (the recurrent
+    policy's unit of sampling -- see rl.ppo.ppo_update; it counted transitions
+    until 2026-08-17). Small, granular minibatches early in training, doubling
+    toward a larger cap as training progresses -- the "increase batch size instead
     of decaying the learning rate" schedule shape (Smith et al. 2017: more
     frequent, noisier early gradient steps to cover ground quickly on a
     policy far from any optimum; larger, smoother steps later as it
@@ -586,16 +608,14 @@ def ent_coef_schedule(cumulative_games, start=0.02, floor=0.005, horizon_games=5
 
 
 def train_selfplay(net_a, deck_ctx_a, decklist_a, reward_fn_a, net_b, deck_ctx_b, decklist_b, reward_fn_b,
-                    optimizers_a, optimizers_b, horizon, n_iterations, games_per_iteration,
+                    optimizer_a, optimizer_b, horizon, n_iterations, games_per_iteration,
                     rng, device="cpu", game_logs=None):
     """Runs n_iterations rounds of collect_rollout (games_per_iteration real
     games each) + ppo_update. See this module's own docstring for when
     net_a is net_b (mirror self-play, one pooled update) vs. not (cross-matchup,
-    two independent updates). optimizers_a/optimizers_b:
-    LISTS of optimizers (see ppo_update's own docstring for why -- a net's
-    shared_stack may need its own separate optimizer from the net's own
-    head). Returns nothing -- both nets and all optimizers are updated in
-    place. game_logs: forwarded straight to collect_rollout (see its
+    two independent updates). optimizer_a/optimizer_b: one optimizer each,
+    over that net's own parameters (encoder included -- see rl.deck).
+    Returns nothing -- both nets and both optimizers are updated in place. game_logs: forwarded straight to collect_rollout (see its
     own docstring) -- one entry appended per game, across every iteration."""
     mirror = net_a is net_b
     # AlwaysKeep pregame: train_selfplay trains only the main policy (pretrain /
@@ -611,11 +631,11 @@ def train_selfplay(net_a, deck_ctx_a, decklist_a, reward_fn_a, net_b, deck_ctx_b
             pairing, games_per_iteration, horizon, rng, device=device, game_logs=game_logs)
         buf_a = buffers_by_deck.get("a", RolloutBuffer())
         buf_b = buffers_by_deck.get("b", RolloutBuffer())
-        stats_a = ppo_update(net_a, optimizers_a, buf_a, device) if len(buf_a) else (0.0, 0.0, 0.0, 0.0, 0.0, 0, 0.0, 0.0)
+        stats_a = ppo_update(net_a, optimizer_a, buf_a, device) if len(buf_a) else (0.0, 0.0, 0.0, 0.0, 0.0, 0, 0.0, 0.0)
         if mirror:
             stats_b = stats_a
         else:
-            stats_b = ppo_update(net_b, optimizers_b, buf_b, device) if len(buf_b) else (0.0, 0.0, 0.0, 0.0, 0.0, 0, 0.0, 0.0)
+            stats_b = ppo_update(net_b, optimizer_b, buf_b, device) if len(buf_b) else (0.0, 0.0, 0.0, 0.0, 0.0, 0, 0.0, 0.0)
         mean_r_a = float(np.mean(buf_a.reward)) if len(buf_a) else 0.0
         mean_r_b = float(np.mean(buf_b.reward)) if len(buf_b) else 0.0
         print(f"  iter {iteration}: games={games_played} buf=({len(buf_a)},{len(buf_b)}) "

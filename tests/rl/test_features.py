@@ -9,14 +9,20 @@ import game
 from game.state import CardInstance, GameState, Permanent, PlayerState
 from rl.features import (
     CARD_TYPES,
+    COUNTER_VOCAB,
+    KEYWORD_VOCAB,
+    SLOTS_AFTER_TARGETING,
+    SUBTYPE_VOCAB,
     MANA_PIP_CAP,
     POWER_TOUGHNESS_CAP,
+    DYNAMIC_FEATURE_DIM,
     STATIC_FEATURE_DIM,
     TOKEN_FEATURE_DIM,
     ZONES,
     CardVocab,
     build_token_set,
     cached_static_card_features,
+    static_card_features,
 )
 
 
@@ -185,12 +191,16 @@ def test_build_token_set_both_seats_all_zones_and_targeting():
             f"my_seat={my_seat}: Guttersnipe's side flag should be {expected_side_flag}, got {guttersnipe_row[-1]}"
         )
         # Dynamic-slot offsets, counted back from the row's END (same idiom
-        # the side-flag check above already relies on): side(-1), zone
-        # one-hot(-2..-5), targeted_by_theirs(-6), targeted_by_mine(-7),
-        # committed_blocker(-8) -- see _token_row's own row-assembly order.
-        targeted_theirs_slot = -(len(ZONES) + 1) - 1
-        targeted_mine_slot = -(len(ZONES) + 1) - 2
-        committed_blocker_slot = -(len(ZONES) + 1) - 3
+        # the side-flag check above already relies on). SLOTS_AFTER_TARGETING
+        # is features.py's own count of everything past the targeting pair, so
+        # inserting another block there shifts these without touching the test
+        # -- see its comment for why that is exported rather than recomputed.
+        targeted_theirs_slot = -SLOTS_AFTER_TARGETING - 1
+        targeted_mine_slot = -SLOTS_AFTER_TARGETING - 2
+        # Directly before targeted_by_mine sit the four per-permanent bits
+        # (is_attached, auras_attached, summoning_sick, is_attacking), and
+        # committed_as_blocker is the fifth slot back from it.
+        committed_blocker_slot = targeted_mine_slot - 5
         # committed_as_blocker must be set on Guttersnipe regardless of
         # my_seat: without reading the permanent's own true owner_idx (not
         # my_seat_idx), blocked_by lookups would silently use the wrong
@@ -257,8 +267,9 @@ def test_own_hand_tokenized_opponent_hidden():
 
     # The zone one-hot block sits immediately before the side flag at row[-1],
     # so "hand" is at -(1 + len(ZONES) - index). Derived rather than hardcoded:
-    # ZONES gained a sixth entry ("known_top") on 2026-08-13 and a literal -2
-    # silently started reading the wrong slot.
+    # ZONES has both gained and lost entries (a "known_top" that came in
+    # 2026-08-13 and went in 2026-08-17, a "revealed" added since), and a
+    # literal -2 silently started reading the wrong slot each time.
     hand_slot = -(len(ZONES) - ZONES.index("hand")) - 1
     for seat, hand_size in ((0, 3), (1, 2)):
         tokens = build_token_set(state, seat, vocab)
@@ -394,77 +405,27 @@ def test_card_vocab_persistence_append_only():
         shutil.rmtree(tmp_dir)
 
 
-# --- Brainstorm library blindness: known_top (2026-08-13) ---
+# The four known_top tests lived here. They pinned a persisted record of what
+# Brainstorm had placed on top of a player's own library -- visible to its
+# owner, hidden from the opponent, validated against the real library, and
+# cleared on every shuffle. All of it went away with known_top itself
+# (2026-08-17): the recurrent policy is expected to remember the placement from
+# what it SAW (those cards leave its own tokenized hand one at a time) rather
+# than be handed the fact. The one invariant worth keeping outlived it, below.
 
 
 @pytest.mark.slow
-def test_known_top_is_visible_to_its_owner_and_hidden_from_the_opponent():
-    """The gap this closes: Brainstorm resolves through a real agent decision
-    choosing which two cards go on top and in what order, and the library
-    appeared NOWHERE in the observation -- so the choice's entire value
-    materialized 1-2 draws later with zero observability. A real player
-    obviously remembers what they just placed, so this is observation fidelity,
-    not new information."""
-    _decklist_a, _decklist_b, vocab = _base_vocab()
-    me, opp = PlayerState(on_the_play=True), PlayerState(on_the_play=False)
-    bolt, mountain = game.CARD_DEFS["Lightning Bolt"], game.CARD_DEFS["Mountain"]
-    for p in (me, opp):
-        p.library = [bolt, mountain, mountain, mountain]
-        p.known_top = [bolt]
-        p.known_top_library_len = len(p.library)
-    state = GameState(on_the_play=True, players=[me, opp])
+def test_shuffle_library_is_the_only_place_a_library_gets_shuffled():
+    """game.effects.shared.shuffle_library exists to be a single choke point,
+    not for the one-line shuffle itself. It carried exactly one cross-cutting
+    concern -- clearing known_top, since a shuffle destroys any knowledge of
+    library order -- and that concern is gone. The choke point is kept anyway:
+    it is the seam any future one would attach to, and nine call sites used to
+    shuffle directly.
 
-    slot = -(len(ZONES) - ZONES.index("known_top")) - 1
-    for seat in (0, 1):
-        rows = [row for _i, row, _id in build_token_set(state, seat, vocab) if row[slot] == 1.0]
-        assert len(rows) == 1, f"seat {seat} must see exactly its OWN known_top, got {len(rows)}"
-        assert rows[-1][-1] == 1.0, "a known_top token must carry the 'mine' side flag"
-
-
-@pytest.mark.slow
-def test_known_top_degrades_when_the_cards_are_consumed_off_the_top():
-    """known_top_prefix validates against the REAL library instead of trusting
-    the stored list, so a draw/mill/exile that consumed the known cards leaves
-    no phantom token behind -- with no hook at any of the engine's 40+ library
-    mutation sites."""
-    from game.state import known_top_prefix
-    bolt, mountain = game.CARD_DEFS["Lightning Bolt"], game.CARD_DEFS["Mountain"]
-    me = PlayerState(on_the_play=True)
-    me.library = [bolt, mountain, mountain]
-    me.known_top = [bolt, mountain]
-    me.known_top_library_len = len(me.library)
-    assert known_top_prefix(me) == [bolt, mountain]
-
-    del me.library[:1]                      # drew the Bolt
-    assert known_top_prefix(me) == [mountain], "the drawn card must drop out, the rest survive"
-
-    del me.library[:1]                      # drew the Mountain too
-    assert known_top_prefix(me) == [], "nothing known remains"
-
-
-@pytest.mark.slow
-def test_known_top_is_dropped_when_something_unexpected_reaches_the_top():
-    """Fail-closed: if the top no longer matches what was placed, the agent
-    forgets rather than believing something false."""
-    from game.state import known_top_prefix
-    bolt, mountain = game.CARD_DEFS["Lightning Bolt"], game.CARD_DEFS["Mountain"]
-    me = PlayerState(on_the_play=True)
-    me.known_top = [bolt, bolt]
-    me.library = [mountain, bolt, bolt]  # something got put on top above them
-    me.known_top_library_len = 2  # recorded when only the two Bolts were there
-    assert known_top_prefix(me) == [], "an unrecognized top must invalidate the whole claim"
-
-
-@pytest.mark.slow
-def test_every_library_shuffle_clears_known_top():
-    """Validation alone leaves a hidden-information LEAK: after a shuffle the
-    stored list can match the real library by coincidence (~7% with 4 copies in
-    60 cards). The claim would be TRUE but the player could not legitimately
-    know it, so every shuffle must clear known_top outright. Enforced
-    structurally -- game.effects.shared.shuffle_library is the single choke
-    point all shuffles route through."""
-    import random as _r
-    from game.effects.shared import shuffle_library
+    Structural, not behavioural: no module may call rng.shuffle on a library
+    outside shuffle_library."""
+    import inspect
     import game.effects.shared as shared_mod
     import game.resolution.handlers_library as hl
     import game.resolution.handlers_mulligan as hm
@@ -473,17 +434,6 @@ def test_every_library_shuffle_clears_known_top():
     import game.catalog.green_cards as grn
     import game.catalog.colorless_cards as col
 
-    me = PlayerState(on_the_play=True)
-    me.library = [game.CARD_DEFS["Mountain"]] * 20
-    me.known_top = [game.CARD_DEFS["Mountain"]]
-    me.known_top_library_len = 20
-    state = GameState(on_the_play=True, players=[me, PlayerState(on_the_play=False)])
-    state.rng = _r.Random(0)
-    shuffle_library(state)
-    assert me.known_top == [], "shuffle_library must clear the owner's known_top"
-
-    # ...and no module may still shuffle a library behind its back.
-    import inspect
     for mod in (shared_mod, hl, hm, uc, red, grn, col):
         src = inspect.getsource(mod)
         offenders = [ln.strip() for ln in src.splitlines()
@@ -491,3 +441,161 @@ def test_every_library_shuffle_clears_known_top():
         # shared.py legitimately contains the ONE real shuffle, inside shuffle_library
         allowed = 1 if mod is shared_mod else 0
         assert len(offenders) == allowed, f"{mod.__name__} shuffles a library outside the choke point: {offenders}"
+
+
+@pytest.mark.slow
+def test_an_unblocked_attacker_is_distinguishable_from_a_creature_at_home():
+    """The observation gap Part C closed (2026-08-17).
+
+    combat's own damage step reads
+    `unblocked = [p for p in attackers if p not in blocked_by]`, so an UNBLOCKED
+    attacker never appears in blocked_by at all -- and blocked_as_attacker, the
+    only combat bit a token used to carry, is therefore 0 for it. The creature
+    about to deal lethal damage was feature-identical to one sitting at home,
+    which is exactly the state a defender has to reason about when deciding
+    whether to burn it, and the attacker has to reason about when deciding
+    whether to pump.
+
+    Also pins summoning sickness, which gates both attacking (CR 302.6) and
+    tapping for mana (Llanowar Elves) and reached the policy through nothing
+    at all."""
+    _decklist_a, _decklist_b, vocab = _base_vocab()
+    seat0 = PlayerState(on_the_play=True)
+    attacking, at_home = Permanent(game.CARD_DEFS["Kitchen Imp"]), Permanent(game.CARD_DEFS["Kitchen Imp"])
+    attacking.summoning_sick = at_home.summoning_sick = False
+    seat0.battlefield = [attacking, at_home]
+    seat1 = PlayerState(on_the_play=False)
+    sick = Permanent(game.CARD_DEFS["Guttersnipe"])  # entered this turn -> can't attack, can't tap for mana
+    seat1.battlefield = [sick]
+    state = GameState(on_the_play=True, players=[seat0, seat1])
+    seat0.attackers = [attacking]  # declared, and NOT blocked -> absent from blocked_by
+
+    rows = {ident: row for _idx, row, ident in build_token_set(state, 0, vocab)}
+    assert rows[attacking] != rows[at_home], (
+        "an unblocked attacker must not be feature-identical to an identical creature that stayed home"
+    )
+    # Same two creatures from the DEFENDER's perspective: the bit tracks the
+    # permanent's own controller, not whoever is looking at it.
+    rows_defender = {ident: row for _idx, row, ident in build_token_set(state, 1, vocab)}
+    assert rows_defender[attacking] != rows_defender[at_home], (
+        "the defender is the seat that most needs to see which creatures are attacking"
+    )
+    fresh_rows = build_token_set(state, 1, vocab)
+    sick_row = next(row for _i, row, ident in fresh_rows if ident is sick)
+    seat1.battlefield[0].summoning_sick = False
+    ready_row = next(row for _i, row, ident in build_token_set(state, 1, vocab) if ident is sick)
+    assert sick_row != ready_row, "summoning sickness must be visible: it gates both attacking and tapping for mana"
+
+
+@pytest.mark.slow
+def test_derived_card_features_separate_cards_that_used_to_collide():
+    """Before the registry/extra-derived blocks (2026-08-17) the structured
+    feature vector was printed stats only, which collapsed 141 catalog cards
+    onto 78 distinct vectors -- all 26 lands shared ONE vector, so the entire
+    mana base was undifferentiated, and the learned card embedding (frozen,
+    9,920 params) was the only thing telling any of them apart.
+
+    Pinned as PROPERTIES rather than the headline count, which every added card
+    would churn: the specific pairs below each collided for a different reason,
+    so together they cover every derived block."""
+    features = {name: tuple(static_card_features(cd)) for name, cd in game.CARD_DEFS.items()}
+
+    # mana colors -- basic lands were indistinguishable from each other
+    assert features["Forest"] != features["Mountain"]
+    # enters_tapped + an ETB trigger, vs a plain untapped source
+    assert features["Bojuka Bog"] != features["Great Furnace"]
+    # extra["artifact"] -- load-bearing, since affinity counts artifact lands
+    assert features["Island"] != features["Seat of the Synod"]
+    assert features["Mountain"] != features["Great Furnace"]
+    # pending_kinds -- same cost, same type, entirely different decisions
+    assert features["Brainstorm"] != features["Dispel"]
+    # count_all/count mana carry their COLOR at index 1, like "fixed" does --
+    # ("count_all", "G", predicate). Reading those two kinds as colorless is
+    # the bug this asserts against: Priest of Titania and Overgrown Battlement
+    # both tap for {G}, and treating them as {C} sources would misdescribe
+    # every board-scaled mana creature in the pool.
+    mana_start = len(game.POOL_COLORS) + 1 + len(CARD_TYPES) + 2 + len(KEYWORD_VOCAB)
+    priest = static_card_features(game.CARD_DEFS["Priest of Titania"])
+    assert priest[mana_start] == 1.0, "Priest of Titania produces mana"
+    assert priest[mana_start + 1 + game.POOL_COLORS.index("G")] == 1.0, "and it produces GREEN, not colorless"
+    assert priest[mana_start + 1 + game.POOL_COLORS.index("C")] == 0.0
+    assert priest[mana_start + 1 + len(game.POOL_COLORS)] == 1.0, "count_all is board-scaled"
+    assert static_card_features(game.CARD_DEFS["Forest"])[mana_start + 1 + len(game.POOL_COLORS)] == 0.0,         "a plain fixed source is not board-scaled"
+    # subtypes -- the elves engine keys off creature type, which reached the
+    # policy through nothing before this
+    elf, non_elf = game.CARD_DEFS["Llanowar Elves"], game.CARD_DEFS["Kitchen Imp"]
+    elf_slots = [i for i, t in enumerate(SUBTYPE_VOCAB) if t == "Elf"]
+    assert elf_slots, "SUBTYPE_VOCAB must carry Elf"
+    offset = STATIC_FEATURE_DIM - len(SUBTYPE_VOCAB)
+    assert static_card_features(elf)[offset + elf_slots[0]] == 1.0
+    assert static_card_features(non_elf)[offset + elf_slots[0]] == 0.0
+
+    distinct = len(set(features.values()))
+    assert distinct >= 0.85 * len(features), (
+        f"only {distinct}/{len(features)} cards have a distinct structured vector -- the derived blocks "
+        f"regressed (this was 78/141 before they existed, and 131/141 after)"
+    )
+
+
+@pytest.mark.slow
+def test_a_scrying_agent_can_see_the_cards_it_is_sorting():
+    """The blind-decision bug (fixed 2026-08-17).
+
+    begin_scry_surveil does `del state.library[:n]` and parks the revealed
+    cards in pending["remaining"], and scry_surveil_options offers a bare
+    ["keep", "dispose"] -- so the cards were in no zone, tokenized nowhere, and
+    named by no action row. The agent chose which card to bottom without being
+    able to see ANY of them: a coin flip, and one no amount of memory
+    architecture could fix, since the information never entered the
+    observation at any timestep.
+
+    Every other pending exposes its cards by name through the action mask
+    (search_fetch, ponder, discard, choose_graveyard_card); tuck_position was
+    the only other one affected and is covered below."""
+    decklist = game.parse_decklist_file("../data/elves.txt")
+    vocab = CardVocab([decklist])
+    seat0, seat1 = PlayerState(on_the_play=True), PlayerState(on_the_play=False)
+    state = GameState(on_the_play=True, players=[seat0, seat1])
+    seat0.library = [game.CARD_DEFS["Llanowar Elves"], game.CARD_DEFS["Forest"],
+                     game.CARD_DEFS["Priest of Titania"]]
+    game.begin_scry_surveil(state, "scry", 2, lambda s: None)
+
+    zone_start = STATIC_FEATURE_DIM + DYNAMIC_FEATURE_DIM - len(ZONES) - 1
+    focus_slot = -SLOTS_AFTER_TARGETING
+    by_name = {}
+    for idx, row, _ident in build_token_set(state, 0, vocab):
+        zone = ZONES[[row[zone_start + i] for i in range(len(ZONES))].index(1.0)]
+        by_name[next(n for n, i in vocab.name_to_index.items() if i == idx)] = (zone, row[focus_slot])
+
+    assert set(by_name) == {"Llanowar Elves", "Forest"}, (
+        f"both revealed cards must be observable while sorting them, got {sorted(by_name)}"
+    )
+    assert all(zone == "revealed" for zone, _f in by_name.values())
+    # remaining[0] is the card THIS keep/dispose applies to; the other is seen
+    # but not yet reached. Without that split the agent sees two cards and
+    # cannot tell which one the button acts on.
+    assert by_name["Llanowar Elves"][1] == 1.0, "the card under decision must carry decision_focus"
+    assert by_name["Forest"][1] == 0.0, "a not-yet-reached card must not"
+
+    # Hidden information: the OPPONENT of a scrying player learns nothing. The
+    # gate is active_idx, so this is the check that the whole zone is safe.
+    assert build_token_set(state, 1, vocab) == [], "a scry must reveal nothing to the opponent"
+
+
+@pytest.mark.slow
+def test_a_tucking_agent_can_see_the_card_it_is_tucking():
+    """The same blind-decision bug at its other site. begin_tuck_to_library
+    (Deem Inferior) holds the bounced card in pending["tuck_card"] -- off the
+    battlefield, not yet in the library -- and its two action rows are
+    "Tuck: 2nd from top" / "Tuck: bottom", which name a POSITION and not a
+    card. The agent was choosing where to put something it could not see."""
+    decklist = game.parse_decklist_file("../data/elves.txt")
+    vocab = CardVocab([decklist])
+    seat0, seat1 = PlayerState(on_the_play=True), PlayerState(on_the_play=False)
+    state = GameState(on_the_play=True, players=[seat0, seat1])
+    game.begin_tuck_to_library(state, game.CARD_DEFS["Priest of Titania"], owner_idx=0)
+
+    tokens = build_token_set(state, 0, vocab)
+    assert len(tokens) == 1, f"the tucked card must be observable, got {len(tokens)} tokens"
+    assert tokens[0][0] == vocab.index("Priest of Titania")
+    assert tokens[0][1][-SLOTS_AFTER_TARGETING] == 1.0, "the single tuck card is always the decision focus"

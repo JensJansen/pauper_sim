@@ -14,7 +14,7 @@ from rl.action_bridge import (
     execute_pointer_choice,
     pointer_legal_mask,
 )
-from rl.features import ZONES as FEATURE_ZONES
+from rl.features import SLOTS_AFTER_TARGETING
 from rl.features import CardVocab, build_token_set
 
 
@@ -455,7 +455,10 @@ def test_choose_cast_copy_percher_response():
         sc_tokens = build_token_set(sc_state, 0, vocab)
         sc_row_a = next(row for _i, row, ident in sc_tokens if ident is t_a)
         sc_row_b = next(row for _i, row, ident in sc_tokens if ident is t_b)
-        tgt_theirs = -(len(FEATURE_ZONES) + 1) - 1
+        # Counted back from the row's END, past everything _token_row appends
+        # after the targeting pair -- features.py owns that count, so another
+        # inserted block shifts this automatically.
+        tgt_theirs = -SLOTS_AFTER_TARGETING - 1
         assert sc_row_a[tgt_theirs] == 1.0 and sc_row_b[tgt_theirs] == 0.0, (
             "only the Percher-targeted graveyard copy may show targeted_by_theirs"
         )

@@ -1,11 +1,21 @@
 {
-  "_note": "The gauntlet twin, generation 2 (2026-08-07). The ORIGINAL 4_deck_subleague_gauntlet population became permanently unusable as a comparison reference once its shared_stack_frozen.pt (never git-committed, only ever on local disk) was deleted during the 2026-08-06 restart's fresh pretrain -- gauntlet's saved per-deck weights were trained against that specific embedding space, and loading them onto the NEW frozen stack (same tensor shapes, unrelated representations) silently produces a technically-invalid comparison, not a crash. See TRAINING_IMPROVEMENT_OPTIONS.md and training_configs/run_default.json's own _gauntlet_disabled_note for the full trace. This config re-grows a genuine twin: SAME roster, SAME frozen stack (the one 4_deck_subleague_test is training against right now), SAME run-mechanics as run_default.json (checkpoint_opponent_rate, pfsp, snapshot_every_games, n_workers) -- diverging purely from a different nondeterministic training trajectory, exactly the original gauntlet's own design intent. Deliberately a NEW file (not resurrecting training_configs/run_gauntlet.json, which is retired -- see its own _note -- or run_gauntlet_pod.json, which targeted the now-invalid population).",
+  "_note": "The gauntlet twin: an INDEPENDENTLY-trained population on the same roster and the same run mechanics as run_default.json, diverging purely from a different nondeterministic training trajectory. That is the whole design -- a shared, population-wide blind spot is something an independently-evolved population exposes and a deck's own history never can. Its mechanics are pinned equal to run_default.json's by tests/test_run_league.py: they had silently drifted (games_per_iteration and pfsp_power were absent, so this would have trained at 6 games/iteration against the main league's 24), which is exactly the kind of difference that makes a twin comparison measure the config instead of the training. gauntlet_league_name points BACK at the main league, so the twin reports vs_gauntlet against it from its first session. The confound that disabled the ORIGINAL gauntlet is now structurally impossible: it was trained against a frozen shared stack that was later deleted, and its weights were then loaded onto the calling population's unrelated embedding space -- silently invalid, not a crash. Per-deck encoders (2026-08-17) put the encoder inside each checkpoint, so a population can only ever be played through the perception it was trained with, and the stack_id.txt guard that policed this is gone.",
   "snapshot_every_games": 200,
   "n_workers": 6,
   "checkpoint_opponent_rate": 0.15,
   "pfsp": true,
   "league_name": "4_deck_subleague_gauntlet",
-  "roster": ["rakdos_madness", "dmir_terror", "elves", "mono_red_rally"],
+  "roster": [
+    "rakdos_madness",
+    "dmir_terror",
+    "elves",
+    "mono_red_rally"
+  ],
   "total_games": 600000,
-  "heuristic_decks": ["mono_red_rally"]
+  "heuristic_decks": [
+    "mono_red_rally"
+  ],
+  "games_per_iteration": 24,
+  "pfsp_power": 0.5,
+  "gauntlet_league_name": "4_deck_subleague_test"
 }

@@ -38,6 +38,7 @@ uniform sampling: every untried candidate carries the same weight."""
 import json
 import os
 
+from rl.arch import SetTransformer
 from rl.deck import DeckNetwork
 from rl.agent import AlwaysKeep, SeatAgent
 from rl.mulligan import MulliganNet
@@ -250,20 +251,46 @@ class LeaguePool:
             return opponent_deck_name, rng.choice([path for _id, path in snaps])
         return opponent_deck_name, None
 
-    def load_snapshot_agent(self, snapshot_path, shared_stack, deck_ctx):
+    def load_snapshot_agent(self, snapshot_path, deck_ctx):
         """Builds (or returns a cached) frozen SeatAgent for a historical
         snapshot -- the DeckNetwork PLUS its era-matched pregame decider (a
         frozen MulliganNet if the snapshot carries one, else AlwaysKeep for a
         deck-only snapshot with no mulligan state). Never trained itself, only
         ever a rollout opponent (collect_rollout's own inference-mode forward
-        covers inference; requires_grad=False here is defensive, matching the
-        frozen shared stack's convention). Cached by path so repeat samples
-        reuse it."""
+        covers inference; requires_grad=False here is defensive). Cached by
+        path so repeat samples reuse it -- which means the SAME SeatAgent
+        object plays many different games, so its per-game recurrent state has
+        to be cleared between them. rl.train.collect_rollout's own game loop
+        does that for every agent a pairing hands it; see SeatAgent.reset for
+        why it is load-bearing rather than hygiene.
+
+        Takes no encoder: a snapshot is SELF-CONTAINED, carrying the perception
+        encoder its policy was trained with inside its own state_dict
+        (rl.deck.DeckNetwork registers it). A fresh SetTransformer is built
+        here purely as a shape to load those weights into, sized from
+        deck_ctx's own vocab. That is what makes a historical opponent an
+        honest snapshot of the era it came from -- under the previous shared-
+        frozen-stack design every vintage was replayed on TODAY's encoder, and
+        the caller had to supply one (rl.train even passed the TRAINING deck's
+        stack to build its OPPONENT)."""
         if snapshot_path in self._net_cache:
             return self._net_cache[snapshot_path]
-        _vocab, fixed_table = deck_ctx
+        vocab, fixed_table = deck_ctx
         saved = ckpt_io.load_snapshot(snapshot_path)
-        net = DeckNetwork(shared_stack, film_condition_dim=shared_stack.d_model, non_targeting_n_actions=len(fixed_table),
+        encoder = SetTransformer(vocab.size)
+        # Built at SetTransformer's own default architecture, which is the ONE
+        # architecture anything in this repo ever trains (unlike trunk_hidden,
+        # which is per-league configurable and therefore recorded in the
+        # snapshot). Checked explicitly because the raw failure is a wall of
+        # torch size-mismatch lines naming an unrelated tensor
+        # ("pointer_query.bias") rather than the actual cause.
+        saved_d_model = saved["state_dict"]["encoder.embedding.weight"].shape[1]
+        assert saved_d_model == encoder.d_model, (
+            f"{snapshot_path} was saved with a d_model={saved_d_model} encoder, but SetTransformer's "
+            f"current default is {encoder.d_model} -- the architecture changed since this snapshot was "
+            f"written, so its weights cannot be loaded"
+        )
+        net = DeckNetwork(encoder, film_condition_dim=encoder.d_model, non_targeting_n_actions=len(fixed_table),
                            trunk_hidden=saved["trunk_hidden"])
         net.load_state_dict(saved["state_dict"])
         net.eval()
@@ -271,7 +298,7 @@ class LeaguePool:
             p.requires_grad = False
 
         if "mulligan_state_dict" in saved:
-            mull = MulliganNet(shared_stack, hidden=saved.get("mulligan_hidden", 64))
+            mull = MulliganNet(net.encoder, hidden=saved.get("mulligan_hidden", 64))
             mull.load_state_dict(saved["mulligan_state_dict"])
             mull.eval()
             for p in mull.parameters():

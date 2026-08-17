@@ -51,14 +51,14 @@ def test_both_schedules_are_flat_at_a_horizon_that_never_advances():
     real run recorded for 40,104 iterations. A single session tops out around
     3,000 games/deck, i.e. 6% of the 50,000-game horizon, and
     int(0.06 * 6) == 0 doublings."""
-    assert batch_size_for_iteration(0) == batch_size_for_iteration(3000) == 32
+    assert batch_size_for_iteration(0) == batch_size_for_iteration(3000) == 4
     frozen_start, frozen_end = ent_coef_schedule(0), ent_coef_schedule(3000)
     assert abs(frozen_end - frozen_start) < 0.001, (
         f"a session-local horizon leaves ent_coef effectively fixed ({frozen_start} -> {frozen_end})")
 
     # ...and both DO move once the horizon actually advances, so the schedules
     # themselves were never broken -- only the number fed to them.
-    assert batch_size_for_iteration(50_000) > 32
+    assert batch_size_for_iteration(50_000) > 4
     assert ent_coef_schedule(50_000) < frozen_start
 
 
@@ -140,17 +140,24 @@ def test_the_schedules_now_actually_move_across_sessions(tmp_path):
     assert seen[-1] < seen[0], "and it must anneal downward, per its own schedule"
 
 
-def test_the_minibatch_ramp_is_pinned_off_by_default():
-    """Fixing the counter switches the ramp ON for the first time as a side
-    effect, and that is a 24x cut in Adam steps (ppo.py slices
-    range(0, total, batch_size), so batch_size >= buffer collapses the update
-    to one full-batch minibatch). It is pinned at start == cap == 32 until it
-    is run deliberately as its own experiment."""
+def test_the_minibatch_ramp_is_measured_in_episodes_and_does_fire():
+    """The ramp counts EPISODES since the recurrent policy landed (2026-08-17)
+    -- ppo_update samples whole trajectories, so a transition-level minibatch
+    has no meaning. It was pinned OFF at 32/32 transitions before that; it is
+    now live at 4 -> 16 episodes.
+
+    The renamed keys are the point: a config still carrying batch_size_start
+    would be read as 32 EPISODES, which at ~25-50 episodes per buffer collapses
+    every update to one full-batch minibatch. PPO_DEFAULTS' unknown-key assert
+    catches that instead, which only works while the OLD names are absent."""
     from rl.league_runner import PPO_DEFAULTS
-    assert PPO_DEFAULTS["batch_size_start"] == PPO_DEFAULTS["batch_size_cap"] == 32
-    pinned = PPO_DEFAULTS["batch_size_cap"]
-    assert batch_size_for_iteration(0, start=32, cap=pinned) == 32
-    assert batch_size_for_iteration(50_000, start=32, cap=pinned) == 32, "the ramp must not fire"
+    assert "batch_size_start" not in PPO_DEFAULTS and "batch_size_cap" not in PPO_DEFAULTS, (
+        "the old transition-level keys must stay gone so a stale config fails loudly"
+    )
+    assert PPO_DEFAULTS["seq_batch_size_start"] == 4 and PPO_DEFAULTS["seq_batch_size_cap"] == 16
+    start, cap = PPO_DEFAULTS["seq_batch_size_start"], PPO_DEFAULTS["seq_batch_size_cap"]
+    assert batch_size_for_iteration(0, start=start, cap=cap) == start
+    assert batch_size_for_iteration(50_000, start=start, cap=cap) == cap, "the ramp must reach its cap"
 
 
 def test_snapshot_cadence_survives_short_sessions():
@@ -229,16 +236,11 @@ def test_the_adopted_lr_matches_the_arm_that_justified_it():
 
     The arm's config (run_lr2e4_ab.json) was deleted in the 2026-08-17 cleanup
     along with every other concluded A/B, so the value is pinned as a literal
-    here instead of read back from it."""
+    here instead of read back from it. The companion assertion that
+    run_pretrain.py kept its own untested 3e-4 went with that script when
+    per-deck encoders removed the pretrain phase entirely."""
     from rl.league_runner import PPO_DEFAULTS
-    from repo_paths import REPO_ROOT
     assert PPO_DEFAULTS["lr"] == 0.0002
-
-    # run_pretrain.py keeps its own 3e-4 -- the experiment covered LEAGUE
-    # training only, so the two are legitimately different and "consistency"
-    # is not a reason to change it.
-    pretrain = (REPO_ROOT / "src" / "run_pretrain.py").read_text()
-    assert "lr=3e-4" in pretrain, "pretrain lr was never tested; do not sync it to the league default"
 
 
 # test_ab_config_differs_from_baseline_in_exactly_one_knob lived here. It pinned
@@ -306,27 +308,44 @@ def test_main_league_mechanics_match_the_validated_config():
     assert set(main["roster"]) == set(manifest), "main league must carry the full manifest roster"
 
 
-def test_pretrain_cross_deck_pairing_is_opt_in_and_actually_varies():
-    """The shared encoder had only ever seen MIRROR board states -- both players
-    on the same decklist -- while ~10/11 of real league games are cross-deck. Its
-    attention was therefore asked at league time to encode card co-occurrences it
-    never saw during pretraining. --cross-deck fixes that.
+def test_the_gauntlet_twin_is_mechanically_identical_to_the_league_it_measures():
+    """A twin population exists to differ from the main league in NOTHING but
+    its nondeterministic training trajectory. Any mechanical difference makes
+    the comparison measure the config instead of the training -- and it had
+    already drifted exactly that way: run_gauntlet_twin.json carried no
+    games_per_iteration and no pfsp_power, so it would have trained at 6
+    games/iteration against the main league's 24 while looking like a valid
+    twin (found 2026-08-17, before its first session).
 
-    Two things pinned. (1) Default stays mirror, bit-for-bit: the frozen stack
-    currently in use came from mirror-only pretraining and the baseline
-    populations were all trained against it, so flipping the default would
-    silently change what a re-pretrain reproduces. (2) --cross-deck really does
-    sample other decks, and still leaves SOME mirrors (it samples the whole
-    roster including self), which is roughly the mix a real league produces."""
-    import random
-    from run_pretrain import pretrain_opponent
+    Same class of failure as league_main.json's own drift above, but worse in
+    consequence: that one trains a league badly, this one silently invalidates
+    every number the twin is built to produce.
 
-    decks = ["a", "b", "c", "d", "e"]
-    rng = random.Random(0)
-    assert all(pretrain_opponent(decks, d, False, rng) == d for d in decks), "default must stay mirror"
+    Roster must match too. Only league_name and gauntlet_league_name may
+    differ -- and they must point AT each other, which is what makes each side
+    report vs_gauntlet against the other."""
+    from repo_paths import REPO_ROOT
+    cfgs = REPO_ROOT / "training_configs"
+    default = json.loads((cfgs / "run_default.json").read_text())
+    twin = json.loads((cfgs / "run_gauntlet_twin.json").read_text())
 
-    drawn = [pretrain_opponent(decks, "a", True, rng) for _ in range(400)]
-    assert set(drawn) == set(decks), "cross-deck must be able to draw every deck, self included"
-    non_mirror = sum(1 for d in drawn if d != "a")
-    assert 0.6 < non_mirror / len(drawn) < 0.95, (
-        f"expected roughly (n-1)/n = {(len(decks)-1)/len(decks):.0%} cross-deck, got {non_mirror/len(drawn):.0%}")
+    MECHANICS = ["snapshot_every_games", "n_workers", "games_per_iteration",
+                 "pfsp_power", "checkpoint_opponent_rate", "pfsp"]
+    for k in MECHANICS:
+        assert k in twin, f"run_gauntlet_twin.json is missing {k}; it would silently fall back to a default"
+        assert twin[k] == default[k], (
+            f"run_gauntlet_twin.json {k}={twin[k]!r} but the league it measures uses {default[k]!r}")
+
+    assert set(twin["roster"]) == set(default["roster"]), "a twin must play the same decks"
+    assert twin["league_name"] != default["league_name"], "the twin must be a SEPARATE population"
+    assert twin["gauntlet_league_name"] == default["league_name"]
+    assert default["gauntlet_league_name"] == twin["league_name"]
+
+
+# test_pretrain_cross_deck_pairing_is_opt_in_and_actually_varies lived here. It
+# pinned run_pretrain.py's --cross-deck opponent sampling: the shared encoder
+# had only ever seen MIRROR board states while ~10/11 of real league games are
+# cross-deck, so its attention was asked at league time to encode card
+# co-occurrences it never saw. Per-deck encoders (2026-08-17) deleted the whole
+# pretrain phase -- every encoder now learns from exactly the league games its
+# own deck plays, so the mismatch it addressed cannot arise.

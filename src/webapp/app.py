@@ -2,7 +2,7 @@
 
 - Landing page (/, static/landing.html): links to the two tools below.
 - Training ops (/train, static/index.html): start/stop/monitor run_league.py
-  and run_pretrain.py sessions from a browser, with training_configs/*.json
+  sessions from a browser, with training_configs/*.json
   treated as optional form-prefill preconfigurations (loaded into fields
   client-side, editable after).
 - Replay viewer (/replay, static/replay.html): pick a --log event-log JSON
@@ -28,7 +28,7 @@ from repo_paths import REPO_ROOT  # noqa: E402
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))  # sibling modules `runs`, `replay_engine`
 from runs import (  # noqa: E402
-    LEAGUE_GLOBAL, LEAGUE_MODES, PRETRAIN_GLOBAL, PRETRAIN_SPEC,
+    LEAGUE_GLOBAL, LEAGUE_MODES,
     RunManager, argspec_from_parser, _league_parser,
 )
 from replay_engine import list_games, reduce_game  # noqa: E402
@@ -56,8 +56,6 @@ def argspec(script):
     for league). global: always-visible dests, regardless of mode. modes:
     (league only) collapsible groups -- see runs.py's LEAGUE_MODES docstring
     for why fields are grouped by run_league.py's real run modes."""
-    if script == "pretrain":
-        return jsonify({"fields": PRETRAIN_SPEC, "global": PRETRAIN_GLOBAL, "modes": []})
     if script == "league":
         return jsonify({"fields": argspec_from_parser(_league_parser()), "global": LEAGUE_GLOBAL, "modes": LEAGUE_MODES})
     return jsonify({"error": f"unknown script {script!r}"}), 404

@@ -62,8 +62,8 @@ def _sanitize_events(game_logs):
     return [[conv(event) for event in one_game] for one_game in game_logs]
 
 
-def _league_rollout_worker(training_deck_name, all_state_dicts, all_trunk_hidden, shared_state_dict,
-                            shared_hparams, reward_fn_name, league_root_dir, horizon, n_games, seed,
+def _league_rollout_worker(training_deck_name, all_state_dicts, all_trunk_hidden,
+                            reward_fn_name, league_root_dir, horizon, n_games, seed,
                             mulligan_state_dicts=None, collect_logs=False, checkpoint_rate=0.0, pfsp=True,
                             pfsp_power=None):
     """Runs in a SEPARATE PROCESS (spawned fresh -- Windows only supports
@@ -95,15 +95,15 @@ def _league_rollout_worker(training_deck_name, all_state_dicts, all_trunk_hidden
     reward_fn = getattr(rewards_module, reward_fn_name)
     decklists, vocab, deck_ctxs, fixed_tables = build_pool()
 
-    shared = SetTransformer(vocab.size, **shared_hparams)
-    shared.load_state_dict(shared_state_dict)
-    shared.eval()
-    for p in shared.parameters():
-        p.requires_grad = False
-
+    # One encoder PER DECK, built fresh as a shape and filled from that deck's
+    # own state_dict -- the encoder is a registered child of DeckNetwork, so
+    # it crosses the process boundary inside all_state_dicts along with the
+    # rest of the net. Nothing extra has to be shipped for it.
     live_nets = {}
     for name, state_dict in all_state_dicts.items():
-        net = DeckNetwork(shared, film_condition_dim=shared.d_model, non_targeting_n_actions=len(fixed_tables[name]),
+        encoder = SetTransformer(vocab.size)
+        net = DeckNetwork(encoder, film_condition_dim=encoder.d_model,
+                           non_targeting_n_actions=len(fixed_tables[name]),
                            trunk_hidden=all_trunk_hidden[name])
         net.load_state_dict(state_dict)
         net.eval()
@@ -128,7 +128,7 @@ def _league_rollout_worker(training_deck_name, all_state_dicts, all_trunk_hidden
         from rl.mulligan import MulliganNet
         mulligan_nets = {}
         for name, sd in mulligan_state_dicts.items():
-            mn = MulliganNet(shared)  # reuses the same frozen shared stack built above
+            mn = MulliganNet(live_nets[name].encoder)  # its own deck's encoder, loaded just above
             mn.load_state_dict(sd)
             mn.eval()
             mulligan_nets[name] = mn
@@ -151,7 +151,7 @@ def _league_rollout_worker(training_deck_name, all_state_dicts, all_trunk_hidden
 
 
 def collect_rollout_league_parallel(training_deck_name, live_nets, reward_fn_name, league_root_dir, horizon, n_games,
-                                     executor, n_workers, shared_hparams, shared_state_dict, all_trunk_hidden,
+                                     executor, n_workers, all_trunk_hidden,
                                      mulligan_state_dicts=None, game_logs=None, checkpoint_rate=0.0, pfsp=True,
                                      pfsp_power=None):
     """Orchestrator (runs in the MAIN process): splits n_games across
@@ -165,12 +165,14 @@ def collect_rollout_league_parallel(training_deck_name, live_nets, reward_fn_nam
     in-process -- including sampling some OTHER deck's current live net,
     not just training_deck_name's own or frozen snapshots.
 
-    shared_state_dict, all_trunk_hidden: the FROZEN shared stack's weights and
-    every live net's trunk widths -- both fixed for the whole session (the
-    shared stack never trains, trunk widths never resize), so the caller
-    computes them ONCE (rl.league_runner._run_session, right after live_nets is
-    built) instead of this function re-deriving them from live_nets on every
-    one of the n_iterations * len(train_decks) calls it gets per session.
+    all_trunk_hidden: every live net's trunk widths -- fixed for the whole
+    session (trunk widths never resize), so the caller computes it ONCE
+    (rl.league_runner._run_session, right after live_nets is built) instead of
+    this function re-deriving it from live_nets on every one of the
+    n_iterations * len(train_decks) calls it gets per session. Each net's
+    PERCEPTION ENCODER needs no equivalent: it is part of the net, so it ships
+    inside all_state_dicts below and is re-sent every call (it trains, so a
+    once-per-session broadcast would go stale immediately).
 
     checkpoint_rate, pfsp: forwarded to every worker's own pool.sample_opponent
     call verbatim -- see rl.league.LeaguePool.sample_opponent's docstring.
@@ -188,7 +190,7 @@ def collect_rollout_league_parallel(training_deck_name, live_nets, reward_fn_nam
     collect_logs = game_logs is not None
     futures = [
         executor.submit(_league_rollout_worker, training_deck_name, all_state_dicts, all_trunk_hidden,
-                         shared_state_dict, shared_hparams, reward_fn_name, league_root_dir, horizon, chunk,
+                         reward_fn_name, league_root_dir, horizon, chunk,
                          random.randrange(2 ** 31), mulligan_state_dicts, collect_logs, checkpoint_rate, pfsp,
                          pfsp_power)
         for chunk in chunks if chunk > 0

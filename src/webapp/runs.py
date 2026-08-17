@@ -1,6 +1,6 @@
 """Subprocess-backed run management for the training-ops web UI (app.py).
 
-A "run" is a plain OS subprocess: run_league.py or run_pretrain.py invoked
+A "run" is a plain OS subprocess: run_league.py invoked
 with explicit CLI flags built from the submitted form values -- NEVER a
 --run-config/--league-config PATH. That's what makes a loaded
 training_configs/*.json preconfiguration purely a form-prefill convenience
@@ -53,19 +53,10 @@ import analysis.report_metrics as report_metrics  # noqa: E402 -- torch-free, sa
 LOG_DIR = REPO_ROOT / "logs" / "webapp_runs"
 REGISTRY_PATH = LOG_DIR / "registry.json"
 
-SCRIPTS = {"league": SRC_DIR / "run_league.py", "pretrain": SRC_DIR / "run_pretrain.py"}
-
-# run_pretrain.py takes two positional args + a flag (no argparse), so it
-# gets a small hand-written spec instead of introspection.
-PRETRAIN_SPEC = [
-    {"dest": "n_iterations", "flags": [], "type": "int", "nargs": None, "default": 1,
-     "metavar": None, "help": "Sessions to run this invocation (positional arg 1)."},
-    {"dest": "games_per_iteration", "flags": [], "type": "int", "nargs": None, "default": 2,
-     "metavar": None, "help": "Games per deck per session (positional arg 2)."},
-    {"dest": "freeze", "flags": ["--freeze"], "type": "store_true", "nargs": None, "default": False,
-     "help": "After this session, freeze the shared stack to shared_stack_frozen.pt. Run once, when satisfied."},
-]
-PRETRAIN_GLOBAL = [f["dest"] for f in PRETRAIN_SPEC]
+# Only one training script now. There used to be a "pretrain" entry here too,
+# for run_pretrain.py, which built and froze the league's single shared
+# perception stack; per-deck encoders (2026-08-17) removed that whole phase.
+SCRIPTS = {"league": SRC_DIR / "run_league.py"}
 
 # run_league.py's own --run-config/--league-config: never exposed, since runs
 # are always started with fully-resolved explicit flags (see module docstring).
@@ -122,15 +113,6 @@ def build_argv(script, values):
     """values: {dest: value} from the submitted form (already JSON-decoded).
     A missing/empty/None value means "flag omitted" -- the script's own
     hardcoded default applies, exactly as if left off the CLI by hand."""
-    if script == "pretrain":
-        n_iter = values.get("n_iterations")
-        gpi = values.get("games_per_iteration")
-        argv = [str(n_iter) if n_iter not in (None, "") else "1",
-                str(gpi) if gpi not in (None, "") else "2"]
-        if values.get("freeze"):
-            argv.append("--freeze")
-        return argv
-
     assert script == "league", f"unknown script {script!r}"
     argv = []
     for field in argspec_from_parser(_league_parser()):
@@ -288,7 +270,7 @@ def _batch_healthy(log_tail):
     return re.search(r"session \d+ done", log_tail) is not None
 
 
-# Neither run_league.py nor run_pretrain.py logs PER-ITERATION timing today
+# run_league.py does not log PER-ITERATION timing today
 # (the "iter N [deck]: games=... policy_loss=..." lines carry no elapsed
 # time) -- only a summary line at the end of each "batch" (one script
 # invocation's own internal session, or one --eval pass). "Batch" is

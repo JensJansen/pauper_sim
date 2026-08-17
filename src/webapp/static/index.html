@@ -32,9 +32,6 @@
   button.primary { background: #3a6df0; border-color: #3a6df0; color: #fff; width: 100%; margin-top: 14px; padding: 9px; font-size: 13px; }
   button.primary:hover { background: #4a7cff; }
   button.danger { background: #4a2020; border-color: #6b2a2a; }
-  #script-toggle { display: flex; gap: 8px; margin-bottom: 4px; }
-  #script-toggle button { flex: 1; }
-  #script-toggle button.active { background: #3a6df0; border-color: #3a6df0; color: #fff; }
   #global-fields { margin-bottom: 12px; padding-bottom: 8px; border-bottom: 1px solid #2a2d33; }
   details.mode-group {
     border: 1px solid #2a2d33; border-radius: 6px; margin-bottom: 8px; padding: 8px 10px;
@@ -67,7 +64,7 @@
 
 <header>
   <h1>Training Ops</h1>
-  <p>Local control panel for run_league.py / run_pretrain.py — start, stop, watch logs.</p>
+  <p>Local control panel for run_league.py — start, stop, watch logs.</p>
   <a href="/">← Home</a>
   <a href="/replay">Game replay viewer →</a>
 </header>
@@ -75,13 +72,8 @@
 <main>
   <section id="new-run">
     <h2>New run</h2>
-    <div id="script-toggle">
-      <button id="btn-league" class="active" onclick="setScript('league')">League</button>
-      <button id="btn-pretrain" onclick="setScript('pretrain')">Pretrain</button>
-    </div>
-
     <div id="preconfig-row">
-      <label for="preconfig">Load preconfiguration (training_configs/) — prefills League-training fields below, still fully editable</label>
+      <label for="preconfig">Load preconfiguration (training_configs/) — prefills training fields below, still fully editable</label>
       <select id="preconfig" onchange="applyPreconfig(this.value)">
         <option value="">— none —</option>
       </select>
@@ -111,7 +103,7 @@
 </main>
 
 <script>
-let currentScript = 'league';
+const currentScript = 'league';  // run_league.py is the only training script (pretrain removed 2026-08-17)
 let currentSpec = { fields: [], global: [], modes: [] };
 let currentMode = null;
 let configsByFile = {};
@@ -137,14 +129,6 @@ async function init() {
   await loadSpec('league');
   refreshRuns();
   setInterval(refreshRuns, 3000);
-}
-
-function setScript(script) {
-  currentScript = script;
-  document.getElementById('btn-league').classList.toggle('active', script === 'league');
-  document.getElementById('btn-pretrain').classList.toggle('active', script === 'pretrain');
-  document.getElementById('preconfig-row').style.display = script === 'league' ? '' : 'none';
-  loadSpec(script);
 }
 
 async function loadSpec(script) {

@@ -513,7 +513,10 @@ def with_dense_mana_burn_penalty(base_reward_fn, mana_burn_c=3.3, mana_burn_p=4.
 # Pre-baked named instance (callers reference reward_fns by plain name via
 # getattr off this module -- see rl.train's own reward_fn_name plumbing).
 # Floor lowered to 0.2 (vs. the default 0.25) per the "sliding scale from
-# 1 - 0.2" spec -- this is the reward pretraining (run_pretrain.py) uses.
+# 1 - 0.2" spec. This was the PRETRAIN phase's reward until per-deck encoders
+# removed that phase (2026-08-17); nothing in production references it now, but
+# it stays as the worked example of an action-count-scaled reward and is what
+# rl.rollout_parallel's own smoke test drives.
 action_count_win_reward_200_floor02 = action_count_win_reward(min_reward=0.2)
 
 # Not wired into run_league.py; kept for reference/comparison against

@@ -2,10 +2,13 @@
 
 Drives rl.league_runner._run_session directly -- the EXACT training sequence
 (all decks, collect + ppo_update, the batch-size schedule, session-end
-checkpointing) -- with the ONLY difference being a fresh, UNTRAINED shared stack
-of identical config (fresh_stack=True) instead of the loaded trained one. So
-every number here is a true training session's per-iteration cost, not an
-isolated function microbench.
+checkpointing) over a throwaway checkpoint dir, so every number here is a
+true training session's per-iteration cost, not an isolated function
+microbench. Nothing has to be done to get untrained weights: with per-deck
+encoders a league with no live.pt on disk starts from freshly-initialized
+nets, which is exactly the benchmark condition (there used to be a
+fresh_stack=True flag for this, back when the alternative was loading a
+pretrained frozen shared stack).
 
 Each config runs with the SAME seed (identical fresh weights + shuffles) over
 its own throwaway checkpoint dir, so they are comparable. _run_session prints
@@ -42,7 +45,7 @@ def _run_config(name, iters, gpi, snapshot_every, seed, roster):
     workers = _parse_config(name)
     import tempfile
     league_dir = tempfile.mkdtemp(prefix=f"bench_train_{name}_")
-    kwargs = dict(fresh_stack=True, league_dir=league_dir, seed=seed, roster=roster)
+    kwargs = dict(league_dir=league_dir, seed=seed, roster=roster)
     t0 = time.perf_counter()
     try:
         if workers and workers > 1:

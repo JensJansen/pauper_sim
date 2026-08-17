@@ -7,7 +7,10 @@ early on, with few decks and no snapshots yet, most games are naturally
 close to mirror play; cross-deck and cross-snapshot exposure grows
 organically as the pool fills in, without a hardcoded phase boundary.
 
-Uses the same frozen shared stack as pretraining (shared_stack_frozen.pt).
+Every deck owns its whole network, perception encoder included, and trains it
+end to end -- there is no pretrain phase and no shared stack (removed
+2026-08-17; see rl.deck's module docstring). A deck with no checkpoint yet
+starts from a freshly-initialized net, so nothing has to be prepared first.
 Each deck's own live net/optimizer persists in checkpoints/league/
 <deck_name>/live.pt; historical opponents live alongside as
 snapshot_<id>.pt (LeaguePool's own concern).

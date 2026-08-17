@@ -426,38 +426,57 @@ def _log_decision_weights(state, dec, dist, value, action_idx, full_mask_t):
     )
 
 
-def _seat_step(state, seat, deck_ctx, net, horizon, device, greedy=False):
+def _seat_step(state, seat, deck_ctx, net, horizon, device, greedy=False, hidden=None, prev_action=None):
     """One seat's main-policy decision, batch-of-1 (the sequential collector).
     Builds the decision (mask first -- see _build_decision), takes the sole legal
-    action WITHOUT a forward when the state is forced, else runs the shared stack
-    + per-deck net, masks, and samples (or argmaxes, when greedy). Returns
-    (executor, buffer_entry, is_pass); buffer_entry is None for a forced move
-    (record nothing). greedy=True is for eval (deterministic argmax); training
-    always samples. Forced decisions never call _log_decision_weights -- no
-    forward pass ran, so there's nothing to log (and nothing informative
-    about a decision with one legal option anyway)."""
+    action WITHOUT a forward when the state is forced, else runs this deck's
+    encoder + net, masks, and samples (or argmaxes, when greedy). Returns
+    (executor, buffer_entry, is_pass, hidden); buffer_entry is None for a forced
+    move (record nothing). greedy=True is for eval (deterministic argmax);
+    training always samples. Forced decisions never call _log_decision_weights
+    -- no forward pass ran, so there's nothing to log (and nothing informative
+    about a decision with one legal option anyway).
+
+    hidden: this seat's recurrent state (rl.deck.DeckNetwork's GRU), threaded
+    in and returned advanced. prev_action: the raw action index this seat took
+    at its own previous RECORDED decision, or None at the start of a game.
+    Returns both, advanced.
+
+    A FORCED decision returns both UNCHANGED, which is the property that keeps
+    rollout and replay consistent: a forced move runs no forward here and is
+    recorded in no buffer, so ppo_update -- which replays exactly the recorded
+    transitions and derives prev_action from the PRECEDING recorded one --
+    must not advance either for it. Nothing is lost by skipping it; the next
+    real decision observes whatever the forced move did."""
     dec = _build_decision(state, seat, deck_ctx, horizon)
     if dec.sole_action is not None:
         return (_executor_for(state, dec.sole_action, dec.fixed_table, dec.identities), None,
-                _is_pass(dec.sole_action, dec.fixed_table))
+                _is_pass(dec.sole_action, dec.fixed_table), hidden, prev_action)
 
     vocab_idx, features, key_padding_mask, _identities = pad_token_batch([dec.tokens], device=device)
     side_flag = features[:, :, -1]
     full_mask = _padded_full_mask(dec.full_mask, dec.n_fixed, vocab_idx.shape[1], device).unsqueeze(0)
     with torch.inference_mode():
-        mine_summary, theirs_summary, token_reps = net.shared_stack(vocab_idx, features, key_padding_mask, side_flag)
+        mine_summary, theirs_summary, token_reps = net.encoder(vocab_idx, features, key_padding_mask, side_flag)
         scalar_t = torch.as_tensor(dec.scalar, dtype=torch.float32, device=device).unsqueeze(0)
-        logits, value = net(mine_summary, theirs_summary, scalar_t, token_reps, full_mask[:, dec.n_fixed:])
+        logits, value, hidden = net(mine_summary, theirs_summary, scalar_t, token_reps,
+                                    full_mask[:, dec.n_fixed:], hidden=hidden,
+                                    prev_action=net.prev_action_symbols([prev_action], device))
         masked_logits = logits.masked_fill(~full_mask, -1e8)
         dist = torch.distributions.Categorical(logits=masked_logits)
         action = masked_logits.argmax(dim=-1) if greedy else dist.sample()
         logp = dist.log_prob(action)
         action_idx = int(action.item())
         _log_decision_weights(state, dec, dist, value, action_idx, full_mask)
+    # inference_mode tensors cannot later enter an autograd graph, and this one
+    # is carried forward into the NEXT decision's forward -- clone it out of
+    # inference mode so the rollout's own chain stays legal. (The update never
+    # sees this state at all; it replays from zeros.)
+    hidden = hidden.clone()
 
     buffer_entry = (dec.tokens, dec.scalar, dec.full_mask, action_idx, float(logp.item()), float(value.item()))
     return (_executor_for(state, action_idx, dec.fixed_table, dec.identities), buffer_entry,
-            _is_pass(action_idx, dec.fixed_table))
+            _is_pass(action_idx, dec.fixed_table), hidden, action_idx)
 
 
 # --- the agent: one dispatch, no attribution ---
@@ -495,13 +514,31 @@ class AlwaysKeep:
 
 class SeatAgent:
     """One seat's decision-maker: main policy (DeckNetwork) + pregame decider
-    (MulliganNet or AlwaysKeep) + deck_ctx (vocab, fixed_table)."""
+    (MulliganNet or AlwaysKeep) + deck_ctx (vocab, fixed_table) + this seat's
+    live recurrent state for the game currently being played."""
 
     def __init__(self, main, mulligan, deck_ctx):
         self.main = main            # DeckNetwork (None only in decide()'s pregame-only unit tests)
         self.mulligan = mulligan    # MulliganNet or AlwaysKeep
         self.deck_ctx = deck_ctx
         self.vocab = deck_ctx[0]
+        self.hidden = {}            # seat -> that seat's GRU state this game; see reset()
+        self.prev_action = {}       # seat -> its own last RECORDED action index this game
+
+    def reset(self):
+        """Clear the recurrent state. MUST be called at the start of every
+        game, for every agent -- rl.train.collect_rollout's own game loop is
+        the one place that does it.
+
+        Not optional bookkeeping. A SeatAgent is routinely REUSED across
+        games: rl.league.LeaguePool.load_snapshot_agent caches by path and
+        hands the same object back for every sample of that snapshot. Without
+        this the GRU would carry one game's state into the next, so the agent
+        would begin a fresh game already remembering a game it is no longer
+        playing -- and ppo_update, which replays every episode from a ZERO
+        state, would be recomputing hidden states that never occurred."""
+        self.hidden = {}
+        self.prev_action = {}
 
     def decide(self, state, seat, horizon, device, greedy=False):
         pend = state.pending_resolution
@@ -515,7 +552,17 @@ class SeatAgent:
             sink = []
             executor = mulligan_mod.decide(self.mulligan, self.vocab, state, seat, sink.append, greedy=greedy)
             return DecisionResult(executor, None, sink[0] if sink else None, is_pass=False)
-        executor, ppo_entry, is_pass = _seat_step(state, seat, self.deck_ctx, self.main, horizon, device, greedy=greedy)
+        # Keyed by SEAT, not one state per agent. A mirror pairing puts this
+        # exact object on BOTH seats (rl.train.collect_rollout_league:
+        # `opp_agent = train_agent` for a true mirror), and a single shared
+        # state would then interleave the two seats' histories -- so seat 1
+        # would condition on seat 0's recurrent state, which encodes seat 0's
+        # own hand. That is a hidden-information leak, and it would also break
+        # ppo_update: a mirror records each seat's trajectory as its own
+        # contiguous episode, and replay starts every episode from zeros.
+        executor, ppo_entry, is_pass, self.hidden[seat], self.prev_action[seat] = _seat_step(
+            state, seat, self.deck_ctx, self.main, horizon, device, greedy=greedy,
+            hidden=self.hidden.get(seat), prev_action=self.prev_action.get(seat))
         return DecisionResult(executor, ppo_entry, None, is_pass)
 
 

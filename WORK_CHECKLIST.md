@@ -6,11 +6,15 @@ filled in during that discussion, then the work is done against it.
 
 Status: `[ ]` not started · `[~]` in progress · `[x]` done
 
-**Order of work (changed 2026-08-17): 2 → 3 → 4 → 1.** Cleanup moves to the end.
+**Order of work (revised 2026-08-17): 2 → 5 → 4 → 1.** Items 2, 4 and 5 are
+done; item 3 is obsolete. Only the rest of the cleanup (item 1) remains.
+Cleanup was moved to the end.
 The first pass of it is already done and committed, but the rest is deferred until
-items 2–4 have landed — each of them rewrites code and docs that a cleanup pass
-would otherwise have to touch twice. Item numbers below are left as they were so
-existing commit messages keep pointing at the right thing.
+the other items have landed — each rewrites code and docs a cleanup pass would
+otherwise have to touch twice. Item numbers are left as they were so existing
+commit messages keep pointing at the right thing; **item 3 is obsolete** (see
+below) and item 5 was added after investigating what the agents can actually
+perceive.
 
 ---
 
@@ -356,39 +360,206 @@ mana. The cap value (20) is left alone; flagged to watch for truncations in trai
 
 ---
 
-## 3. `[ ]` Pretrain the frozen stack on prior-generation *agent* games
+## 3. `[x]` ~~Pretrain the frozen stack on prior-generation *agent* games~~ — **OBSOLETE**
 
-Today `run_pretrain.py` trains the shared encoder from near-random self-play. Instead,
-generate its training games with a prior generation of trained agents, so the encoder
-learns to represent boards that actually occur in competent play.
+Superseded by item 5, which removed the frozen stack entirely. There is no shared
+encoder left to pretrain: every deck trains its own from the first league game, so
+the "encoder formed on weak play, then frozen forever" problem this item existed to
+fix cannot arise.
 
-**Goals:** _(to be defined with owner)_
-
-**Open questions:**
-- Which generation is the source — current league `live.pt`s, a fixed snapshot vintage,
-  or a mix across vintages?
-- Is this behavior cloning / representation learning off recorded trajectories, or
-  still on-policy RL with the old agents merely as opponents?
-- Bootstrapping: the prior generation was itself trained on the *old* frozen stack, so
-  its checkpoints don't load onto the new one. What is the intended handoff?
-- Does the cross-deck pairing setting from `--cross-deck` carry over?
+Worth recording, since the framing here was wrong in a way that mattered: the item
+claimed `run_pretrain.py` trained "from near-random self-play". It did not — it ran
+real PPO via `train_selfplay`. The actual defect was that the encoder and the
+throwaway policies learned *simultaneously from scratch*, the policies were then
+discarded, and the encoder was frozen having seen ~2,000 games/deck of the weakest
+phase against the 12,000+ of league play that followed. Per-deck encoders address
+that directly rather than improving the data fed to a phase that shouldn't exist.
 
 ---
 
-## 4. `[ ]` Agent memory / historical information as input
+## 4. `[x]` Agent memory — recurrent policy
 
-Give the policy access to game history, not just the current board state.
+**DONE** — 676 passed, 1 skipped.
 
-**Goals:** _(to be defined with owner)_
+### The distinction that shaped this
 
-**Open questions:**
-- What history — cards seen in the opponent's deck this game, previous turns' plays,
-  the full action log, or a learned recurrent state?
-- Per-game memory only, or across games in a match/league (opponent modelling)?
-- Where it enters: extra static features, extra tokens into the SetTransformer, or a
-  recurrent/attention layer in the per-deck trunk?
-- This grows `TOKEN_FEATURE_DIM` or the model shape ⇒ almost certainly requires a
-  fresh pretrain + freeze. Sequencing vs. item 3 matters.
+Owner's three motivating examples turned out to be three different problems:
+cards scried to the bottom, cards the opponent revealed, and total cards played
+by the opponent. Only one of those is memory in the architectural sense.
+
+- Cards **played** by the opponent are largely already observable — their
+  graveyard, exile and battlefield are all tokenized for both seats.
+- Cards **scried to the bottom** were never observed *at all* (below).
+- Only **inference** — "they held two blue up and passed, so they have
+  interaction" — actually needs history.
+
+Owner chose inference, which meant recurrence rather than hand-computed memory
+features, on an explicit principle: **don't hand the agent facts; it learns
+from what it sees only.** That principle is what makes the observation fix
+below a prerequisite rather than an alternative — recurrence integrates
+observations over time and cannot recover information that was never in any
+observation.
+
+### The blind-decision bug, found while checking that premise
+
+`begin_scry_surveil` does `del state.library[:n]` and parks the revealed cards
+in `pending["remaining"]`; `scry_surveil_options` offers a bare
+`["keep", "dispose"]`. The cards were in no zone, tokenized nowhere, and named
+by no action row — so **the agent chose which card to bottom without being able
+to see any of them.** A coin flip, and one no memory architecture could ever
+have fixed. `tuck_position` (Deem Inferior) had the same shape: `"Tuck: 2nd from
+top"` / `"Tuck: bottom"` name a position, not a card.
+
+Fixed with a `revealed` zone plus three disposition bits
+(`decision_focus` / `revealed_kept` / `revealed_disposed`), tokenized for the
+DECIDING seat only — gated on `active_idx`, so a scry reveals nothing to the
+opponent. Every other pending already exposed its cards by name through the
+action mask, which is why only these two were affected.
+
+### The recurrent policy
+
+A `GRU` between the trunk and every head, so critic, fixed-action head and
+pointer query are all history-aware. Whole episodes as sequences, hidden state
+zero-initialized per game: replay is then **exact** rather than approximate, so
+there are no stored hidden states and no R2D2-style burn-in. That was only
+possible because `collect_rollout` already appended each seat's trajectory
+contiguously and flushed it `done=True` — the structure sequence minibatching
+needs already existed, and only `np.random.shuffle` was destroying it.
+
+`ppo_update` now segments on `done` and minibatches over trajectories;
+`batch_size_start`/`cap` became `seq_batch_size_start`/`cap` counting
+**episodes** (4 → 16), renamed so a stale config fails loudly instead of being
+read as 32 episodes and collapsing the update to one full-batch minibatch.
+
+### One real bug the tests caught
+
+A mirror pairing puts the **same `SeatAgent` object on both seats**
+(`opp_agent = train_agent`). With a single `self.hidden` that meant seat 1
+conditioning on seat 0's recurrent state — interleaved episodes *and* a
+hidden-information leak, since seat 0's state encodes seat 0's own hand. Fixed
+by keying hidden state by seat. The per-game reset also had to be deduped by
+identity: with one agent on both seats the second reset was wiping what the
+first was meant to hand over.
+
+The episode-major layout test was mutation-checked — transposing the reshape in
+`DeckNetwork.forward` makes it fail, which is the point, since that bug would
+otherwise train silently on interleaved fragments of different games.
+
+### Risks accepted, not resolved
+
+- **Tuned hyperparameters are perturbed.** Minibatches went from 32 transitions
+  to ~400-1600. `target_kl` early stopping and `games_per_iteration=24` were
+  both tuned against the old granularity.
+- **Deep BPTT on a terminal reward.** `rl/mulligan.py` exists precisely because
+  this engine's credit assignment cannot push signal ~100 steps; the GRU is
+  being asked to learn temporal inference through that same discount.
+- **No measurement.** This is the eleventh architectural change against ten
+  null results, and within-league elo cannot say whether it worked.
+
+### Open, deliberately not decided
+
+`known_top` (Brainstorm's remembered library top) is a **computed, persisted
+fact** — exactly what the owner's "learn from what it sees" principle rejects,
+and its own docstring says it exists because the placement's value materializes
+1-2 draws later with no observability. Recurrence is the principled replacement.
+Left in place for the first run rather than removed on principle without data.
+
+---
+
+## 5. `[x]` Observation richness: per-deck encoders + derived card features
+
+**DONE** — 670 passed, 1 skipped.
+
+Started from the owner's assessment that "far too little information is being
+effectively encoded vs what possible information the agents can expect". Three
+findings, all measured rather than assumed:
+
+1. **The structured feature vector described almost nothing about what a card
+   does.** 25 dims of printed stats collapsed the 141-card catalog onto **78
+   distinct vectors**. All 26 lands shared *one* — the entire mana base was
+   undifferentiated. So did Lightning Bolt / Galvanic Blast / Lava Dart, and
+   Brainstorm / Dispel / Spell Pierce / Thought Scour / Mental Note. The catalog
+   has 139 distinct `effect_id`s and the vector covered them with 9 keywords.
+2. **The whole burden of telling those apart fell on the card embedding — which
+   was frozen.** 9,920 params, 8% of the shared stack, frozen after ~2,000
+   games/deck and never updated across the 12,000+ that followed. The component
+   that had to learn the most was trained the least. `rl/features.py` already
+   cited arxiv 2407.05879 for "structured features drive generalization, the
+   identity embedding alone does not" — and then gave the structured half almost
+   nothing to work with.
+3. **Public information was missing outright.** `state.attackers` had zero
+   references in `src/rl/`; the only combat bit was `blocked_as_attacker`, and
+   combat's own damage step reads `unblocked = [p for p in attackers if p not in
+   blocked_by]` — so an **unblocked attacker was feature-identical to a creature
+   that stayed home**. Also absent: summoning sickness, aura attachment, counters
+   (a 1/1 with two +1/+1 counters read as a vanilla 3/3).
+
+### Decided (owner, 2026-08-17)
+
+- **Per-deck encoders**, over the cheaper alternative of unfreezing the one shared
+  stack in-process. Owner's call, and it turned out better than the alternative on
+  a point I had underweighted: every checkpoint becomes **self-contained**, so
+  cross-population comparison is valid by construction and re-training an encoder
+  can never again invalidate a reference population.
+- **Cheap end of the feature work** — presence/absence derived from
+  `EFFECT_REGISTRY` and `CardDef.extra`, marked in code as a future improvement
+  rather than hand-authoring a semantic vector per card.
+- **Part C (missing public state) in scope.**
+- **No throughput measurement first** — cost accepted knowingly.
+
+### What landed
+
+**Features** (`rl/features.py`). `STATIC_FEATURE_DIM` 25 → 123, `DYNAMIC` 16 → 25,
+`TOKEN_FEATURE_DIM` 41 → 148. Added, all auto-derived so a new card is described
+the moment it is registered: mana production (produces / which colors /
+board-scaled / enters-tapped / can-filter), a multi-hot over every registry spec
+key, the `pending_kinds` a card creates (its behavioral signature), `extra` flags,
+and creature subtypes. Plus is-attacking, summoning-sick, auras-attached,
+is-attached, and per-kind counter counts.
+
+**Result: 78 → 131 distinct vectors of 141.** Every residual collision is a genuine
+near-functional-duplicate pair (Llanowar/Fyndhorn Elves, Gladecover Scout/Slippery
+Bogle, Lightning Bolt/Galvanic Blast).
+
+Two were load-bearing rather than cosmetic. `extra["artifact"]` — affinity counts
+artifact *lands*, so `Island` and `Seat of the Synod` were the same card and the
+agent could not see the count driving its own cost reductions. And the `Elf`
+subtype — Priest of Titania taps for {G} per Elf, so the elves engine was invisible
+to the encoder. `elves` has sat at 25–35% against baseline in **every** arm ever
+tested; not a proven cause, but its core synergy was genuinely not in the
+observation.
+
+**Architecture.** `DeckNetwork` owns a registered `SetTransformer`. Deleted:
+`run_pretrain.py`, `shared_stack_frozen.pt` and its schema, the pretrain checkpoint
+schema, `strip_shared_stack`, `load_frozen_stack` / `build_fresh_stack` /
+`stack_id` / `write_stack_id` / `stack_id_matches`, the `fresh_stack` flag, the
+worker's `shared_state_dict`/`shared_hparams` broadcast, `_precompute_frozen_shared`
+and both `cache_shared` branches, and `ppo_update`'s optimizer *list* (every caller
+passed one). New `league_runner.build_deck_net` is the single construction site.
+
+### One bug caught while writing it
+
+`count` / `count_all` mana specs carry their **color at index 1**, like `fixed`
+does — `("count_all", "G", predicate)`. My first draft mapped every non-`fixed`,
+non-`flexible` kind to colorless, which would have described Priest of Titania and
+Overgrown Battlement as `{C}` sources. Both tap for `{G}`. Caught by reading the
+real spec shapes instead of trusting the prototype; pinned by a test.
+
+### Consequences accepted
+
+- **PPO is slower per update.** A frozen encoder allowed one cached forward per
+  update reused across all epochs; a trainable one is recomputed every minibatch of
+  every epoch (`n_epochs=4`, `batch_size=32`). Not measured — owner declined.
+- **Snapshots grow** ~360 KB → ~830 KB, so archived history over a long run roughly
+  doubles.
+- **Card knowledge is no longer shared between decks** — each learns its opponents'
+  cards only from games against them.
+- **The mulligan net's embedding now drifts under it.** It holds its deck's encoder
+  by plain reference (its REINFORCE optimizer must not step what PPO owns), so PPO
+  moves that representation between mulligan updates. Owner accepted; the fix, if
+  mulligan quality ever degrades, is giving it its own embedding table.
+- **A fresh start is mandatory** — `TOKEN_FEATURE_DIM` changed, so no existing
+  checkpoint loads. Nothing was on disk to migrate.
 
 ---
 

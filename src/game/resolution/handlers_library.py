@@ -9,7 +9,6 @@ from .. import registry
 from ..cards import CardType
 from ._core import begin_resolution, complete_resolution
 from ..effects.shared import shuffle_library
-from ..state import known_top_prefix
 from .handlers_targeting import begin_choose_permanent
 
 
@@ -352,15 +351,12 @@ def put_on_top_options(state):
 def _finish_put_on_top(state):
     pending = state.pending_resolution
     state.library[0:0] = pending["placed"]  # placed[0] on top
-    # The controller chose these and obviously remembers them -- record it so
-    # the agent's observation matches what a real player knows. Prepended, not
-    # assigned: an earlier Brainstorm's cards may still be sitting underneath
-    # these, and they are still known. game.state.known_top_prefix validates the
-    # whole list against the real library at read time, so a stale tail can
-    # never produce a false claim.
-    placer = state.players[state.active_idx]
-    placer.known_top = list(pending["placed"]) + known_top_prefix(placer)
-    placer.known_top_library_len = len(placer.library)
+    # No record is kept of what went on top. It used to be (PlayerState.
+    # known_top), because the placement's whole value materializes 1-2 draws
+    # later and a Markov observation could not carry it that far. The recurrent
+    # policy is now expected to remember it from what it SAW: these cards leave
+    # the tokenized hand one at a time as they are placed, so the sequence is
+    # in the observation stream even though no single frame holds it.
     state.log_event("put_on_top", cards=[c.name for c in pending["placed"]])
     complete_resolution(state)
 

@@ -1,6 +1,6 @@
 """run_league.py's reusable core: session driving (_run_session), eval-mode
 functions (_run_eval and the vs_history/vs_gauntlet/vs_heuristic checks),
-checkpoint/progress helpers, and the shared/frozen-stack loaders. Extracted
+checkpoint/progress helpers, and the per-deck network builder. Extracted
 so benchmarking/training_run.py can import this directly (`from rl import
 league_runner`) instead of importing the 954-line run_league.py CLI script
 for its side-effect-free functions -- run_league.py itself now just calls
@@ -28,18 +28,16 @@ from rl.mulligan import MulliganNet, update as mulligan_update
 from rl import checkpoint as ckpt_io
 from repo_paths import CHECKPOINTS_DIR
 
-FROZEN_STACK = CHECKPOINTS_DIR / "shared_stack_frozen.pt"
 LEAGUE_DIR = CHECKPOINTS_DIR / "league"
-D_MODEL = 64
+D_MODEL = 64  # SetTransformer width; must match rl.arch.SetTransformer's own d_model default
 # Turn limit for a single game, for TRAINING and EVERY eval alike. One constant
 # because a training/eval mismatch here is silent: games would simply end at a
 # different point than the policy was trained for, and every win rate would
 # measure something other than what it claimed. It was previously written out
-# as a literal `120` in six places (both _run_session and _run_eval here, plus
-# run_pretrain, run_cross_league_eval, run_anchor_eval, run_snapshot_round_robin),
-# so changing it would have silently desynchronized them.
+# as a literal `120` in several places (both _run_session and _run_eval here,
+# plus run_cross_league_eval, run_anchor_eval, run_snapshot_round_robin), so
+# changing it would have silently desynchronized them.
 HORIZON = 120
-SHARED_HPARAMS = {"d_model": D_MODEL, "n_heads": 4, "n_layers": 2, "dim_feedforward": 128}
 
 # Games per in-training eval check (vs_history / vs_gauntlet / vs_heuristic).
 # Was a hardcoded 20 at each of the three call sites, giving SE 11.2pp and a
@@ -57,9 +55,9 @@ SHARED_HPARAMS = {"d_model": D_MODEL, "n_heads": 4, "n_layers": 2, "dim_feedforw
 EVAL_GAMES = 20
 EVAL_EVERY_SESSIONS = 1
 
-# DeckNetwork trunk widths -- the TRAINABLE half of the model, per deck. The
-# frozen SetTransformer encoder is 117,056 params; this trunk at (128, 128) is
-# 82,877, so 59% of the model is frozen at whatever the pretrain phase produced.
+# DeckNetwork trunk widths, per deck. Each deck's SetTransformer encoder is a
+# further 117,056 params on top of this (and trains with it, 2026-08-17 -- it
+# used to be a shared, pretrained, permanently-frozen 59% of the model).
 # Made per-league configurable 2026-08-15 to test whether the late-training
 # plateau (reached by ~4,000 games/deck
 # and NOT caused by KL truncation, entropy, advantage scale or Adam-step count)
@@ -114,26 +112,35 @@ PPO_DEFAULTS = {
     # plateau is NOT a trust-region problem and lowering lr further will not fix
     # it.
     #
-    # Scope: LEAGUE training only. run_pretrain.py has its own 3e-4 and was
-    # never part of the experiment -- do not "make it consistent" without
-    # running the same test on the pretrain phase.
+    # Scope: LEAGUE training only. The pretrain phase kept its own untested
+    # 3e-4 and was deleted with run_pretrain.py (2026-08-17), so this is now
+    # the only lr in the system.
     #
     # Resuming a league trained at 3e-4 (checkpoints/4_deck_subleague_test)
     # now picks this up and silently changes its optimizer mid-run. Pin
     # "ppo": {"lr": 0.0003} in that league's config if it is ever continued.
     "lr": 2e-4,
-    # Minibatch ramp, PINNED OFF (start == cap == 32, so no doubling ever fires).
-    # BUG 1 kept cumulative_games at 0, which held batch_size at 32 for all
-    # 40,104 iterations of the 60,001-games/deck run. Fixing the counter
-    # (run_league.py) would have switched the ramp on for the first time as a
-    # SIDE EFFECT of a bug fix -- and it is not a small change: ppo.py slices
-    # range(0, total, batch_size), so batch_size >= buffer collapses the update
-    # to a single full-batch minibatch. At the old ~777-transition buffer that
-    # is 2.74 Adam steps per iteration instead of 67, a 24x cut. Whether that
-    # ramp is even wanted is a separate experiment, designed under a diagnosis
-    # later measurement overturned. Raise batch_size_cap to run it.
-    "batch_size_start": 32,
-    "batch_size_cap": 32,
+    # Minibatch ramp, in EPISODES per minibatch -- NOT transitions.
+    #
+    # The recurrent policy (2026-08-17) made a transition-level minibatch
+    # meaningless: ppo_update replays whole episodes through the GRU in order,
+    # so its unit of sampling is a trajectory, not a step. These keys were
+    # renamed from batch_size_start/batch_size_cap precisely so a config
+    # carrying the old numbers fails loudly on PPO_DEFAULTS' unknown-key assert
+    # instead of being read as 32 EPISODES -- which, at ~25-50 episodes per
+    # buffer, would silently collapse every update to one full-batch minibatch.
+    #
+    # 4 -> 16 with ~100-step episodes is roughly 400 -> 1600 transitions per
+    # minibatch, against the 32 transitions the feedforward policy used. That
+    # is a large change in gradient granularity and it perturbs values tuned
+    # against the old one (target_kl's early stopping, games_per_iteration=24).
+    # Expect the KL/truncation diagnostics to move on the first recurrent run.
+    #
+    # The ramp itself (small early, large late) is unchanged in spirit and
+    # still PINNED OFF-ish: start 4, cap 16 does fire, unlike the old pinned
+    # 32/32. BUG 1 (cumulative_games stuck at 0) is fixed, so the ramp is live.
+    "seq_batch_size_start": 4,
+    "seq_batch_size_cap": 16,
     "mulligan_lr": 1e-3,   # the mulligan net's own, deliberately separate optimizer
     "gamma": 0.99,
     "gae_lambda": 0.95,    # with gamma, a 0.9405/step advantage decay
@@ -161,102 +168,25 @@ PPO_DEFAULTS = {
 }
 
 
-def load_frozen_stack(vocab_size, path=None):
-    """The frozen shared encoder. `path` defaults to the live FROZEN_STACK.
+def build_deck_net(vocab_size, n_actions, trunk_hidden=None):
+    """One deck's full network: its OWN perception encoder (rl.arch) plus the
+    trunk/critic/pointer heads built over it. Every construction site goes
+    through here so no caller has to remember that the encoder is built from
+    the pool vocab size and that film_condition_dim tracks its d_model.
 
-    An explicit path exists for ONE purpose: comparing populations trained
-    against DIFFERENT frozen stacks. That is not the same illegal operation
-    stack_id_matches guards -- _run_eval_vs_gauntlet loads another population's
-    WEIGHTS onto the CALLING population's stack, which silently reinterprets
-    them and is meaningless. Two agents merely PLAYING each other need no
-    shared encoder at all: each encodes the state with its own and picks its
-    own actions, which is a perfectly valid head-to-head. Loading each side on
-    its own stack (analysis/run_cross_league_eval.py --stack-a/--stack-b) is
-    therefore how a cross-stack reference is recovered after a re-freeze,
-    without training a fresh twin."""
-    path = path or FROZEN_STACK
-    assert os.path.exists(path), (
-        f"{path} not found -- run `python run_pretrain.py ... --freeze` (pretrain) first"
-    )
-    ckpt = ckpt_io.load_frozen_stack(path)
-    assert ckpt["vocab_size"] == vocab_size, (
-        f"frozen stack was built with vocab_size={ckpt['vocab_size']}, current pool vocab is {vocab_size} -- "
-        "the deck roster changed since pretraining ran; re-run pretraining or fix the mismatch before continuing"
-    )
-    shared = SetTransformer(vocab_size, d_model=ckpt["d_model"], n_heads=4, n_layers=2, dim_feedforward=128)
-    shared.load_state_dict(ckpt["shared"])
-    for p in shared.parameters():
-        p.requires_grad = False
-    shared.eval()
-    return shared
-
-
-def stack_id(shared):
-    """A short content hash of the frozen perception stack's weights.
-
-    Every cross-population comparison in this repo silently assumes both sides
-    were built on the SAME stack: _run_eval_vs_gauntlet loads the gauntlet
-    league's saved per-deck weights onto a DeckNetwork wrapping whatever stack
-    the CALLING population currently holds. If the two stacks differ, the
-    resulting number is meaningless -- and nothing errors, nothing warns, the
-    win rate just quietly measures nonsense.
-
-    That is not hypothetical. It already happened: the gauntlet league was not
-    retrained during the 2026-08-06 restart, its own stack was deleted, and
-    every vs_gauntlet reading across sessions 0-14 (24,579 games/deck) was
-    confounded before anyone noticed (run_default.json's own
-    _gauntlet_disabled_note records the post-mortem). This is the check that
-    would have caught it on the first session."""
-    import hashlib
-    h = hashlib.sha256()
-    for key, tensor in sorted(shared.state_dict().items()):
-        h.update(key.encode())
-        h.update(tensor.detach().cpu().numpy().tobytes())
-    return h.hexdigest()[:16]
-
-
-def write_stack_id(league_dir, shared):
-    """Records which stack this league's checkpoints were trained against.
-    Written on every session so a league that predates this check acquires one
-    the next time it trains."""
-    os.makedirs(league_dir, exist_ok=True)
-    with open(f"{league_dir}/stack_id.txt", "w") as f:
-        f.write(stack_id(shared))
-
-
-def stack_id_matches(league_dir, shared):
-    """True if league_dir was trained against `shared`, or if it has no
-    stack_id.txt at all.
-
-    WARNS rather than asserts on a missing file, and returns True: every league
-    on disk today predates this check, and hard-failing them all would make the
-    guard's first act be to break working setups. A present-and-DIFFERENT id is
-    the real signal and returns False."""
-    path = f"{league_dir}/stack_id.txt"
-    if not os.path.exists(path):
-        return True  # legacy league, nothing to compare against
-    with open(path) as f:
-        recorded = f.read().strip()
-    if recorded == stack_id(shared):
-        return True
-    print(f"  !! STACK MISMATCH: {league_dir} was trained against shared stack {recorded}, "
-          f"current stack is {stack_id(shared)} -- any cross-population comparison against it "
-          f"is meaningless and is being SKIPPED", flush=True)
-    return False
-
-
-def build_fresh_stack(vocab_size):
-    """A shared stack with the EXACT architecture/config of the real frozen
-    one (SHARED_HPARAMS) but random, UNTRAINED weights -- frozen + eval, same
-    as load_frozen_stack returns. Lets the benchmark harness drive the real
-    training loop (_run_session) without a trained shared_stack_frozen.pt on
-    disk: identical to the real league in every way except the weights aren't
-    trained, which is exactly the intended benchmarking difference."""
-    shared = SetTransformer(vocab_size, **SHARED_HPARAMS)
-    for p in shared.parameters():
-        p.requires_grad = False
-    shared.eval()
-    return shared
+    There is deliberately no shared-encoder loader beside this any more. The
+    league used to pretrain ONE SetTransformer, freeze it to
+    checkpoints/shared_stack_frozen.pt, and build every deck on that single
+    instance -- which also required stack_id.txt bookkeeping, because loading
+    one population's per-deck weights onto ANOTHER population's stack
+    silently produces a meaningless number (that really happened: every
+    vs_gauntlet reading across sessions 0-14, 24,579 games/deck, was
+    confounded before anyone noticed). A checkpoint now carries its own
+    encoder, so cross-population comparison is valid by construction and
+    there is nothing left to guard."""
+    encoder = SetTransformer(vocab_size)
+    return DeckNetwork(encoder, film_condition_dim=encoder.d_model, non_targeting_n_actions=n_actions,
+                       trunk_hidden=trunk_hidden or TRUNK_HIDDEN)
 
 
 def _save_live_checkpoints(live_nets, optimizers, deck_names, session, session_path, league_dir,
@@ -422,7 +352,7 @@ def _next_batch_games(league_dir, total_games):
 
 
 def _run_session(n_iterations, games_per_iteration, snapshot_every, executor, n_workers,
-                  fresh_stack=False, league_dir=None, seed=None,
+                  league_dir=None, seed=None,
                   train_deck=True, train_mulligan=True, train_decks=None,
                   matchup=None, game_logs=None, checkpoint_rate=0.0, roster=None, pfsp=True,
                   gauntlet_league_dir=None, heuristic_decks=(), cumulative_games=0,
@@ -436,11 +366,13 @@ def _run_session(n_iterations, games_per_iteration, snapshot_every, executor, n_
     # session and picks up from the right point when a NEW session starts,
     # rather than resetting to each schedule's start value every single
     # process invocation the way both used to (see their own docstrings).
-    # fresh_stack + league_dir + seed let the benchmark harness drive this EXACT
-    # loop with untrained (but identical-config) models over a throwaway dir,
-    # reproducibly -- the only intended differences from a real training
-    # session. Defaults preserve the real run: load the trained frozen stack,
-    # checkpoint into LEAGUE_DIR, nondeterministic rng.
+    # league_dir + seed let the benchmark harness drive this EXACT loop over a
+    # throwaway dir, reproducibly -- the only intended differences from a real
+    # training session. Defaults preserve the real run: checkpoint into
+    # LEAGUE_DIR, nondeterministic rng. (There used to be a fresh_stack flag
+    # too, for driving the loop without a trained shared_stack_frozen.pt on
+    # disk; every deck now starts from a freshly-initialized encoder anyway
+    # unless its own live.pt supplies one, so there is nothing to toggle.)
     #
     # Independent per-layer / per-deck training (freeze modes): train_deck /
     # train_mulligan gate which LAYER updates; train_decks (a subset, default the
@@ -457,7 +389,7 @@ def _run_session(n_iterations, games_per_iteration, snapshot_every, executor, n_
     deck_names = list(decklists)
     # roster: a TRUE isolated sub-league -- restricts the entire opponent pool (not
     # just which decks receive a training round, see train_decks below) to this
-    # subset. vocab/shared_stack/deck_ctxs/fixed_tables still come from the FULL
+    # subset. vocab/deck_ctxs/fixed_tables still come from the FULL
     # build_pool() roster above, unchanged -- only WHICH deck_names this session ever
     # constructs a live net/optimizer for, or ever samples as an opponent, narrows.
     # This preserves checkpoint/vocab compatibility with the full-roster league (a
@@ -486,10 +418,6 @@ def _run_session(n_iterations, games_per_iteration, snapshot_every, executor, n_
     hp = {**PPO_DEFAULTS, **(ppo_hparams or {})}
     unknown = set(hp) - set(PPO_DEFAULTS)
     assert not unknown, f"unknown ppo hyperparameter(s) {sorted(unknown)}; known: {sorted(PPO_DEFAULTS)}"
-    shared = build_fresh_stack(vocab.size) if fresh_stack else load_frozen_stack(vocab.size)
-    if league_dir is not None and not fresh_stack:
-        write_stack_id(league_dir, shared)
-
     live_nets, optimizers = {}, {}
     for name in deck_names:
         # Trunk width: whatever this deck's existing live.pt was built with when
@@ -501,18 +429,17 @@ def _run_session(n_iterations, games_per_iteration, snapshot_every, executor, n_
         # in run_league.py).
         live_path = f"{league_dir}/{name}/live.pt"
         width = ckpt_io.trunk_hidden_from_deck_checkpoint(live_path) or trunk_hidden
-        net = DeckNetwork(shared, film_condition_dim=D_MODEL, non_targeting_n_actions=len(fixed_tables[name]),
-                          trunk_hidden=width)
+        net = build_deck_net(vocab.size, len(fixed_tables[name]), width)
         optimizer = torch.optim.Adam([p for p in net.parameters() if p.requires_grad], lr=hp["lr"])
         ckpt_io.load_deck_checkpoint(live_path, net, optimizer)  # no-op if live_path doesn't exist yet; optimizer load is migration-guarded (a migrated live.pt dropping "optimizer" -> fresh Adam)
         live_nets[name] = net
         optimizers[name] = optimizer
 
-    # Fixed for the whole session (shared never trains, trunk widths never
-    # resize) -- computed once here rather than re-derived by
-    # collect_rollout_league_parallel on every one of its
-    # n_iterations * len(train_decks) calls below.
-    shared_state_dict = shared.state_dict()
+    # Fixed for the whole session (trunk widths never resize) -- computed once
+    # here rather than re-derived by collect_rollout_league_parallel on every
+    # one of its n_iterations * len(train_decks) calls below. Each net's
+    # ENCODER is not broadcast this way: it trains, so it ships fresh inside
+    # every net's own state_dict on each call.
     all_trunk_hidden = {name: tuple(layer.out_features for layer in net.trunk_layers) for name, net in live_nets.items()}
 
     # Per-deck mulligan model (rl.mulligan): owns the pregame keep/mulligan +
@@ -521,7 +448,7 @@ def _run_session(n_iterations, games_per_iteration, snapshot_every, executor, n_
     # with the per-deck policies (mulligan.pt is deleted alongside live.pt).
     mulligan_nets, mulligan_optimizers = {}, {}
     for name in deck_names:
-        mnet = MulliganNet(shared)
+        mnet = MulliganNet(live_nets[name].encoder)
         mopt = torch.optim.Adam([p for p in mnet.parameters() if p.requires_grad], lr=hp["mulligan_lr"])
         mull_path = f"{league_dir}/{name}/mulligan.pt"
         ckpt_io.load_deck_checkpoint(mull_path, mnet, mopt)  # same migration-guarded optimizer load as the live-net path above
@@ -591,7 +518,7 @@ def _run_session(n_iterations, games_per_iteration, snapshot_every, executor, n_
         # count each iteration adds, regardless of how many decks train.
         games_so_far_this_session = iteration * games_per_iteration
         batch_size = batch_size_for_iteration(cumulative_games + games_so_far_this_session,
-                                              start=hp["batch_size_start"], cap=hp["batch_size_cap"])
+                                              start=hp["seq_batch_size_start"], cap=hp["seq_batch_size_cap"])
         # hp["ent_coef"] pins a CONSTANT and skips the anneal entirely (Wave 2b);
         # None keeps the 0.02 -> 0.005 schedule. See PPO_DEFAULTS for the measured
         # reason the anneal is suspect.
@@ -618,7 +545,7 @@ def _run_session(n_iterations, games_per_iteration, snapshot_every, executor, n_
             elif executor is not None:
                 buffers_by_deck, mull_by_deck, played, outcomes = collect_rollout_league_parallel(
                     name, live_nets, reward_fn_name, league_dir, horizon, games_per_iteration,
-                    executor, n_workers, SHARED_HPARAMS, shared_state_dict, all_trunk_hidden,
+                    executor, n_workers, all_trunk_hidden,
                     mulligan_state_dicts, game_logs=game_logs, checkpoint_rate=checkpoint_rate, pfsp=pfsp,
                     pfsp_power=pfsp_power,
                 )
@@ -673,12 +600,12 @@ def _run_session(n_iterations, games_per_iteration, snapshot_every, executor, n_
                     if deck_name == name:
                         (policy_loss, value_loss, entropy, approx_kl, clip_fraction,
                          epochs_run, explained_variance, adv_std) = ppo_update(
-                            live_nets[name], [optimizers[name]], buf, "cpu", batch_size=batch_size,
+                            live_nets[name], optimizers[name], buf, "cpu", batch_size=batch_size,
                             ent_coef=ent_coef, gamma=hp["gamma"], gae_lambda=hp["gae_lambda"],
                             target_kl=hp["target_kl"], n_epochs=hp["n_epochs"],
                             adv_norm_floor=hp["adv_norm_floor"])
                     else:
-                        ppo_update(live_nets[deck_name], [optimizers[deck_name]], buf, "cpu",
+                        ppo_update(live_nets[deck_name], optimizers[deck_name], buf, "cpu",
                                    batch_size=batch_size, ent_coef=ent_coef, gamma=hp["gamma"],
                                    gae_lambda=hp["gae_lambda"], target_kl=hp["target_kl"],
                                    n_epochs=hp["n_epochs"], adv_norm_floor=hp["adv_norm_floor"])
@@ -800,7 +727,7 @@ def _run_session(n_iterations, games_per_iteration, snapshot_every, executor, n_
     if matchup is None and run_evals:
         for name in train_decks:
             for r in _run_eval_vs_history(name, live_nets[name], mulligan_nets[name], deck_ctxs[name],
-                                          decklists[name], shared, league_dir, horizon,
+                                          decklists[name], league_dir, horizon,
                                           games_per_snapshot=eval_games, seed=seed):
                 _append_metric(league_dir, kind="vs_history", session=session, iteration=iteration, deck=name,
                                cumulative_games=cumulative_at_session_end, **r)
@@ -811,7 +738,7 @@ def _run_session(n_iterations, games_per_iteration, snapshot_every, executor, n_
             # training has reached this deck, or no gauntlet_league_dir is configured
             # for this league at all (most leagues won't have one).
             r = _run_eval_vs_gauntlet(name, live_nets[name], mulligan_nets[name], deck_ctxs[name],
-                                      decklists[name], shared, gauntlet_league_dir, horizon,
+                                      decklists[name], gauntlet_league_dir, horizon,
                                       games=eval_games, seed=seed)
             if r is not None:
                 _append_metric(league_dir, kind="vs_gauntlet", session=session, iteration=iteration, deck=name,
@@ -837,7 +764,7 @@ def _run_session(n_iterations, games_per_iteration, snapshot_every, executor, n_
 
 
 def _run_eval(eval_decks, games_per_pairing, greedy, seed, game_logs, matchup=None,
-              fresh_stack=False, league_dir=None):
+              league_dir=None):
     """Eval / faithful log generation: play games with NO training (record=False,
     no updates, no checkpointing) over the CURRENT live agents (deck net + its
     mulligan model -- so logged games use the same pregame policy training does).
@@ -861,19 +788,18 @@ def _run_eval(eval_decks, games_per_pairing, greedy, seed, game_logs, matchup=No
     eval_decks = list(matchup) if matchup else (list(eval_decks) if eval_decks else deck_names)
     assert set(eval_decks) <= set(deck_names), f"eval decks {eval_decks} not all in roster {deck_names}"
     pairings = [tuple(matchup)] if matchup else list(itertools.combinations_with_replacement(eval_decks, 2))
-    shared = build_fresh_stack(vocab.size) if fresh_stack else load_frozen_stack(vocab.size)
     rng = random.Random(seed)
     horizon = HORIZON
 
     live_nets, mulligan_nets = {}, {}
     for name in set(eval_decks):
         live_path = f"{league_dir}/{name}/live.pt"
-        net = DeckNetwork(shared, film_condition_dim=D_MODEL, non_targeting_n_actions=len(fixed_tables[name]),
-                          trunk_hidden=ckpt_io.trunk_hidden_from_deck_checkpoint(live_path) or TRUNK_HIDDEN)
+        net = build_deck_net(vocab.size, len(fixed_tables[name]),
+                             ckpt_io.trunk_hidden_from_deck_checkpoint(live_path))
         ckpt_io.load_deck_checkpoint(live_path, net)  # optimizer=None: eval only ever needs inference weights
         net.eval()
         live_nets[name] = net
-        mnet = MulliganNet(shared)
+        mnet = MulliganNet(net.encoder)
         mull_path = f"{league_dir}/{name}/mulligan.pt"
         ckpt_io.load_deck_checkpoint(mull_path, mnet)
         mnet.eval()
@@ -926,7 +852,7 @@ def league_roster(league_dir):
                   if os.path.exists(os.path.join(league_dir, d, "live.pt")))
 
 
-def load_vintage_agent(league_dir, deck_name, vintage, shared, deck_ctx, pool=None):
+def load_vintage_agent(league_dir, deck_name, vintage, deck_ctx, pool=None):
     """A frozen SeatAgent for ONE historical point of deck_name: an int/str
     snapshot id, or "live" for the current checkpoint pair.
 
@@ -938,29 +864,27 @@ def load_vintage_agent(league_dir, deck_name, vintage, shared, deck_ctx, pool=No
     single reused `pool` -- load_snapshot_agent caches by path, so the same
     snapshot is only ever read off disk once.
 
-    NOTE: for a snapshot vintage this inherits load_snapshot_agent's BUG 3
-    behavior -- DeckNetwork registers the
-    shared stack as a child module, so that loader's requires_grad=False sweep
-    and state_dict load both reach `shared`. Harmless for read-only eval
-    against an already-frozen stack (every embedded copy is byte-identical),
-    which is all this is used for; it is NOT safe once the stack is trainable.
+    Every vintage brings its OWN perception encoder (it lives inside the
+    checkpoint), so a historical agent is played exactly as it was, rather
+    than being replayed through whatever encoder is current -- which is what
+    made a vintage comparison honest only while the stack was frozen forever.
     """
-    _vocab, fixed_table = deck_ctx
+    vocab, fixed_table = deck_ctx
     deck_dir = os.path.join(league_dir, deck_name)
     if vintage == "live":
         live_path = os.path.join(deck_dir, "live.pt")
-        net = DeckNetwork(shared, film_condition_dim=D_MODEL, non_targeting_n_actions=len(fixed_table),
-                          trunk_hidden=ckpt_io.trunk_hidden_from_deck_checkpoint(live_path) or TRUNK_HIDDEN)
+        net = build_deck_net(vocab.size, len(fixed_table),
+                             ckpt_io.trunk_hidden_from_deck_checkpoint(live_path))
         ckpt_io.load_deck_checkpoint(live_path, net)
         net.eval()
-        mull = MulliganNet(shared)
+        mull = MulliganNet(net.encoder)
         ckpt_io.load_deck_checkpoint(os.path.join(deck_dir, "mulligan.pt"), mull)
         mull.eval()
         return SeatAgent(net, mull, deck_ctx)
     for sub in ("", "archive"):
         path = os.path.join(deck_dir, sub, f"snapshot_{int(vintage)}.pt")
         if os.path.exists(path):
-            return (pool or LeaguePool(league_dir, [deck_name])).load_snapshot_agent(path, shared, deck_ctx)
+            return (pool or LeaguePool(league_dir, [deck_name])).load_snapshot_agent(path, deck_ctx)
     raise FileNotFoundError(f"no snapshot_{vintage}.pt for {deck_name} under {deck_dir} or its archive/")
 
 
@@ -1022,7 +946,7 @@ def _play_eval_games(live_agent, opp_agent, decklist, n_games, horizon, rng, opp
             "no_winner": played - live_wins - opp_wins}
 
 
-def _run_eval_vs_history(deck_name, live_net, mulligan_net, deck_ctx, decklist, shared, league_dir,
+def _run_eval_vs_history(deck_name, live_net, mulligan_net, deck_ctx, decklist, league_dir,
                           horizon, games_per_snapshot=EVAL_GAMES, seed=None):
     """Plays deck_name's CURRENT live net against its own past selves: the
     oldest snapshot still in the active LeaguePool sampling window, plus (once
@@ -1035,7 +959,7 @@ def _run_eval_vs_history(deck_name, live_net, mulligan_net, deck_ctx, decklist, 
 
     Returns [] when there's no history yet at all (early in a run, before the
     first snapshot exists) -- nothing to compare against, not an error. Reuses
-    the caller's already-loaded live_net/shared/deck_ctx/decklist (no disk
+    the caller's already-loaded live_net/deck_ctx/decklist (no disk
     round-trip for the live side); only the historical snapshot is loaded from
     disk, via LeaguePool.load_snapshot_agent (the same loader league training
     itself uses for checkpoint opponents). Relies on collect_rollout's own
@@ -1059,7 +983,7 @@ def _run_eval_vs_history(deck_name, live_net, mulligan_net, deck_ctx, decklist, 
     live_agent = SeatAgent(live_net, mulligan_net, deck_ctx)
     results = []
     for label, snapshot_id, is_archive, snapshot_path in milestones:
-        hist_agent = pool.load_snapshot_agent(snapshot_path, shared, deck_ctx)
+        hist_agent = pool.load_snapshot_agent(snapshot_path, deck_ctx)
         result = _play_paired_eval_games(live_agent, hist_agent, decklist, games_per_snapshot, horizon,
                                          seed, "snapshot_wins")
         # snapshot_id/is_archive recorded (2026-08-13) because the two labels
@@ -1073,16 +997,16 @@ def _run_eval_vs_history(deck_name, live_net, mulligan_net, deck_ctx, decklist, 
     return results
 
 
-def _run_eval_vs_gauntlet(deck_name, live_net, mulligan_net, deck_ctx, decklist, shared, gauntlet_league_dir,
+def _run_eval_vs_gauntlet(deck_name, live_net, mulligan_net, deck_ctx, decklist, gauntlet_league_dir,
                            horizon, games=EVAL_GAMES, seed=None):
     """Plays deck_name's CURRENT live net against the SAME-NAMED deck from an
     INDEPENDENTLY-trained population (gauntlet_league_dir -- see
     training_configs/run_gauntlet.json's own _note) -- a genuinely EXTERNAL
     reference, not another point in this league's own self-play history the
     way _run_eval_vs_history's snapshots are. Two runs trained via the
-    identical algorithm/settings from the SAME frozen shared stack still
-    diverge into different regions of strategy space from nothing but a
-    different nondeterministic training trajectory -- so a shared,
+    identical algorithm/settings still diverge into different regions of
+    strategy space from nothing but a different nondeterministic training
+    trajectory -- so a shared,
     population-wide blind spot (this WHOLE mini-league co-adapting into a
     closed, mutually-exploitable bubble, the failure mode this whole
     mechanism exists to catch) is something an independently-evolved
@@ -1097,24 +1021,23 @@ def _run_eval_vs_gauntlet(deck_name, live_net, mulligan_net, deck_ctx, decklist,
     play, not an exploration sample."""
     if gauntlet_league_dir is None:
         return None
-    # A gauntlet trained against a DIFFERENT frozen stack produces a number
-    # that looks fine and means nothing -- see stack_id's docstring for the
-    # 24,579-games/deck precedent. Skip rather than report garbage.
-    if not stack_id_matches(gauntlet_league_dir, shared):
-        return None
+    # No stack-compatibility check is needed: the gauntlet's checkpoint brings
+    # its own perception encoder, so its weights are never reinterpreted
+    # through this league's. That confound (and the stack_id.txt bookkeeping
+    # that guarded it) died with the shared frozen stack -- see build_deck_net.
     gauntlet_live_path = f"{gauntlet_league_dir}/{deck_name}/live.pt"
     if not os.path.exists(gauntlet_live_path):
         return None
 
-    _vocab, fixed_table = deck_ctx
+    vocab, fixed_table = deck_ctx
     # The gauntlet is a DIFFERENT population and may legitimately have been
     # trained at a different trunk width than the league calling this, so its
     # own checkpoint is the only authority on the shape to build.
-    gauntlet_net = DeckNetwork(shared, film_condition_dim=D_MODEL, non_targeting_n_actions=len(fixed_table),
-                               trunk_hidden=ckpt_io.trunk_hidden_from_deck_checkpoint(gauntlet_live_path))
+    gauntlet_net = build_deck_net(vocab.size, len(fixed_table),
+                                  ckpt_io.trunk_hidden_from_deck_checkpoint(gauntlet_live_path))
     ckpt_io.load_deck_checkpoint(gauntlet_live_path, gauntlet_net)  # existence already checked above
     gauntlet_net.eval()
-    gauntlet_mull = MulliganNet(shared)
+    gauntlet_mull = MulliganNet(gauntlet_net.encoder)
     gauntlet_mull_path = f"{gauntlet_league_dir}/{deck_name}/mulligan.pt"
     ckpt_io.load_deck_checkpoint(gauntlet_mull_path, gauntlet_mull)
     gauntlet_mull.eval()

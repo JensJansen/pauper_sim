@@ -361,28 +361,6 @@ class PlayerState:
         # this, never any other discard effect.
         self.cleanup_discard_turns = 0
 
-        # Cards this player has legitimately SEEN placed on top of their own
-        # library, top-first -- set by effects that let the controller choose
-        # what goes on top (Brainstorm's "put two cards from your hand on top
-        # of your library in any order"). Bookkeeping ONLY: nothing in the
-        # rules reads this, no game behavior depends on it, and it is not
-        # hidden information -- a real player obviously remembers the two cards
-        # they just placed. It exists because the agent's observation did not
-        # include it, making the placement choice structurally untrainable (the
-        # decision's entire value materializes 1-2 draws later with no
-        # observability of the consequence).
-        #
-        # NEVER read this directly -- read known_top_prefix(player), which
-        # validates it against the ACTUAL library. See that function.
-        self.known_top = []
-        # len(library) at the moment known_top was recorded. Comparing it to
-        # the CURRENT length is how many cards have since come off the top,
-        # which is the only way to tell "the Mountain I placed" from "a
-        # different Mountain now on top" -- library entries are interned,
-        # shared CardDefs, so neither == nor `is` can distinguish two copies of
-        # a 4-of. See known_top_prefix.
-        self.known_top_library_len = 0
-
         # Total mana LOST to rule 500.4's automatic pool-empty (game.turn.
         # _empty_mana_pools) over the whole game -- summed across every
         # non-empty clear, all colors combined (a {"R": 2} clear adds 2, not
@@ -912,47 +890,6 @@ class GameState:
             "turn_player_idx": self.turn_player_idx,
             **{k: _safe(v) for k, v in fields.items()},
         })
-
-
-def known_top_prefix(player):
-    """The prefix of `player`'s library that player legitimately knows, top
-    first -- VERIFIED against the real library rather than trusted.
-
-    PlayerState.known_top records what an effect placed on top (Brainstorm),
-    but the library keeps moving afterwards: the player draws, Thought Scour
-    mills two, Experimental Synthesizer exiles the top card. There is no single
-    choke point to hook -- the engine has 40+ raw list mutations of `library`
-    across nine files -- so instead of tracking every one, this checks what is
-    ACTUALLY on top right now and returns only the still-true suffix.
-
-    Cards consumed off the FRONT (drawn, milled, exiled from top) therefore
-    degrade the known prefix automatically and correctly, with no per-site
-    bookkeeping. Anything else -- a shuffle, a card inserted above the known
-    ones -- fails the check and returns [], which is the safe direction: the
-    agent forgets rather than believes something false.
-
-    TWO independent checks, and both are needed:
-
-    1. HOW MANY cards have left the top, from the library's length delta since
-       placement. Value comparison alone cannot do this. Library entries are
-       interned, shared CardDefs, so with a 4-of neither `==` nor `is` can tell
-       "the Mountain I put there" from "a different Mountain now on top" --
-       after drawing both known cards off [Bolt, Mountain, Mountain], a naive
-       value match happily reports the third card as known. The player would
-       have no legitimate way to know it.
-    2. That the cards still there ARE the ones recorded, catching anything that
-       changed the top without changing the length.
-
-    Neither subsumes the other, and shuffles additionally clear known_top
-    outright at the choke point (game.effects.shared.shuffle_library) because a
-    shuffle preserves length and can coincidentally satisfy both."""
-    consumed = player.known_top_library_len - len(player.library)
-    if consumed < 0 or consumed > len(player.known_top):
-        return []  # library grew, or more left the top than were ever known
-    remaining = player.known_top[consumed:]
-    if remaining and player.library[:len(remaining)] == remaining:
-        return remaining
-    return []
 
 
 def build_shuffled_library(decklist, rng):

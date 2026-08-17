@@ -49,7 +49,7 @@ import time
 from repo_paths import CHECKPOINTS_DIR
 from rl.league import LeaguePool
 from rl.pool import build_pool
-from rl.league_runner import (HORIZON, league_roster, load_frozen_stack, load_vintage_agent,
+from rl.league_runner import (HORIZON, league_roster, load_vintage_agent,
                               _play_paired_eval_games)
 
 
@@ -136,7 +136,6 @@ def main():
     args = p.parse_args()
 
     decklists, vocab, deck_ctxs, _fixed = build_pool()
-    shared = load_frozen_stack(vocab.size)
     league_dir = str(CHECKPOINTS_DIR / args.league)
     labels = args.snapshots.split(",")
     decks = args.decks.split(",") if args.decks else league_roster(league_dir)
@@ -151,7 +150,7 @@ def main():
     for deck in decks:
         deck_ctx = deck_ctxs[deck]
         pool = LeaguePool(league_dir, [deck])  # cached by path: each snapshot loads once
-        agents = {v: load_vintage_agent(league_dir, deck, v, shared, deck_ctx, pool=pool) for v in labels}
+        agents = {v: load_vintage_agent(league_dir, deck, v, deck_ctx, pool=pool) for v in labels}
 
         pair_wins = {}
         for a, b in pairs:

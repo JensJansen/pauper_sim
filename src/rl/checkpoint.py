@@ -1,11 +1,9 @@
-"""Centralizes checkpoint save/load for the ~4 distinct on-disk schemas that
-used to be hand-rolled (build net, torch.load, load_state_dict, optional
-optimizer-migration guard) at every call site across rl/league.py,
-rl/league_runner.py, and run_pretrain.py. Pure reorganization: no schema (key
-names, tensor shapes, what gets stored) changed by moving the code here --
-every existing checkpoint on disk remains loadable byte-for-byte.
+"""Centralizes checkpoint save/load for the distinct on-disk schemas that used
+to be hand-rolled (build net, torch.load, load_state_dict, optional
+optimizer-migration guard) at every call site across rl/league.py and
+rl/league_runner.py.
 
-Four schemas, four helper pairs (deliberately NOT unified into one signature
+Two schemas, two helper pairs (deliberately NOT unified into one signature
 -- the shapes are genuinely different):
 
   - deck checkpoint (save/load_deck_checkpoint): one file per net,
@@ -15,19 +13,18 @@ Four schemas, four helper pairs (deliberately NOT unified into one signature
   - snapshot (save/load_snapshot): rl.league.LeaguePool's frozen historical
     opponent, {"state_dict":, "trunk_hidden":, optional "mulligan_state_dict":,
     optional "mulligan_hidden":}.
-  - shared/frozen stack (save/load_frozen_stack): {"shared": state_dict,
-    "vocab_size":, "d_model":} -- shared_stack_frozen.pt, written once by
-    run_pretrain.py --freeze and read back by rl.league_runner's own
-    (higher-level, net-building) load_frozen_stack function.
-  - pretrain checkpoint (save/load_pretrain_checkpoint): run_pretrain.py's
-    own single combined file for the WHOLE roster's throwaway heads plus the
-    shared stack together -- one file for everyone, not one file per net, so
-    it gets its own pair rather than being forced into deck checkpoint's shape.
 
-The snapshot/frozen-stack loaders return the raw saved dict rather than
-building the net themselves: both callers need a value FROM the dict
-(trunk_hidden, vocab_size/d_model) to know what shape to construct before
-load_state_dict can run, so net-building stays with the caller.
+There were two more until 2026-08-17, both belonging to the pretrain-then-
+freeze design that per-deck encoders replaced: a shared/frozen-stack pair
+(shared_stack_frozen.pt) and a combined pretrain checkpoint holding the whole
+roster's throwaway heads plus the one shared stack. Neither has a writer any
+more -- a DeckNetwork's encoder is a registered child, so it rides along in
+the deck checkpoint and snapshot schemas above with no separate file.
+
+The snapshot loader returns the raw saved dict rather than building the net
+itself: the caller needs trunk_hidden FROM the dict to know what shape to
+construct before load_state_dict can run, so net-building stays with the
+caller.
 """
 import os
 import time
@@ -55,30 +52,6 @@ def _save_with_retry(obj, path):
             if attempt == _SAVE_RETRY_ATTEMPTS - 1:
                 raise
             time.sleep(_SAVE_RETRY_BASE_DELAY * (2 ** attempt))
-
-
-_SHARED_STACK_PREFIX = "shared_stack."
-
-
-def strip_shared_stack(state_dict):
-    """Drops the embedded `shared_stack.*` copy every checkpoint written before
-    2026-08-13 carries.
-
-    DeckNetwork/MulliganNet used to REGISTER the shared perception stack as a
-    child module, so `net.state_dict()` bundled a full copy of it -- 37 of the
-    51 keys in a live.pt. They now hold it as a plain reference
-    (`object.__setattr__`), so a fresh state_dict has no such keys and a
-    strict load_state_dict would reject an old file for having them.
-
-    Stripping happens in the LOADERS below rather than at each call site
-    precisely because every reader routes through them: live.pt, mulligan.pt,
-    and both halves of a snapshot. Forward-compatible -- a no-op on any
-    checkpoint written after the change.
-
-    Dropping these is lossless: every copy on disk is byte-identical to the one
-    frozen stack (`shared_stack_frozen.pt`), which the caller loads separately
-    and passes in. It was never independent state."""
-    return {k: v for k, v in state_dict.items() if not k.startswith(_SHARED_STACK_PREFIX)}
 
 
 def load_optimizer_if_present(optimizer, ckpt, key="optimizer"):
@@ -117,7 +90,7 @@ def load_deck_checkpoint(path, net, optimizer=None):
     if not os.path.exists(path):
         return False
     ckpt = torch.load(path, weights_only=True)
-    net.load_state_dict(strip_shared_stack(ckpt["net"]))
+    net.load_state_dict(ckpt["net"])
     if optimizer is not None:
         load_optimizer_if_present(optimizer, ckpt)
     return True
@@ -143,58 +116,7 @@ def load_snapshot(path):
     mulligan_state_dict/mulligan_hidden) -- unlike load_deck_checkpoint, does
     NOT build the net itself: the caller needs trunk_hidden to construct a
     DeckNetwork of the right shape BEFORE state_dict can be loaded into it
-    (see rl.league.LeaguePool.load_snapshot_agent).
-
-    Both weight entries are passed through strip_shared_stack, so a snapshot
-    written while the stack was still a registered child module still loads
-    into a net that no longer expects those keys."""
-    saved = torch.load(path, weights_only=True)
-    saved["state_dict"] = strip_shared_stack(saved["state_dict"])
-    if "mulligan_state_dict" in saved:
-        saved["mulligan_state_dict"] = strip_shared_stack(saved["mulligan_state_dict"])
-    return saved
-
-
-def save_frozen_stack(path, shared, vocab_size, d_model):
-    """Writes the shared perception stack's frozen weights to path as
-    {"shared": state_dict, "vocab_size":, "d_model":} -- shared_stack_frozen.pt's
-    schema, written once by run_pretrain.py --freeze."""
-    _save_with_retry({"shared": shared.state_dict(), "vocab_size": vocab_size, "d_model": d_model}, path)
-
-
-def load_frozen_stack(path):
-    """Returns the raw saved dict (shared state_dict, vocab_size, d_model) --
-    does NOT build the SetTransformer itself: the caller needs vocab_size/
-    d_model to validate compatibility (see rl.league_runner's own
-    load_frozen_stack, which wraps this) before constructing one of the
-    right shape."""
-    return torch.load(path, weights_only=True)
-
-
-def save_pretrain_checkpoint(path, shared, opt_shared, nets, head_opts, session, vocab_size, d_model):
-    """Writes run_pretrain.py's own single combined checkpoint (every pool
-    deck's throwaway head net + optimizer, plus the ONE shared stack + its
-    optimizer, together in one file) -- genuinely a different shape from
-    save_deck_checkpoint's one-file-per-net schema, so it isn't forced into
-    that one. nets/head_opts are {deck_name: net/optimizer} dicts, one entry
-    per pool deck."""
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    _save_with_retry({
-        "shared": shared.state_dict(), "opt_shared": opt_shared.state_dict(),
-        "nets": {name: net.state_dict() for name, net in nets.items()},
-        "head_opts": {name: opt.state_dict() for name, opt in head_opts.items()},
-        "session": session, "vocab_size": vocab_size, "d_model": d_model,
-    }, path)
-
-
-def load_pretrain_checkpoint(path):
-    """Returns the raw saved dict, or None if path doesn't exist yet (a
-    fresh pretrain run, nothing to resume). The caller (run_pretrain.py)
-    still owns the roster/vocab-compatibility asserts and the per-net/
-    per-optimizer load_state_dict calls, since those need its own live nets/
-    optimizers/deck_names to load into and validate against."""
-    if not os.path.exists(path):
-        return None
+    (see rl.league.LeaguePool.load_snapshot_agent)."""
     return torch.load(path, weights_only=True)
 
 
