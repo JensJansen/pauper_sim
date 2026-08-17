@@ -1,25 +1,34 @@
 {
   "_note": "The full 11-deck league (checkpoints/league/). max_batch_size removed 2026-07-31 -- the doubling ladder's own safety property (never jump from a small verified batch to a huge one) is now enforced by whatever repeatedly re-invokes run_league.py and health-checks between calls (the /train skill, or the webapp's auto-escalation), not a separate hand-picked ceiling.",
-
   "_brought_current": "UPDATED 2026-08-16. This file had drifted badly: it predated all of Wave 2a and carried no games_per_iteration (so it would have silently used max(1, n_workers)=6 instead of the validated 24), checkpoint_opponent_rate 0.0, no pfsp_power, no gauntlet, and total_games 3000. Running the main league on it would have trained under mechanics nothing had ever validated -- exactly the stale-config trap the /train skill warns about. Every run-mechanics field below is now copied from run_default.json, the config all four 2026-08 experiments used. tests/test_run_league.py pins that they stay in sync.",
-
   "_why_now": "The 4-deck sub-league plateaus by ~4,000 games/deck and seven hypotheses for that plateau have been tested and falsified (RL_METHODOLOGY_PLAN.md sections 1A.5-1A.14). The two survivors are the frozen encoder and the META ITSELF: section 1A.5 measured that three of four matchups in the sub-league are near-deterministic (win rates 2.6%-97%), so PFSP can only redistribute games, never create competitive ones. Eleven decks gives every deck ten opponents instead of three, which is the direct test of that -- and it needs NO re-pretrain, because run_pretrain.py calls build_pool() with no roster restriction, so the frozen stack was already trained across all 11 decks (500 games/deck x 11) and the vocab already spans them.",
-
-  "_measurement": "gauntlet_league_name points at the 4-deck baseline. vs_gauntlet will report for the four OVERLAPPING decks (rakdos_madness, dmir_terror, elves, mono_red_rally) and is a documented no-op for the other seven, which have no checkpoint there. That preserves a common external reference for a third of the roster, which matters because sections 1A.11-1A.12 established that within-league elo-vs-own-history does not measure strength in either direction and must never be used alone. Both populations train from the same unchanged shared_stack_frozen.pt, satisfying _run_eval_vs_gauntlet's precondition -- do NOT re-freeze the stack while this run is the thing being measured.",
-
-  "_what_would_count": "If the plateau is the sub-league meta's structure, this run should show (a) a materially less degenerate matchup distribution in opponent_stats.json -- the sub-league's decks spent ~50% of training in matchups they win <8% or >82% of -- and (b) continued improvement past the ~4,000 games/deck point where every 4-deck run went flat. If it plateaus at the same point anyway, the meta is NOT the ceiling and the frozen encoder is what remains, which then justifies the ~9h of a much larger re-pretrain.",
-
+  "_measurement": "SUPERSEDED 2026-08-16 by _no_reference_yet below -- kept only as the record of how the OLD-stack run was measured. It read: vs_gauntlet reports for the four decks overlapping the 4-deck baseline and is a no-op for the other seven. That held while both populations shared a frozen stack. After the re-freeze it does NOT: the guard now suppresses the check entirely.",
+  "_what_would_count": "ANSWERED, and the answer was no (RL_METHODOLOGY_PLAN.md section 1A.15). The 11-deck run on the old stack did show (a) -- degenerate-matchup share fell 44.9% -> 38.5%, with dmir 58.6 -> 35.3 and elves 55.8 -> 40.1 -- but NOT (b): vs_gauntlet went 27.5 / 50.0 / 56.25 / 46.25 across cum 984 / 3,984 / 7,224 / 10,224, peaking around 7,000 and settling into the same band the 4-deck arms occupied (mean from cum 3,984 on: 11-deck 50.8%, 4-deck 51.6%). A less degenerate matchup distribution did not raise the ceiling. THIS run's question is different: does a cross-deck pretrained encoder break that band?",
   "league_name": "league",
-  "roster": ["mono_red_madness", "rakdos_madness", "spy_combo", "boggles", "monster_tron", "dmir_terror", "elves", "grixis_affinity", "jund_wildfire", "mono_blue_terror", "mono_red_rally"],
-  "total_games": 8000,
-
+  "roster": [
+    "mono_red_madness",
+    "rakdos_madness",
+    "spy_combo",
+    "boggles",
+    "monster_tron",
+    "dmir_terror",
+    "elves",
+    "grixis_affinity",
+    "jund_wildfire",
+    "mono_blue_terror",
+    "mono_red_rally"
+  ],
+  "total_games": 12000,
   "snapshot_every_games": 200,
   "n_workers": 6,
   "games_per_iteration": 24,
   "pfsp_power": 0.5,
   "checkpoint_opponent_rate": 0.15,
   "pfsp": true,
-
   "gauntlet_league_name": "4_deck_subleague_test",
-  "heuristic_decks": ["mono_red_rally"]
+  "heuristic_decks": [
+    "mono_red_rally"
+  ],
+  "_newstack_note": "FRESH START 2026-08-16 on a NEW frozen shared stack. The previous stack was pretrained on 500 games/deck of MIRROR-ONLY self-play; this one has 2,000 games/deck at ~93% CROSS-DECK pairings (run_pretrain --cross-deck), because the encoder had never once encoded a board with two different decks' cards on it while ~10/11 of real league games are exactly that. Freezing invalidated every prior checkpoint, so all six old-stack populations were moved to checkpoints/archive_oldstack_2026-08-16/ rather than deleted -- they remain the evidence for RL_METHODOLOGY_PLAN.md sections 1A.5-1A.14. The old stack itself is preserved at checkpoints/shared_stack_frozen.pt.pre_bigpretrain_2026-08-16, so those populations stay loadable and every earlier comparison stays reconstructible.",
+  "_no_reference_yet": "gauntlet_league_name still points at 4_deck_subleague_test, which now lives in the archive and was trained against the OLD stack. league_runner.stack_id_matches (Wave 1 item 1.4) detects that and makes _run_eval_vs_gauntlet a warn-and-return-None no-op, so vs_gauntlet will be SILENT rather than reporting confounded numbers -- the guard doing exactly its job. This run therefore has NO common external reference until a twin is trained on the new stack, which is the real cost of the freeze. Judge it on its own snapshot round robin (analysis/run_snapshot_round_robin.py), and remember sections 1A.11-1A.12: within-league elo does not measure strength in either direction, so the question it CAN answer is the shape one -- does the series keep rising past ~7,000 games/deck, where every population on the old stack flattened into a ~51% band?"
 }
