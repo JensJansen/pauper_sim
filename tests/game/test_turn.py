@@ -163,22 +163,23 @@ def test_real_two_player_game_through_actual_cards():
         if state.pending_resolution is not None:
             # Only ever a pay_cost here now (paying Lightning Bolt's {R}) --
             # discard (above) is handled regardless of whose turn it is.
-            # Float-first: a tap floats mana into the pool via a top-level mana
-            # ability BEFORE the cast (below); during payment there is only pool
-            # mana to spend.
-            color = mana.pool_spend_options(state)[0]
-            return lambda: mana.execute_pool_spend(state, color)
+            # Cast-then-pay (601.2f/g): the spell is announced first, so THIS is
+            # the window where mana gets produced -- tap a source when the pool
+            # can't cover the remainder yet, then spend what's floating.
+            options = mana.pool_spend_options(state)
+            if options:
+                return lambda: mana.execute_pool_spend(state, options[0])
+            mtn = next((p for p in state.battlefield if p.card_def.name == "Mountain" and not p.tapped), None)
+            return (lambda: mana.activate_mana_source(state, mtn)) if mtn is not None else None
         if state.lands_played_this_turn == 0 and any(c.name == "Mountain" for c in state.hand):
             return lambda: play_land_from_hand(state, registry.CARD_DEFS["Mountain"])
         if _bolts_available(state) > 0:
+            # plan_payment now counts untapped sources as well as the pool, so
+            # no pre-float step is needed -- announce, then pay above.
             if mana.plan_payment(state, bolt_def.cast_cost) is not None:
                 def _cast_bolt():
                     mana.begin_pay_cost(state, bolt_def.cast_cost, on_complete=lambda s: push_to_stack(s, bolt_def, bolt_resolve))
                 return _cast_bolt
-            # Can't pay yet -- float {R} from an untapped Mountain first (float-first).
-            mtn = next((p for p in state.battlefield if p.card_def.name == "Mountain" and not p.tapped), None)
-            if mtn is not None:
-                return lambda: mana.activate_mana_source(state, mtn)
         return None  # Pass -- resolves the stack if non-empty, else advances the phase
 
     state = run_multiplayer_game(
@@ -679,22 +680,50 @@ def test_mana_floated_in_real_end_step_swept_same_turn():
     assert state.players[0].mana_pool_single_pip == {}  # cleared alongside mana_pool
 
 
-def test_mana_ability_illegal_during_cleanup():
-    # AUTHORIZED SIMPLIFICATION (owner-approved 2026-08-10): a gate-free
-    # mana ability (605.1a/605.3b -- legal in ANY OTHER priority window) is
-    # specifically revoked while state.in_cleanup, even though the source
-    # itself remains a perfectly ordinary, otherwise-untapped Mountain --
-    # ground truth (game.mana_ability_options) still lists it, only the
-    # drl_env-facing legal() gate additionally checks in_cleanup.
+def test_speculative_mana_ability_is_main_phase_only():
+    # AUTHORIZED SIMPLIFICATION (owner-approved 2026-08-17, see
+    # drl_env._actions_mana._mana_timing_legal): SPECULATIVE floating -- a mana
+    # ability activated with no payment open -- is restricted to the active
+    # player's own main phase. Real 605.1a/605.3b allows it in any priority
+    # window. Payment-time activation (601.2f) stays legal in every phase and is
+    # covered by test_mana_ability_legal_mid_pay_unless.
+    #
+    # This REPLACES the old test_mana_ability_illegal_during_cleanup and its own
+    # separate 2026-08-10 simplification (mana abilities revoked while
+    # state.in_cleanup, so floated mana could not dodge the burn signal there).
+    # Cleanup is not a main phase and no payment is open in it, so the new rule
+    # already excludes it -- the flag check is gone, one deviation fewer, and the
+    # cleanup case is asserted below as a consequence rather than a special case.
     state = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
     mountain = Permanent(registry.CARD_DEFS["Mountain"])
     state.battlefield = [mountain]
     legal = _mana_ability_legal("Mountain", None)
-    assert legal(state)  # untapped, not in cleanup -- legal as normal
-    assert ("Mountain", None) in mana.mana_ability_options(state)  # ground truth agrees
+
+    # Ground truth (game.mana_ability_options) says the source is available in
+    # every case below -- only the drl_env-facing timing gate differs, which is
+    # what makes this a restriction on the ACTION SPACE, not on the engine.
+    for phase in (Phase.MAIN1, Phase.MAIN2):
+        state.phase = phase
+        assert legal(state), f"speculative float must be legal in {phase}"
+        assert ("Mountain", None) in mana.mana_ability_options(state)
+
+    for phase in (Phase.UPKEEP, Phase.DRAW, Phase.DECLARE_ATTACKERS,
+                  Phase.COMBAT_DAMAGE, Phase.END):
+        state.phase = phase
+        assert not legal(state), f"speculative float must be illegal in {phase}"
+        assert ("Mountain", None) in mana.mana_ability_options(state), "source availability is unchanged"
+
+    # Not the opponent's main phase either -- "the ACTIVE player's own main
+    # phase" is turn ownership, not merely the phase.
+    state.phase = Phase.MAIN1
+    state.active_idx = 1
+    assert not legal(state), "the non-turn player may not speculatively float in the turn player's main phase"
+
+    # Cleanup, now a consequence of the phase rule rather than its own flag.
+    state.active_idx = 0
     state.in_cleanup = True
-    assert not legal(state)  # blocked purely by the flag, not by source availability
-    assert ("Mountain", None) in mana.mana_ability_options(state)  # ground truth is unchanged -- the source itself is still available
+    state.phase = Phase.END
+    assert not legal(state)
 
 
 def test_madness_decision_from_forced_cleanup_discard_still_resolves():

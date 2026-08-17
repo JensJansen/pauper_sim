@@ -6,9 +6,15 @@ filled in during that discussion, then the work is done against it.
 
 Status: `[ ]` not started · `[~]` in progress · `[x]` done
 
+**Order of work (changed 2026-08-17): 2 → 3 → 4 → 1.** Cleanup moves to the end.
+The first pass of it is already done and committed, but the rest is deferred until
+items 2–4 have landed — each of them rewrites code and docs that a cleanup pass
+would otherwise have to touch twice. Item numbers below are left as they were so
+existing commit messages keep pointing at the right thing.
+
 ---
 
-## 1. `[~]` Cleanup
+## 1. `[~]` Cleanup — **deferred to last**
 
 Repo-wide cleanup pass.
 
@@ -64,19 +70,222 @@ Move from pay-then-cast to the real rule 601 sequence: announce the spell, choos
 modes/targets/X, *then* activate mana abilities and pay. Floating mana is permitted
 only during main phases.
 
-**Goals:** _(to be defined with owner)_
+### Decided (owner, 2026-08-17)
 
-**Open questions:**
-- "Floating allowed only in main phases" is a deviation from real MTG (mana empties
-  at every step/phase end, and floating is legal in any phase). Confirm this is an
-  intentional owner-authorized simplification / action-space restriction, and it gets
-  an `# AUTHORIZED SIMPLIFICATION:` marker — or whether the intent is instead that the
-  *agent* is only offered the choice to float in main phases.
-- Scope of the action-space change: the mana subdecision state machine
-  (`choose_target` → `choose_color`), `action_bridge`, `_actions_mana`, and every
-  legality read.
-- Does this invalidate the frozen stack / existing checkpoints (action-space shape
-  change ⇒ likely a fresh start)?
+- **Option 2.** Payment-time mana activation (CR 601.2f) is fully faithful and works in
+  *every* phase. Only **speculative** floating — activating a mana ability with no
+  payment in progress — is restricted, to the **active player's own main phase**
+  (`phase ∈ {MAIN1, MAIN2}` *and* `active_idx == turn_player_idx`). This is the sole
+  authorized deviation and carries an `# AUTHORIZED SIMPLIFICATION:` marker.
+- **Restore CR 500.4 fully.** The `_COMBAT_PHASES` "combat is one mana window"
+  exception is removed; mana dissipates between every step and phase.
+- **Cleanup needs no special case.** Cleanup is not a main phase, so the three
+  `not state.in_cleanup` mana checks are subsumed by the new gate and are deleted
+  along with their own `AUTHORIZED SIMPLIFICATION` marker.
+- **Mana-burn penalty stays wired.** Speculative floating still exists in main phases,
+  so over-floating is still a real, punishable misplay — just a much narrower one.
+- **Uniform per-action gate (owner's formulation, adopted over the two special-case
+  guards originally planned):** every action taken while a payment is open is legal
+  only if the payment is *still completable afterwards*. This covers taps, filters and
+  both stages of Saruli's subdecision with one rule, and subsumes
+  `_filter_would_strand_payment` entirely.
+- **Saruli Caretaker is excluded from the affordability count.** Its cost taps another
+  creature that may itself be a mana source, so counting it as free supply overstates
+  (in `spy_combo`, Saruli + Llanowar Elves is 1 unit, not 2 — using Saruli *consumes*
+  the Elves). Exclusion is conservative and safe; the agent can still float Saruli by
+  hand in its own main phase. Recorded as a known false negative.
+
+Net effect on the mandate ledger: **two authorized deviations removed, one added.**
+
+### Why the solver must be exact, not greedy
+
+A greedy solver is *sound but incomplete*: if it finds a way to pay, that way is real,
+so it never strands — but it says "no" to costs that are genuinely payable, hiding a
+legal cast, which is itself a faithfulness violation. The pre-float-first greedy needed
+two passes of colour-preference heuristics to be even that good.
+
+The uniform per-action gate does **not** rescue an unsound cast check: if legality says
+"castable" when it is not, every subsequent action fails its own gate, the mask goes
+all-False, and that is exactly the crash being avoided. So the cast check has to be
+sound on its own; and since the exact test is *shorter and cheaper* than the greedy one
+here, it should also be complete.
+
+### What the investigation found
+
+- **The engine is float-first**, not an approximation of 601.2: `begin_pay_cost` is
+  entered *only* when the pool already covers the cost, and "no source is ever tapped
+  during payment" ([mana.py:186](src/game/mana.py#L186)).
+- **CR 500.4 is already correct** — `_empty_mana_pools` empties both players' pools at
+  every step/phase end. There is no mana burn (the pre-2010 life-loss rule is
+  correctly absent); `mana_mistake_burn` is an RL signal only.
+- **601.2f already works mechanically.** Mana abilities carry no `_pending_gate` and
+  `legal_action_mask` calls every closure unconditionally, so a mana ability is
+  *already* legal during an open `pay_cost`. Nothing new is needed to allow tapping
+  mid-payment.
+- **Every affordability gate in the codebase funnels through one function**,
+  `game.plan_payment(state, cost)` — ~25 call sites, all of the form
+  `plan_payment(...) is not None`. Changing what that function *means* is the change.
+- **A prior design had a real tap-solver** (pre-`68e4f64`), removed by float-first
+  because it *auto-tapped* — it took the decision away from the agent. The synthesis
+  wanted here is: solver for **legality only**, agent still chooses every tap.
+- **The catalog is small**: 32 mana specs — 17 `fixed`, 12 `flexible`, and one each of
+  `count` / `count_all` / `fixed_multi` / `tron`. Every source produces a fixed
+  multiset except `flexible`, which produces one symbol from a colour set. Wall of
+  Roots is once-per-turn (`used_this_turn`), so no source is repeatable.
+
+### Two new hazards the change introduces (both reachable in the real decklists)
+
+Float-first guarantees "a payment, once begun, can always be completed" — there is no
+*Abandon payment* action, so an unpayable payment is an all-False mask and a crash.
+Letting a payment begin before the mana exists creates two ways to break it:
+
+1. **Conduit Pylons** is *both* a filter and a mana source (`fixed C`). Filtering taps
+   it, removing a unit the affordability check had counted. `monster_tron`.
+   The existing `_filter_would_strand_payment` does **not** catch this — its reasoning
+   assumes the pool size is invariant, which is true, but the *source* it taps is now
+   part of affordability.
+2. **Saruli Caretaker**'s extra cost taps another creature, which may itself be a mana
+   source, and its colour is chosen afterwards — so a wrong colour choice can strand a
+   coloured requirement. `spy_combo` (which also runs Overgrown Battlement, Wall of
+   Roots and Lotus Petal, so the tapped creature is very often a mana source).
+
+### Goals
+
+1. `plan_payment` means "pool **plus** mana still available from untapped sources",
+   checked **exactly** — no false positives (which strand and crash) and no false
+   negatives (which hide a legal cast, a faithfulness violation).
+2. Agent keeps every tap decision. The solver decides *whether* a cost is payable,
+   never *how* it is paid.
+3. Speculative floating restricted to main phases; payment-time activation unrestricted.
+4. No stranding remains reachable: every mid-payment choice that can reduce
+   affordability is gated on the payment staying completable.
+5. Net simplification, not net addition — the mana-burn reward machinery exists to
+   punish a misplay that this change makes structurally impossible.
+
+### File-by-file plan
+
+**`src/game/mana.py` — the only file with genuinely new logic.**
+
+- `available_mana_units(state)` → `list[frozenset[str]]`. One entry per mana symbol the
+  active player could still put toward a cost: each floating pool pip as `{c}`, plus
+  each symbol every untapped/available source would produce. `flexible` → one entry
+  with its whole colour set; `fixed_multi`/`tron`/`count`/`count_all` → one entry per
+  symbol; Utopia Sprawl's bonus → extra entries; Abundant Growth's grant widens the
+  land's own entry. Reuses the existing per-permanent gates (`tapped`,
+  `tap_summoning_locked`, `mana_extra_available`).
+- `can_pay(units, cost)` → bool. Exact, via the deficiency form of Hall's theorem:
+  feasible **iff** `len(units) >= total pips needed` **and**, for every non-empty
+  subset `S` of the colours actually demanded, `sum(need[c] for c in S) <=` the number
+  of units whose colour set meets `S`. At most 6 demanded colours ⇒ ≤63 subsets, and
+  real costs demand 1–3 ⇒ ≤7. Exact both ways, which is the requirement: a false
+  positive strands the payment and crashes; a false negative hides a legal cast.
+- `plan_payment(state, cost)` becomes `can_pay(available_mana_units(state), cost)`,
+  keeping its truthy-or-`None` return so **all ~25 call sites are untouched**.
+- `pool_can_pay` stays as-is — still the right question for "pool alone", still
+  directly tested, and now one input among several.
+- `payment_in_progress(state)` — one-liner (`pending_resolution["kind"] == "pay_cost"`)
+  shared by the three main-phase gates below, so the rule lives in one place.
+- Per-sweep cache for `available_mana_units`, cleared by the existing
+  `reset_mana_cache()` that `legal_action_mask` already calls before and after every
+  sweep — same lifecycle as `_enchanting_cache`.
+- Docstrings: `begin_pay_cost`, `plan_payment`, `pool_can_pay` and the module header
+  all currently assert float-first semantics and must be rewritten.
+
+**`src/drl_env/_actions_mana.py` — the action-space restriction and one guard.**
+
+- `_mana_ability_legal`, `_mana_extra_choose_legal`, `_filter_mana_legal`: add
+  `payment_in_progress(state) or state.phase in SORCERY_SPEED_PHASES`. This is the
+  `# AUTHORIZED SIMPLIFICATION` and carries the marker.
+- `_filter_would_strand_payment`: replace its bespoke colour-only reasoning with
+  "rebuild the units list as it would be *after* this conversion — pool pip removed,
+  output unit added, **the filter source's own mana units removed because it taps** —
+  and re-ask `can_pay`". Strictly simpler than what's there now, catches the Conduit
+  Pylons hazard the current version misses, and subsumes its `choose_cast_copy`
+  special case.
+
+**`src/game/resolution/handlers_casting.py` — the Saruli guard.**
+
+- `begin_mana_subdecision` / `execute_mana_subdecision_target`: while a payment is in
+  progress, only offer creatures whose tapping leaves the payment completable.
+- `begin_mana_color_choice`'s `can_produce`: same, per colour. Both reuse `can_pay`.
+
+**`src/drl_env/_actions_cast.py`, `_actions_cast_altzone.py`, `_actions_resolution.py`**
+
+- **No logic changes** — they all route through `plan_payment`. Comment/docstring
+  updates only, where text asserts pool-only semantics (`_delve_execute`'s "pure pool
+  spend", `_pay_unless_pay_legal`, the alt-cost notes).
+- Behavioural note, no code: `pay_unless` (Ward, Spell Pierce) currently can only be
+  paid from already-floating mana. CR 605.3a explicitly allows activating mana
+  abilities "whenever a rule or effect asks for a mana payment", so this change fixes
+  an existing deviation for free.
+
+**`src/drl_env/_actions_table.py`**
+
+- The 16-line "Float-first: NO 'Abandon payment'" block is now wrong in its premise
+  ("affordability was checked exactly … before the payment began, so spending alone can
+  never strand"). Rewrite to state the new invariant and both guards.
+
+**`src/game/turn.py`**
+
+- `_empty_mana_pools` — no change (500.4 is already right).
+- Two *consequences* to decide, not code I'd write unasked: the `_COMBAT_PHASES`
+  one-mana-window simplification becomes moot, and `_tally_mana_mistake` loses most of
+  its reason to exist. See the questions below.
+
+**Tests**
+
+- New in `tests/game/test_mana.py`: `can_pay` unit tests, adversarial —
+  `{G:2}` against `[{G,R},{R}]` must be **False**; `{G:1,R:1}` against `[{G,R},{G,R}]`
+  must be **True**; `{G:1,generic:1}` against `[{G}]` must be **False**.
+- New: cast-then-pay end to end — empty pool, untapped lands, cast is legal, tap
+  during the payment, spell resolves.
+- New: speculative float illegal outside a main phase; payment-time float legal in
+  every phase.
+- New: one regression per hazard (Conduit Pylons; Saruli tapping a mana creature).
+- Existing: catalog tests mostly pre-fill `state.mana_pool`, which still satisfies the
+  broader check, so most pass untouched. The ones that will flip are those asserting a
+  cast is *illegal* with an empty pool but untapped lands present — each needs review,
+  since some of those become correctly legal.
+
+**`src/rl/agent.py` — the stranded-payment bug report.**
+
+`_raise_all_false` already dumps both pools and every mana source. What it cannot show
+is **what the solver itself saw**, which is the only thing that localises a mask flaw.
+Add, for the `pay_cost` case specifically:
+
+- a distinct error message naming this failure — a stranded payment is a *legality-mask
+  bug*, not a generic unrepresentable state, and should never be confused with one;
+- the **original cost** the cast was gated on (stashed on the pending at
+  `begin_pay_cost`) beside the **remaining** cost now, so it is immediately visible
+  whether the solver was wrong at announce time or something consumed supply after;
+- `available_mana_units(state)` as the solver sees it *right now*, plus the `can_pay`
+  verdict against the remaining cost;
+- one line per battlefield permanent with a mana/filter spec giving the reason it is or
+  is not in that unit list — `tapped`, summoning-locked, `mana_extra_available` false,
+  or excluded as `mana_extra_choose`.
+
+Those four together separate the two possible causes: a **unit-construction** bug (a
+source wrongly counted or wrongly omitted) or a **`can_pay`** bug (the feasibility test
+itself). Without them the dump shows the board but not the model of the board, and the
+model is where the bug would be.
+
+**`src/game/turn.py` — priority during the cast window (verification, not a change).**
+
+Owner's requirement: no enemy action during a cast window, only once the spell is on
+the stack. **Already true, by construction** — a player who takes an action keeps
+priority (`_priority_round`, `active_idx` unchanged; only a Pass flips it), and Pass is
+illegal while a pending is open (`_pass_legal._pending_gate = _GATE_NO_PENDING`).
+`push_to_stack` fires in `_after_pay`, so the opponent's first chance to respond is
+after the spell is cast, per CR 601.2i/117.3c. Cast-then-pay lengthens that window a
+lot, so the invariant gets an explicit test rather than being left implicit.
+
+Also here: the `PRIORITY_ROUND_ACTION_CAP` exhaustion path drops an open pending. Its
+comment ("float-first has no undo … any mana already spent is gone") needs rewriting —
+under cast-then-pay a dropped payment abandons an *announced spell*, not just floated
+mana. The cap value (20) is left alone; flagged to watch for truncations in training.
+
+**Docs** — README's mana section, the module docstrings above, and
+`.claude/skills/train/SKILL.md`'s reward paragraph if the burn penalty is unwired.
 
 ---
 

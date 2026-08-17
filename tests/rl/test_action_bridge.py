@@ -337,25 +337,39 @@ def test_stranded_payment_filter_regression():
     filt_idx = next(i for i, (n, _l, _e) in enumerate(tron_table)
                     if n == "Filter Barrels of Blasting Jelly, paying G")
     st = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
+    # Speculative floating is the active player's own main phase only
+    # (drl_env._actions_mana._mana_timing_legal); a bare GameState has no
+    # phase at all, which would fail that gate before reaching what this
+    # test is actually about.
+    st.phase = game.turn.Phase.MAIN1
     st.battlefield = [Permanent(game.CARD_DEFS["Barrels of Blasting Jelly"])]
     st.mana_pool.update({"G": 1})
     # With no payment pending, converting the lone G is a perfectly legal choice.
     assert drl_env.legal_action_mask(st, tron_table)[filt_idx], "filter must stay legal with no payment pending"
-    # Mid-payment owing exactly {G} with exactly one G floating: converting it
-    # away would strand the payment -> must be masked ILLEGAL.
+    # Mid-payment owing exactly {G} with exactly one G floating. Barrels can
+    # output ANY of five colors, and one of them is G -- so the conversion
+    # itself is still perfectly safe (G in, G back out) and stays legal. What
+    # must not be reachable is the specific COLOR choice that strands, and that
+    # is where the guard now bites: one gate later, on exactly the wrong
+    # branch, instead of blanket-refusing a whole action that has a safe line.
     game.begin_pay_cost(st, {"G": 1}, on_complete=lambda s: None)
     assert st.pending_resolution["kind"] == "pay_cost" and st.pending_resolution["remaining"].get("G") == 1
-    assert not drl_env.legal_action_mask(st, tron_table)[filt_idx], (
-        "filter that would strand an in-progress payment must be masked illegal"
-    )
-    # A SPARE copy of the owed color is still convertible -- the guard rejects
-    # only conversions that provably break the payment, never useful ones.
-    st.mana_pool["G"] = 2
     assert drl_env.legal_action_mask(st, tron_table)[filt_idx], (
-        "converting a spare pip of the owed color must stay legal"
+        "a conversion with a safe output color available must stay legal"
     )
-    # And the payment is always completable from here (the invariant that matters).
-    assert "G" in game.pool_spend_options(st)
+
+    # Take it, and check the color stage offers ONLY the color that pays.
+    tron_table[filt_idx][2](st)
+    assert st.mana_subdecision["stage"] == "choose_color"
+    offered = {c for c in game.COLORS
+               if drl_env.legal_action_mask(st, tron_table)[
+                   next(i for i, (n, _l, _e) in enumerate(tron_table) if n == f"Produce {c}")]}
+    assert offered == {"G"}, (
+        f"only G can still pay the owed {{G}}; every other output would strand -- got {offered}"
+    )
+    # Non-empty by construction, which is the invariant that actually matters:
+    # the agent is never left with a payment it owes and no legal way to make it.
+    assert offered
 
 
 @pytest.mark.slow
@@ -462,21 +476,35 @@ def test_choose_cast_copy_percher_response():
 
 
 @pytest.mark.slow
-def test_choose_cast_copy_stranded_payment_regression():
-    # STRANDED-PAYMENT regression #2: the same stranding the pay_cost-only
-    # guard above already forbids can ALSO happen one step earlier, during
-    # choose_cast_copy itself -- 2 Bramble Wurms in the graveyard, activating
-    # the {2}{G} graveyard ability (legal: the pool already covers it), then
-    # filtering the floating {G} away WHILE still choosing which copy, before
-    # begin_pay_cost ever opens. game.resolution.handlers_casting.
-    # begin_choose_cast_copy's reserved_cost + drl_env._actions_mana.
-    # _filter_would_strand_payment's own choose_cast_copy branch forbid it.
+def test_no_mana_ability_during_a_casting_step_before_601_2f():
+    # CR 601.2f: mana abilities are activated at ONE point in the casting
+    # process -- after modes, X, delve and which-copy are settled and the total
+    # cost is known, immediately before paying. Not partway through choosing
+    # them. No player receives priority during 601.2, so the engine's otherwise
+    # correct "a mana ability is legal in ANY priority window" (605.1a/605.3b)
+    # simply does not apply mid-cast.
+    #
+    # This REPLACES an older regression that asserted the opposite -- that a
+    # filter stayed legal during choose_cast_copy and had to be individually
+    # guarded against stranding the reserved cost (2 Bramble Wurms in the
+    # graveyard, activate the {2}{G} graveyard ability, then filter the {G}
+    # away while still picking a copy). Refusing the whole window is both more
+    # faithful and strictly safer than guarding one action inside it, and it
+    # generalises: the same hole reappeared at choose_delve_amount, where every
+    # "Delve N" button re-checks affordability and a tap taken mid-choice could
+    # leave them ALL illegal (found live -- Gurmag Angler, black source tapped
+    # for blue after announcing).
     bw_def = game.CARD_DEFS["Bramble Wurm"]
     bw_a, bw_b = CardInstance(bw_def), CardInstance(bw_def)
     bw_me = PlayerState(on_the_play=True)
     bw_me.graveyard = [bw_a, bw_b]
     bw_me.battlefield = [Permanent(game.CARD_DEFS["Barrels of Blasting Jelly"])]
     bw_state = GameState(on_the_play=True, players=[bw_me, PlayerState(on_the_play=False)])
+    # Speculative floating is the active player's own main phase only
+    # (drl_env._actions_mana._mana_timing_legal); a bare GameState has no
+    # phase at all, which would fail that gate before reaching what this
+    # test is actually about.
+    bw_state.phase = game.turn.Phase.MAIN1
     bw_state.mana_pool.update({"C": 2, "G": 1})  # 2 C pays the generic, G pays the G -- plan_payment/pool_can_pay would say yes
     bw_decklist = game.parse_decklist_file("../data/monster_tron.txt")
     bw_table = drl_env.build_action_table(bw_decklist, game.EFFECT_REGISTRY)
@@ -491,11 +519,19 @@ def test_choose_cast_copy_stranded_payment_regression():
             s, bw_def.extra["gy_ability_cost"], on_complete=lambda s2: resolve_calls.append(inst)),
         reserved_cost=bw_def.extra["gy_ability_cost"],
     )
-    assert bw_state.pending_resolution["kind"] == "choose_cast_copy" and bw_state.pending_resolution["reserved_cost"] == {"generic": 2, "G": 1}
-    assert not drl_env.legal_action_mask(bw_state, bw_table)[bw_filt_idx], (
-        "filtering away the only G during choose_cast_copy must be masked illegal -- "
-        "the not-yet-open pay_cost is guaranteed to need it"
+    assert bw_state.pending_resolution["kind"] == "choose_cast_copy"
+    # The cast is committed but 601.2f has not been reached: NO mana ability is
+    # legal, so there is nothing here that could consume the mana the payment is
+    # about to need. Every mana row in the table, not just the filter -- the rule
+    # is about the window, not about one hazardous action inside it.
+    bw_mask = drl_env.legal_action_mask(bw_state, bw_table)
+    bw_mana_rows = [i for i, (n, _l, _e) in enumerate(bw_table)
+                    if n.startswith("Tap ") or n.startswith("Filter ")]
+    assert bw_mana_rows, "sanity: monster_tron must have mana rows for this to be testing anything"
+    assert not any(bw_mask[i] for i in bw_mana_rows), (
+        "no mana ability may be activated between announcing a cast and reaching 601.2f"
     )
+
     execute_pointer_choice(bw_state, bw_a)  # pick a copy -> begin_pay_cost opens, fully funded
     assert bw_state.pending_resolution["kind"] == "pay_cost"
     while bw_state.pending_resolution is not None:

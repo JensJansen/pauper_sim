@@ -103,22 +103,30 @@ from .effects.tokens import (
 )
 from .effects.triggers import promote_triggers_to_stack
 from .mana import (
+    CASTING_STEP_PENDING_KINDS,
     COLORS,
     POOL_COLORS,
     TRON_TYPES,
     activate_mana_source,
+    available_mana_units,
     begin_pay_cost,
+    can_pay,
     controls_all_tron_types,
     execute_pool_spend,
     float_mana,
     mana_ability_options,
     mana_output,
+    outstanding_cost,
+    payment_in_progress,
+    payment_survives,
     plan_payment,
     pool_can_pay,
     pool_spend_options,
     reset_mana_cache,
+    source_mana_units,
     spend_one_pip,
     tap_summoning_locked,
+    units_after,
 )
 from .registry import CARD_DEFS, EFFECT_REGISTRY, ENTERS_TAPPED_EFFECTS, derive_pending_kinds
 from .resolution import (

@@ -548,6 +548,10 @@ def test_mana_ability_options_cache_no_stale_leak():
     perf_state = GameState(on_the_play=True, players=[PlayerState(True)])
     perf_mtn = Permanent(game.CARD_DEFS["Mountain"])
     perf_state.battlefield = [perf_mtn]
+    # Speculative floating is main-phase-only (see _mana_timing_legal); the
+    # default GameState carries no phase at all, which would fail the timing
+    # gate before the cache this test is actually about ever gets consulted.
+    perf_state.phase = game.turn.Phase.MAIN1
     assert legal_action_mask(perf_state, perf_actions)[perf_tap_mountain]
     assert _actions_mana._mana_ability_options_cache is None  # cleared again once the sweep itself returns
     game.activate_mana_source(perf_state, perf_mtn)  # taps the only Mountain -- 0 untapped sources left
@@ -578,6 +582,11 @@ def test_saruli_caretaker_two_stage_mana_subdecision():
     bogle_2.slot = 2
     bogle_2.tapped = True  # already tapped -- would be excluded downstream, not relevant to this row's own aggregate legality
     state = GameState(on_the_play=True)
+    # Speculative floating is the active player's own main phase only
+    # (drl_env._actions_mana._mana_timing_legal); a bare GameState has no
+    # phase at all, which would fail that gate before reaching what this
+    # test is actually about.
+    state.phase = game.turn.Phase.MAIN1
     state.battlefield = [saruli, bogle_1, bogle_2]
 
     tap_idx = _action_index(saruli_actions, "Tap Saruli Caretaker")
@@ -628,6 +637,11 @@ def test_mana_filter_two_step_color_choice():
 
     barrels = Permanent(game.CARD_DEFS["Barrels of Blasting Jelly"])
     state = GameState(on_the_play=True)
+    # Speculative floating is the active player's own main phase only
+    # (drl_env._actions_mana._mana_timing_legal); a bare GameState has no
+    # phase at all, which would fail that gate before reaching what this
+    # test is actually about.
+    state.phase = game.turn.Phase.MAIN1
     state.battlefield = [barrels]
     state.mana_pool = {"U": 1}
 
@@ -696,6 +710,11 @@ def test_mana_filter_same_color_round_trip_erases_single_pip_tag():
     barrels = Permanent(game.CARD_DEFS["Barrels of Blasting Jelly"])
     forest = Permanent(game.CARD_DEFS["Forest"])
     state = GameState(on_the_play=True)
+    # Speculative floating is the active player's own main phase only
+    # (drl_env._actions_mana._mana_timing_legal); a bare GameState has no
+    # phase at all, which would fail that gate before reaching what this
+    # test is actually about.
+    state.phase = game.turn.Phase.MAIN1
     state.battlefield = [barrels, forest]
 
     game.activate_mana_source(state, forest)  # a real, avoidable single land tap
@@ -760,6 +779,11 @@ def test_mana_filter_mid_pay_cost_completes_without_disturbing_original_payment(
     tron_decklist = game.parse_decklist_file(str(DATA_DIR / "monster_tron.txt"))
     tron_actions = build_action_table(tron_decklist, game.EFFECT_REGISTRY)
     state = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
+    # Speculative floating is the active player's own main phase only
+    # (drl_env._actions_mana._mana_timing_legal); a bare GameState has no
+    # phase at all, which would fail that gate before reaching what this
+    # test is actually about.
+    state.phase = game.turn.Phase.MAIN1
     state.battlefield = [Permanent(game.CARD_DEFS["Barrels of Blasting Jelly"])]
     state.mana_pool.update({"G": 2})  # a SPARE green pip -- converting one away can't strand the {G} still owed
 
@@ -858,12 +882,20 @@ def test_mana_ability_legal_mid_pay_unless():
     pu_results = []
     game.begin_pay_unless(pu_state, 0, {"generic": 1}, lambda s, paid: pu_results.append(paid))
     assert pu_state.pending_resolution["kind"] == "pay_unless"
-    assert not legal_action_mask(pu_state, pu_actions)[pu_pay_idx]  # can't pay yet -- nothing floated
-    assert legal_action_mask(pu_state, pu_actions)[pu_tap_idx]  # but CAN float mana right now, mid-resolution
+    # No phase is set on this state at all, so nothing here is legal by way of
+    # the main-phase rule -- everything below is the PAYMENT window (605.3a's
+    # "whenever a rule or effect asks for a mana payment"), which is exactly
+    # what this test exists to pin.
+    assert legal_action_mask(pu_state, pu_actions)[pu_tap_idx]  # CAN tap right now, mid-resolution
+    # Payable BEFORE anything is floated: cast-then-pay counts the untapped
+    # Mountain, so the payer is not required to pre-float to be offered the
+    # choice. Under float-first this assertion read `not ...` -- that was the
+    # bug being fixed, not a property worth keeping.
+    assert legal_action_mask(pu_state, pu_actions)[pu_pay_idx]
 
     pu_actions[pu_tap_idx][2](pu_state)
     assert pu_state.pending_resolution["kind"] == "pay_unless"  # untouched by the tap
-    assert legal_action_mask(pu_state, pu_actions)[pu_pay_idx]  # now payable -- just floated it
+    assert legal_action_mask(pu_state, pu_actions)[pu_pay_idx]  # and still payable once floated
 
     pu_actions[pu_pay_idx][2](pu_state)
     while pu_state.pending_resolution is not None and pu_state.pending_resolution["kind"] == "pay_cost":
@@ -882,6 +914,11 @@ def test_mana_ability_legal_mid_any_pending_resolution():
     mid_mtn = Permanent(game.CARD_DEFS["Mountain"])
     mid_state.battlefield = [mid_mtn]
     mid_state.hand = [game.CARD_DEFS["Lightning Bolt"]]
+    # The discard here is an unrelated pending, NOT a payment, so this float is
+    # speculative and needs the main phase (_mana_timing_legal). The property
+    # being pinned -- a mana ability neither needs nor disturbs an unrelated
+    # open resolution -- is unchanged.
+    mid_state.phase = game.turn.Phase.MAIN1
 
     discard_completed = []
     game.begin_discard(mid_state, 1, False, on_complete=lambda s, cards: discard_completed.append(cards))
@@ -919,10 +956,18 @@ def test_mana_subdecision_does_not_hijack_the_other_seat():
     saruli.summoning_sick = False
     bogle = Permanent(game.CARD_DEFS["Slippery Bogle"])
     state = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
+    # Speculative floating is the active player's own main phase only
+    # (drl_env._actions_mana._mana_timing_legal); a bare GameState has no
+    # phase at all, which would fail that gate before reaching what this
+    # test is actually about.
+    state.phase = game.turn.Phase.MAIN1
     state.players[1].battlefield = [saruli, bogle]
 
-    # Seat 1 opens the subdecision while it is the active seat.
+    # Seat 1 opens the subdecision while it is the active seat. It must be seat
+    # 1's own turn too: speculative floating is the ACTIVE PLAYER's main phase,
+    # which is turn ownership, not just the phase (_mana_timing_legal).
     state.active_idx = 1
+    state.turn_player_idx = 1
     tap_idx = _action_index(actions, "Tap Saruli Caretaker")
     assert actions[tap_idx][1](state)
     actions[tap_idx][2](state)

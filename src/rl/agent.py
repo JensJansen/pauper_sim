@@ -206,13 +206,62 @@ def _raise_all_false(state, seat, deck_vocab=None):
             on_bf = any(b in p.battlefield for p in state.players)
             tok = (id(b) in ids) if isinstance(ids, set) else ids
             print(f"    blocker {b.card_def.name}#{b.slot} on_battlefield={on_bf} tokenized={tok}", flush=True)
-    # A STRANDED PAYMENT (pending_kind=pay_cost) is the one all-False shape whose
-    # cause is invisible from the pending alone: it depends on what mana is
-    # floating and what could still be tapped. Float-first mana has no "Abandon
-    # payment" action, so a payment the agent cannot finish is unescapable by
-    # construction -- meaning the mana state at this instant IS the bug report.
-    # Dump both pools, every mana source and whether it is still untapped, and
-    # what each untapped one could produce.
+    # A STRANDED PAYMENT is not a generic "the action space can't represent this
+    # state" -- it is specifically a LEGALITY-MASK BUG, and it is the one
+    # all-False shape whose cause is invisible from the pending alone. There is
+    # no "Abandon payment" action, so a payment the agent cannot finish is
+    # unescapable by construction; game.mana's STRANDING INVARIANT says this is
+    # unreachable, so reaching it means one of exactly two things is wrong:
+    #
+    #   (a) plan_payment said yes when it should have said no, so the cast was
+    #       never legal -- a bug in available_mana_units (a source counted that
+    #       shouldn't be, or counted as producing more than it can) or in
+    #       can_pay (the feasibility test itself);
+    #   (b) plan_payment was right, and something consumed supply AFTER the
+    #       announcement that its own gate should have refused -- a missing or
+    #       wrong payment_survives check on some mid-payment action.
+    #
+    # `announced` (stashed by begin_pay_cost) vs `remaining` separates them: if
+    # the units below cannot cover `announced` either, it is (a); if they could
+    # have then but cannot now, it is (b). Everything printed here is the
+    # SOLVER'S OWN VIEW, not just the board -- the board alone shows what is
+    # there, and the bug is in the model of what is there.
+    if pend and pend["kind"] == "pay_cost":
+        units = game.available_mana_units(state)
+        announced = pend.get("announced")
+        print("    --- STRANDED PAYMENT (legality-mask bug) ---", flush=True)
+        print(f"    announced_cost={announced} remaining_cost={pend['remaining']}", flush=True)
+        print(f"    solver units ({len(units)}) = {sorted(''.join(sorted(u)) for u in units)}", flush=True)
+        print(f"    can_pay(units, remaining)={game.can_pay(units, pend['remaining'])}"
+              f"  can_pay(units, announced)="
+              f"{game.can_pay(units, announced) if announced is not None else '<not recorded>'}", flush=True)
+        if announced is not None:
+            print("    => cause is (a) plan_payment/available_mana_units/can_pay was wrong at announce time"
+                  if not game.can_pay(units, announced)
+                  else "    => cause is (b) supply was consumed after announcement by an action whose"
+                       " payment_survives gate is missing or wrong", flush=True)
+        # Why each candidate source is or is not in that unit list. This is what
+        # localises (a): compare the board against the model of the board.
+        for p in state.battlefield:
+            spec = game.EFFECT_REGISTRY.get(p.card_def.effect_id, {})
+            if "mana" not in spec and "filter_mana" not in spec and "mana_extra_choose" not in spec:
+                continue
+            contributed = game.source_mana_units(state, p)
+            if contributed:
+                reason = f"IN as {[''.join(sorted(u)) for u in contributed]}"
+            elif p.tapped:
+                reason = "OUT: tapped"
+            elif game.tap_summoning_locked(state, p):
+                reason = "OUT: summoning-locked"
+            elif spec.get("mana_extra_choose") is not None:
+                reason = "OUT: mana_extra_choose (excluded by design -- its cost taps another source)"
+            elif spec.get("mana_extra_available") is not None:
+                reason = "OUT: mana_extra_available() false (already used this turn?)"
+            elif "mana" not in spec:
+                reason = "OUT: filter only, produces no mana of its own"
+            else:
+                reason = "OUT: no reason found -- SUSPECT, this is a source_mana_units bug"
+            print(f"      {p.card_def.name}#{p.slot}: {reason}", flush=True)
     print(f"    mana_pool(active)={dict(state.mana_pool)}", flush=True)
     for idx, player in enumerate(state.players):
         print(f"    seat{idx} pool={dict(player.mana_pool)} life={player.life_total}", flush=True)
@@ -235,6 +284,13 @@ def _raise_all_false(state, seat, deck_vocab=None):
                 used = p.flags.get("used_this_turn", p.tapped)
                 sources.append(f"{p.card_def.name}#{p.slot}{'(used)' if used else '(available)'}")
         print(f"    seat{idx} mana sources={sources}", flush=True)
+    if pend and pend["kind"] == "pay_cost":
+        raise RuntimeError(
+            f"STRANDED PAYMENT: owed {pend['remaining']} (announced {pend.get('announced')}) with no legal "
+            f"way to pay it. game.mana's STRANDING INVARIANT says this is unreachable, so either "
+            f"plan_payment allowed a cast it should not have, or a mid-payment action consumed supply "
+            f"without a payment_survives gate -- see the dump above for which."
+        )
     raise RuntimeError(f"all-False action mask for pending kind {pend['kind'] if pend else None!r}")
 
 

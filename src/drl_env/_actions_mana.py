@@ -22,21 +22,64 @@ def _cached_mana_ability_options(state):
     return _mana_ability_options_cache[1]
 
 
+def _mana_timing_legal(state):
+    """WHEN a mana ability may be activated at all. No pending-resolution gate
+    (605.1a/605.3b: a mana ability never uses the stack and doesn't require
+    priority), so this is purely a phase/payment question.
+
+    Two windows:
+      1. a payment is open (game.payment_in_progress) -- CR 601.2f/605.3a,
+         fully faithful, legal in EVERY phase. This is the window cast-then-pay
+         runs in: announce, then tap for what the cost turned out to be.
+      2. SPECULATIVE floating, with nothing to pay for.
+
+    # AUTHORIZED SIMPLIFICATION (owner-approved 2026-08-17): window 2 is
+    # restricted to the active player's own main phase. Real Magic allows
+    # floating in any step or phase in which you have priority. The restriction
+    # costs very little in practice -- holding mana up is leaving lands
+    # UNTAPPED, not floating, and paying for an instant on the opponent's turn
+    # goes through window 1 -- so what it actually removes is floating for a
+    # mana ability's SIDE EFFECT (Lotus Petal's sacrifice, Wall of Roots'
+    # counter) outside a main phase.
+    #
+    # This subsumes the old `not state.in_cleanup` check that every mana entry
+    # point used to carry (its own separate authorized simplification, added
+    # 2026-08-10 so floated mana could not dodge the burn signal in cleanup):
+    # cleanup is not a main phase, and no payment is open there, so both
+    # windows already exclude it and the special case is gone.
+
+    Neither window is open mid-cast, before 601.2f -- see
+    game.mana.CASTING_STEP_PENDING_KINDS. That case has to be refused ahead of
+    the main-phase test rather than folded into it, because a cast announced in
+    a main phase is still in a main phase while its modes/X/delve/copy are being
+    chosen."""
+    pending = state.pending_resolution
+    if pending is not None and pending["kind"] in game.CASTING_STEP_PENDING_KINDS:
+        return False
+    return (
+        game.payment_in_progress(state)
+        or (state.phase in game.turn.SORCERY_SPEED_PHASES and state.active_idx == state.turn_player_idx)
+    )
+
+
 def _mana_ability_legal(name, color):
-    """Float-first: a mana ability is legal in ANY OTHER priority window,
-    even mid-resolution of anything else (605.1a/605.3b -- it never uses
-    the stack and doesn't require priority to activate), so this has no
-    pending-resolution gate at all -- no `_pending_gate` attribute means
-    legal_action_mask always calls it, regardless of what's pending. Legal
-    iff a source named `name` can produce `color` right now
-    (game.mana_ability_options; color=None for fixed/tron/count sources),
-    AND state.in_cleanup is False -- AUTHORIZED SIMPLIFICATION (owner-
-    approved 2026-08-10, see state.in_cleanup's own docstring): real
-    605.1a/605.3b grants no exception from this during real Magic's own
-    cleanup step, but this engine's does, specifically so mana can never be
-    floated somewhere it can dodge the dense mana-burn reward signal."""
+    """Legal iff a source named `name` can produce `color` right now
+    (game.mana_ability_options; color=None for fixed/tron/count sources), the
+    timing window allows it (_mana_timing_legal), and tapping it that way leaves
+    an open payment still finishable (game.payment_survives).
+
+    No `_pending_gate` attribute, so legal_action_mask always calls this
+    regardless of what is pending -- which is what makes CR 601.2f work: a mana
+    ability is legal mid-payment, and under cast-then-pay that is the normal
+    way mana gets produced."""
     def legal(state):
-        return not state.in_cleanup and (name, color) in _cached_mana_ability_options(state)
+        if not _mana_timing_legal(state) or (name, color) not in _cached_mana_ability_options(state):
+            return False
+        source = _cached_mana_source(state, name, color)
+        if source is None:
+            return False
+        produced = [frozenset({symbol}) for symbol in game.mana_output(source, state, color)]
+        return game.payment_survives(state, game.units_after(state, tapped=[source], produced=produced))
     return legal
 
 
@@ -123,13 +166,19 @@ def _mana_extra_choose_legal(name):
     extra_pred off the resolved permanent's own card_def.effect_id (not a
     closed-over table-build-time value) -- same reasoning
     _mana_extra_choose_execute gives, handles a token-sourced name
-    identically to a real decklist name. AUTHORIZED SIMPLIFICATION
-    (owner-approved 2026-08-10, see state.in_cleanup's own docstring):
-    additionally illegal while state.in_cleanup, same as every other
-    gate-free mana entry point -- cleanup is the one priority window this
-    engine deliberately does revoke it from."""
+    identically to a real decklist name. Timing follows the shared
+    _mana_timing_legal rule, same as every other mana entry point.
+
+    Mid-payment a candidate only counts if tapping IT specifically leaves the
+    payment finishable (mana_extra_choose_target_safe). Checking that HERE, and
+    not only at the target-choice step, is load-bearing: the choose_target stage
+    takes EXCLUSIVE priority (legal_action_mask suppresses every other action
+    while a mana_subdecision is open), so activating with no safe target left
+    would produce an all-False mask with no way back -- the exact failure this
+    gate exists to prevent. Any-not-all: one safe candidate is enough to
+    activate, and the target step then offers precisely those."""
     def legal(state):
-        if state.in_cleanup:
+        if not _mana_timing_legal(state):
             return False
         p = _find_mana_extra_source(state, name)
         if p is None:
@@ -138,10 +187,31 @@ def _mana_extra_choose_legal(name):
         if extra_pred is None:
             return False
         return any(
-            q is not p and not q.tapped and extra_pred(q)
+            q is not p and not q.tapped and extra_pred(q) and mana_extra_choose_target_safe(state, q)
             for q in state.battlefield
         )
     return legal
+
+
+def mana_extra_choose_target_safe(state, target):
+    """Would tapping `target` as a mana_extra_choose source's additional cost
+    (Saruli Caretaker's "tap another untapped creature you control") leave an
+    open payment still finishable?
+
+    Net effect on supply: `target` loses whatever it could still have produced,
+    and one pip of any color arrives once the color stage resolves. Saruli
+    itself contributes nothing to remove -- game.source_mana_units deliberately
+    excludes mana_extra_choose sources from the count, for exactly the reason
+    this function has to exist.
+
+    So it is a SWAP, not a gain, and in spy_combo the creature tapped is usually
+    itself a mana source (Overgrown Battlement, Wall of Roots, Lotus Petal).
+    Tapping Overgrown Battlement with several defenders out trades several green
+    pips for one, which is a real loss and can strand a payment. Shared with
+    rl.action_bridge, which masks the target choice with this same predicate so
+    the two can never disagree about which creatures are on offer."""
+    return game.payment_survives(state, game.units_after(
+        state, tapped=[target], produced=[game.COLORS]))
 
 
 def _mana_extra_choose_execute(name):
@@ -168,9 +238,20 @@ def _mana_subdecision_color_legal(color):
     color is currently offerable (state.mana_subdecision["can_produce"],
     bound as a closure by that opener -- see game.resolution.
     begin_mana_color_choice's own docstring for what each real caller
-    binds). Generic: this function has no idea which ability is asking."""
+    binds). Generic: this function has no idea which ability is asking.
+
+    Mid-payment it must additionally not strand that payment. This is the LAST
+    gate in the chain and the one that actually pins the color down: everything
+    upstream (the filter's activation, Saruli's activation and target) had to
+    reason optimistically about a color the agent had not chosen yet, crediting
+    one pip of ANY of the offered colors. Choosing here is where that optimism
+    is cashed in, so choosing a color the remaining cost cannot use is refused
+    rather than allowed to strand -- the same shape as tapping a dual land for
+    the wrong half, which is how this class of bug was first found."""
     def legal(state):
-        return state.active_mana_subdecision["can_produce"](state, color)
+        if not state.active_mana_subdecision["can_produce"](state, color):
+            return False
+        return game.payment_survives(state, game.units_after(state, produced=[{color}]))
     legal._mana_subdecision_gate = "choose_color"
     return legal
 
@@ -235,26 +316,27 @@ def _filter_mana_legal(name, input_color):
     clobbering whatever pending_resolution is already open --
     state.pending_resolution is a single slot, not a stack; same reasoning
     state.mana_subdecision's own docstring gives) -- no pending-resolution
-    gate, per 605.1a. Legal iff an unused filter named `name` exists and
-    the pool already holds a floating `input_color` pip (any color,
-    including colorless, can pay a generic cost) -- AND, mid-payment,
-    converting that pip away must not strand the payment (see
-    _filter_would_strand_payment). Uses the sweep-scoped
-    _cached_filter_source cache, not a fresh scan -- this legal() runs once
-    per (source, input_color) row, POOL_COLORS-many per source now instead
-    of POOL_COLORS x len(colors). AUTHORIZED SIMPLIFICATION (owner-approved
-    2026-08-10, see state.in_cleanup's own docstring): additionally illegal
-    while state.in_cleanup, same as every other gate-free mana entry
-    point."""
+    gate, per 605.1a. Legal iff the timing window allows a mana ability at
+    all (_mana_timing_legal), an unused filter named `name` exists, the pool
+    already holds a floating `input_color` pip (any color, including
+    colorless, can pay a generic cost), and converting that pip away would
+    not strand an open payment (_filter_would_strand_payment). Uses the
+    sweep-scoped _cached_filter_source cache, not a fresh scan -- this
+    legal() runs once per (source, input_color) row, POOL_COLORS-many per
+    source now instead of POOL_COLORS x len(colors).
+
+    A filter needs a floating pip to convert, so outside a payment it is
+    reachable only in a main phase anyway -- the timing gate is what makes
+    that a stated rule rather than an accident of when the pool is non-empty."""
     def legal(state):
-        if state.in_cleanup or _cached_filter_source(state, name) is None \
+        if not _mana_timing_legal(state) or _cached_filter_source(state, name) is None \
                 or state.mana_pool.get(input_color, 0) <= 0:
             return False
-        return not _filter_would_strand_payment(state, input_color)
+        return not _filter_would_strand_payment(state, name, input_color)
     return legal
 
 
-def _filter_would_strand_payment(state, input_color):
+def _filter_would_strand_payment(state, name, input_color):
     """Would converting one `input_color` pip away right now make an ALREADY-
     BEGUN payment -- or one about to begin the instant the current choice
     resolves -- impossible to finish?
@@ -273,7 +355,7 @@ def _filter_would_strand_payment(state, input_color):
     A SECOND, later hole in the same guarantee: choose_cast_copy (WHICH
     graveyard copy to cast/activate, MTG 601.2a) sits BETWEEN the moment a
     flashback/escape/graveyard-ability action is chosen (its own legality
-    already required plan_payment to confirm the pool covers the cost) and the
+    already required plan_payment to confirm the cost was payable) and the
     begin_pay_cost that actually opens once a copy is picked -- and mana
     abilities/filters stay legal "in ANY priority window" (605.1a/605.3b)
     during that gap too, same as mid-pay_cost. So filtering away the very pip
@@ -281,40 +363,32 @@ def _filter_would_strand_payment(state, input_color):
     as it is once pay_cost has already begun -- confirmed live (monster_tron,
     turn 44: 2 Bramble Wurms in the graveyard, activated the {2}{G} graveyard
     ability, filtered the floating {G} away while still choosing WHICH copy;
-    pay_cost then opened already unpayable, all-False mask). game.resolution.
-    handlers_casting.begin_choose_cast_copy's own docstring covers why only
-    this one pointer pending needs this (reserved_cost, stashed on the
-    pending by whichever registry-driven execute closure already knows the
-    upcoming cost in full -- drl_env._actions_cast._graveyard_ability_execute /
-    drl_env._actions_cast_altzone._flashback_execute).
+    pay_cost then opened already unpayable, all-False mask). Both windows are
+    covered because game.outstanding_cost reports both.
 
-    Only COLORED requirements can break. A filter is one pip in, one pip out, so
-    the pool's SIZE is invariant and any outstanding generic requirement stays
-    exactly as payable as before (any color pays generic) -- so this checks only
-    whether the pool would still hold enough `input_color` for what the cost
-    specifically demands in that color. Exact, not a heuristic: it permits every
-    conversion that leaves the payment completable from the pool (including
-    converting a spare copy of a needed color) and rejects only those that
-    provably break it. Pool-only, matching game.mana.pool_can_pay -- the same
-    domain float-first already uses for affordability everywhere else.
+    THREE things change, and the version of this check written for float-first
+    only modelled one of them. It reasoned that a filter is one pip in, one pip
+    out, so the pool's SIZE is invariant and only a COLORED requirement could
+    break -- true of the pool, but the filter also TAPS ITS OWN SOURCE, and
+    Conduit Pylons is both a filter and a plain {C} mana source. Under
+    cast-then-pay an untapped Pylons is counted toward affordability, so
+    filtering with it silently deletes a unit the cast was allowed on:
+    pool {U}, owing {2}, Pylons the only other source -> plan_payment says
+    payable (2 units), filter it and only 1 unit remains. The old check looked
+    at `remaining["U"]`, saw 0, and allowed exactly that.
 
-    A conservative edge, deliberately accepted: it does not additionally reason
-    about mana still tappable from untapped sources, so a line like "convert my
-    only G to U, then tap a second Forest for G" is refused. That line is never
-    NEEDED -- pool_can_pay already required the full cost to be floating when
-    the payment began (or, for the choose_cast_copy case, when the flashback/
-    activate action was chosen), so converting away a still-demanded pip can
-    only ever reduce sufficiency."""
-    pending = state.pending_resolution
-    if pending is None:
+    So ask the real question instead of a proxy for it: rebuild the unit list as
+    it would be after the conversion -- input pip spent, filter source tapped,
+    one pip of the filter's own output colors added (which color is the agent's
+    later choice, gated in turn by _mana_subdecision_color_legal) -- and check
+    whether the payment still survives. Shorter than the reasoning it replaces,
+    exact in both directions, and it covers generic requirements too."""
+    source = _cached_filter_source(state, name)
+    if source is None:
         return False
-    if pending["kind"] == "pay_cost":
-        still_needed = pending["remaining"].get(input_color, 0)
-    elif pending["kind"] == "choose_cast_copy" and pending.get("reserved_cost") is not None:
-        still_needed = pending["reserved_cost"].get(input_color, 0)
-    else:
-        return False
-    return state.mana_pool.get(input_color, 0) - 1 < still_needed
+    output_colors = game.EFFECT_REGISTRY[source.card_def.effect_id]["filter_mana"]["colors"]
+    return not game.payment_survives(state, game.units_after(
+        state, tapped=[source], spent=[input_color], produced=[output_colors]))
 
 
 def _filter_mana_execute(name, input_color):

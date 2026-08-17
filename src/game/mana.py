@@ -1,11 +1,38 @@
-"""Mana system (float-first): what a permanent produces, activating a mana
-ability to float mana into the pool (activate_mana_source), spending that pool
-to pay a cost (begin_pay_cost + execute_pool_spend), and pure pool-affordability
-legality checks (pool_can_pay / plan_payment).
+"""Mana system (cast-then-pay, real rule 601.2): what a permanent produces,
+activating a mana ability to float mana into the pool (activate_mana_source),
+spending that pool to pay a cost (begin_pay_cost + execute_pool_spend), and the
+affordability check every cast/activate legality gate runs (plan_payment, over
+available_mana_units + can_pay).
+
+ORDERING. Real Magic announces a spell, settles modes/targets/X, determines the
+total cost (601.2e), and only THEN activates mana abilities (601.2f) and pays
+(601.2g). This engine used to run 601.2f FIRST -- "float-first": a cast was
+illegal unless the floating pool already covered it, and no source was ever
+tapped during payment. That is the reverse of the real sequence and it forced
+the agent to commit to a mana configuration before knowing what it was paying
+for. Cast-then-pay (2026-08-17) restores the real order: a cast is legal when
+the pool PLUS still-untapped sources could cover the cost, and the sources are
+tapped during the payment itself.
+
+THE STRANDING INVARIANT. There is no "Abandon payment" action, so a payment the
+agent cannot finish leaves it with no legal action at all (an all-False mask,
+a hard error). Two things uphold the invariant that a begun payment can always
+be finished:
+  1. plan_payment is EXACT -- see can_pay. A false positive would strand;
+     a false negative would hide a legal cast, which is its own faithfulness
+     bug, so "conservative" is not a safe default here either.
+  2. every action taken while a payment is open is legal only if the payment
+     is still completable afterwards (drl_env's own gates call back into
+     can_pay for this). Tapping a source only ever adds mana, but a FILTER
+     taps its own source (Conduit Pylons is both a filter and a {C} source)
+     and Saruli Caretaker's cost taps another creature that may itself be a
+     mana source, so neither is automatically safe.
 
 References registry.EFFECT_REGISTRY + its derived views only inside function
 bodies (the lazy-lookup convention every submodule here uses -- keeps mana.py
 import-order-safe from anywhere)."""
+
+from itertools import combinations
 
 from . import registry
 from .cards import CardType, EffectId
@@ -184,18 +211,25 @@ def mana_output(permanent, state, color_choice=None):
 
 
 def begin_pay_cost(state, cost, on_complete):
-    """Float-first mana payment: entered only when `cost` is already affordable
-    from the floating pool (callers gate on plan_payment/pool_can_pay first, and
-    the agent floats its mana via mana abilities BEFORE casting). The model then
-    spends one floating pip at a time (see pool_spend_options/execute_pool_spend)
-    until `cost` is covered -- no source is ever tapped during payment.
+    """CR 601.2f/601.2g: the payment window. Entered once `cost` is known to be
+    payable (callers gate on plan_payment first), which under cast-then-pay
+    means from the floating pool PLUS whatever is still tappable -- so this is
+    where the agent both activates mana abilities and spends the pool, one
+    action at a time, until `cost` is covered.
+
+    `announced` records the cost as it stood when the payment opened, next to
+    the `remaining` that shrinks as it is paid. Nothing in the payment reads it;
+    it exists so that if a payment ever DOES strand, the bug report can say
+    whether plan_payment was wrong to allow the announcement or whether supply
+    was consumed afterwards -- two different bugs that look identical from
+    `remaining` alone (see rl.agent._raise_all_false).
 
     A cost already fully covered before any spend (e.g. Lotus Petal's empty {}
     cast cost) completes immediately -- the same check execute_pool_spend runs
     after each spend, run here too for the zero-input case. Without it the
     resolution would open with nothing left to pay and nothing able to close
     it, softlocking the cast instead of resolving it."""
-    begin_resolution(state, "pay_cost", on_complete, remaining=dict(cost))
+    begin_resolution(state, "pay_cost", on_complete, remaining=dict(cost), announced=dict(cost))
     if _cost_satisfied(state.pending_resolution["remaining"]):
         complete_resolution(state)
 
@@ -439,14 +473,255 @@ def pool_can_pay(pool, cost):
     return _cost_satisfied(_reduce_cost_by_pool(pool, cost))
 
 
+def source_mana_units(state, permanent):
+    """The mana units `permanent` could still contribute, or () if it can't be
+    tapped for mana right now. A "unit" is ONE mana symbol, represented as the
+    frozenset of colors that symbol could be -- singleton for anything with a
+    determined output, wider for a color CHOICE.
+
+    Mirrors mana_ability_options' own per-permanent gates exactly (tapped,
+    summoning-lock, mana_extra_available), so the affordability check and the
+    list of abilities actually offered can never disagree about what is
+    available.
+
+    mana_extra_choose (Saruli Caretaker) is EXCLUDED, matching
+    mana_ability_options' own exclusion, and here that is load-bearing rather
+    than incidental: Saruli's cost taps ANOTHER creature, which in spy_combo is
+    usually itself a mana source (Overgrown Battlement, Wall of Roots, Lotus
+    Petal). Counting Saruli as free supply would say two units are available
+    where only one is -- Saruli CONSUMES the other creature -- and an
+    overcount strands the payment. Deliberately conservative: it can hide a
+    line where Saruli upgrades a mana creature's fixed color into any color
+    (owner-accepted 2026-08-17, recorded as a known false negative). The agent
+    can still float Saruli by hand in its own main phase and then cast."""
+    if permanent.tapped or tap_summoning_locked(state, permanent):
+        return ()
+    entry = registry.EFFECT_REGISTRY.get(permanent.card_def.effect_id, {})
+    spec = entry.get("mana")
+    granted = _granted_mana_colors(state, permanent)
+    if spec is None and not granted:
+        return ()
+    if entry.get("mana_extra_choose") is not None:
+        return ()
+    extra = entry.get("mana_extra_available")
+    if extra is not None and not extra(state, permanent):
+        return ()
+
+    # Utopia Sprawl's bonus rides along with ANY tap of this permanent, so it
+    # is added to whichever alternative below is taken, never chosen against.
+    bonus = [frozenset({c}) for c in _bonus_mana_symbols(state, permanent)]
+    if spec is None:  # a grant with no native mana ability of its own
+        return [frozenset(granted)] + bonus
+    if spec[0] == "flexible":
+        # One symbol either way, so the native choices and any granted color
+        # collapse into a single unit exactly -- no information is lost.
+        return [frozenset(set(spec[1]) | granted)] + bonus
+
+    # Every other kind produces a DETERMINED multiset (fixed/fixed_multi/tron/
+    # count/count_all). Ask mana_output rather than approximating, so Rakdos
+    # Carnarium's two DIFFERENT symbols both count and an online Tron land's
+    # three do -- the pre-float-first solver's fixed-at-1 undercount is exactly
+    # the bug that costs. mana_output already appends the bonus, so strip it
+    # back off and re-add it once at the end.
+    full = mana_output(permanent, state)
+    native = full[:len(full) - len(bonus)] if bonus else full
+    if not granted:
+        return [frozenset({s}) for s in native] + bonus
+    if len(native) == 1:
+        # One symbol either way -- native color or a granted one -- so this is
+        # still exact.
+        return [frozenset(set(native) | granted)] + bonus
+    # A grant on a MULTI-symbol source (Abundant Growth on a Tron land or
+    # Rakdos Carnarium) is a genuine either/or: all of the native symbols, OR
+    # one symbol of a granted color -- never a mix. A flat unit list cannot
+    # express that alternative, and widening one native unit would claim both
+    # at once (Tron Tower would read as "{C}{C}{C}, one of which may be {G}"),
+    # which OVERSTATES supply and would strand a payment. Credit the native
+    # output alone: never wrong about the count, and only ever hides the line
+    # where the grant's color was the point. No card pairing in the current
+    # catalog reaches this -- Abundant Growth enchants a land, and every land
+    # here is single-symbol -- so it is an unreachable-today safety floor
+    # rather than a live approximation.
+    return [frozenset({s}) for s in native] + bonus
+
+
+def available_mana_units(state):
+    """Every mana unit the ACTIVE player could still put toward a cost right
+    now: one per floating pool pip, plus whatever each untapped, available
+    source would produce (source_mana_units). Each unit is one symbol, as the
+    frozenset of colors it could be.
+
+    A pool pip and a not-yet-tapped source symbol are interchangeable for
+    affordability, which is the whole point of the representation -- it is why
+    cast-then-pay needs no separate "pool" and "sources" reasoning anywhere.
+
+    DELIBERATELY NOT CACHED, unlike _enchanting/_cached_mana_ability_options.
+    Those are safe to memoize per state object because their only callers are
+    legal_action_mask sweeps, which never mutate state mid-sweep and which reset
+    the caches on both sides. plan_payment is NOT sweep-only -- cards call it
+    directly (red_cards' _makeshift_munitions_legal) and so do tests -- so a
+    state-keyed cache populated outside a sweep is never invalidated and goes
+    stale the moment anything taps. That was tried and it silently reported a
+    just-floated pool as still empty. Measured at ~1.5x the sweep cost of the
+    pool-only check it replaces, which is not worth a correctness hazard.
+    Pure (no mutation)."""
+    units = [frozenset({color}) for color, n in state.mana_pool.items() for _ in range(n)]
+    for p in state.battlefield:
+        units.extend(source_mana_units(state, p))
+    return units
+
+
+def can_pay(units, cost):
+    """EXACT: could `cost` be paid using `units` (available_mana_units' shape)?
+
+    Two conditions, and together they are both necessary and sufficient:
+      1. there are at least as many units as pips demanded in total -- generic
+         accepts any color, so for it only the COUNT matters;
+      2. Hall's condition on the colored half: for every non-empty subset S of
+         the colors actually demanded, the units able to produce some color in
+         S are at least the pips demanded across S.
+    (2) alone permits a colored assignment to exist; (1) then guarantees enough
+    units are left over to cover generic. Neither implies the other:
+    {G:2} against [{G,R}, {R}] fails (2) while passing (1); {G:1, generic:1}
+    against [{G}] fails (1) while passing (2).
+
+    Exactness matters in BOTH directions here, which is why this is Hall's
+    condition and not the greedy tap-solver this engine used before float-first:
+    a false positive lets a payment begin that cannot finish (all-False mask,
+    hard error -- there is no Abandon payment), and a false negative hides a
+    legal cast from the agent, which is a rules-faithfulness bug in its own
+    right. At most six colors can be demanded, so the subset sweep is at most 63
+    iterations and in real costs (one to three colors) at most seven.
+
+    Over-production is free: tapping a source the payment doesn't need only
+    floats extra mana, so every unit counts as available with no "should I tap
+    it" decision folded in. That decision stays entirely the agent's.
+    Pure (no mutation)."""
+    need = {color: cost.get(color, 0) for color in POOL_COLORS if cost.get(color, 0) > 0}
+    if len(units) < sum(need.values()) + cost.get("generic", 0):
+        return False
+    demanded = list(need)
+    for size in range(1, len(demanded) + 1):
+        for subset in combinations(demanded, size):
+            wanted = frozenset(subset)
+            if sum(need[c] for c in subset) > sum(1 for u in units if u & wanted):
+                return False
+    return True
+
+
+PAYMENT_PENDING_KINDS = frozenset({"pay_cost", "pay_unless"})
+
+# The steps of an in-flight cast that come BEFORE 601.2f. Real Magic activates
+# mana abilities at 601.2f -- after modes and X (601.2b), targets (601.2c) and
+# the total cost (601.2e) are settled, and immediately before paying (601.2g).
+# It does NOT let a player tap for mana partway through choosing them. So a mana
+# ability is illegal while one of these is open, and the payment window that
+# follows is where the mana is actually produced.
+#
+# This is a faithfulness FIX, not a restriction: the engine used to allow mana
+# abilities here (gate-free, "legal in ANY priority window"), which is right for
+# a priority window but wrong mid-cast, since no player receives priority during
+# 601.2. It also closes a stranding hole cast-then-pay would otherwise open --
+# the choices below re-check affordability per option, so a tap taken between
+# announcing and paying could leave EVERY option unpayable and the mask empty
+# (found live: Gurmag Angler's delve step with the black source tapped for blue
+# after announcing, every "Delve N" button illegal).
+CASTING_STEP_PENDING_KINDS = frozenset({
+    "choose_cast_mode", "choose_cast_x", "choose_delve_amount", "choose_cast_copy",
+})
+
+
+def payment_in_progress(state):
+    """Is the active player being asked for mana right now? Real Magic lets a
+    player activate a mana ability whenever they have priority, whenever they
+    are casting/activating something that needs a mana payment, AND whenever a
+    rule or effect asks for a mana payment (605.3a). This is the last two cases,
+    and it is what makes payment-time tapping legal in EVERY phase while
+    SPECULATIVE floating is restricted to the active player's own main phase
+    (see drl_env._actions_mana._mana_timing_legal for that restriction and its
+    AUTHORIZED SIMPLIFICATION marker).
+
+    "pay_unless" (Ward, Spell Pierce -- "counter it unless you pay {2}") is a
+    payment window, not merely a yes/no prompt: 605.3a's third case is exactly
+    "a rule or effect asks for a mana payment", so the payer may tap for it
+    right then. It carries no stranding risk of its own -- declining stays legal
+    throughout -- so outstanding_cost deliberately does NOT report it; only the
+    timing gate cares. begin_pay_unless flips active_idx to the payer first, so
+    state.battlefield here is already THEIR board."""
+    pending = state.pending_resolution
+    return pending is not None and pending["kind"] in PAYMENT_PENDING_KINDS
+
+
+def outstanding_cost(state):
+    """The cost an open payment still owes, or None if none is open. Whatever
+    this returns must stay payable, so it is what every mid-payment legality
+    gate checks against (see this module's own STRANDING INVARIANT).
+
+    Only "pay_cost". The gap between committing to a cast and the payment
+    actually opening (choosing modes, X, a delve amount, which graveyard copy)
+    used to need protecting here too, because mana abilities were legal across
+    it; CASTING_STEP_PENDING_KINDS now makes them illegal there outright, per
+    601.2f, so nothing can consume supply in that gap for this to defend."""
+    pending = state.pending_resolution
+    if pending is not None and pending["kind"] == "pay_cost":
+        return pending["remaining"]
+    return None
+
+
+def units_after(state, tapped=(), spent=(), produced=()):
+    """available_mana_units as it WOULD be after a hypothetical mana action:
+    every permanent in `tapped` loses its still-available units, every color in
+    `spent` loses one pool pip, and each entry in `produced` (an iterable of
+    colors) adds one unit that could be any of them.
+
+    One helper for all three mid-payment actions, because all three change the
+    unit list and only the bookkeeping differs:
+      tap a source   tapped=[source], produced=[{s} for s in mana_output(...)]
+      mana filter    tapped=[source], spent=[input], produced=[output_colors]
+      Saruli's cost  tapped=[the creature it taps], produced=[COLORS]
+    A tap looks like it could never strand a payment, since it only adds mana --
+    but a source with a color CHOICE counts while untapped as one unit that
+    could be ANY of its colors, and tapping collapses it to one concrete color.
+    That narrowing stranded a real game: Jagged Barrens ({B} or {R}) counted
+    toward an {R} cost, then tapped for {B}, leaving {R} owed and no red source.
+
+    Removal is by VALUE (frozensets compare equal), so it does not matter
+    whether the entry dropped for a spent pip came from the pool or from a
+    source that produces the same color -- they are interchangeable to can_pay
+    by construction. Pure (no mutation)."""
+    units = list(available_mana_units(state))
+    for permanent in tapped:
+        for unit in source_mana_units(state, permanent):
+            units.remove(unit)
+    for color in spent:
+        units.remove(frozenset({color}))
+    units.extend(frozenset(colors) for colors in produced)
+    return units
+
+
+def payment_survives(state, units):
+    """Could an in-flight payment still be finished from `units`? True when no
+    payment is in flight at all, so callers can ask unconditionally.
+
+    This is the second half of the STRANDING INVARIANT at the top of this
+    module: every action available while a payment is open is gated on it, so
+    the agent can never reach a state where it owes mana and has no legal way to
+    produce it. Pure (no mutation)."""
+    owed = outstanding_cost(state)
+    return owed is None or can_pay(units, owed)
+
+
 def plan_payment(state, cost):
-    """Float-first legality shim: a spell/ability is castable iff the floating
-    pool already covers `cost` (pool_can_pay) -- the agent produces its mana via
-    mana abilities BEFORE casting, so affordability is a pure, exact pool
-    question. Returns a truthy sentinel when payable, else None, so every
-    existing `plan_payment(...) is not None` legality gate reads the pool with no
-    call-site edits. A filter (Barrels/Conduit Pylons) is now an explicit
-    pool->pool conversion the agent runs itself, not a payment-time fallback.
-    Pure (no mutation). (Thin alias for pool_can_pay kept only to spare its many
-    `is not None` call sites a rename.)"""
-    return True if pool_can_pay(state.mana_pool, cost) else None
+    """The one affordability gate every cast/activate legality check calls:
+    could `cost` be paid right now from the floating pool PLUS whatever is still
+    tappable (available_mana_units + can_pay)? Returns a truthy sentinel when
+    payable, else None, so every existing `plan_payment(...) is not None` call
+    site reads the new semantics with no edit.
+
+    Legality only. It decides WHETHER a cost can be paid, never HOW -- which
+    sources to tap, in what order, and which color each flexible one makes are
+    all the agent's own actions during the payment. That separation is the point:
+    the pre-float-first version of this function returned an actual tap plan and
+    execute_payment applied it, which is exactly how the engine used to take the
+    mana decision away from the agent. Pure (no mutation)."""
+    return True if can_pay(available_mana_units(state), cost) else None

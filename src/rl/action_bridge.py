@@ -87,10 +87,19 @@ def pointer_legal_mask(state, identities_row):
     if mana_sub is not None:
         mask = [False] * len(identities_row)
         if mana_sub["stage"] == "choose_target":
+            # mana_extra_choose_target_safe: mid-payment, tapping this creature
+            # as the additional cost must leave the payment finishable. The
+            # SWAP it performs (this creature's own mana for one pip of any
+            # color) can be a net loss -- Overgrown Battlement with several
+            # defenders out is several green pips for one. _mana_extra_choose_
+            # legal already refuses to open the subdecision unless at least one
+            # candidate passes this, so the mask here can never come back empty.
+            from drl_env._actions_mana import mana_extra_choose_target_safe
             source, predicate = mana_sub["source"], mana_sub["target_predicate"]
             for i, p in enumerate(identities_row):
                 if (p is not None and p in state.battlefield and p is not source
-                        and not p.tapped and predicate(p)):
+                        and not p.tapped and predicate(p)
+                        and mana_extra_choose_target_safe(state, p)):
                     mask[i] = True
         return mask  # choose_color stage is a fixed button, not a pointer choice -- all-False here
 

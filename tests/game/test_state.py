@@ -70,12 +70,15 @@ def test_real_game_event_log():
             return lambda: resolution.execute_discard_option(state, name)
         if state.active_idx != 0:
             return None  # player 1 never acts otherwise
-        if state.pending_resolution is not None:  # paying the Bolt's {R} -- spend floated pool mana
-            # Float-first: a tap floats mana into the pool via a top-level mana
-            # ability BEFORE the cast (below); during payment there is only pool
-            # mana to spend, never a source to tap.
-            color = mana.pool_spend_options(state)[0]
-            return lambda: mana.execute_pool_spend(state, color)
+        if state.pending_resolution is not None:  # paying the Bolt's {R}
+            # Cast-then-pay (601.2f/g): the spell is announced first, so THIS is
+            # the window where mana gets produced -- tap a source when the pool
+            # can't cover the remainder yet, then spend what's floating.
+            options = mana.pool_spend_options(state)
+            if options:
+                return lambda: mana.execute_pool_spend(state, options[0])
+            mtn = next((p for p in state.battlefield if p.card_def.name == "Mountain" and not p.tapped), None)
+            return (lambda: mana.activate_mana_source(state, mtn)) if mtn is not None else None
         if state.lands_played_this_turn == 0 and any(c.name == "Mountain" for c in state.hand):
             return lambda: play_land_from_hand(state, registry.CARD_DEFS["Mountain"])
         # hand_count - stacked_count, same accounting drl_env._hand_count_available
@@ -85,14 +88,12 @@ def test_real_game_event_log():
         hand_count = sum(1 for c in state.hand if c.name == "Lightning Bolt")
         stacked_count = sum(1 for e in state.stack if e["card_def"].name == "Lightning Bolt")
         if hand_count > stacked_count:
+            # plan_payment now counts untapped sources as well as the pool, so
+            # no pre-float step is needed -- announce, then pay above.
             if mana.plan_payment(state, bolt_def.cast_cost) is not None:
                 def _cast_bolt():
                     mana.begin_pay_cost(state, bolt_def.cast_cost, on_complete=lambda s: push_to_stack(s, bolt_def, bolt_resolve))
                 return _cast_bolt
-            # Can't pay yet -- float {R} from an untapped Mountain first (float-first).
-            mtn = next((p for p in state.battlefield if p.card_def.name == "Mountain" and not p.tapped), None)
-            if mtn is not None:
-                return lambda: mana.activate_mana_source(state, mtn)
         return None  # Pass -- resolves the stack if non-empty, else advances the phase
 
     events = []

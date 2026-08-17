@@ -895,6 +895,11 @@ def test_conduit_pylons_filter_any_color_gated_on_untapped():
     actions = drl_env.build_action_table([("Conduit Pylons", 1)], registry.EFFECT_REGISTRY)
     pylons = Permanent(registry.CARD_DEFS["Conduit Pylons"])
     state = GameState(on_the_play=True)
+    # Speculative floating is the active player's own main phase only
+    # (drl_env._actions_mana._mana_timing_legal); a bare GameState has no
+    # phase at all, which would fail that gate before reaching what this
+    # test is actually about.
+    state.phase = Phase.MAIN1
     state.battlefield = [pylons]
     state.mana_pool = {"U": 1}
     _, legal, execute = next((nm, lg, ex) for nm, lg, ex in actions if nm == "Filter Conduit Pylons, paying U")
@@ -1101,9 +1106,13 @@ def test_map_token_own_wiring_creature_choice_cost_and_sorcery_speed_gate():
     state.stack.append({})  # mid-resolution of ANYTHING -- Speed.SORCERY requires an empty stack
     assert not legal(state)
     state.stack.clear()
-    assert not legal(state)  # empty stack now, but nothing floated yet -- still not payable
-    activate_mana_source(state, swamp)  # float {1}'s worth BEFORE activating (float-first)
-    assert legal(state)  # own MAIN1, empty stack, {1} now floating -- legal
+    # Legal with NOTHING floating: cast-then-pay counts the untapped Swamp, and
+    # the {1} is produced during the payment (601.2f). Under float-first this
+    # read `not legal(state)` until a pre-float happened -- that pre-float
+    # requirement is precisely what this change removes.
+    assert legal(state)  # own MAIN1, empty stack, a source that can still pay {1}
+    activate_mana_source(state, swamp)
+    assert legal(state)  # and still legal once it IS floating
 
     execute(state)
     assert state.pending_resolution["kind"] == "pay_cost"
