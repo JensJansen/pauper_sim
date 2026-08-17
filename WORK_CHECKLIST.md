@@ -23,7 +23,7 @@ the four concluded A/B configs; the seven one-off `src/analysis/` scripts and th
 
 **Consequence:** a fresh pretrain + freeze is now mandatory before any league run.
 
-### Done (commit `71b31f1`)
+### Done (commit `7812e33`)
 
 - **A.** All 24 dangling `RL_METHODOLOGY_PLAN.md` citations stripped across 15 files.
   Each comment kept its conclusion; only the pointer went.
