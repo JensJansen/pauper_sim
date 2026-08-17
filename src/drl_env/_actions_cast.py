@@ -250,7 +250,11 @@ def _delve_execute(name, max_n, resolve):
                     game.on_cast_trigger(s2, card_def)
                     game.push_to_stack(s2, card_def, resolve)
                 game.begin_pay_cost(s, _delve_reduced_cost(card_def, n), on_complete=_after_pay)
-            game.begin_exile_n_from_graveyard(state, n, _after_exile)
+            # mid_cast=True: this exile sits between announcing the spell and
+            # the payment opening, so no mana ability may be activated during
+            # it (601.2f). Without it, tapping a dual for the wrong half here
+            # strands the delve-reduced cost that follows.
+            game.begin_exile_n_from_graveyard(state, n, _after_exile, mid_cast=True)
 
         game.begin_choose_delve_amount(state, card_def, max_n, _after_n)
     return execute

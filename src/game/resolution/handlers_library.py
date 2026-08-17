@@ -167,13 +167,25 @@ def explore(state, creature):
         surveil(state, 1)  # "you may put it into your graveyard" == surveil 1 (keep on top or graveyard)
 
 
-def begin_exile_n_from_graveyard(state, n, on_complete, predicate=None):
+def begin_exile_n_from_graveyard(state, n, on_complete, predicate=None, mid_cast=False):
     """Exile n cards from the active player's own graveyard as a COST, the
     model choosing which one at a time (chained begin_choose_graveyard_card).
     predicate (default any) narrows eligible cards. Used by Delve (exile N to
     pay {N} of a spell's generic cost, Gurmag Angler) and reusable by any
     other "exile N from your graveyard" cost. Runs on_complete(state) once n
-    are exiled (or eligible cards run out)."""
+    are exiled (or eligible cards run out).
+
+    mid_cast marks each step's pending as part of an in-flight cast, which makes
+    mana abilities illegal for its duration (drl_env._actions_mana.
+    _mana_timing_legal, CR 601.2f). Delve needs it and passes True: its exile
+    happens BETWEEN announcing the spell and the payment opening, so a tap taken
+    here can narrow a color choice the not-yet-open payment depends on. That is
+    not hypothetical -- it stranded a real game (dmir_terror: both Contaminated
+    Aquifers and both Ice Tunnels tapped for {U} during the exile, leaving the
+    delve-reduced {B} unpayable). The flag is a per-CALL fact, not a property of
+    the pending KIND: choose_graveyard_card is equally used at resolution time
+    (Masked Vandal's ETB, Relic of Progenitus), where mana abilities are
+    perfectly legal, so it cannot simply be added to CASTING_STEP_PENDING_KINDS."""
     pred = predicate or (lambda c: True)
 
     def _step(remaining):
@@ -187,6 +199,8 @@ def begin_exile_n_from_graveyard(state, n, on_complete, predicate=None):
             _step(remaining - 1)
 
         begin_choose_graveyard_card(state, pred, _chosen)
+        if mid_cast:
+            state.pending_resolution["mid_cast"] = True
 
     _step(n)
 

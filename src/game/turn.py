@@ -85,12 +85,15 @@ class Speed(enum.Enum):
 # degrades to "MAIN1 only" for free.
 SORCERY_SPEED_PHASES = {Phase.MAIN1, Phase.MAIN2}
 
-# Combat's three sub-phases form ONE mana window: mana floated in
-# declare-attackers is still there in declare-blockers/combat-damage.
-# AUTHORIZED SIMPLIFICATION (owner-approved): real Magic empties the pool
-# between each of these steps too (500.4); we don't, treating combat as a
-# single window. Every OTHER phase boundary still empties (see _run_turn_gen).
-_COMBAT_PHASES = {Phase.DECLARE_ATTACKERS, Phase.DECLARE_BLOCKERS, Phase.COMBAT_DAMAGE}
+# Rule 500.4 is now applied at EVERY step and phase boundary without exception.
+# Combat's three sub-phases used to be treated as one mana window (an authorized
+# simplification: mana floated in declare-attackers survived into
+# declare-blockers and combat-damage, which 500.4 does not allow). Removed
+# 2026-08-17 with cast-then-pay, on the owner's call: speculative floating is
+# now the active player's own main phase only, so no mana can be deliberately
+# floated INTO combat in the first place, and payment-time mana is produced and
+# spent inside a single payment. The exception had nothing left to protect, so
+# the faithful rule costs nothing -- one authorized deviation removed.
 
 
 def _tally_mana_mistake(state, idx, player, burnt):
@@ -669,15 +672,15 @@ def _run_turn_gen(state, combat_enabled=False):
         phases = FULL_PHASES if combat_enabled else MINIMAL_PHASES
         for phase in phases:
             from_phase = state.phase
-            # Rule 500.4: unused mana empties at every step/phase boundary (both
-            # players), EXCEPT between combat's own sub-phases (one mana window
-            # -- see _COMBAT_PHASES). Logged BEFORE state.phase/phase_change
-            # advance, tagged with from_phase (the phase actually ending) --
-            # matching real Magic's own "at the end of X" timing, and keeping
-            # the replay viewer from showing combat's floated mana as still
-            # present once Main Phase 2 (or any other next phase) has begun.
-            if not (from_phase in _COMBAT_PHASES and phase in _COMBAT_PHASES):
-                _empty_mana_pools(state)
+            # Rule 500.4: unused mana empties at every step/phase boundary, for
+            # both players, with NO exceptions (combat's three sub-phases used
+            # to share one window -- see the note above the phase list for why
+            # that exception was removed). Logged BEFORE state.phase/
+            # phase_change advance, tagged with from_phase (the phase actually
+            # ending) -- matching real Magic's own "at the end of X" timing, and
+            # keeping the replay viewer from showing floated mana as still
+            # present once the next phase has begun.
+            _empty_mana_pools(state)
             state.phase = phase
             state.log_event("phase_change", from_phase=from_phase.value if from_phase is not None else None)
             auto_effect = _PHASE_AUTO_EFFECTS.get(phase)

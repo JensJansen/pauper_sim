@@ -336,12 +336,20 @@ def test_speed_legal_turn_owner_vs_priority_holder():
     assert speed_legal(state, Speed.INSTANT)  # unaffected -- instant speed never cares whose turn it is
 
 
-def test_rule_500_4_mana_pool_clears_at_phase_boundaries_except_combat():
+def test_rule_500_4_mana_pool_clears_at_every_phase_boundary():
     # Rule 500.4: unused mana empties at every step/phase boundary for BOTH
-    # players (not just whoever floated it), EXCEPT across combat's own
-    # three sub-phases -- an authored simplification (see _COMBAT_PHASES'
-    # own comment in turn.py) that treats DECLARE_ATTACKERS/DECLARE_BLOCKERS/
-    # COMBAT_DAMAGE as one shared mana window. Two pre-placed, already-
+    # players (not just whoever floated it), with NO exceptions. Combat's three
+    # sub-phases used to share one mana window (an authorized simplification);
+    # it was removed 2026-08-17 with cast-then-pay, since speculative floating
+    # is now the active player's own main phase only and payment-time mana is
+    # produced and spent inside a single payment -- nothing can deliberately
+    # float INTO combat any more, so the exception had nothing left to protect.
+    #
+    # The policy below calls activate_mana_source DIRECTLY rather than going
+    # through the action mask, so it still floats in DECLARE_ATTACKERS to prove
+    # the ENGINE clears it there; the mask's own refusal to offer that float is
+    # a separate rule, covered by
+    # test_speculative_mana_ability_is_main_phase_only. Two pre-placed, already-
     # untapped Mountains (no land drop / draw needed: player 0 is
     # on_the_play so its first-turn draw is skipped, and an empty hand never
     # triggers cleanup_step's discard) let this float mana at two different
@@ -378,9 +386,9 @@ def test_rule_500_4_mana_pool_clears_at_phase_boundaries_except_combat():
     by_phase = {phase: (p0, p1) for phase, p0, p1 in mana_pool_log}
     assert by_phase[Phase.MAIN1] == ({}, {})  # nothing floated yet
     assert by_phase[Phase.DECLARE_ATTACKERS] == ({}, {})  # MAIN1's float (both players') cleared crossing into combat
-    assert by_phase[Phase.DECLARE_BLOCKERS][0] == {"R": 1}  # DECLARE_ATTACKERS' float survives -- combat's shared window
-    assert by_phase[Phase.COMBAT_DAMAGE][0] == {"R": 1}  # still there crossing DECLARE_BLOCKERS -> COMBAT_DAMAGE too
-    assert by_phase[Phase.MAIN2] == ({}, {})  # cleared again once combat's shared window ends
+    assert by_phase[Phase.DECLARE_BLOCKERS][0] == {}  # DECLARE_ATTACKERS' float is gone too -- 500.4 applies BETWEEN combat steps now
+    assert by_phase[Phase.COMBAT_DAMAGE][0] == {}  # and across DECLARE_BLOCKERS -> COMBAT_DAMAGE
+    assert by_phase[Phase.MAIN2] == ({}, {})
     assert floated_at == {"main1", "declare_attackers"}  # both floats actually happened, not skipped
     # mana_burnt_total tallies pips lost, not clear-events: player 0 lost the
     # MAIN1 "R":1 AND the DECLARE_ATTACKERS "R":1 (two separate clears) -> 2;

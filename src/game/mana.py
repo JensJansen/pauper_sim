@@ -229,6 +229,18 @@ def begin_pay_cost(state, cost, on_complete):
     after each spend, run here too for the zero-input case. Without it the
     resolution would open with nothing left to pay and nothing able to close
     it, softlocking the cast instead of resolving it."""
+    # The STRANDING INVARIANT, asserted at the one place it can still be
+    # cheaply localised. Every caller is supposed to have gated on plan_payment
+    # first; if one has not, the failure otherwise surfaces several actions
+    # later as an all-False mask, with the traceback pointing at the agent
+    # rather than at the cast path that skipped its check. Failing here names
+    # the guilty call site directly in the traceback.
+    assert can_pay(available_mana_units(state), cost), (
+        f"begin_pay_cost opened an unpayable cost {dict(cost)} -- available units "
+        f"{sorted(''.join(sorted(u)) for u in available_mana_units(state))}, pool "
+        f"{dict(state.mana_pool)}. This caller did not gate on plan_payment, or gated on a "
+        f"DIFFERENT cost than it went on to charge."
+    )
     begin_resolution(state, "pay_cost", on_complete, remaining=dict(cost), announced=dict(cost))
     if _cost_satisfied(state.pending_resolution["remaining"]):
         complete_resolution(state)

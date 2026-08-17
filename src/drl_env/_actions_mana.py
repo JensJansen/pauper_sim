@@ -54,7 +54,8 @@ def _mana_timing_legal(state):
     a main phase is still in a main phase while its modes/X/delve/copy are being
     chosen."""
     pending = state.pending_resolution
-    if pending is not None and pending["kind"] in game.CASTING_STEP_PENDING_KINDS:
+    if pending is not None and (pending["kind"] in game.CASTING_STEP_PENDING_KINDS
+                                or pending.get("mid_cast")):
         return False
     return (
         game.payment_in_progress(state)
