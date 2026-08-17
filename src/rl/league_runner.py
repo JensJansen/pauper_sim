@@ -161,11 +161,24 @@ PPO_DEFAULTS = {
 }
 
 
-def load_frozen_stack(vocab_size):
-    assert os.path.exists(FROZEN_STACK), (
-        f"{FROZEN_STACK} not found -- run `python run_pretrain.py ... --freeze` (pretrain) first"
+def load_frozen_stack(vocab_size, path=None):
+    """The frozen shared encoder. `path` defaults to the live FROZEN_STACK.
+
+    An explicit path exists for ONE purpose: comparing populations trained
+    against DIFFERENT frozen stacks. That is not the same illegal operation
+    stack_id_matches guards -- _run_eval_vs_gauntlet loads another population's
+    WEIGHTS onto the CALLING population's stack, which silently reinterprets
+    them and is meaningless. Two agents merely PLAYING each other need no
+    shared encoder at all: each encodes the state with its own and picks its
+    own actions, which is a perfectly valid head-to-head. Loading each side on
+    its own stack (analysis/run_cross_league_eval.py --stack-a/--stack-b) is
+    therefore how a cross-stack reference is recovered after a re-freeze,
+    without training a fresh twin."""
+    path = path or FROZEN_STACK
+    assert os.path.exists(path), (
+        f"{path} not found -- run `python run_pretrain.py ... --freeze` (pretrain) first"
     )
-    ckpt = ckpt_io.load_frozen_stack(FROZEN_STACK)
+    ckpt = ckpt_io.load_frozen_stack(path)
     assert ckpt["vocab_size"] == vocab_size, (
         f"frozen stack was built with vocab_size={ckpt['vocab_size']}, current pool vocab is {vocab_size} -- "
         "the deck roster changed since pretraining ran; re-run pretraining or fix the mismatch before continuing"

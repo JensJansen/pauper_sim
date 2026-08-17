@@ -63,14 +63,27 @@ def main():
     p.add_argument("--games", type=int, default=50, help="Games per matchup (default 50).")
     p.add_argument("--seed", type=int, default=None)
     p.add_argument("--log", type=str, default=None, metavar="PATH", help="Write the summary JSON here.")
+    # Per-side frozen stacks. Two agents PLAYING each other need no shared
+    # encoder -- each encodes the state with its own and picks its own actions.
+    # That is categorically different from _run_eval_vs_gauntlet loading another
+    # population's weights ONTO the calling stack, which stack_id_matches rightly
+    # blocks. These flags are how a cross-population reference survives a
+    # re-freeze (2026-08-16) instead of having to be rebuilt by training a twin.
+    p.add_argument("--stack-a", type=str, default=None, metavar="PATH",
+                    help="Frozen stack league_a was trained against (default: the current one).")
+    p.add_argument("--stack-b", type=str, default=None, metavar="PATH",
+                    help="Frozen stack league_b was trained against (default: the current one).")
     args = p.parse_args()
 
     roster = args.roster.split(",") if args.roster else DEFAULT_ROSTER
     decklists, vocab, deck_ctxs, fixed_tables = build_pool()
-    shared = load_frozen_stack(vocab.size)
+    shared_a = load_frozen_stack(vocab.size, args.stack_a)
+    shared_b = load_frozen_stack(vocab.size, args.stack_b) if args.stack_b != args.stack_a else shared_a
+    if args.stack_a != args.stack_b:
+        print(f"cross-stack: A={args.stack_a or 'current'}  B={args.stack_b or 'current'}", flush=True)
 
-    live_a, mull_a = _load_deck_nets(CHECKPOINTS_DIR / args.league_a, roster, shared, fixed_tables)
-    live_b, mull_b = _load_deck_nets(CHECKPOINTS_DIR / args.league_b, roster, shared, fixed_tables)
+    live_a, mull_a = _load_deck_nets(CHECKPOINTS_DIR / args.league_a, roster, shared_a, fixed_tables)
+    live_b, mull_b = _load_deck_nets(CHECKPOINTS_DIR / args.league_b, roster, shared_b, fixed_tables)
 
     rng = random.Random(args.seed)
     results = []
