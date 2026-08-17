@@ -64,7 +64,74 @@ the four concluded A/B configs; the seven one-off `src/analysis/` scripts and th
 
 ---
 
-## 2. `[ ]` Cast-then-pay, with floating mana allowed only in main phases
+## 2. `[x]` Cast-then-pay, with floating mana allowed only in main phases
+
+**DONE** — commits `9cc470d` (core), `774fe5b` (500.4 + delve hole), plus the
+test/doc pass. 675 passed, 1 skipped.
+
+### What actually happened vs. the plan
+
+The plan held. Two things it did **not** predict, both found by running the code
+rather than reading it:
+
+1. **A third hazard, and it was a faithfulness bug rather than a guard gap.**
+   CR 601.2f activates mana abilities at *one* point — after modes, X, delve and
+   which-copy are settled. The engine allowed them throughout, which is correct
+   for a priority window but wrong mid-cast, since no player receives priority
+   during 601.2. Left alone it strands: each "Delve N" button re-checks
+   affordability, so a tap taken mid-choice can leave them *all* illegal. Seen
+   live (Gurmag Angler, the black source tapped for blue after announcing).
+   Refusing the whole window is more faithful *and* strictly safer than guarding
+   individual actions inside it, and it subsumed the planned `choose_cast_copy`
+   `reserved_cost` guard entirely.
+2. **The delve *exile* needed a per-call flag, not a pending-kind entry.**
+   `choose_graveyard_card` is equally used at resolution time (Masked Vandal,
+   Relic), where mana abilities are perfectly legal, so being mid-cast is a fact
+   about the *call*, not the kind.
+
+Three of my own bugs, worth recording since each was caught by a mechanism the
+plan put in place rather than by review:
+
+- A state-keyed cache on `available_mana_units` — `plan_payment` is not
+  sweep-only (cards and tests call it directly), so nothing reset it and it
+  reported a just-floated pool as still empty. Removed; measured at ~1.5× the
+  pool-only check it replaced, which is not worth a correctness hazard.
+- Widening a *multi-symbol* source by an Abundant Growth grant, which claims the
+  native output **and** a granted colour from one tap. Overstates supply, so it
+  would strand. Caught while writing the code, before running it.
+- `_filter_would_strand_payment` referencing a source name its signature did not
+  take — it now has to resolve the filter permanent, which the pool-only version
+  never needed.
+
+**The diagnostic paid for itself immediately.** It named the delve bug on the
+first capture: `announced == remaining`, ten units all `{U}`,
+`can_pay(units, announced)=False` ⇒ cause (a), wrong at announce time, with all
+four black-capable duals showing `OUT: tapped`. Adding an assertion to
+`begin_pay_cost` then named the exact call site instead of failing several
+actions later inside the agent.
+
+### Deviation ledger: **two removed, one added**
+
+| | |
+|---|---|
+| **removed** | `state.in_cleanup`'s mana ban (2026-08-10) — subsumed by the main-phase rule |
+| **removed** | combat's shared mana window — CR 500.4 now applies at every boundary with no exception |
+| **added** | speculative floating restricted to the active player's own main phase |
+
+Also fixed, unplanned and free: `pay_unless` (Ward, Spell Pierce) could only be
+paid from already-floating mana. CR 605.3a allows mana abilities "whenever a
+rule or effect asks for a mana payment", so the payer may now tap for it.
+
+### Not done, deliberately
+
+`PRIORITY_ROUND_ACTION_CAP` is left at 20. Cast-then-pay does not change the
+action *count* of a cast (taps merely moved from before the cast to inside it),
+but a cap-exhausted payment now abandons an announced spell rather than only
+wasting float. Watch for truncations in training before raising it.
+
+---
+
+## 2-original. Plan as agreed (kept for reference)
 
 Move from pay-then-cast to the real rule 601 sequence: announce the spell, choose
 modes/targets/X, *then* activate mana abilities and pay. Floating mana is permitted

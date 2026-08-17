@@ -87,7 +87,7 @@ def test_cartouche_of_solidarity_grants_exactly_plus_one_plus_one():
 
 
 def test_cartouche_of_solidarity_cast_pays_w_through_the_mana_pipeline():
-    """{W} cast cost, actually charged through the real float-first mana
+    """{W} cast cost, actually charged through the real mana
     pipeline (mana.activate_mana_source -> mana.begin_pay_cost ->
     mana.execute_pool_spend) -- unlike every other test in this file, which
     calls cast_cartouche_of_solidarity directly and never touches payment
@@ -141,7 +141,7 @@ def test_cartouche_of_solidarity_etb_creates_a_vigilant_warrior_token():
 
 
 def test_ethereal_armor_cast_pays_w_through_the_mana_pipeline():
-    """{W} cast cost, actually charged through the real float-first mana
+    """{W} cast cost, actually charged through the real mana
     pipeline (mana.activate_mana_source -> mana.begin_pay_cost ->
     mana.execute_pool_spend) -- same gap as Cartouche of Solidarity above."""
     state = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])

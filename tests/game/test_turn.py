@@ -806,3 +806,97 @@ def test_on_mana_burn_hook_wired_through_run_multiplayer_game():
     assert tapped_once  # the tap actually happened
     assert 0 in calls  # the hook was actually consulted for player 0's own burn
     assert state.players[0].mana_mistake_burn == 1
+
+
+def test_cast_then_pay_end_to_end_with_an_empty_pool():
+    # The headline sequence, through the REAL action table rather than direct
+    # engine calls: with NOTHING floating and two untapped Mountains, casting
+    # Lightning Bolt is already legal (601.2e says the cost is known before any
+    # mana is produced), the payment window is where the Mountain gets tapped
+    # (601.2f), and the pool spend finishes it (601.2g).
+    #
+    # Under float-first this exact position was ILLEGAL -- the agent had to
+    # guess and float first, before knowing what it was paying for. That guess
+    # is the misplay this whole change removes.
+    from drl_env import build_action_table, legal_action_mask
+
+    actions = build_action_table([("Mountain", 4), ("Lightning Bolt", 2)], registry.EFFECT_REGISTRY)
+    cast_idx = next(i for i, (n, _l, _e) in enumerate(actions) if n == "Cast Lightning Bolt")
+    tap_idx = next(i for i, (n, _l, _e) in enumerate(actions) if n == "Tap Mountain")
+
+    state = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
+    state.phase = Phase.MAIN1
+    state.battlefield = [Permanent(registry.CARD_DEFS["Mountain"]),
+                         Permanent(registry.CARD_DEFS["Mountain"])]
+    state.hand = [registry.CARD_DEFS["Lightning Bolt"]]
+    assert state.mana_pool == {}
+
+    assert legal_action_mask(state, actions)[cast_idx], "castable off untapped lands, nothing floating"
+    actions[cast_idx][2](state)
+    assert state.pending_resolution["kind"] == "pay_cost"
+    assert state.pending_resolution["remaining"] == {"R": 1}
+    assert state.pending_resolution["announced"] == {"R": 1}, "announced is stashed for the strand bug report"
+
+    # 601.2f: the mana ability is legal DURING the payment -- that is the window
+    # the mana is produced in now.
+    assert legal_action_mask(state, actions)[tap_idx]
+    actions[tap_idx][2](state)
+    assert state.mana_pool == {"R": 1}
+
+    # 601.2g: spend it. Nothing reached the stack before this point (601.2i).
+    assert not state.stack, "nothing reaches the stack until the cost is paid"
+    mana.execute_pool_spend(state, "R")
+    assert state.mana_pool == {}
+    # The payment is over; Bolt's own "any target" choice follows it (this
+    # engine settles that after the cost rather than at 601.2c -- a separate
+    # ordering question this test deliberately does not assert on). What matters
+    # here is that pay_cost is done and it was driven entirely by tapping.
+    assert state.pending_resolution is not None
+    assert state.pending_resolution["kind"] != "pay_cost", "the payment completed"
+
+
+def test_opponent_never_acts_inside_the_cast_window():
+    # CR 601.2 is atomic: no player receives priority between announcing a spell
+    # and it becoming cast, so the opponent cannot respond until it is ON THE
+    # STACK (601.2i, then 117.3c). Cast-then-pay makes that window much longer
+    # -- it now contains every tap -- so the invariant is pinned explicitly
+    # rather than left implicit.
+    #
+    # Two mechanisms hold it, and this asserts both: a player who takes an
+    # ACTION keeps priority (_priority_round only flips active_idx on a Pass),
+    # and Pass is illegal while a resolution is pending
+    # (drl_env._pass_legal._pending_gate).
+    from drl_env import build_action_table, legal_action_mask
+
+    actions = build_action_table([("Mountain", 4), ("Lightning Bolt", 2)], registry.EFFECT_REGISTRY)
+    cast_idx = next(i for i, (n, _l, _e) in enumerate(actions) if n == "Cast Lightning Bolt")
+    pass_idx = next(i for i, (n, _l, _e) in enumerate(actions) if n == "Pass")
+
+    state = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
+    state.phase = Phase.MAIN1
+    state.battlefield = [Permanent(registry.CARD_DEFS["Mountain"])]
+    state.hand = [registry.CARD_DEFS["Lightning Bolt"]]
+    caster = state.active_idx
+
+    actions[cast_idx][2](state)
+    assert state.pending_resolution["kind"] == "pay_cost"
+    assert state.active_idx == caster, "announcing must not hand priority to anyone"
+    assert not legal_action_mask(state, actions)[pass_idx], (
+        "Pass is illegal mid-payment, which is what stops the phase -- and priority -- "
+        "advancing out from under an in-flight cast"
+    )
+
+    # Take the whole payment; priority never leaves the caster at any point.
+    tap_idx = next(i for i, (n, _l, _e) in enumerate(actions) if n == "Tap Mountain")
+    actions[tap_idx][2](state)
+    assert state.active_idx == caster
+    assert not legal_action_mask(state, actions)[pass_idx], "still sealed mid-payment"
+    mana.execute_pool_spend(state, "R")
+    assert state.active_idx == caster
+
+    # Bolt's own target choice follows the payment, and Pass stays illegal
+    # through it too -- the cast is still in flight, so the opponent still
+    # cannot act. Priority reopens only once nothing is pending at all.
+    assert state.pending_resolution is not None
+    assert not legal_action_mask(state, actions)[pass_idx]
+    assert state.active_idx == caster, "priority never left the caster for the whole cast"

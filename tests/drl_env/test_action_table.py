@@ -134,7 +134,7 @@ def test_plot_and_on_cast_trigger():
 def test_on_cast_trigger_fires_only_after_cost_paid():
     # Regression: on_cast_trigger (Guttersnipe) must fire only once a spell's
     # cost is actually paid -- queued in _cast_execute's _after_pay, never
-    # inline the instant the cast is announced. Float-first: float {B}, announce
+    # inline the instant the cast is announced. Pre-float (optional under cast-then-pay): float {B}, announce
     # the cast (opens pay_cost), confirm the trigger has NOT fired while payment
     # is still pending, then spend to complete it and confirm it queues, then
     # fires only on resolve.
@@ -161,7 +161,7 @@ def test_on_cast_trigger_fires_only_after_cost_paid():
         cast_legal = _cast_legal("Fake Bolt", None, game.turn.Speed.INSTANT)
         cast_execute = _cast_execute("Fake Bolt", game.EFFECT_REGISTRY[EffectId.FILLER]["cast"]["resolve"])
 
-        game.activate_mana_source(state, swamp)  # float {B} BEFORE casting (float-first)
+        game.activate_mana_source(state, swamp)  # float {B} BEFORE casting (a pre-float is optional now, not required)
         assert cast_legal(state)
         cast_execute(state)
         assert state.pending_resolution["kind"] == "pay_cost"
@@ -204,7 +204,7 @@ def test_faithless_looting_flashback_requires_mana():
     mountains = [Permanent(game.CARD_DEFS["Mountain"]) for _ in range(3)]
     state.battlefield = mountains
     for m in mountains:
-        game.activate_mana_source(state, m)  # float 3 R BEFORE flashing back (float-first)
+        game.activate_mana_source(state, m)  # float 3 R BEFORE flashing back (a pre-float is optional now, not required)
     assert fb_legal(state)
     fb_execute(state)
     assert state.pending_resolution["kind"] == "pay_cost"
@@ -235,7 +235,7 @@ def test_tokens_blood_sacrifice():
     state.library = [CardDef("Library Card", CardType.SORCERY, {}, None)]
 
     swamp = next(p for p in state.battlefield if p.card_def.name == "Swamp")
-    game.activate_mana_source(state, swamp)  # float-first: float {B} BEFORE activating (Blood's {1})
+    game.activate_mana_source(state, swamp)  # pre-float (still valid, just no longer required): float {B} BEFORE activating (Blood's {1})
     assert activate_legal(state)
     activate_execute(state)  # pays {1} via the real begin_pay_cost path, same as every other cost_key ability
     assert state.pending_resolution["kind"] == "pay_cost"
@@ -474,7 +474,7 @@ def test_aura_targeting_exact_slot_addressing():
     state.hand = [rancor_card]
 
     _, cast_rancor_legal, cast_rancor_execute = targeting_actions[_action_index(targeting_actions, "Cast Rancor")]
-    targeting_actions[_action_index(targeting_actions, "Tap Forest")][2](state)  # float-first: float {G} BEFORE casting
+    targeting_actions[_action_index(targeting_actions, "Tap Forest")][2](state)  # pre-float (still valid, just no longer required): float {G} BEFORE casting
     assert cast_rancor_legal(state)
     cast_rancor_execute(state)
     assert state.pending_resolution["kind"] == "pay_cost"
@@ -521,7 +521,7 @@ def test_aura_target_fizzle():
     state.battlefield = [bogle_1, forest]
     state.hand = [rancor_card]
 
-    targeting_actions[_action_index(targeting_actions, "Tap Forest")][2](state)  # float-first: float {G} first
+    targeting_actions[_action_index(targeting_actions, "Tap Forest")][2](state)  # pre-float (still valid, just no longer required): float {G} first
     targeting_actions[_action_index(targeting_actions, "Cast Rancor")][2](state)
     targeting_actions[_action_index(targeting_actions, "Spend G from pool")][2](state)
     game.execute_choose_any_target_creature(state, 0, "Slippery Bogle", 1)  # Aura targets via the any-target pointer path now

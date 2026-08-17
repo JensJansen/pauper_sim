@@ -1,14 +1,89 @@
-"""Tests for game.mana float-first mana system: activate_mana_source,
-begin_pay_cost/execute_pool_spend, pool_can_pay/plan_payment, the
-Boggles-style mana-fixing Auras (Utopia Sprawl automatic bonus, Abundant
-Growth competing granted ability), and discount_departing_source (the
-sacrifice/untap mana-burn-tag discount)."""
+"""Tests for game.mana's cast-then-pay mana system: activate_mana_source,
+begin_pay_cost/execute_pool_spend, the can_pay/available_mana_units
+affordability solver behind plan_payment, the Boggles-style mana-fixing Auras
+(Utopia Sprawl automatic bonus, Abundant Growth competing granted ability), and
+discount_departing_source (the sacrifice/untap mana-burn-tag discount)."""
 
 import random
+
+import pytest
 
 from game import mana, registry
 from game.cards import CardDef, CardType, EffectId
 from game.state import GameState, Permanent
+
+
+def _u(*colors):
+    return frozenset(colors)
+
+
+@pytest.mark.parametrize("units,cost,expected,why", [
+    # -- the total-count condition, on its own --
+    ([_u("G")], {"G": 1}, True, "trivial"),
+    ([_u("G")], {"G": 1, "generic": 1}, False, "one unit cannot pay two pips"),
+    ([], {}, True, "a free cost is payable with nothing"),
+    ([_u("C"), _u("C")], {"generic": 2}, True, "colorless pays generic"),
+    ([_u("C")], {"R": 1}, False, "colorless cannot pay a colored pip"),
+    ([_u("G"), _u("R"), _u("W")], {"G": 1, "generic": 2}, True, "leftovers cover generic"),
+
+    # -- Hall's condition, on its own: enough units in total, but not enough
+    #    that can make the specific colors demanded --
+    ([_u("G", "R"), _u("R")], {"G": 2}, False, "only one unit can make G"),
+    ([_u("G", "R"), _u("G", "R")], {"G": 2}, True, "both duals can make G"),
+    ([_u("G", "R"), _u("G", "R")], {"G": 1, "R": 1}, True, "the duals split"),
+    ([_u("G"), _u("G")], {"G": 1, "R": 1}, False, "nothing can make R"),
+
+    # -- the JOINT case, which neither condition catches alone: each color
+    #    passes on its own and the total passes, but the PAIR is short. This is
+    #    the case a greedy solver gets wrong and the reason the subset sweep
+    #    exists at all.
+    ([_u("B", "U"), _u("B", "U"), _u("B", "U"), _u("W")], {"U": 2, "B": 2}, False,
+     "{U,B} jointly needs 4 units, only 3 can make either"),
+    ([_u("B", "U"), _u("B", "U"), _u("B", "U"), _u("U")], {"U": 2, "B": 2}, True,
+     "the fourth unit makes U, so the pair is covered"),
+    ([_u("B", "U"), _u("B", "U"), _u("U"), _u("U")], {"U": 2, "B": 2}, True,
+     "duals take the B half, singles take the U half"),
+    ([_u("B", "U"), _u("U"), _u("U"), _u("U")], {"U": 2, "B": 2}, False,
+     "only one unit can make B"),
+    ([_u("W", "U"), _u("U", "B"), _u("B", "W")], {"W": 1, "U": 1, "B": 1}, True,
+     "a three-colour cycle splits perfectly"),
+    ([_u("W", "U"), _u("W", "U"), _u("W", "U")], {"W": 1, "U": 1, "B": 1}, False,
+     "nothing can make B"),
+])
+def test_can_pay_is_exact_in_both_directions(units, cost, expected, why):
+    """can_pay must be EXACT, not merely safe. A false positive lets a payment
+    begin that cannot finish -- an all-False mask and a hard error, since there
+    is no Abandon payment action. A false negative hides a legal cast, which is
+    a rules-faithfulness bug in its own right. The greedy tap-solver that
+    predated float-first was sound but incomplete, i.e. it made the second kind
+    of error; this pins that both are gone."""
+    assert mana.can_pay(units, cost) is expected, why
+
+
+def test_available_mana_units_counts_pool_and_sources_in_one_currency():
+    """A floating pip and a symbol from an untapped source are interchangeable
+    for affordability -- that equivalence is the whole point of the unit
+    representation, and it is why cast-then-pay needs no separate "pool" and
+    "sources" reasoning anywhere."""
+    state = GameState(on_the_play=True)
+    state.battlefield = [
+        Permanent(CardDef("Mountain", CardType.LAND, None, EffectId.MOUNTAIN)),
+        Permanent(CardDef("Swamp", CardType.LAND, None, EffectId.SWAMP)),
+    ]
+    assert sorted("".join(sorted(u)) for u in mana.available_mana_units(state)) == ["B", "R"]
+    assert mana.plan_payment(state, {"R": 1, "B": 1}) is not None, "castable off untapped lands alone"
+    assert mana.plan_payment(state, {"R": 2}) is None, "only one red source exists"
+
+    # Tapping one moves it from the source half to the pool half, leaving the
+    # total unchanged -- an invariant the payment gates depend on.
+    mana.activate_mana_source(state, state.battlefield[0])
+    assert sorted("".join(sorted(u)) for u in mana.available_mana_units(state)) == ["B", "R"]
+    assert mana.plan_payment(state, {"R": 1, "B": 1}) is not None
+
+    # A tapped source with nothing floating contributes nothing.
+    state.mana_pool.clear()
+    assert sorted("".join(sorted(u)) for u in mana.available_mana_units(state)) == ["B"]
+    assert mana.plan_payment(state, {"R": 1}) is None
 
 
 def test_fixed_multi_source_floats_both_symbols_at_once():

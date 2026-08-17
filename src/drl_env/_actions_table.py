@@ -9,7 +9,7 @@ turn this file's import block into the split.
 Categories, in table order (see drl_env._actions_cast/_actions_cast_altzone/
 _combat/_resolution/_mana for the category boundaries themselves):
   A. Play land: <name>            -- one per distinct land name
-  A2. Tap <name> [for <color>]    -- float-first mana abilities: one no-color
+  A2. Tap <name> [for <color>]    -- mana abilities: one no-color
      row per fixed/Tron/count source, one row per producible color for a
      flexible/granted source. Legal in ANY priority window, even
      mid-resolution of anything else (605.1a/605.3b -- no pending-resolution
@@ -290,7 +290,7 @@ def build_action_table(decklist, registry, token_card_defs=(),
     for name in land_names:
         actions.append((f"Play land: {name}", _land_drop_legal(name), _land_drop_execute(name)))
 
-    # Float-first mana abilities: "Tap X [for <color>]" produces mana into the
+    # Mana abilities: "Tap X [for <color>]" produces mana into the
     # pool in ANY priority window, even mid-resolution of anything else
     # (605.1a/605.3b -- a mana ability never uses the stack and doesn't
     # require priority; see _mana_ability_legal's own docstring for why no
@@ -773,10 +773,11 @@ def build_action_table(decklist, registry, token_card_defs=(),
                     _choose_opponent_permanent_execute(name, slot),
                 ))
 
-    # Float-first: no "Choose: X as color" tap-during-payment rows. A flexible
-    # or granted source's color is now chosen at TAP time (the "Tap X for
-    # <color>" mana-ability rows above float directly into the pool); paying a
-    # cost only ever spends floated pool mana (below).
+    # No "Choose: X as color" rows: a flexible or granted source's color is
+    # chosen at TAP time (the "Tap X for <color>" mana-ability rows above float
+    # directly into the pool), whether that tap happens speculatively in a main
+    # phase or inside a payment. Spending what is floating is the separate row
+    # set below.
     for color in game.POOL_COLORS:
         actions.append((
             f"Spend {color} from pool",
@@ -869,22 +870,33 @@ def build_action_table(decklist, registry, token_card_defs=(),
     # to the TARGETED player, so the decline row has to exist in their table too
     # the day any cross-player graveyard pick becomes optional.
     actions.append(("Decline (graveyard)", _decline_graveyard_card_legal, _decline_graveyard_card_execute))
-    # Float-first: NO "Abandon payment" -- there is no undo. Paying a cost is
-    # just spending already-floated pool mana (the _pool_spend rows below), and
-    # affordability was checked exactly (game.mana.pool_can_pay) before the
-    # payment began, so spending alone can never strand. With no such action to
-    # take, there is no tap/untap churn cycle for a dense reward penalty to
-    # ever need to fight.
+    # NO "Abandon payment" -- there is no undo. Real Magic rewinds a spell whose
+    # cost cannot be paid (an illegal-action correction, not a normal game
+    # action), and this engine keeps the payment unabandonable instead, so a
+    # payment that cannot be finished leaves the agent with no legal action at
+    # all (an all-False mask, a hard error). Every cast/activate action and Pass
+    # are illegal while a pending is open, so there is nowhere else to go.
     #
-    # That "cannot strand" guarantee is NOT self-enforcing, though: because
-    # there is no undo, anything that DESTROYS floating mana mid-payment can
-    # make an already-begun payment impossible to finish, and with every cast/
-    # activate action and Pass illegal during a pending, the agent is left with
-    # no legal action at all (an all-False mask). A mana FILTER is exactly such
-    # an action -- pool->pool conversion, legal mid-payment -- and a real
-    # pretrain run hit it (monster_tron: filter away the only {G} while owing
-    # {G}). _filter_would_strand_payment now upholds the guarantee for that
-    # path; any FUTURE action that consumes floating mana must do the same.
+    # Under cast-then-pay that guarantee needs real work, and it is NOT
+    # self-enforcing. See game.mana's own STRANDING INVARIANT for the full
+    # statement; the two halves are:
+    #   1. game.plan_payment is EXACT (game.can_pay, Hall's condition), so a
+    #      payment only ever begins when it can be finished -- and
+    #      begin_pay_cost asserts that itself, so a caller that skips the gate
+    #      fails there rather than several actions later here;
+    #   2. every action available DURING a payment is gated on the payment
+    #      surviving it (game.payment_survives). Tapping is not automatically
+    #      safe: a source with a color choice counts as one unit that could be
+    #      any of its colors, and tapping collapses it to one. Filters tap their
+    #      own source, and Conduit Pylons is also a {C} source. Saruli's cost
+    #      taps another creature that may itself be a mana source.
+    # Mana abilities are additionally illegal for the whole of an in-flight cast
+    # before 601.2f (game.mana.CASTING_STEP_PENDING_KINDS and the mid_cast flag
+    # on the delve exile), which is both faithful and removes a whole class of
+    # these hazards rather than guarding each one.
+    #
+    # Any FUTURE action that can reduce available mana mid-payment must add the
+    # same payment_survives gate.
     # NOTE: the pregame mulligan actions ("Keep hand" / "Mulligan") and the
     # "mulligan_bottom" branch of the generic "Choose: X" action have no rows in
     # this table. The per-deck MulliganNet (rl.mulligan) owns every pregame

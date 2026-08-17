@@ -430,7 +430,7 @@ def test_gurmag_angler_delve_exiles_graveyard_cards_to_pay_generic():
     ]
     state.battlefield = [Permanent(registry.CARD_DEFS["Swamp"]) for _ in range(5)]  # {6}{B} minus delve 2 = {4}{B} = 5 mana
     for sw in state.battlefield:
-        activate_mana_source(state, sw)  # float-first: float 5 B into the pool BEFORE casting
+        activate_mana_source(state, sw)  # pre-float (still valid, just no longer required): float 5 B into the pool BEFORE casting
     legal, execute = byname["Cast Gurmag Angler"]
     assert legal(state)
     execute(state)
@@ -746,7 +746,7 @@ def test_blood_fountain_activate_via_action_table_pays_real_mana_cost():
     state.battlefield = [fountain] + [Permanent(registry.CARD_DEFS["Swamp"]) for _ in range(4)]
     for sw in state.battlefield:
         if sw.card_def.name == "Swamp":
-            activate_mana_source(state, sw)  # float-first: float 4 B BEFORE activating ({3}{B} = 4 mana)
+            activate_mana_source(state, sw)  # pre-float (still valid, just no longer required): float 4 B BEFORE activating ({3}{B} = 4 mana)
     bear = state.new_instance(CardDef("Bear", CardType.CREATURE, {"G": 1}, EffectId.FILLER, power=1, toughness=1))
     state.graveyard = [bear]
 

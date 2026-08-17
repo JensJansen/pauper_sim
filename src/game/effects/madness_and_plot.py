@@ -16,9 +16,9 @@ def execute_madness_cast(state):
 
     Exile removal happens in _after_pay, NOT before begin_pay_cost -- the same
     "never touch a zone until on_complete fires" contract every begin_pay_cost
-    caller keeps: float-first's begin_pay_cost is only opened once
-    plan_payment/pool_can_pay has already confirmed the cost is affordable, so
-    there is no undo path to worry about."""
+    caller keeps: begin_pay_cost is only opened once plan_payment has confirmed
+    the cost is payable (and it asserts that itself), so there is no undo path
+    to worry about."""
     pending = state.pending_resolution
     card_def = pending["card_def"]
     outer_on_complete = pending["on_complete"]

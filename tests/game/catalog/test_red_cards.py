@@ -695,7 +695,7 @@ def test_fiery_temper_madness_cast_via_real_discard_chain():
     resolve_top_of_stack(state)  # opens the cast-or-graveyard decision
     assert state.pending_resolution["kind"] == "madness_decision"
 
-    activate_mana_source(state, mountain)  # float-first: float {R} BEFORE casting
+    activate_mana_source(state, mountain)  # pre-float (still valid, just no longer required): float {R} BEFORE casting
     execute_madness_cast(state)
     assert state.pending_resolution["kind"] == "pay_cost"
     guard = 0

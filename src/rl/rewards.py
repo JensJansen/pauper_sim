@@ -532,7 +532,7 @@ deploy_reward_v1 = deploy_reward()
 # the cleanup-discard sloppiness penalty q from both bands. v1's
 # efficiency scaling induces an action-space-minimization pathology (the policy
 # generalizes "win in fewer actions -> more reward" into "shrink your own
-# board"); flat win removes that gradient. Float-first means no undo action
+# board"); flat win removes that gradient. There is no undo action
 # exists, so there's no tap/untap-abandon churn to structurally guard against;
 # PPO entropy alone bounds pointless actions without capping them. Because q
 # never reaches 1, every win here still strictly outscores every loss no

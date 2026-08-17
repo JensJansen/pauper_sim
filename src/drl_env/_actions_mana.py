@@ -1,11 +1,26 @@
 """Mana production: native/flexible tap abilities, Saruli-Caretaker-shaped
 extra-cost ("tap another creature") sources, mana filters (Conduit Pylons/
-Barrels of Blasting Jelly), and Chromatic Star's choose_mana_color. All of
-these are gate-free per real Magic (605.1a/605.3b -- a mana ability never
-uses the stack and doesn't require priority), except the shared
-choose_color mana_subdecision buttons and choose_mana_color, which are
-pending-kind-gated. legal(state)/execute(state) factory pairs
-build_action_table (drl_env._actions_table) calls once per matching source."""
+Barrels of Blasting Jelly), and Chromatic Star's choose_mana_color.
+
+None of these carry a _pending_gate (605.1a/605.3b -- a mana ability never uses
+the stack and doesn't require priority), except the shared choose_color
+mana_subdecision buttons and choose_mana_color, which are pending-kind-gated.
+That is what makes CR 601.2f work: a mana ability stays legal during an open
+payment, which under cast-then-pay is the normal way mana gets produced.
+
+Two rules cut across every entry point here, both added with cast-then-pay
+(2026-08-17):
+  _mana_timing_legal   WHEN a mana ability may be activated at all -- during a
+                       payment (faithful, any phase), or speculatively in the
+                       active player's own main phase (the one AUTHORIZED
+                       SIMPLIFICATION). Never mid-cast before 601.2f.
+  payment_survives     WHETHER this specific activation would leave an open
+                       payment finishable. See game.mana's STRANDING INVARIANT:
+                       tapping is not automatically safe, because a color CHOICE
+                       collapses to one concrete color.
+
+legal(state)/execute(state) factory pairs build_action_table
+(drl_env._actions_table) calls once per matching source."""
 
 import game
 
@@ -342,10 +357,10 @@ def _filter_would_strand_payment(state, name, input_color):
     BEGUN payment -- or one about to begin the instant the current choice
     resolves -- impossible to finish?
 
-    Float-first's own design guarantee is that a payment, once begun, can always
-    be completed -- it deliberately removed the "Abandon payment" action (which
-    existed to escape exactly this), so a payment the agent cannot finish is
-    unescapable BY CONSTRUCTION: every cast/activate action is illegal while a
+    The engine's standing guarantee is that a payment, once begun, can always be
+    completed -- there is no "Abandon payment" action (it was deliberately
+    removed, having existed to escape exactly this), so a payment the agent
+    cannot finish is unescapable BY CONSTRUCTION: every cast/activate action is illegal while a
     pending is open, Pass is illegal, and the only remaining actions are
     spending pool mana and tapping sources. That guarantee was never enforced
     for filters, and a real pretrain run found the hole (monster_tron, turn 10:

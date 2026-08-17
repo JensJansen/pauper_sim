@@ -406,7 +406,7 @@ def _wall_of_roots():
 def test_wall_of_roots_no_tap_ability_and_counter_death():
     """Wall of Roots: no {T} in the real ability's own cost at all (unlike
     every other mana dork here), and a real -0/-1 counter each use (not a
-    private activation count). Float-first: its mana ability IS
+    private activation count). Its mana ability IS
     activate_mana_source (immediate float, no tap-during-payment), so both
     are exercised through that path."""
     state = GameState(on_the_play=True)

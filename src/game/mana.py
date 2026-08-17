@@ -247,8 +247,8 @@ def begin_pay_cost(state, cost, on_complete):
 
 
 def mana_ability_options(state):
-    """Float-first: every (name, color_choice) mana ability the active player
-    can activate RIGHT NOW via this GENERIC (name, color) shape, one per
+    """Every (name, color_choice) mana ability the active player can activate
+    RIGHT NOW via this GENERIC (name, color) shape, one per
     distinct source name -- a top-level action legal in ANY priority window,
     even mid-resolution of anything else (605.1a/605.3b: a mana ability never
     uses the stack and doesn't require priority to activate). Lists only what
@@ -294,7 +294,7 @@ def mana_ability_options(state):
 
 
 def activate_mana_source(state, permanent, color_choice=None):
-    """Float-first: activate `permanent`'s mana ability immediately -- tap it
+    """Activate `permanent`'s mana ability immediately -- tap it
     (unless mana_no_tap), add its produced symbols to the pool (float_mana,
     which also tags single-pip production -- see its own docstring), run any
     on_tap side effect (Lotus Petal/Treasure self-sac, Wall of Roots
@@ -476,12 +476,13 @@ def _reduce_cost_by_pool(pool, cost):
 
 
 def pool_can_pay(pool, cost):
-    """True iff the floating `pool` alone already covers `cost` -- specific
-    pips (W/U/B/R/G/C) by their own symbol, generic by any leftover. The
-    float-first legality check: under float-first the agent produces its mana
-    into the pool via mana abilities BEFORE casting, so "can I afford this?"
-    is a pure, exact question about concrete mana -- no source-tapping solver
-    (plan_payment) needed. Pure (no mutation)."""
+    """True iff the floating `pool` ALONE already covers `cost` -- specific
+    pips (W/U/B/R/G/C) by their own symbol, generic by any leftover.
+
+    Not the affordability gate: that is plan_payment, which also counts what is
+    still tappable. This is the narrower "could I pay without touching another
+    source?" question, kept because it is genuinely a different question and is
+    directly tested. Pure (no mutation)."""
     return _cost_satisfied(_reduce_cost_by_pool(pool, cost))
 
 

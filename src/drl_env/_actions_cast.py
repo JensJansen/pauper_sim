@@ -238,9 +238,13 @@ def _delve_execute(name, max_n, resolve):
     (shared "Delve 0".."Delve 6" buttons) first, THEN exile that many
     graveyard cards (the model chooses which -- begin_exile_n_from_
     graveyard, unchanged), THEN pay the {generic-n} remainder, then cast
-    normally. The exile is a cost, paid first and irreversible; the mana
-    payment that follows is a pure pool spend (float-first: no undo, see the
-    "no Abandon payment" note in build_action_table below)."""
+    normally. The exile is a cost, paid first and irreversible.
+
+    Both the delve-amount choice and the exile are mid-cast, BEFORE 601.2f, so
+    no mana ability is legal during either (hence mid_cast=True below). Without
+    that, a tap taken during the exile could narrow a color the not-yet-open
+    payment depends on and leave every "Delve N" option unpayable -- see the
+    "no Abandon payment" note in build_action_table below."""
     def execute(state):
         card_def = game.CARD_DEFS[name]
 

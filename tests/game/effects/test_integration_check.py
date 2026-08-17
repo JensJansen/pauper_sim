@@ -57,7 +57,7 @@ def test_madness_chain_triggers_stack_madness_and_plot_mana_resolution():
         # outer_on_complete, instead of crashing on a stale pending_resolution
         # reference once pay_cost's own resolution clears it.
         assert state.pending_resolution["kind"] == "pay_cost"
-        # Float-first: float {G} from the Forest (a mana ability resolves at once,
+        # Pre-float (optional under cast-then-pay): float {G} from the Forest (a mana ability resolves at once,
         # even when paying a cost -- rule 605.3a), then spend it explicitly.
         mana.activate_mana_source(state, state.battlefield[0])
         mana.execute_pool_spend(state, "G")

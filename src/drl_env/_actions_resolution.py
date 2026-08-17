@@ -91,10 +91,11 @@ def _choose_name_options(state):
     if pending is None:
         return []
     kind = pending["kind"]
-    # Float-first: no tap-during-payment. Mana is produced by top-level mana
-    # abilities BEFORE casting; paying a cost only ever spends floated pool mana
-    # (_pool_spend), never taps a source here. So "pay_cost" is absent from this
-    # by-name dispatch.
+    # "pay_cost" is absent from this by-name dispatch on purpose. A payment's
+    # own choices are not NAMED options: producing mana is the ordinary "Tap X"
+    # mana-ability rows (601.2f -- legal during a payment, which is how mana is
+    # produced under cast-then-pay), and spending it is the "Spend <color> from
+    # pool" rows. Neither routes through a by-name option list.
     if kind == "search_fetch":
         return game.search_fetch_options(state)
     if kind == "throne_reveal":  # Undercity Throne: pick a creature card from the revealed top 10

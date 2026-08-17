@@ -62,10 +62,12 @@ src/
     turn.py                  Phase/Speed enums; priority rounds; mulligan; the turn
                              loop; game_coroutine + run_multiplayer_game (the 2-player
                              driver the training loop drives).
-    mana.py                  Float-first mana: mana abilities float into a per-player
-                             pool at any priority window (never the stack), paying a
-                             cost spends floated pool mana explicitly, pure pool-
-                             affordability legality checks (pool_can_pay).
+    mana.py                  Cast-then-pay mana (real CR 601.2): a cast is legal when
+                             the pool PLUS still-untapped sources could cover it
+                             (plan_payment, over available_mana_units + can_pay), and
+                             the sources are tapped inside the payment (601.2f) before
+                             the pool is spent (601.2g). The agent makes every tap;
+                             the solver only decides whether a cost is payable.
     decklist.py              Parse data/*.txt decklists against CARD_DEFS.
     registry.py              Union of every color catalog -> CARD_DEFS + EFFECT_REGISTRY;
                              derive_pending_kinds.
@@ -207,8 +209,9 @@ and play out matches on its own. Highlights:
   triggers queue and get promoted to the stack.
 - **Combat.** Declare attackers/blockers, summoning sickness, combat damage,
   per-permanent identity (so an Aura can attach to one specific copy).
-- **Mana.** A mana pool that must be spent by explicit actions, Tron-land
-  detection, and flexible/filter mana sources.
+- **Mana — cast then pay (real CR 601.2).** A mana pool spent by explicit
+  actions, Tron-land detection, flexible/filter sources — and, since
+  2026-08-17, the real casting order. See below.
 - **Card mechanics.** Madness, plot, flashback, auras/bestow, scry/surveil,
   fetch/search, initiative/Undercity, mulligans, token generation (Blood,
   Robot, Warrior, Eldrazi Spawn, Food, Clue, Treasure, and more), affinity/
@@ -236,6 +239,62 @@ and play out matches on its own. Highlights:
   nor `is` can tell two copies apart. Shuffles additionally clear it outright
   at `game.effects.shared.shuffle_library`, the single choke point every
   library shuffle routes through.
+
+### Mana: cast then pay
+
+Real Magic announces a spell, settles modes/X/targets, determines the total
+cost (601.2e), and only **then** activates mana abilities (601.2f) and pays
+(601.2g). This engine ran 601.2f *first* until 2026-08-17 — "float-first": a
+cast was illegal unless the floating pool already covered it, and no source was
+ever tapped during payment. That is the reverse of the real sequence, and it
+forced the agent to commit to a mana configuration before it knew what it was
+paying for.
+
+**How it works now.** One function carries the change: every affordability gate
+in the codebase is `game.plan_payment(state, cost) is not None`, and that now
+means *"could the floating pool **plus** whatever is still tappable cover this?"*
+No call site moved. The agent still makes every tap — the solver decides only
+**whether** a cost is payable, never **how**. (A pre-float-first version returned
+an actual tap *plan* that the engine applied, which is exactly how the mana
+decision used to be taken away from the agent.)
+
+**The solver is exact**, via the deficiency form of Hall's theorem: a cost is
+payable iff there are at least as many mana units as pips, and for every subset
+of the colours demanded, at least that many units can produce one of them.
+Exactness matters in both directions — a false positive lets a payment begin
+that cannot finish (an all-False mask and a hard error, since there is no
+*Abandon payment*), and a false negative hides a legal cast, which is a
+rules-faithfulness bug of its own. At most six colours can be demanded, so the
+subset sweep is ≤63 iterations, and ≤7 for real costs.
+
+**The stranding invariant.** Because a payment cannot be abandoned, anything
+done during one that reduces available mana could make it unfinishable. Every
+such action is gated on the payment surviving it. Tapping is *not* automatically
+safe: a source with a colour choice counts while untapped as one unit that could
+be any of its colours, and tapping collapses it to one — Jagged Barrens (`{B}`
+or `{R}`) tapped for `{B}` against an `{R}` cost is exactly how a real game
+stranded. Filters tap their own source, and Conduit Pylons is *also* a `{C}`
+source. Saruli Caretaker's cost taps another creature that may itself be a mana
+source, so it is excluded from the affordability count entirely and both its
+choices are gated. `begin_pay_cost` asserts the invariant itself, so a caller
+that skips its gate fails at that call site instead of several actions later.
+
+Mana abilities are additionally illegal for the whole of an in-flight cast
+*before* 601.2f — while modes, X, a delve amount, which graveyard copy, or
+delve's exile are being chosen. That is faithful (no player receives priority
+during 601.2) and it removes a whole class of stranding rather than guarding
+each case.
+
+> **AUTHORIZED SIMPLIFICATION** (owner-approved 2026-08-17). *Speculative*
+> floating — a mana ability activated with no payment open — is restricted to
+> the active player's own main phase. Real Magic allows it in any priority
+> window. It costs little in practice: holding mana up means leaving lands
+> *untapped*, not floating, and paying for an instant on the opponent's turn
+> goes through the payment window, so what it actually removes is floating for a
+> mana ability's *side effect* (Lotus Petal's sacrifice, Wall of Roots' counter)
+> outside a main phase. This change **removed two** authorized deviations —
+> the `state.in_cleanup` mana ban, and combat's shared mana window — and added
+> this one.
 
 The engine's effect functions defensively handle a no-opponent (1-player)
 configuration — useful for a card-level unit test that doesn't need a second
@@ -708,12 +767,14 @@ wired only through `--matchup` mode.)
   per-turn mana-burn counters for the *next* turn before that next turn's own
   boundary sweep runs) escaped the dense penalty entirely. `Phase.END` now
   runs a real end-step priority round first (rule 513), sweeps mana at an
-  explicit sub-boundary, THEN runs cleanup — and `state.in_cleanup` makes
-  every gate-free mana ability illegal for the whole cleanup portion itself
-  (an authorized simplification beyond real rule 514.3; the existing
-  trigger-driven extra priority round there is kept, specifically so a
-  Madness card discarded by forced cleanup can still resolve its own
-  cast-or-graveyard decision).
+  explicit sub-boundary, THEN runs cleanup. Mana abilities are illegal for the
+  whole cleanup portion — as of 2026-08-17 that falls out of the general
+  main-phase rule below rather than needing `state.in_cleanup` to say so, and
+  the separate authorized simplification that used to sit on that flag is gone.
+  `in_cleanup` itself remains, since it is the only thing distinguishing the end
+  step from cleanup (they share `Phase.END`). The trigger-driven extra priority
+  round there is kept, specifically so a Madness card discarded by forced
+  cleanup can still resolve its own cast-or-graveyard decision.
 
   `deploy_reward_v3` (2026-08-10) reshapes the curve itself considerably on
   top of all the above, per owner request: `mana_burn_c=2.0`/`mana_burn_p=2.5`

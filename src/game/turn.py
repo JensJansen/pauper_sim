@@ -129,10 +129,9 @@ def _tally_mana_mistake(state, idx, player, burnt):
 def _empty_mana_pools(state):
     """Rule 500.4: at the end of each step/phase, all unused mana empties --
     for BOTH players (the non-active player can float mana to cast an instant
-    on your turn). Float-first makes the pool a persistent within-phase
-    resource, so this per-phase empty is what makes a mis-floated color a real,
-    faithful cost (the mana is gone, the source stays tapped) rather than an
-    undo. Replaces the old once-per-turn clear (untap_step) -- and, since it
+    on your turn). The pool is a persistent within-phase resource, so this
+    per-phase empty is what makes a mis-floated color a real, faithful cost (the
+    mana is gone, the source stays tapped) rather than an undo. Replaces the old once-per-turn clear (untap_step) -- and, since it
     now owns every mana clear, logs each non-empty emptying (keyed by player
     index) so the event log stays a faithful record of when mana was lost, and
     tallies each player's own PlayerState.mana_burnt_total (raw diagnostic,
@@ -593,15 +592,21 @@ def _run_priority_round_gen(state):
     # returns once the stack's empty AND no cost/choice is outstanding);
     # this is the one path that doesn't, so it has to drop it itself rather
     # than let it leak across a phase boundary no caller expects.
-    # ponytail: float-first has no undo mechanism at all (payment is an
-    # irreversible pool spend, not a reversible tap), so a dropped pay_cost
-    # is simply left as-is here: any mana already spent toward it via
-    # execute_pool_spend is gone, and any floated-but-unspent mana just sits
-    # in the pool until the next phase-boundary clear -- both are ordinary
-    # "burned floating mana" outcomes real Magic itself produces whenever a
-    # player floats more than they use, not a new failure mode. Upgrade to a
-    # smarter "no observable progress" detector if this ever needs to be
-    # tighter.
+    # ponytail: there is no undo mechanism at all (payment is an irreversible
+    # pool spend, not a reversible tap), so a dropped pay_cost is simply left
+    # as-is here: any mana already spent toward it via execute_pool_spend is
+    # gone, and any floated-but-unspent mana sits in the pool until the next
+    # phase-boundary clear -- both are ordinary "burned floating mana" outcomes
+    # real Magic itself produces whenever a player floats more than they use.
+    #
+    # Under cast-then-pay (2026-08-17) this drops slightly more: the ANNOUNCED
+    # SPELL is abandoned too, not just floating mana. The card is unharmed --
+    # push_to_stack only runs in the payment's own on_complete, so it never
+    # left hand -- but the taps and spends made toward it are lost. The action
+    # COUNT of a cast did not change (taps merely moved from before the cast to
+    # inside it), so the cap is left at 20; watch for truncations in training
+    # before raising it, and prefer a real "no observable progress" detector to
+    # a bigger number.
     state.pending_resolution = None
 
 
