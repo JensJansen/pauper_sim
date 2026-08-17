@@ -75,7 +75,7 @@ DEFAULT_MAX_SNAPSHOTS_PER_DECK = 32
 # Why this matters more than a mis-set knob. Measured from the real
 # opponent_stats.json at 60,001 games/deck, the share of each deck's training
 # games spent in matchups it wins <25% of, against the Elo it gained over the
-# whole run (RL_METHODOLOGY_PLAN.md sections 1A.3/1A.4):
+# whole run:
 #
 #   mono_red_rally   0.0% unwinnable, 51.3% mirror  ->  +241 Elo
 #   rakdos_madness  58.0% unwinnable, 25.5% mirror  ->   -66 Elo

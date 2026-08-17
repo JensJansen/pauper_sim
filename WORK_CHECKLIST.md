@@ -8,19 +8,53 @@ Status: `[ ]` not started · `[~]` in progress · `[x]` done
 
 ---
 
-## 1. `[ ]` Cleanup
+## 1. `[~]` Cleanup
 
 Repo-wide cleanup pass.
 
-**Goals:** _(to be defined with owner)_
+### Done (commit `f6a16b9`)
 
-**Open questions:**
-- What is in scope — dead code, stale docs, the archived checkpoint trees, the
-  one-off experiment configs in `training_configs/`, the finished sections of
-  `RL_METHODOLOGY_PLAN.md`, or all of it?
-- Carry-over items already known: `advance_progress` counter cadence (advances at
-  session end, should advance at snapshot cadence — hand-corrected 3× so far);
-  `HeuristicAgent` move + Tier-4 naming from the repo-reorg plan.
+Deleted: `RL_METHODOLOGY_PLAN.md`; all of `checkpoints/` (1.4 GB — every population,
+both stack backups, `vocab.json`, `shared_stack_frozen.pt`); all of `logs/` (80 MB);
+the four concluded A/B configs; the seven one-off `src/analysis/` scripts and their
+`_shared.py`. Every reference to a deleted *file* was repaired (`README.md`,
+`rl/rewards.py`, `tests/test_run_league.py`, `tests/rl/test_train.py`,
+`.claude/skills/train/SKILL.md`). 655 passed, 1 skipped.
+
+**Consequence:** a fresh pretrain + freeze is now mandatory before any league run.
+
+### Done (commit `71b31f1`)
+
+- **A.** All 24 dangling `RL_METHODOLOGY_PLAN.md` citations stripped across 15 files.
+  Each comment kept its conclusion; only the pointer went.
+- **B.** `run_default.json` 5,741 → 2,042 chars, `league_main.json` 4,666 → 1,542.
+  Every `_`-note about a deleted population is gone; what remains documents live
+  values (`games_per_iteration=24`, `pfsp_power=0.5`) and current status.
+- **F. BUG 3 fixed.** `_save_live_checkpoints` had always written the live nets at
+  every snapshot point so a crash keeps its training; `progress.json` was written
+  only after `_run_session` returned, so a crash left the counter *behind* the
+  weights and it had to be hand-corrected three times. New
+  `league_runner.checkpoint_progress()` writes the counter absolutely at the same
+  snapshot points; `advance_progress()` takes `session_start_games` so the
+  session-end write is idempotent rather than double-counting. Regression test
+  pins both halves.
+- **G.** `HeuristicAgent` + its nine scoring helpers moved to
+  [src/rl/heuristic_agent.py](src/rl/heuristic_agent.py). One-way dependency
+  (heuristic → agent), so nothing in the learned path can come to depend on it.
+  Its tests stayed in `test_agent.py` — they share `_rally_ctx`/`_make_creature`
+  fixtures with the SeatAgent tests, and duplicating those would be more fragile
+  than the tidier split is worth.
+
+656 passed, 1 skipped.
+
+### Deferred / declined
+
+| # | Item | Disposition |
+|---|---|---|
+| C | Gauntlet machinery (97 refs, 14 files). Both configs point `gauntlet_league_name` at deleted populations, so `vs_gauntlet` is a permanent silent no-op | **deferred by owner** — machinery and all three gauntlet configs left untouched |
+| D | `deploy_reward_v1`–`v5` — production-dead, only tests reference them | **declined** — thin parameter bindings over machinery that stays anyway; their comments are load-bearing (v3's collapse is the cited reason v6's safety margin exists) |
+| E | README narrative for deleted experiments (1,192 lines) | **deferred** — items 2–4 will rewrite exactly those sections; doing it now means doing it twice |
+| H | Tooling whose target populations no longer exist | **declined** — all take league names as arguments, so they survive a fresh start unchanged. Only `src/benchmarking/` looks genuinely spent |
 
 ---
 
@@ -88,5 +122,11 @@ Give the policy access to game history, not just the current board state.
 (4,931/5,770 at cum 6,984 games/deck), up to 100% vs `spy_combo`. Owner's assessment:
 the deck is functioning correctly — the other ten decks are missing *strategic facets*
 the agents cannot currently express or perceive. Items 2–4 all widen what the agent can
-do or see, which is the intended fix; ten prior optimizer/architecture hypotheses were
-all null (`RL_METHODOLOGY_PLAN.md` §1A.5–1A.15).
+do or see, which is the intended fix.
+
+Ten prior hypotheses for the same plateau were tested and every one came back null:
+self-play cycling, `adv_std`, degenerate matchups, entropy coefficient, Adam-step count,
+KL truncation, trainable capacity, meta size, and a cross-deck-pretrained encoder. The
+one durable methodological result from that work: **within-league elo does not measure
+strength in either direction** — every strength claim needs a common external reference.
+(The full writeup lived in `RL_METHODOLOGY_PLAN.md`, deleted 2026-08-17.)

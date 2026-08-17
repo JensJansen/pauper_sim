@@ -226,9 +226,8 @@ def learning_health(league_dir, min_records=10):
     wall clock at measured throughput. Nothing in this loop could tell a run
     that was learning from one that was not, so a 60,001-games/deck run
     continued for weeks while three of its four decks were getting WORSE --
-    each of them ending up weaker than a snapshot already sitting on disk
-    (RL_METHODOLOGY_PLAN.md section 1A.3). Crash-free is not the same as
-    healthy."""
+    each of them ending up weaker than a snapshot already sitting on disk.
+    Crash-free is not the same as healthy."""
     path = Path(league_dir) / "metrics.jsonl"
     if not path.exists():
         return "unknown", []
@@ -447,8 +446,7 @@ class RunManager:
                         f.write("  !! At least one deck is now WEAKER than a checkpoint already on disk.\n"
                                 "     Continuing will train further from the degraded policy.\n")
             # DEFAULT IS WARN, NOT STOP. Stopping automatically is an
-            # operator-policy call the repo owner has not made yet
-            # (RL_METHODOLOGY_PLAN.md section 8, open question 1), and silently
+            # operator-policy call the repo owner has not made yet, and silently
             # halting someone's overnight run is the more destructive default of
             # the two. Set stop_on_regression on the run entry to opt in.
             if verdict == "regressed" and entry.get("stop_on_regression"):

@@ -50,7 +50,7 @@ def pretrain_opponent(deck_names, name, cross_deck, rng):
     including `name`, so roughly 1/len(roster) of rounds stay mirrors -- close
     to the mix a real league produces.
 
-    Why this exists (2026-08-16, RL_METHODOLOGY_PLAN.md section 1A.15): the
+    Why this exists (2026-08-16): the
     shared stack has only ever encoded MIRROR board states, both players on the
     same decklist. In an 11-deck league ~10/11 of games are cross-deck, so the
     SetTransformer's attention is asked at training time to encode combinations

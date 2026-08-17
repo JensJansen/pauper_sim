@@ -11,9 +11,16 @@ import game
 from game.state import CardInstance, GameState, PlayerState
 from rl.action_bridge import build_fixed_action_table
 from rl.agent import (
-    DECK_SIZE_CAP, OPPONENT_HAND_SIZE_CAP, AlwaysKeep, HeuristicAgent, SeatAgent, _Decision,
-    _attack_is_worthwhile, _blocker_worth_assigning, _card_name_from_cast_action, _cmc,
+    DECK_SIZE_CAP, OPPONENT_HAND_SIZE_CAP, AlwaysKeep, SeatAgent, _Decision,
     _log_decision_weights, _resolve_pointer_identity, _scalar_features,
+)
+# HeuristicAgent moved to its own module 2026-08-17. Its tests stayed in this
+# file rather than moving with it: they are built on _rally_ctx / _make_creature
+# / TOKEN_DEFS, fixtures shared with the SeatAgent tests here, and duplicating
+# those to achieve a tidier file split would be the more fragile arrangement.
+from rl.heuristic_agent import (
+    HeuristicAgent, _attack_is_worthwhile, _blocker_worth_assigning,
+    _card_name_from_cast_action, _cmc,
 )
 from rl.arch import SetTransformer
 from rl.deck import DeckNetwork

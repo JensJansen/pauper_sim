@@ -11,7 +11,7 @@ what hides a monotone decline. `dmir_terror` vs its own oldest archived
 snapshot ran 60/80/85/65/80/60/60/80/75/55/50/60/60/45 across sessions 24-37;
 pooled, that is a bland ~65%, and the regression it actually describes went
 unnoticed for thirteen sessions. It was independently confirmed only by a
-purpose-built round robin (RL_METHODOLOGY_PLAN.md section 1A.3) that cost 4,296s
+purpose-built round robin that cost 4,296s
 of compute to rediscover what was already sitting in this file.
 
 So this version leads with the PER-RECORD SEQUENCE, and only then pools:
@@ -136,7 +136,7 @@ def peak_comparison(rows, group=5):
       - a LINEAR trend test cannot see rise-then-fall, which is the actual
         shape here. Measured on real data: dmir_terror vs archive_oldest rose
         35% -> 85% then fell to 45%, and trend_z reads +0.35, FLAT. The
-        round robin (RL_METHODOLOGY_PLAN.md section 1A.3) independently found
+        round robin independently found
         every deck peaking mid-run -- snapshot 116 / 58 / 289 / 232 -- so
         rise-then-fall is the norm in this project, not an edge case.
 

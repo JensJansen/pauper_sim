@@ -111,8 +111,7 @@ class DeckNetwork(nn.Module):
 # The last three were added together because all three are PUBLIC information
 # a real player has at the table and none of them was reaching the policy.
 # on_the_play in particular was a plain oversight: rl.mulligan.MulliganNet has
-# always received it while the main policy never did. See
-# RL_METHODOLOGY_PLAN.md section 4.2.
+# always received it while the main policy never did.
 #
 # 4 = turn/lands/mulligans/am-i-turn-player, +2 = my/opponent life totals,
 # +5 = my/opponent library size, opponent hand size, stack-targets-me/opponent,

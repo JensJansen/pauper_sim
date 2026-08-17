@@ -99,7 +99,7 @@ def build_arg_parser(description=None):
                               "leagues won't have one. Prefer --league-config's own gauntlet_league_name field (see "
                               "training_configs/run_gauntlet.json's _note); this flag is the lower-level override.")
     parser.add_argument("--heuristic-decks", type=str, default=None, metavar="A,B,...",
-                         help="Deck(s) to ALSO periodically measure against rl.agent.HeuristicAgent -- the "
+                         help="Deck(s) to ALSO periodically measure against rl.heuristic_agent.HeuristicAgent -- the "
                               "gauntlet's hand-authored, non-learned tier-1 member (rl.league_runner._run_eval_vs_heuristic). "
                               "Default: none (most decks don't have an owner-authored heuristic opponent). Prefer "
                               "--league-config's own heuristic_decks field; this flag is the lower-level override.")

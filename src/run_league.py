@@ -142,7 +142,7 @@ def main():
         # ratio can be raised without a code edit -- at the default of 6, every
         # ppo_update spends its whole trust region on six games of evidence
         # (approx_kl 0.044 against target_kl 0.03, i.e. early stopping on most
-        # updates; see RL_METHODOLOGY_PLAN.md section 1A.2). Raising it costs
+        # updates). Raising it costs
         # wall-clock exactly as the benchmark comment above predicts -- a bigger
         # buffer per update, no extra collection parallelism -- which is a
         # deliberate trade, not an oversight.
@@ -218,8 +218,13 @@ def main():
     # BUG 1 FIX (2026-08-13): cumulative_games_per_deck must advance for EVERY
     # batch, not only auto-sized ones -- see league_runner.advance_progress for
     # the full rationale and the invariant it protects.
+    # BUG 3 FIX (2026-08-17): league_runner.checkpoint_progress has already been
+    # advancing the same counter at every snapshot point during the session, so
+    # this final write passes the session's own starting count and computes the
+    # total absolutely rather than adding to what those writes left on disk.
     if league_dir is not None:
-        advance_progress(league_dir, n_iterations, games_per_iteration, auto_sizing)
+        advance_progress(league_dir, n_iterations, games_per_iteration, auto_sizing,
+                         session_start_games=cumulative_games)
 
     if args.log:
         meta = {"mode": "matchup" if matchup else "league", "matchup": list(matchup) if matchup else None,

@@ -412,7 +412,7 @@ Setting it to 0.05 was run as a controlled single-variable A/B
 (config since deleted with the rest of the concluded arms) and
 **was not adopted** — it held
 policy entropy 25% higher but left `approx_kl` unchanged and merely
-redistributed elo between decks. See RL_METHODOLOGY_PLAN.md §1A.8–§1A.10.
+redistributed elo between decks.
 
 **`lr` changed 3e-4 → 2e-4 (2026-08-15)** — the first default here set by a
 controlled experiment rather than a guess. Three single-variable arms at 10,000
@@ -446,7 +446,7 @@ problem** and lowering `lr` further will not fix it.
 Scope is **league training only** — `run_pretrain.py` keeps its own 3e-4, which
 was never part of the experiment. Resuming a league trained at 3e-4 now picks up
 the new default; pin `"ppo": {"lr": 0.0003}` in its config to continue it
-unchanged. See RL_METHODOLOGY_PLAN.md §1A.11–§1A.13.
+unchanged.
 
 Training runs on **CPU** by design — the model is small (~200–250K params) and
 a batch-size sweep found no GPU crossover at this size.
@@ -472,7 +472,7 @@ appends to `checkpoints/<league>/metrics.jsonl`, one JSON line per record:
 > Adam steps on as a side effect — raise `batch_size_cap` to run it as its own
 > experiment. Note the anneal running correctly is not the same as it being
 > *right*: it was measured moving the wrong way relative to policy entropy, and
-> the fix attempted for it did not pan out (RL_METHODOLOGY_PLAN.md §1A.8–§1A.10).
+> the fix attempted for it did not pan out.
 
 - `kind: "session_start"` — one header per session recording the reward
   function, roster, cumulative games/deck, and every resolved PPO/eval

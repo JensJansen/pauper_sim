@@ -2,9 +2,9 @@
 
 WHY THIS EXISTS. Training can make a policy worse, and did: at 60,001
 games/deck, three of four decks in 4_deck_subleague_test lost head-to-head to
-their own ~200-game-old selves (RL_METHODOLOGY_PLAN.md section 1A.3, and
-logs/rr_live_check.json -- dmir_terror 38%, elves 43%, rakdos_madness 35%
-against snapshot_0). Continuing to train from `live.pt` in that state means
+their own ~200-game-old selves (dmir_terror 38%, elves 43%,
+rakdos_madness 35% against snapshot_0, measured by a snapshot round
+robin). Continuing to train from `live.pt` in that state means
 building on the worst version of the policy the run ever produced.
 
 NO NEW BACKUP IS NEEDED and this deliberately does not make one of the pool.

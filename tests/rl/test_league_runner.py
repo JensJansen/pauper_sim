@@ -180,7 +180,7 @@ def test_run_eval_vs_gauntlet_plays_the_independent_twin_and_handles_missing_dec
 def test_run_eval_vs_heuristic_plays_real_games(tmp_path, monkeypatch):
     """_run_eval_vs_heuristic is the gauntlet's tier-1 (hand-authored,
     non-learned) member -- confirms it actually plays real games between a
-    live net and rl.agent.HeuristicAgent and returns a real tally, using the
+    live net and rl.heuristic_agent.HeuristicAgent and returns a real tally, using the
     deck the owner scoped it to (mono_red_rally)."""
     monkeypatch.chdir(_SRC_DIR)
     monkeypatch.setattr(

@@ -150,7 +150,7 @@ def ppo_update(net, optimizers, buf, device, n_epochs=4, batch_size=64, gamma=0.
     # policy did, and dividing by that tiny std promotes pure noise to a
     # full-scale gradient before ~67 Adam steps run on it. Measured at 60,001
     # games/deck, three of four decks spent 58-77% of training in exactly such
-    # matchups (RL_METHODOLOGY_PLAN.md section 1A.4), and flattening PFSP only
+    # matchups, and flattening PFSP only
     # takes the worst case to ~56% -- the floor is structural, since two of
     # elves' four opponents are unwinnable.
     #

@@ -19,7 +19,8 @@ from rl.arch import SetTransformer
 from rl.deck import DeckNetwork
 from rl.league import LeaguePool, PFSP_POWER
 from rl.pool import build_pool
-from rl.agent import HeuristicAgent, SeatAgent
+from rl.agent import SeatAgent
+from rl.heuristic_agent import HeuristicAgent
 from rl.train import batch_size_for_iteration, collect_rollout, collect_rollout_league, _constant_pairing, ent_coef_schedule
 from rl.rollout_parallel import collect_rollout_league_parallel
 from rl.ppo import ppo_update
@@ -60,7 +61,7 @@ EVAL_EVERY_SESSIONS = 1
 # frozen SetTransformer encoder is 117,056 params; this trunk at (128, 128) is
 # 82,877, so 59% of the model is frozen at whatever the pretrain phase produced.
 # Made per-league configurable 2026-08-15 to test whether the late-training
-# plateau (RL_METHODOLOGY_PLAN.md section 1A.13 -- reached by ~4,000 games/deck
+# plateau (reached by ~4,000 games/deck
 # and NOT caused by KL truncation, entropy, advantage scale or Adam-step count)
 # is a capacity ceiling. (512, 512) is 515,261 params, 6.2x this.
 #
@@ -111,7 +112,7 @@ PPO_DEFAULTS = {
     # Note for anyone tuning further: 2e-4 plateaus and oscillates exactly as
     # 3e-4 does despite having no truncation at all, so the late-training
     # plateau is NOT a trust-region problem and lowering lr further will not fix
-    # it. See RL_METHODOLOGY_PLAN.md sections 1A.12-1A.13.
+    # it.
     #
     # Scope: LEAGUE training only. run_pretrain.py has its own 3e-4 and was
     # never part of the experiment -- do not "make it consistent" without
@@ -130,13 +131,12 @@ PPO_DEFAULTS = {
     # to a single full-batch minibatch. At the old ~777-transition buffer that
     # is 2.74 Adam steps per iteration instead of 67, a 24x cut. Whether that
     # ramp is even wanted is a separate experiment, designed under a diagnosis
-    # RL_METHODOLOGY_PLAN.md overturns. Raise batch_size_cap to run it.
+    # later measurement overturned. Raise batch_size_cap to run it.
     "batch_size_start": 32,
     "batch_size_cap": 32,
     "mulligan_lr": 1e-3,   # the mulligan net's own, deliberately separate optimizer
     "gamma": 0.99,
-    "gae_lambda": 0.95,    # with gamma, a 0.9405/step advantage decay -- see
-                           # RL_METHODOLOGY_PLAN.md section 4.1 on the horizon this implies
+    "gae_lambda": 0.95,    # with gamma, a 0.9405/step advantage decay
     "target_kl": 0.03,
     "n_epochs": 4,
     # Floor on the advantage-normalization divisor (rl.ppo.ppo_update). 0.0 is
@@ -146,7 +146,7 @@ PPO_DEFAULTS = {
     "adv_norm_floor": 0.0,
     # Entropy bonus. None = use rl.train.ent_coef_schedule's 0.02 -> 0.005
     # anneal (the historical behavior, unchanged). A float pins it CONSTANT for
-    # the whole run, which is Wave 2b (RL_METHODOLOGY_PLAN.md section 1A.8).
+    # the whole run, which is Wave 2b.
     #
     # Why the knob exists: on the 20,016-games/deck run the anneal was measured
     # running the wrong way. ent_coef fell 0.0200 -> 0.0140 while policy entropy
@@ -337,7 +337,29 @@ def should_snapshot(games_before, games_per_iteration, snapshot_every):
     return (games_before + games_per_iteration) // snapshot_every_games > games_before // snapshot_every_games
 
 
-def advance_progress(league_dir, n_iterations, games_per_iteration, auto_sizing):
+def checkpoint_progress(league_dir, cumulative_games_per_deck):
+    """Mid-session write of the cumulative counter, at the snapshot cadence.
+
+    BUG 3 (fixed 2026-08-17). _save_live_checkpoints has always written the
+    live nets incrementally at every snapshot point, precisely so a mid-session
+    crash keeps the training it already did. progress.json did NOT: it was
+    written once, by run_league.main(), only after _run_session RETURNED. So a
+    crash left the two out of step -- weights from N games/deck on disk beside
+    a counter still reading the session's starting value. The counter is the
+    horizon batch_size_for_iteration, ent_coef_schedule and should_snapshot all
+    ramp against, so the resumed league re-ran a stretch of schedule it had
+    already trained through. It had to be hand-corrected three times before
+    being fixed here.
+
+    Writes the counter ABSOLUTELY (caller passes games-so-far, not a delta) so
+    calling it repeatedly within one session is idempotent. Leaves
+    last_batch_size alone: that is the doubling ladder's feedback and belongs
+    to the session as a whole, so only advance_progress touches it."""
+    _save_progress(league_dir, _load_progress(league_dir)["last_batch_size"], cumulative_games_per_deck)
+
+
+def advance_progress(league_dir, n_iterations, games_per_iteration, auto_sizing,
+                     session_start_games=None):
     """Record what a finished batch did. Returns the new progress dict.
 
     Two separate things live in progress.json and only ONE of them belongs to
@@ -357,11 +379,20 @@ def advance_progress(league_dir, n_iterations, games_per_iteration, auto_sizing)
     escalation loop both always pass --n-iterations, so progress.json was never
     written, _load_progress returned 0 forever, and both schedules restarted at
     their origin every session for the entire run. Extracted from
-    run_league.main() so the invariant is testable without spawning training."""
+    run_league.main() so the invariant is testable without spawning training.
+
+    session_start_games is BUG 3's half of the fix. checkpoint_progress now
+    advances the same counter mid-session, so a session-end "add played to
+    whatever is on disk" would double-count every snapshot it already wrote.
+    Given the session's own starting count, this computes the new value
+    ABSOLUTELY (start + played) and is therefore idempotent no matter how many
+    mid-session writes landed. Omitting it keeps the old additive behavior for
+    callers that never checkpoint mid-session."""
     progress = _load_progress(league_dir)
     played = n_iterations * games_per_iteration
     last_batch_size = played if auto_sizing else progress["last_batch_size"]
-    cumulative = progress["cumulative_games_per_deck"] + played
+    base = progress["cumulative_games_per_deck"] if session_start_games is None else session_start_games
+    cumulative = base + played
     _save_progress(league_dir, last_batch_size, cumulative)
     return {"last_batch_size": last_batch_size, "cumulative_games_per_deck": cumulative}
 
@@ -467,7 +498,7 @@ def _run_session(n_iterations, games_per_iteration, snapshot_every, executor, n_
         # a config edit from silently shape-mismatching a league already on disk
         # -- the same failure mode as the vocab/feature-dim asserts, but for a
         # value that is now per-league tunable (see trunk_hidden's own docstring
-        # in run_league.py and RL_METHODOLOGY_PLAN.md section 1A.14).
+        # in run_league.py).
         live_path = f"{league_dir}/{name}/live.pt"
         width = ckpt_io.trunk_hidden_from_deck_checkpoint(live_path) or trunk_hidden
         net = DeckNetwork(shared, film_condition_dim=D_MODEL, non_targeting_n_actions=len(fixed_tables[name]),
@@ -728,6 +759,11 @@ def _run_session(n_iterations, games_per_iteration, snapshot_every, executor, n_
             # LeaguePool.save_opponent_stats' own docstring for why this specific
             # cadence, not "every game" or "never until session end").
             pool.save_opponent_stats()
+            # BUG 3: and the cumulative counter, so progress.json can never be
+            # left behind the weights those two lines just wrote. The iteration
+            # is finished by here, so games_before + games_per_iteration is what
+            # this league has actually trained.
+            checkpoint_progress(league_dir, games_before + games_per_iteration)
             print(f"  iter {iteration}: snapshotted {len(train_decks)} train deck(s) + saved live checkpoints "
                   f"(counts now: { {n: len(pool.snapshots[n]) for n in deck_names} })", flush=True)
 
@@ -903,7 +939,7 @@ def load_vintage_agent(league_dir, deck_name, vintage, shared, deck_ctx, pool=No
     snapshot is only ever read off disk once.
 
     NOTE: for a snapshot vintage this inherits load_snapshot_agent's BUG 3
-    behavior (RL_METHODOLOGY_PLAN.md section 3) -- DeckNetwork registers the
+    behavior -- DeckNetwork registers the
     shared stack as a child module, so that loader's requires_grad=False sweep
     and state_dict load both reach `shared`. Harmless for read-only eval
     against an already-frozen stack (every embedded copy is byte-identical),
@@ -1090,7 +1126,7 @@ def _run_eval_vs_gauntlet(deck_name, live_net, mulligan_net, deck_ctx, decklist,
 
 def _run_eval_vs_heuristic(deck_name, live_net, mulligan_net, deck_ctx, decklist, horizon,
                             games=EVAL_GAMES, seed=None):
-    """Plays deck_name's CURRENT live net against a HeuristicAgent (rl.agent)
+    """Plays deck_name's CURRENT live net against a HeuristicAgent (rl.heuristic_agent)
     for the SAME deck -- the gauntlet's tier-1 member: a hand-authored, non-
     self-play reference opponent, distinct from _run_eval_vs_gauntlet's tier-2
     (an independently-TRAINED population). Only called for whichever deck(s)

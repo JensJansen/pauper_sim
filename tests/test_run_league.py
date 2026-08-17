@@ -26,7 +26,8 @@ import json
 
 import pytest
 
-from rl.league_runner import _load_progress, _next_batch_games, _save_progress, advance_progress, should_snapshot
+from rl.league_runner import (_load_progress, _next_batch_games, _save_progress, advance_progress,
+                              checkpoint_progress, should_snapshot)
 from rl.train import batch_size_for_iteration, ent_coef_schedule
 
 
@@ -95,6 +96,35 @@ def test_auto_sized_batch_feeds_the_ladder_and_advances_the_counter(tmp_path):
     _save_progress(league, last_batch_size=64, cumulative_games_per_deck=10_000)
     after = advance_progress(league, n_iterations=20, games_per_iteration=6, auto_sizing=True)
     assert after == {"last_batch_size": 120, "cumulative_games_per_deck": 10_120}
+
+
+def test_mid_session_progress_checkpoints_survive_a_crash_and_never_double_count(tmp_path):
+    """BUG 3's fix. _save_live_checkpoints has always written the live nets at
+    every snapshot point so a mid-session crash keeps the training it did;
+    progress.json was written only after _run_session returned, so a crash left
+    the counter BEHIND the weights and it had to be hand-corrected three times.
+
+    Two properties, and the second is the one that makes the first safe:
+      1. a crash after some snapshots leaves the counter at those snapshots;
+      2. a session that completes lands on exactly start + played, no matter
+         how many mid-session writes preceded it -- otherwise the fix trades a
+         counter that lagged for one that runs ahead."""
+    league = str(tmp_path)
+    _save_progress(league, last_batch_size=64, cumulative_games_per_deck=10_000)
+
+    # Session of 100 iterations x 6 games; snapshots land every 200 games.
+    for games_so_far in (200, 400, 600):
+        checkpoint_progress(league, 10_000 + games_so_far)
+    crashed = _load_progress(league)
+    assert crashed["cumulative_games_per_deck"] == 10_600, "a crash keeps the snapshots it wrote"
+    assert crashed["last_batch_size"] == 64, "mid-session writes must not touch the doubling ladder"
+
+    # Now let the same session finish. 100 * 6 = 600 games -> 10,600, NOT
+    # 10,600 + 600: the three writes above are already part of that total.
+    after = advance_progress(league, n_iterations=100, games_per_iteration=6, auto_sizing=False,
+                             session_start_games=10_000)
+    assert after["cumulative_games_per_deck"] == 10_600, "session end must be absolute, not additive"
+    assert _load_progress(league) == after
 
 
 def test_the_schedules_now_actually_move_across_sessions(tmp_path):

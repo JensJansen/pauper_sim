@@ -565,7 +565,7 @@ def test_adv_norm_floor_defaults_to_a_true_no_op_and_damps_degenerate_batches():
     outcome -- so critic noise is promoted to a full-scale gradient. Three of
     four decks spent 58-77% of training in matchups they win <25% of, and
     flattening PFSP only reaches ~56%, so this is structural rather than
-    incidental (RL_METHODOLOGY_PLAN.md section 1A.4).
+    incidental.
 
     Two properties, both load-bearing:
       - floor=0.0 (the default) must reproduce the historical behavior EXACTLY,

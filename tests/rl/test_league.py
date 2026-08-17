@@ -303,7 +303,7 @@ def test_share_of_the_hardest_matchup_decreases_as_pfsp_power_decreases():
     LARGER exponent SHARPENS concentration onto the opponent you lose to most.
     The change was made to reduce that concentration and did the opposite,
     sending three of four decks to 58-77% of their training games in matchups
-    they win <25% of (RL_METHODOLOGY_PLAN.md section 1A.4)."""
+    they win <25% of."""
     shares = {p: _share_of_hardest(p) for p in (0.5, 1.0, 2.0)}
     hardest = {p: s[0] for p, s in shares.items()}
     mirror = {p: s[1] for p, s in shares.items()}

@@ -4,8 +4,8 @@ The working diagnosis for the plateau was self-play cycling: the population
 chasing itself in a circle, each policy beating the last while none of them get
 stronger. That story requires an INTRANSITIVE strategy space -- some genuine
 rock-paper-scissors among the policies. A single win-rate trace can never show
-it (see RL_METHODOLOGY_PLAN.md section 10 on how cycling is actually
-demonstrated in the literature: payoff-matrix structure, never one curve). A
+it -- cycling is demonstrated in the literature by payoff-matrix
+structure, never by a single curve. A
 round robin among a deck's OWN historical snapshots can.
 
 For each deck: pick K snapshots spanning the run, play all K(K-1)/2 pairs, and
