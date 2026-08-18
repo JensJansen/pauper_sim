@@ -61,7 +61,7 @@ the four concluded A/B configs; the seven one-off `src/analysis/` scripts and th
 
 | # | Item | Disposition |
 |---|---|---|
-| C | Gauntlet machinery (97 refs, 14 files). Both configs point `gauntlet_league_name` at deleted populations, so `vs_gauntlet` is a permanent silent no-op | **deferred by owner** — machinery and all three gauntlet configs left untouched |
+| C | Gauntlet machinery (97 refs, 14 files). Both configs point `gauntlet_league_name` at deleted populations, so `vs_gauntlet` is a permanent silent no-op | **deferred by owner — and the premise has since expired (2026-08-18).** Both populations were regrown (main 10,008 games/deck, twin 5,016) and `vs_gauntlet` now reports in both directions. It is the only external, non-saturating signal the harness produces: `vs_heuristic` saturated at 95% and every `vs_history` series reads FLAT, while `vs_gauntlet` moved 7.5% → 42.5% with per-deck trend z up to +3.4. Deleting this machinery would have removed the one metric that still discriminates. Keep. |
 | D | `deploy_reward_v1`–`v5` — production-dead, only tests reference them | **declined** — thin parameter bindings over machinery that stays anyway; their comments are load-bearing (v3's collapse is the cited reason v6's safety margin exists) |
 | E | README narrative for deleted experiments (1,192 lines) | **deferred** — items 2–4 will rewrite exactly those sections; doing it now means doing it twice |
 | H | Tooling whose target populations no longer exist | **declined** — all take league names as arguments, so they survive a fresh start unchanged. Only `src/benchmarking/` looks genuinely spent |

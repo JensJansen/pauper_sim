@@ -250,8 +250,17 @@ def report(records, window=TREND_WINDOW):
     """Returns the report as a list of printed lines (also prints them) --
     returning them makes this testable without capturing stdout."""
     by_deck = defaultdict(lambda: defaultdict(list))
+    sessions = []
     for r in records:
         kind = r.get("kind", "?")
+        # session_start is league-level, not per-deck: it has no `deck`, so
+        # grouping it with the rest bucketed it under a "?" heading that then
+        # rendered empty (no `games`, no ppo/mulligan branch) -- silently
+        # hiding the reward_fn/roster it carries, which is the first thing to
+        # check when confirming two populations trained under the same rules.
+        if kind == "session_start":
+            sessions.append(r)
+            continue
         # vs_history's label is part of the series identity, never pooled away:
         # archive_oldest is a fixed ~200-game reference, active_oldest a moving
         # ~6,400-game one. They answer different questions.
@@ -259,6 +268,12 @@ def report(records, window=TREND_WINDOW):
         by_deck[r.get("deck", "?")][tag].append(r)
 
     lines = []
+    if sessions:
+        last = sessions[-1]
+        rewards = sorted({s.get("reward_fn", "?") for s in sessions})
+        lines.append(f"=== run === {len(sessions)} session(s), reward_fn={'/'.join(rewards)}, "
+                     f"roster={','.join(last.get('roster', []))}, "
+                     f"train_decks={','.join(last.get('train_decks', []))}")
     for deck in sorted(by_deck):
         lines.append(f"=== {deck} ===")
         for tag in sorted(by_deck[deck]):

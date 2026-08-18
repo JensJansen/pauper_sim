@@ -184,7 +184,12 @@ def main():
         }
         print(f"  {league}/{name}: {total / n:.2f} ({total_single_pip / n:.2f} tagged) over {n} games")
 
+    # The vintages belong IN the log: two runs of this script over the same two
+    # leagues differ only by which point in each population's training they
+    # played, so a summary that omits them is unreadable a week later (and a
+    # budget-matched run is indistinguishable from a live-vs-live one).
     out = {"league_a": args.league_a, "league_b": args.league_b, "roster": roster,
+           "vintage_a": args.vintage_a, "vintage_b": args.vintage_b,
            "games_per_matchup": args.games, "seed": args.seed, "results": results,
            "total_games": total_games, "total_a_wins": total_a, "total_b_wins": total_b,
            "mana_burnt_by_deck": burn_summary}
