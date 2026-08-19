@@ -53,6 +53,49 @@ from rl.ppo import ppo_update
 MAX_DECISIONS_PER_TURN = 5000
 
 
+def _non_progressing_report(state, seat, n_decisions):
+    """The message the turn guard raises -- deliberately a full diagnostic, not
+    just a count.
+
+    A loop like this is rare and policy-dependent: it surfaced in a TRAINING
+    run after a 1,920-game frozen-weight soak found nothing, because training
+    drifts the policy into states a fixed policy never reaches. Re-catching one
+    can therefore cost hours. So the raise carries everything needed to
+    identify the offending action on the FIRST occurrence -- which creatures
+    are attacking and with what keywords, which blockers the engine considers
+    eligible, what is already assigned -- rather than a count that only proves
+    something is wrong. Every field here was one I had to go back and add
+    instrumentation for the first time round (2026-08-19).
+    """
+    pend = state.pending_resolution
+    lines = [
+        f"non-progressing priority round: {n_decisions} decisions in turn {state.turn_number} "
+        f"(limit {MAX_DECISIONS_PER_TURN}). Some action is legal but makes no progress.",
+        f"  phase={getattr(state.phase, 'value', state.phase)} "
+        f"pending={pend['kind'] if pend else None} seat={seat} active={state.active_idx} "
+        f"turn_player={state.turn_player_idx} stack={len(state.stack)} "
+        f"battlefield={len(state.battlefield)}",
+    ]
+    try:  # diagnostics must never mask the failure they describe
+        from game.effects.stats import creature_keywords
+        from game.effects.combat import creature_block_eligible
+
+        def desc(p):
+            kws = ",".join(sorted(creature_keywords(state, p))) or "-"
+            return f"{p.card_def.name}(slot {p.slot}, {kws})"
+
+        opp = state.opponent
+        lines.append(f"  attackers: {[desc(a) for a in (opp.attackers or ())]}")
+        lines.append(f"  eligible_blockers: {[desc(p) for p in state.battlefield if creature_block_eligible(state, p)]}")
+        lines.append("  blocked_by: " + str({
+            f"{a.card_def.name}#{a.slot}": [f"{b.card_def.name}#{b.slot}" for b in bs]
+            for a, bs in (opp.blocked_by or {}).items()}))
+    except Exception as exc:  # noqa: BLE001
+        lines.append(f"  (combat detail unavailable: {type(exc).__name__}: {exc})")
+    lines.append("  Reproduce/identify with analysis/soak_priority_loop.py.")
+    return "\n".join(lines)
+
+
 class RolloutBuffer:
     def __init__(self):
         self.token_lists, self.scalar, self.mask, self.action, self.logp, self.value, self.reward, self.done = (
@@ -325,16 +368,7 @@ def collect_rollout(pairing, n_games, horizon, rng, device="cpu", record=True, g
                     turn_watch[0], turn_watch[1] = state.turn_number, 0
                 turn_watch[1] += 1
                 if turn_watch[1] > MAX_DECISIONS_PER_TURN:
-                    pend = state.pending_resolution
-                    raise RuntimeError(
-                        f"non-progressing priority round: {turn_watch[1]} decisions in turn "
-                        f"{state.turn_number} (limit {MAX_DECISIONS_PER_TURN}). "
-                        f"phase={getattr(state.phase, 'value', state.phase)} "
-                        f"pending={pend['kind'] if pend else None} seat={seat} "
-                        f"stack={len(state.stack)} battlefield={len(state.battlefield)}. "
-                        "Some action is legal but makes no progress -- see "
-                        "analysis/soak_priority_loop.py to identify it."
-                    )
+                    raise RuntimeError(_non_progressing_report(state, seat, turn_watch[1]))
                 current_sum = sum(state.players[seat].mana_pool_single_pip.values())
                 dr = agents[seat].decide(state, seat, horizon, device, greedy=greedy)
                 if record and record_as[seat] is not None:
