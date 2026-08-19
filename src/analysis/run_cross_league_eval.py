@@ -171,7 +171,22 @@ def main():
     total_a = sum(r["a_wins"] for r in results)
     total_b = sum(r["b_wins"] for r in results)
     print(f"cross-league eval done: {total_games} games in {time.time() - t0:.1f}s")
-    print(f"OVERALL: {args.league_a} {total_a}-{total_b} {args.league_b} "
+
+    # Score matrix: rows/cols in roster order, cell = league_a deck's win rate
+    # (a_wins / games) for that (row deck_a, col deck_b) matchup -- includes
+    # the mirror diagonal (a == b), per the round robin above.
+    by_pair = {(r["deck_a"], r["deck_b"]): r for r in results}
+    col_w = max(len(n) for n in roster) + 1
+    print(f"\nscore matrix ({args.league_a} row's win rate vs {args.league_b} col):")
+    print(" " * col_w + "".join(f"{n:>{col_w}}" for n in roster))
+    for a in roster:
+        row = []
+        for b in roster:
+            r = by_pair[(a, b)]
+            row.append(f"{r['a_wins'] / r['games']:>{col_w}.1%}")
+        print(f"{a:<{col_w}}" + "".join(row))
+
+    print(f"\nOVERALL: {args.league_a} {total_a}-{total_b} {args.league_b} "
           f"({total_a / total_games:.1%} - {total_b / total_games:.1%}) over {total_games} games")
 
     burn_summary = {}
