@@ -218,7 +218,11 @@ and play out matches on its own. Highlights:
 - **The stack & triggers.** Spells/abilities go on a stack and resolve;
   triggers queue and get promoted to the stack.
 - **Combat.** Declare attackers/blockers, summoning sickness, combat damage,
-  per-permanent identity (so an Aura can attach to one specific copy).
+  per-permanent identity (so an Aura can attach to one specific copy),
+  gang-blocking and menace, a first-strike damage sub-step, and removal from
+  combat — a permanent that leaves the battlefield stops attacking/blocking
+  (506.4), while a creature that was blocked stays blocked even if every
+  blocker dies (509.1h).
 - **Mana — cast then pay (real CR 601.2).** A mana pool spent by explicit
   actions, Tron-land detection, flexible/filter sources — and, since
   2026-08-17, the real casting order. See below.
