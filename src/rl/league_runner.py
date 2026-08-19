@@ -7,6 +7,7 @@ for its side-effect-free functions -- run_league.py itself now just calls
 into this module from its own main(). Pure reorganization: no behavior
 changed by moving the code here.
 """
+import copy
 import json
 import os
 import random
@@ -357,7 +358,20 @@ def _run_session(n_iterations, games_per_iteration, snapshot_every, executor, n_
                   matchup=None, game_logs=None, checkpoint_rate=0.0, roster=None, pfsp=True,
                   gauntlet_league_dir=None, heuristic_decks=(), cumulative_games=0,
                   ppo_hparams=None, eval_games=EVAL_GAMES, eval_every_sessions=EVAL_EVERY_SESSIONS,
-                  pfsp_power=PFSP_POWER, trunk_hidden=TRUNK_HIDDEN):
+                  pfsp_power=PFSP_POWER, trunk_hidden=TRUNK_HIDDEN, device="cpu"):
+    # device: where the NETS live, and therefore where ppo_update's gradient
+    # work runs. "cpu" (the default) is byte-for-byte the previous behavior.
+    #
+    # Only the UPDATE moves. Collection always runs on CPU -- it is inference
+    # over one game state at a time in six worker processes, which a GPU cannot
+    # help with -- so the workers keep receiving CPU state_dicts, and every
+    # eval path keeps running on CPU nets. Measured on this repo's own
+    # 22,848-games/deck checkpoint (analysis/bench_gpu_vs_cpu.py): updates are
+    # 86% of session wall time, and CUDA runs them 1.6-2.25x faster with
+    # epochs_run identical on both arms, the speedup growing with buffer size.
+    # The device->host state_dict copy this forces on every collect call costs
+    # ~10ms against ~0.8ms on CPU, i.e. ~5s across a whole session -- measured,
+    # not assumed, because it is the cost that would have made this a wash.
     # cumulative_games: this league's games/deck ALREADY played before this
     # session started (progress.json, threaded in by run_league.py's main())
     # -- the horizon batch_size_for_iteration and ent_coef_schedule (rl.train)
@@ -430,6 +444,14 @@ def _run_session(n_iterations, games_per_iteration, snapshot_every, executor, n_
         live_path = f"{league_dir}/{name}/live.pt"
         width = ckpt_io.trunk_hidden_from_deck_checkpoint(live_path) or trunk_hidden
         net = build_deck_net(vocab.size, len(fixed_tables[name]), width)
+        # .to(device) BEFORE the optimizer is built and BEFORE the checkpoint
+        # load, and the order is load-bearing: Adam's own state tensors
+        # (exp_avg/exp_avg_sq) are created lazily on the param's device, and
+        # Optimizer.load_state_dict casts loaded state onto the device of the
+        # param it belongs to. Building the optimizer first and moving the net
+        # afterwards leaves the moments stranded on CPU while the params sit on
+        # GPU, which fails at the first step() with a device mismatch.
+        net.to(device)
         optimizer = torch.optim.Adam([p for p in net.parameters() if p.requires_grad], lr=hp["lr"])
         ckpt_io.load_deck_checkpoint(live_path, net, optimizer)  # no-op if live_path doesn't exist yet; optimizer load is migration-guarded (a migrated live.pt dropping "optimizer" -> fresh Adam)
         live_nets[name] = net
@@ -449,11 +471,45 @@ def _run_session(n_iterations, games_per_iteration, snapshot_every, executor, n_
     mulligan_nets, mulligan_optimizers = {}, {}
     for name in deck_names:
         mnet = MulliganNet(live_nets[name].encoder)
+        # The encoder is SHARED with the deck net (same object), so it is
+        # already on `device`, but MulliganNet's own heads were just built on
+        # CPU -- leaving the module split across two devices. rl.mulligan.update
+        # picks its device off `next(net.parameters()).device`, so a split
+        # module fails on whichever half loses that coin flip. Same ordering
+        # rule as the deck net above: move before the optimizer exists.
+        mnet.to(device)
         mopt = torch.optim.Adam([p for p in mnet.parameters() if p.requires_grad], lr=hp["mulligan_lr"])
         mull_path = f"{league_dir}/{name}/mulligan.pt"
         ckpt_io.load_deck_checkpoint(mull_path, mnet, mopt)  # same migration-guarded optimizer load as the live-net path above
         mulligan_nets[name] = mnet
         mulligan_optimizers[name] = mopt
+
+    # CPU mirrors for every path that PLAYS rather than trains.
+    #
+    # Game play -- the sequential collect fallback, --matchup pairings, and all
+    # the end-of-session vs_history/vs_gauntlet/vs_heuristic checks -- runs
+    # through collect_rollout(device="cpu"), which builds its tensors on CPU.
+    # Handing those a GPU-resident net is a device mismatch, so on a GPU league
+    # they get a mirror that is refreshed from the training weights on demand.
+    #
+    # When device == "cpu" these are the SAME OBJECTS, not copies: the default
+    # path allocates nothing, copies nothing, and behaves exactly as it did
+    # before this existed.
+    if device == "cpu":
+        cpu_nets, cpu_mulligan_nets = live_nets, mulligan_nets
+
+        def sync_cpu_mirrors():
+            pass
+    else:
+        cpu_nets = {n: copy.deepcopy(net).cpu().eval() for n, net in live_nets.items()}
+        cpu_mulligan_nets = {n: copy.deepcopy(m).cpu().eval() for n, m in mulligan_nets.items()}
+
+        def sync_cpu_mirrors():
+            """Pull the current training weights down for the play paths."""
+            for n in deck_names:
+                cpu_nets[n].load_state_dict({k: v.cpu() for k, v in live_nets[n].state_dict().items()})
+                cpu_mulligan_nets[n].load_state_dict(
+                    {k: v.cpu() for k, v in mulligan_nets[n].state_dict().items()})
 
     pool = LeaguePool(league_dir, deck_names, pfsp_power=pfsp_power)
     session_path = f"{league_dir}/session.txt"
@@ -527,9 +583,21 @@ def _run_session(n_iterations, games_per_iteration, snapshot_every, executor, n_
         # Snapshot the mulligan nets for the workers now (ALL decks -- a frozen
         # opponent still needs its mulligan net to play). Updated once after the
         # deck-loop (on-policy within the iteration, same as the main nets).
-        mulligan_state_dicts = {n: mulligan_nets[n].state_dict() for n in deck_names}
+        # .cpu() for the same reason the main nets are copied down in
+        # rl.rollout_parallel: these cross a process boundary to CPU-only
+        # workers. No-op when training is already on CPU.
+        mulligan_state_dicts = {n: {k: v.cpu() for k, v in mulligan_nets[n].state_dict().items()}
+                                for n in deck_names}
         for name in train_decks:  # only TRAIN decks get a round; the rest are frozen opponents
             t_collect0 = time.time()
+            # Both CPU-playing collect paths below read the mirrors, and the
+            # weights moved since the last round, so refresh first. Deliberately
+            # NOT called on the parallel path: that one ships state_dicts to the
+            # workers itself and never touches a mirror, so syncing there would
+            # be ~10ms of pure waste on every one of a session's 500 rounds.
+            # A no-op on CPU either way.
+            if matchup is not None or executor is None:
+                sync_cpu_mirrors()
             if matchup is not None:
                 # Fixed pairing: this deck vs the OTHER named deck (no opponent
                 # sampling), both sides carrying their REAL mulligan models via the
@@ -537,8 +605,8 @@ def _run_session(n_iterations, games_per_iteration, snapshot_every, executor, n_
                 # training does. game_logs (if given) accumulates across every round.
                 opp = matchup[1] if name == matchup[0] else matchup[0]
                 pairing = _constant_pairing(
-                    [SeatAgent(live_nets[name], mulligan_nets[name], deck_ctxs[name]),
-                     SeatAgent(live_nets[opp], mulligan_nets[opp], deck_ctxs[opp])],
+                    [SeatAgent(cpu_nets[name], cpu_mulligan_nets[name], deck_ctxs[name]),
+                     SeatAgent(cpu_nets[opp], cpu_mulligan_nets[opp], deck_ctxs[opp])],
                     [decklists[name], decklists[opp]], [reward_fn, reward_fn], [name, opp])
                 buffers_by_deck, mull_by_deck, played = collect_rollout(
                     pairing, games_per_iteration, horizon, rng, device="cpu", game_logs=game_logs)
@@ -551,7 +619,7 @@ def _run_session(n_iterations, games_per_iteration, snapshot_every, executor, n_
                 )
             else:
                 buffers_by_deck, mull_by_deck, played, outcomes = collect_rollout_league(
-                    name, live_nets, mulligan_nets, deck_ctxs, decklists, pool, reward_fn,
+                    name, cpu_nets, cpu_mulligan_nets, deck_ctxs, decklists, pool, reward_fn,
                     horizon, games_per_iteration, rng, device="cpu", game_logs=game_logs,
                     checkpoint_rate=checkpoint_rate, pfsp=pfsp,
                 )
@@ -600,12 +668,12 @@ def _run_session(n_iterations, games_per_iteration, snapshot_every, executor, n_
                     if deck_name == name:
                         (policy_loss, value_loss, entropy, approx_kl, clip_fraction,
                          epochs_run, explained_variance, adv_std) = ppo_update(
-                            live_nets[name], optimizers[name], buf, "cpu", batch_size=batch_size,
+                            live_nets[name], optimizers[name], buf, device, batch_size=batch_size,
                             ent_coef=ent_coef, gamma=hp["gamma"], gae_lambda=hp["gae_lambda"],
                             target_kl=hp["target_kl"], n_epochs=hp["n_epochs"],
                             adv_norm_floor=hp["adv_norm_floor"])
                     else:
-                        ppo_update(live_nets[deck_name], optimizers[deck_name], buf, "cpu",
+                        ppo_update(live_nets[deck_name], optimizers[deck_name], buf, device,
                                    batch_size=batch_size, ent_coef=ent_coef, gamma=hp["gamma"],
                                    gae_lambda=hp["gae_lambda"], target_kl=hp["target_kl"],
                                    n_epochs=hp["n_epochs"], adv_norm_floor=hp["adv_norm_floor"])
@@ -725,8 +793,13 @@ def _run_session(n_iterations, games_per_iteration, snapshot_every, executor, n_
     if not run_evals:
         print(f"  (evals skipped: session {session} % eval_every_sessions={eval_every_sessions} != 0)", flush=True)
     if matchup is None and run_evals:
+        # Every check below PLAYS games on CPU nets, so the mirrors must carry
+        # this session's final trained weights -- otherwise a GPU league would
+        # measure whatever the mirrors last held (their session-start state),
+        # silently reporting the wrong policy's win rate rather than crashing.
+        sync_cpu_mirrors()
         for name in train_decks:
-            for r in _run_eval_vs_history(name, live_nets[name], mulligan_nets[name], deck_ctxs[name],
+            for r in _run_eval_vs_history(name, cpu_nets[name], cpu_mulligan_nets[name], deck_ctxs[name],
                                           decklists[name], league_dir, horizon,
                                           games_per_snapshot=eval_games, seed=seed):
                 _append_metric(league_dir, kind="vs_history", session=session, iteration=iteration, deck=name,
@@ -737,7 +810,7 @@ def _run_session(n_iterations, games_per_iteration, snapshot_every, executor, n_
             # _run_eval_vs_gauntlet's own docstring) -- None until that population's
             # training has reached this deck, or no gauntlet_league_dir is configured
             # for this league at all (most leagues won't have one).
-            r = _run_eval_vs_gauntlet(name, live_nets[name], mulligan_nets[name], deck_ctxs[name],
+            r = _run_eval_vs_gauntlet(name, cpu_nets[name], cpu_mulligan_nets[name], deck_ctxs[name],
                                       decklists[name], gauntlet_league_dir, horizon,
                                       games=eval_games, seed=seed)
             if r is not None:
@@ -749,7 +822,7 @@ def _run_session(n_iterations, games_per_iteration, snapshot_every, executor, n_
             # only for whichever deck(s) heuristic_decks names (most leagues
             # name none; see _run_eval_vs_heuristic's own docstring).
             if name in heuristic_decks:
-                r = _run_eval_vs_heuristic(name, live_nets[name], mulligan_nets[name], deck_ctxs[name],
+                r = _run_eval_vs_heuristic(name, cpu_nets[name], cpu_mulligan_nets[name], deck_ctxs[name],
                                            decklists[name], horizon, games=eval_games, seed=seed)
                 _append_metric(league_dir, kind="vs_heuristic", session=session, iteration=iteration, deck=name,
                                cumulative_games=cumulative_at_session_end, **r)

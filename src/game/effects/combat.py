@@ -59,8 +59,17 @@ def can_block(state, blocker, attacker):
     Menace isn't a per-blocker restriction -- any creature may still commit to
     block a menace attacker -- so it plays no part here; menace's own "needs
     2+ blockers" rule is enforced separately, by menace_block_incomplete and
-    enforce_menace below. Shared by creature_block_eligible and drl_env's
-    per-attacker choice predicate, so the rule lives in one place."""
+    enforce_menace below.
+
+    Shared by creature_block_eligible (below) and drl_env._assign_blocker_
+    execute's own extra_predicate, so the rule lives in one place. That
+    sharing is load-bearing, not tidiness: drl_env used to inline a
+    flying-only copy of this, which disagreed with this function about REACH
+    and produced an "Assign Blocker" action that was legal but could match no
+    attacker -- an infinite, memory-eating declare-blockers loop (fixed
+    2026-08-19; see _assign_blocker_execute's own docstring for the full
+    failure). Any future evasion rule belongs HERE, never re-derived by a
+    caller."""
     attacker_needs_flying_blocker = (
         stats.has_keyword(state, attacker, "flying")
         or stats.has_keyword(state, attacker, "cant_be_blocked_except_by_flying")

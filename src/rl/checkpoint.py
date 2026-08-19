@@ -64,14 +64,41 @@ def load_optimizer_if_present(optimizer, ckpt, key="optimizer"):
         optimizer.load_state_dict(ckpt[key])
 
 
+def _to_cpu(obj):
+    """Recursively moves every tensor in a state-dict-shaped structure to CPU.
+
+    A checkpoint must be device-agnostic. torch.save records each tensor's
+    device, so a GPU-trained net saved verbatim produces a live.pt that cannot
+    even be DESERIALIZED on a machine without CUDA, and that silently drags
+    weights back onto the GPU for every CPU-only consumer (analysis/*.py, the
+    webapp, the eval paths). Nothing downstream should have to know which
+    device a league happened to train on -- so the conversion lives here, at
+    the one choke point every checkpoint write goes through, rather than at
+    each call site.
+
+    Handles the Adam-state shape too (optimizer.state_dict() nests tensors
+    inside {"state": {idx: {"exp_avg": ..., ...}}}), which a flat
+    {k: v.cpu()} comprehension would miss.
+    """
+    if torch.is_tensor(obj):
+        return obj.detach().cpu()
+    if isinstance(obj, dict):
+        return {k: _to_cpu(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return type(obj)(_to_cpu(v) for v in obj)
+    return obj
+
+
 def save_deck_checkpoint(path, net, optimizer=None):
     """Writes net's (and, if given, optimizer's) state to path as
     {"net": ...[, "optimizer": ...]} -- the schema shared by run_league.py's
-    per-deck live.pt (DeckNetwork+Adam) and mulligan.pt (MulliganNet+Adam)."""
+    per-deck live.pt (DeckNetwork+Adam) and mulligan.pt (MulliganNet+Adam).
+
+    Always written on CPU regardless of the training device -- see _to_cpu."""
     os.makedirs(os.path.dirname(path), exist_ok=True)
-    saved = {"net": net.state_dict()}
+    saved = {"net": _to_cpu(net.state_dict())}
     if optimizer is not None:
-        saved["optimizer"] = optimizer.state_dict()
+        saved["optimizer"] = _to_cpu(optimizer.state_dict())
     _save_with_retry(saved, path)
 
 
@@ -89,7 +116,12 @@ def load_deck_checkpoint(path, net, optimizer=None):
     weights from an untrained fresh net."""
     if not os.path.exists(path):
         return False
-    ckpt = torch.load(path, weights_only=True)
+    # map_location="cpu": the saver already writes CPU tensors, but a legacy
+    # file written before that (or by any other tool) would otherwise demand
+    # the exact device it was saved on just to deserialize. Loading to CPU and
+    # letting load_state_dict copy into whatever device `net` lives on is
+    # correct for every combination, including CPU-file -> GPU-net.
+    ckpt = torch.load(path, weights_only=True, map_location="cpu")
     net.load_state_dict(ckpt["net"])
     if optimizer is not None:
         load_optimizer_if_present(optimizer, ckpt)
@@ -104,9 +136,15 @@ def save_snapshot(path, net, mulligan_net=None):
     writes a deck-only snapshot; load_snapshot's caller falls back to
     AlwaysKeep for one (see rl.league.LeaguePool.load_snapshot_agent)."""
     trunk_hidden = tuple(layer.out_features for layer in net.trunk_layers)
-    saved = {"state_dict": net.state_dict(), "trunk_hidden": trunk_hidden}
+    # CPU for the same reason save_deck_checkpoint is (see _to_cpu): snapshots
+    # are registered mid-session straight off the live nets, so on a
+    # GPU-trained league they would otherwise be written as CUDA tensors and
+    # become unloadable for every CPU-only consumer -- and snapshots are read
+    # far more widely than live.pt is (PFSP opponent sampling, vs_history,
+    # load_vintage_agent, the cross-league eval's vintages).
+    saved = {"state_dict": _to_cpu(net.state_dict()), "trunk_hidden": trunk_hidden}
     if mulligan_net is not None:
-        saved["mulligan_state_dict"] = mulligan_net.state_dict()
+        saved["mulligan_state_dict"] = _to_cpu(mulligan_net.state_dict())
         saved["mulligan_hidden"] = mulligan_net.trunk[0].out_features  # restore the exact hidden width on load
     _save_with_retry(saved, path)
 
@@ -117,7 +155,7 @@ def load_snapshot(path):
     NOT build the net itself: the caller needs trunk_hidden to construct a
     DeckNetwork of the right shape BEFORE state_dict can be loaded into it
     (see rl.league.LeaguePool.load_snapshot_agent)."""
-    return torch.load(path, weights_only=True)
+    return torch.load(path, weights_only=True, map_location="cpu")  # device-agnostic, see load_deck_checkpoint
 
 
 def trunk_hidden_from_deck_checkpoint(path):

@@ -991,3 +991,53 @@ def test_mana_subdecision_does_not_hijack_the_other_seat():
         "with no pending of its own, seat 0 has no pointer decision -- and must NOT "
         "inherit the choose_target answer from seat 1's subdecision"
     )
+
+
+def test_reach_blocker_vs_flying_attacker_is_not_a_no_op():
+    # REGRESSION (2026-08-19): the "Assign Blocker" legality check and the
+    # per-attacker predicate its executor passes down MUST agree, or the
+    # action becomes legal-but-unfulfillable and the declare-blockers round
+    # never ends.
+    #
+    # game.can_block lets REACH block a flier. creature_block_eligible (hence
+    # _assign_blocker_legal) consults it, so a reach blocker facing only
+    # fliers is correctly offered. _assign_blocker_execute used to inline a
+    # flying-ONLY copy of that rule, so the nested attacker choice it opened
+    # matched nothing, recorded no block, and re-opened begin_declare_blockers
+    # on an identical state -- the same action legal again, forever. Real
+    # decks hit it: elves' Generous Ent (reach) vs dmir_terror's Sneaky
+    # Snacker (flying). horizon bounds TURNS, and turn_number never advances
+    # inside a priority round, so nothing stopped it: collect workers grew
+    # ~1 GB/min until they died pickling their result.
+    decklist = [("Generous Ent", 2), ("Sneaky Snacker", 2), ("Forest", 8)]
+    actions = _actions_table.build_action_table(decklist, game.EFFECT_REGISTRY, opponent_decklist=decklist)
+    _, ent_legal, ent_execute = actions[_action_index(actions, "Assign Blocker: Generous Ent (slot 1)")]
+
+    attacker = Permanent(game.CARD_DEFS["Sneaky Snacker"])
+    attacker.tapped = True  # already attacking
+    ent = Permanent(game.CARD_DEFS["Generous Ent"])
+    state = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
+    state.players[0].battlefield = [attacker]
+    state.players[0].attackers = [attacker]
+    state.players[1].battlefield = [ent]
+    state.active_idx = 1  # _declare_blockers_gen's own flip to the defender
+
+    assert game.has_keyword(state, attacker, "flying"), "fixture assumes Sneaky Snacker flies"
+    assert game.has_keyword(state, ent, "reach"), "fixture assumes Generous Ent has reach"
+    assert game.can_block(state, ent, attacker), "reach must be able to block a flier"
+
+    game.begin_declare_blockers(state, on_complete=lambda s: None)
+    assert ent_legal(state), "reach blocker vs flying attacker must be offered"
+
+    ent_execute(state)
+    # The whole bug: this used to find zero candidates and silently re-open
+    # declare_blockers with nothing recorded. It must instead open a REAL
+    # choice that includes the flier.
+    assert state.pending_resolution is not None
+    assert state.pending_resolution["kind"] == "choose_opponent_permanent", (
+        f"expected a real attacker choice, got {state.pending_resolution['kind']!r} -- "
+        "a no-op re-open is the infinite-loop bug"
+    )
+    assert game.choose_opponent_permanent_options(state) == [("Sneaky Snacker", 1)]
+    game.execute_choose_opponent_permanent_option(state, "Sneaky Snacker", 1)
+    assert state.players[0].blocked_by == {attacker: [ent]}, "the block must actually be recorded"

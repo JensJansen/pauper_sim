@@ -106,28 +106,36 @@ def _assign_blocker_execute(name, slot):
     nests a cross-player choose_opponent_permanent sub-resolution to pick
     which of the attacker's declared, not-yet-blocked attackers it
     blocks -- restricted by extra_predicate to attackers this specific
-    blocker is actually allowed to block: flying's own restriction
-    means an attacker with flying can only be
-    chosen here if `blocker` itself also has flying (game.has_keyword --
-    resolution can't compute this itself, see declare_blocker_
-    assignment's own docstring for why the predicate has to come from
-    here instead). Once that completes, re-opens begin_declare_blockers
+    blocker is actually allowed to block. That predicate is game.can_block
+    itself (resolution can't compute it, see declare_blocker_assignment's own
+    docstring for why the predicate has to come from here instead), which is
+    the SAME function game.creature_block_eligible uses to decide this action
+    is legal at all. Once that completes, re-opens begin_declare_blockers
     (via the captured outer on_complete) so the defender can assign
     another blocker or choose Done -- same nested-callback shape
-    execute_madness_cast already uses for its own multi-step chain."""
+    execute_madness_cast already uses for its own multi-step chain.
+
+    These two MUST be the same function. This used to inline a flying-only
+    subset -- `not attacker.flying or blocker.flying` -- while
+    creature_block_eligible consulted can_block, which also honors REACH and
+    "can't be blocked except by creatures with flying". A reach blocker facing
+    a flying attacker therefore passed the legality check and then matched no
+    attacker under this predicate: the nested choice found zero candidates,
+    recorded nothing, and re-opened declare-blockers on a byte-identical
+    state, so the same action stayed legal forever. Observed 2026-08-19 as
+    elves' Generous Ent (reach) against dmir_terror's Sneaky Snacker (flying):
+    the declare-blockers round never ended, state.turn_number never advanced
+    (so `horizon`, which bounds TURNS, never fired), and the rollout buffer
+    grew ~1 GB/min until the collect worker died pickling its result."""
     def execute(state):
         blocker = next(
             p for p in state.battlefield
             if p.card_def.name == name and p.slot == slot and game.creature_block_eligible(state, p)
         )
         outer_on_complete = state.pending_resolution["on_complete"]
-
-        def _blockable_by(attacker):
-            return not game.has_keyword(state, attacker, "flying") or game.has_keyword(state, blocker, "flying")
-
         game.declare_blocker_assignment(
             state, blocker, on_complete=lambda s: game.begin_declare_blockers(s, outer_on_complete),
-            extra_predicate=_blockable_by,
+            extra_predicate=lambda attacker: game.can_block(state, blocker, attacker),
         )
     return execute
 

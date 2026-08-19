@@ -42,6 +42,15 @@ def build_arg_parser(description=None):
                               "games-count, independent of games_per_iteration) -- this raw flag is a lower-level "
                               "override. Default 20 if neither is given.")
     parser.add_argument("--n-workers", type=int, default=None, help="Default 6 (run config).")
+    parser.add_argument("--device", type=str, default=None, metavar="cpu|cuda",
+                         help="Where the PPO update runs. Default cpu (or --run-config's own `device`). "
+                              "Collection is always CPU across n_workers processes regardless -- it is "
+                              "single-game-at-a-time inference, which a GPU cannot help with -- so this moves "
+                              "only the gradient work, which is ~86%% of session wall time. Measured on this "
+                              "repo's own checkpoints (analysis/bench_gpu_vs_cpu.py): cuda runs ppo_update "
+                              "1.6-2.25x faster with epochs_run identical on both arms, the gap widening with "
+                              "buffer size. Checkpoints are always written on CPU, so a league can move between "
+                              "devices between sessions with no conversion.")
     parser.add_argument("--matchup", nargs=2, metavar=("DECK_A", "DECK_B"), default=None,
                          help="Fixed A-vs-B pairing instead of league opponent sampling (snapshotting off, no "
                               "auto-sizing). Trains both decks with their real mulligan models via the unified loop.")

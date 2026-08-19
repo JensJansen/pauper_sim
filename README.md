@@ -578,8 +578,25 @@ encoder change. Resuming a league trained at 3e-4 now picks up
 the new default; pin `"ppo": {"lr": 0.0003}` in its config to continue it
 unchanged.
 
-Training runs on **CPU** by design — the model is small (~200–250K params) and
-a batch-size sweep found no GPU crossover at this size.
+Training defaults to **CPU**, and `--device cuda` (or `"device"` in the run
+config) moves the PPO update — and only the update — onto the GPU. Collection
+always stays on CPU across `n_workers` processes: it is single-game-at-a-time
+inference, which a GPU cannot help with.
+
+The older "no GPU crossover at this size" finding is **superseded**. It was
+measured when the model was ~200–250K params, before per-deck encoders, the
+GRU, and the growth of `TOKEN_FEATURE_DIM` to 151. Re-measured 2026-08-19 on
+real training buffers (`analysis/bench_gpu_vs_cpu.py`, which times both
+devices on the *same* buffer from identical starting weights inside a real
+session): CUDA runs `ppo_update` **1.6–2.25× faster**, the gap widening with
+buffer size, with `epochs_run` identical on both arms. Updates are ~86% of
+session wall time (collection ~14%), and the device→host `state_dict` copy the
+workers need costs ~10 ms/call, about 5 s across a whole session.
+
+Checkpoints are always written as CPU tensors regardless of training device,
+so a league can move between CPU and GPU between sessions with no conversion.
+A session-level end-to-end speedup has not been confirmed yet — only the
+per-update measurement above.
 
 ### Instrumentation
 
@@ -1276,10 +1293,11 @@ the *other* repo.
 pip install -r requirements.txt
 ```
 
-`requirements.txt` pins a CUDA (cu128) PyTorch build plus `numpy`, but
-**training runs on CPU** and doesn't need a GPU — the pinned wheel just
-prevents pip from silently swapping to a CPU-only build on a machine that does
-have one. The replay converter additionally needs `grpcio-tools` (for
+`requirements.txt` pins a CUDA (cu128) PyTorch build plus `numpy`. **Training
+defaults to CPU and needs no GPU**, so a CPU-only machine is fully supported;
+the pinned wheel keeps pip from silently swapping to a CPU-only build on a
+machine that does have one, and is what `--device cuda` needs when you do want
+the PPO update on the GPU (see the training section for the measurement). The replay converter additionally needs `grpcio-tools` (for
 protobuf codegen). The replay viewer (`src/webapp/`, a git submodule --
 `git submodule update --init` first if it's empty) has its own, separate
 dependency: `flask`.

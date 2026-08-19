@@ -62,7 +62,7 @@ from .catalog.green_cards import (
 )
 from .decklist import parse_decklist_file, parse_decklist_text
 from .effects.casting import bounce_land_etb, cast_aura, cast_permanent_from_hand, enters_battlefield, play_land_from_hand
-from .effects.combat import combat_damage_step, creature_attack_eligible, creature_block_eligible, declare_attacker, declare_attackers_step, enforce_menace, has_unfulfilled_goad, menace_block_incomplete
+from .effects.combat import can_block, combat_damage_step, creature_attack_eligible, creature_block_eligible, declare_attacker, declare_attackers_step, enforce_menace, has_unfulfilled_goad, menace_block_incomplete
 from .effects.undercity import (
     INITIATIVE_MARKER_CARD,
     ROOM_NAMES,

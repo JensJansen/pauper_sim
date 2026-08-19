@@ -58,6 +58,8 @@ this 954-line-turned-~140-line CLI script for its side-effect-free functions.
 import json
 from concurrent.futures import ProcessPoolExecutor
 
+import torch  # _resolve_device: validate --device before any net is built
+
 from repo_paths import CHECKPOINTS_DIR
 from rl.league import PFSP_POWER
 from rl.league_cli_spec import build_arg_parser
@@ -65,6 +67,27 @@ from rl.league_runner import (
     EVAL_EVERY_SESSIONS, EVAL_GAMES, TRUNK_HIDDEN, advance_progress,
     _load_progress, _next_batch_games, _run_eval, _run_session, _save_progress, _write_event_log,
 )
+
+
+def _resolve_device(name):
+    """Validates a device string at STARTUP, before any net is built.
+
+    Fails loudly on two things that would otherwise surface much later and
+    much less legibly: an unrecognized device name (which torch reports from
+    inside ppo_update's first tensor allocation, several minutes into a
+    session), and asking for cuda on a machine without a working CUDA build
+    (which silently is not something to fall back to -- a run launched with
+    --device cuda that quietly trained on CPU would produce timings the owner
+    would reasonably read as GPU timings)."""
+    name = str(name).lower()
+    if name == "cpu":
+        return "cpu"
+    if name.startswith("cuda"):
+        if not torch.cuda.is_available():
+            raise SystemExit(f"--device {name}: torch reports no CUDA available "
+                             f"(torch {torch.__version__}). Use --device cpu.")
+        return name
+    raise SystemExit(f"--device {name}: expected 'cpu' or 'cuda[:N]'.")
 
 
 def main():
@@ -207,7 +230,15 @@ def main():
                             # editing this cannot shape-mismatch a league already on disk,
                             # it just does nothing. JSON gives a list; DeckNetwork wants a
                             # tuple.
-                            trunk_hidden=tuple(run_cfg.get("trunk_hidden", TRUNK_HIDDEN)))
+                            trunk_hidden=tuple(run_cfg.get("trunk_hidden", TRUNK_HIDDEN)),
+                            # Explicit flag wins over the run-config, which wins
+                            # over "cpu" -- same precedence every other mechanic
+                            # here uses. Validated rather than passed through
+                            # blind: a typo'd device name would otherwise surface
+                            # deep inside ppo_update's first tensor allocation,
+                            # and asking for cuda on a box without it should say
+                            # so at startup rather than after loading four nets.
+                            device=_resolve_device(args.device or run_cfg.get("device", "cpu")))
 
     sequential = matchup is not None or n_workers <= 1  # matchup uses collect_rollout directly (no worker path)
     if not sequential:

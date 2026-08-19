@@ -181,7 +181,17 @@ def collect_rollout_league_parallel(training_deck_name, live_nets, reward_fn_nam
     merges every worker's own collect_rollout_league outcomes list (see its
     docstring); the caller applies these to the real pool via record_outcome,
     since every worker's pool here is a separate-process, read-only replica."""
-    all_state_dicts = {name: net.state_dict() for name, net in live_nets.items()}
+    # .cpu() on every tensor: the workers are separate PROCESSES with no CUDA
+    # context of their own, and they play games on CPU regardless of where
+    # training runs. Shipping CUDA tensors across the pickle boundary would
+    # either fail outright or force each worker to open its own CUDA context
+    # just to move them straight back. Measured cost of the copy on a
+    # GPU-resident league: ~10ms per call vs ~0.8ms CPU-to-CPU, i.e. ~5s over
+    # a whole 125-iteration session -- negligible against the update time the
+    # GPU buys back. A no-op when training is already on CPU (.cpu() on a CPU
+    # tensor returns self).
+    all_state_dicts = {name: {k: v.cpu() for k, v in net.state_dict().items()}
+                       for name, net in live_nets.items()}
 
     base = n_games // n_workers
     remainder = n_games % n_workers
