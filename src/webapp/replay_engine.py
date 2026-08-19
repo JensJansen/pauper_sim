@@ -52,6 +52,19 @@ it's worth showing isn't known until either a real event during that phase
 flushes it, or the next phase_change/turn_start discards it unflushed --
 an empty phase, skipped straight through to whatever comes next. See
 GameReducer._emit.
+
+decision_weights is buffered the same way (owner directive, 2026-08-19,
+superseding the 2026-08-02 "always show a real decision, even a pass" call
+for this specific case): the network logs one whenever a decision had more
+than one legal option, REGARDLESS of whether the chosen action was pass
+(rl/agent.py's _log_decision_weights) -- so "the agent considered acting
+and passed anyway" was flushing an otherwise-empty phase's header on its
+own, defeating the collapse above every time either player merely had an
+option to decline. Queued decision_weights steps ride along with the
+phase's own buffered header: shown together if a real action follows later
+in the same phase, discarded together if it doesn't. A decision that led to
+a genuine board change still always shows (the action's own step flushes
+both); only pass-only phases disappear.
 """
 # The event-stream format never states a deck's true size. Approximate
 # "cards remaining": assume a real 60-card constructed deck, decrement once
@@ -137,6 +150,7 @@ class GameReducer:
         self.stack = []  # [{"name": str, "controller": int}], top = last
         self.steps = []
         self._pending_phase_step = None  # buffered phase_change step, see _emit
+        self._pending_decision_steps = []  # buffered decision_weights steps, same phase, see _emit
         # Owner directive (2026-08-02): show every individual mulligan-round
         # draw, reject, and bottom-card pick as its own step -- these are
         # real per-decision moments (each is its own mulligan-model forward
@@ -160,9 +174,13 @@ class GameReducer:
         brevity per the owner's request. turn_start is never itself
         buffered (always shown) but also discards a still-pending phase --
         the previous phase ending with nothing in it is exactly the empty
-        case this is meant to collapse. extra: kind-specific fields merged
-        onto the step (only decision_weights uses this -- candidates/
-        chosen_index/value_estimate/network/pointer_kind)."""
+        case this is meant to collapse.
+
+        decision_weights is buffered right alongside it, queued rather than
+        appended, for the same reason -- see this module's docstring. extra:
+        kind-specific fields merged onto the step (only decision_weights
+        uses this -- candidates/chosen_index/value_estimate/network/
+        pointer_kind)."""
         step = {
             "kind": kind,
             "turn": e.get("turn"),
@@ -176,11 +194,22 @@ class GameReducer:
         if extra:
             step.update(extra)
         if kind == "phase_change":
+            # A new phase starting means the OLD phase is done -- whatever was
+            # still buffered from it (header + any pass-only decisions) never
+            # got flushed by a real event, so it's discarded together here.
             self._pending_phase_step = step
+            self._pending_decision_steps = []
             return
-        if kind != "turn_start" and self._pending_phase_step is not None:
-            self._append_step(self._pending_phase_step)
+        if kind == "decision_weights":
+            self._pending_decision_steps.append(step)
+            return
+        if kind != "turn_start":
+            if self._pending_phase_step is not None:
+                self._append_step(self._pending_phase_step)
+            for pending in self._pending_decision_steps:
+                self._append_step(pending)
         self._pending_phase_step = None
+        self._pending_decision_steps = []
         self._append_step(step)
 
     def _append_step(self, step):

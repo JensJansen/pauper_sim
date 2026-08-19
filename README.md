@@ -1056,18 +1056,25 @@ Each page links back to `/` and to the other tool.
   just the parent — `--n-workers > 1` spawns a `ProcessPoolExecutor`, and
   terminating only the parent would orphan its worker processes. For an
   escalating session, it also stops the next batch from being queued.
-- **Logs** stream live over Server-Sent Events, reading the same kind of
-  log file the `/train` skill already writes by hand
-  (`logs/webapp_runs/<run_id>.log`) — one continuous file per run, so an
-  escalating session's log runs straight through every batch with a
-  `=== batch N ===` marker between them; a finished run's log stays readable
-  afterward.
+- **Each run gets its own folder**, `logs/<timestamp>-<script>-<short-id>/`
+  (`RunManager._run_dir`), holding `stdout.log` and, if the form's `log`
+  field was filled in, `event_log.json` — replacing the old scheme of a
+  hand-typed `--log` path plus a same-named stdout file off in
+  `logs/webapp_runs/`. Filling in `log` still just means "log this run";
+  the path itself is generated, not taken literally, so every logged run
+  ends up somewhere the replay viewer's server-side browser (below) can
+  find it.
+- **Logs** stream live over Server-Sent Events, reading that run's
+  `stdout.log` — one continuous file per run, so an escalating session's
+  log runs straight through every batch with a `=== batch N ===` marker
+  between them; a finished run's log stays readable afterward.
 - **Known limitation**: run tracking (start/stop/status) only works for
   runs started by the currently-running server process — restarting the
   server orphans any run still in flight (it keeps training to completion
   untouched, just no longer stoppable/pollable from the UI). The on-disk
-  registry (`logs/webapp_runs/registry.json`) still shows its history and
-  log once it's done.
+  registry (`logs/webapp_runs/registry.json`, unchanged location — only
+  the per-run stdout/event logs it points to moved) still shows its
+  history and log once it's done.
 - **CPU contention**: training already saturates every core at
   `--n-workers 6`; the UI warns (not blocks) before starting a second run
   while one is already active.
@@ -1141,14 +1148,23 @@ viewing).
   `GameState.stack`); the pregame mulligan sequence is **not** netted into
   one summary step — see below.
 - **A hamburger button fixed at the top-left opens a drawer** (link home,
-  open-a-new-file, and the game list — replacing an earlier plain dropdown)
-  that overlays the board without disturbing the scrub position underneath.
-  **File selection is a native browser file picker**, reachable from the
-  drawer's "Open new file". Pick any `--log` JSON file from disk
-  (`logs/*.json`); the browser reads it and posts the content to the
+  open-a-new-file, browse-server-logs, and the game list — replacing an
+  earlier plain dropdown) that overlays the board without disturbing the
+  scrub position underneath. **File selection is a native browser file
+  picker**, reachable from the drawer's "Open new file". Pick any `--log`
+  JSON file from disk; the browser reads it and posts the content to the
   backend, which returns that file's game list (one file can hold an entire
   round-robin `--eval` run) before reducing any board state, then reduces
-  just the selected game. Each game in the list is labeled from its own
+  just the selected game.
+- **"Browse server logs" (local-only)** lists every
+  `logs/<run>/event_log.json` a webapp-launched run has written
+  (`GET /api/replay/runs`, newest first), so a run started from `/train`
+  doesn't need its output file hunted down by hand afterward — clicking an
+  entry fetches it (`GET /api/replay/runs/<name>/raw`) and feeds it through
+  the exact same client-side flow as a picked file. `app_public.py` (the
+  publicly-hostable subset, see its own section below) has no equivalent
+  route — the hosted viewer stays file-picker-only.
+- Each game in the list is labeled from its own
   `deck_a`/`deck_b` fields (`rl.league_runner`'s `_write_event_log` stamps
   every game with which pairing it actually was) as `"deck A vs deck B (game
   N)"` — the `(game N)` disambiguates repeat games of the same pairing (a
@@ -1249,6 +1265,25 @@ viewing).
   surfaces it, or the next `phase_change`/`turn_start` arrives with nothing
   having happened — an empty phase, dropped rather than shown as a bare
   "— Upkeep —" the player never actually did anything in.
+- **`decision_weights` is buffered right alongside the phase header it
+  belongs to** (owner directive, 2026-08-19, refining the collapse above):
+  `_log_decision_weights` fires for any decision with more than one legal
+  option *regardless of whether the chosen action was pass*, so a player
+  merely considering — and declining — an action was flushing an
+  otherwise-empty phase on its own, defeating the collapse for almost every
+  phase in a real game. Queued decision panels now ride along with the
+  phase's buffered header: shown together if a real action follows later in
+  the same phase, discarded together if it doesn't. A decision that led to
+  an actual board change still always shows — only pass-only phases vanish.
+  Arrow-key/scrubber navigation lands on the next phase with real content,
+  e.g. an empty Main Phase 1 steps straight to Attacks.
+- **A persistent Turn/Phase/active-player line** above the scrubber
+  (`#turn-phase`) reads e.g. "Turn 5 — main1 — P0's turn, P1 acting" —
+  `turn_player_idx` (whose turn it structurally is) and
+  `active_player_idx` (whoever currently holds priority) are shown
+  separately since they diverge whenever a player is doing something (a
+  response, a block) on the other player's turn; identical when they
+  match, so an uneventful step just reads "P0's turn".
 - Deferred, not in MVP scope: live re-inference against an arbitrary
   checkpoint (the decision-point overlay above has shipped).
 

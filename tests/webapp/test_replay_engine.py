@@ -195,14 +195,15 @@ def test_aura_attached_resolves_cross_player_target():
     assert pacifism["enchanting"] == {"controller_idx": 0, "name": "Grizzly Bears", "slot": 0}
 
 
-def test_decision_weights_step_formats_candidates_and_flushes_pending_phase():
+def test_decision_weights_step_formats_candidates_and_flushes_with_a_following_action():
     """rl/agent.py and rl/mulligan.py log structured facts (fixed_label a
     plain string, pointer_identity a {name, slot, controller} fact, never a
-    baked string) -- this handler does the label formatting, and (like any
-    other real event) flushes a still-buffered empty phase_change."""
+    baked string) -- this handler does the label formatting. decision_weights
+    is buffered like phase_change (2026-08-19): it only surfaces once a real
+    action follows in the same phase, which also flushes the phase header."""
     events = [
         _ev("turn_start", phase=None),
-        _ev("phase_change", phase="main1"),  # buffered until a real event flushes it
+        _ev("phase_change", phase="main1"),  # buffered until something real flushes it
         _ev("decision_weights", phase="main1", network="main", chosen_index=1, value_estimate=0.42,
             pointer_kind="declare_attackers",
             candidates=[
@@ -212,16 +213,44 @@ def test_decision_weights_step_formats_candidates_and_flushes_pending_phase():
                 {"index": 2, "probability": 0.2, "fixed_label": None,
                  "pointer_identity": {"name": "Lightning Bolt", "slot": None, "controller": 1}},
             ]),
+        _ev("zone_move", phase="main1", card="Grizzly Bears", from_zone="hand", to_zone="stack", controller=0),
     ]
     steps = GameReducer(events).run()
     kinds = [s["kind"] for s in steps]
-    assert kinds == ["turn_start", "phase_change", "decision_weights"]  # the buffered phase_change got flushed
-    dw = steps[-1]
+    assert kinds == ["turn_start", "phase_change", "decision_weights", "zone_move"]
+    dw = steps[2]
     assert dw["network"] == "main" and dw["chosen_index"] == 1 and dw["value_estimate"] == 0.42
     assert dw["pointer_kind"] == "declare_attackers"
     labels = [c["label"] for c in dw["candidates"]]
     assert labels == ["Pass", "Grizzly Bears (slot 0) (P0)", "Lightning Bolt (P1)"]
     assert dw["players"] == steps[0]["players"], "decision_weights is non-board-mutating"
+
+
+def test_decision_only_phase_collapses_like_an_empty_one():
+    """The exact case this change fixes (owner directive, 2026-08-19,
+    superseding the immediate-flush behavior above): the agent had a real
+    decision (more than one legal option -- rl/agent.py's
+    _log_decision_weights fires regardless of the outcome) but chose to
+    pass, and nothing else happened in the phase. Previously the
+    decision_weights step alone flushed an otherwise-empty phase_change; now
+    it's buffered right alongside it, and both disappear together, same as
+    a phase with no decisions in it at all."""
+    events = [
+        _ev("turn_start", phase=None),
+        _ev("phase_change", phase="main1"),  # would-be-empty, but a decision happens in it
+        _ev("decision_weights", phase="main1", network="main", chosen_index=0, value_estimate=0.1,
+            pointer_kind=None,
+            candidates=[{"index": 0, "probability": 0.9, "fixed_label": "Pass", "pointer_identity": None}]),
+        _ev("phase_change", phase="combat_start"),
+        _ev("zone_move", phase="combat_start", card="Island", from_zone="library", to_zone="hand", reason="draw"),
+    ]
+    steps = GameReducer(events).run()
+    kinds_and_phases = [(s["kind"], s.get("phase")) for s in steps]
+    assert kinds_and_phases == [
+        ("turn_start", None),
+        ("phase_change", "combat_start"),
+        ("zone_move", "combat_start"),
+    ]
 
 
 def test_pass_produces_no_step_regardless_of_stack():

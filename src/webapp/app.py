@@ -6,9 +6,10 @@
   treated as optional form-prefill preconfigurations (loaded into fields
   client-side, editable after).
 - Replay viewer (/replay, static/replay.html): pick a --log event-log JSON
-  file from disk and step through a logged game's board state. The backend
-  parses the raw log directly (replay_engine.py) -- no intermediate replay
-  file format.
+  file from disk, or browse logs/<run>/event_log.json files a webapp-launched
+  run has already written (/api/replay/runs, local-only), and step through a
+  logged game's board state. The backend parses the raw log directly
+  (replay_engine.py) -- no intermediate replay file format.
 
 Serves those three static pages plus a small JSON + Server-Sent-Events API.
 Local single-user tool: no auth, binds to localhost only. See README's
@@ -35,6 +36,7 @@ from replay_engine import list_games, reduce_game  # noqa: E402
 
 TRAINING_CONFIGS_DIR = REPO_ROOT / "training_configs"
 LEAGUE_DECKS_PATH = REPO_ROOT / "data" / "league_decks.json"
+LOGS_DIR = REPO_ROOT / "logs"
 
 app = Flask(__name__, static_folder="static", static_url_path="")
 manager = RunManager()
@@ -111,6 +113,26 @@ def run_log(run_id):
 @app.get("/replay")
 def replay_page():
     return send_from_directory(app.static_folder, "replay.html")
+
+
+@app.get("/api/replay/runs")
+def replay_runs():
+    """Server-side log browser -- local-only (app_public.py has no equivalent,
+    see its own docstring). Every logs/<run>/event_log.json a webapp-launched
+    run has written, via runs.py's RunManager._run_dir, newest first."""
+    runs = []
+    for event_path in LOGS_DIR.glob("*/event_log.json"):
+        stat = event_path.stat()
+        runs.append({"name": event_path.parent.name, "mtime": stat.st_mtime, "size_kb": stat.st_size / 1024})
+    runs.sort(key=lambda r: r["mtime"], reverse=True)
+    return jsonify(runs)
+
+
+@app.get("/api/replay/runs/<name>/raw")
+def replay_run_raw(name):
+    if not (LOGS_DIR / name / "event_log.json").is_file():
+        return jsonify({"error": "not found"}), 404
+    return send_from_directory(LOGS_DIR / name, "event_log.json")
 
 
 @app.post("/api/replay/games")

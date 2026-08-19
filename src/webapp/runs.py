@@ -50,8 +50,9 @@ from repo_paths import REPO_ROOT, SRC_DIR, CHECKPOINTS_DIR  # noqa: E402
 from rl.league_cli_spec import build_arg_parser, LEAGUE_GLOBAL, LEAGUE_MODES  # noqa: E402 -- torch-free, safe on every league-run start
 import analysis.report_metrics as report_metrics  # noqa: E402 -- torch-free, safe on every league-run start
 
-LOG_DIR = REPO_ROOT / "logs" / "webapp_runs"
+LOG_DIR = REPO_ROOT / "logs" / "webapp_runs"  # registry.json only -- per-run logs live under RUNS_ROOT, see _run_dir
 REGISTRY_PATH = LOG_DIR / "registry.json"
+RUNS_ROOT = REPO_ROOT / "logs"
 
 # Only one training script now. There used to be a "pretrain" entry here too,
 # for run_pretrain.py, which built and froze the league's single shared
@@ -146,6 +147,17 @@ def is_auto_sizing_league_run(values):
     return bool(not values.get("matchup") and not values.get("eval")
                 and not values.get("n_iterations")
                 and values.get("total_games"))
+
+
+def _run_dir(script, run_id):
+    """logs/<timestamp>-<script>-<short-id>/ -- one folder per run, holding
+    stdout.log and (if --log was requested) event_log.json together, so
+    app.py's /api/replay/runs browser can list and open either without a
+    separate registry lookup, and so the two kinds of log stop being
+    distinguishable only by hand-picked filename prefix."""
+    d = RUNS_ROOT / f"{time.strftime('%Y%m%d-%H%M%S')}-{script}-{run_id[:6]}"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
 
 
 def _league_dir_for(values):
@@ -325,9 +337,15 @@ class RunManager:
         return self._start_single(script, values)
 
     def _start_single(self, script, values):
-        argv = build_argv(script, values)
         run_id = uuid.uuid4().hex[:12]
-        log_path = LOG_DIR / f"{run_id}.log"
+        run_dir = _run_dir(script, run_id)
+        if values.get("log"):
+            # A filled-in log field means "log this run" -- the auto-organized
+            # folder path replaces whatever the user typed, same opt-in signal
+            # as before, now landing somewhere the browser can find it.
+            values = {**values, "log": str(run_dir / "event_log.json")}
+        argv = build_argv(script, values)
+        log_path = run_dir / "stdout.log"
         cmd = [sys.executable, "-u", str(SCRIPTS[script])] + argv
         log_path.write_text(f"$ {' '.join(cmd)}\n\n")
         logfile = open(log_path, "a")
@@ -347,9 +365,12 @@ class RunManager:
         return run_id
 
     def _start_escalating(self, values):
-        argv = build_argv("league", values)
         run_id = uuid.uuid4().hex[:12]
-        log_path = LOG_DIR / f"{run_id}.log"
+        run_dir = _run_dir("league", run_id)
+        if values.get("log"):
+            values = {**values, "log": str(run_dir / "event_log.json")}
+        argv = build_argv("league", values)
+        log_path = run_dir / "stdout.log"
         log_path.write_text("")
         league_dir = _league_dir_for(values)
         entry = {

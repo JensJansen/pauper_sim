@@ -15,7 +15,7 @@ import pytest
 
 from webapp import runs as runs_module
 from webapp.runs import (
-    LEAGUE_GLOBAL, LEAGUE_MODES, RunManager, _batch_healthy, argspec_from_parser, build_argv,
+    LEAGUE_GLOBAL, LEAGUE_MODES, RunManager, _batch_healthy, _run_dir, argspec_from_parser, build_argv,
     is_auto_sizing_league_run, parse_last_batch_timing, _league_parser,
 )
 
@@ -99,6 +99,16 @@ def test_build_argv_league_matchup_and_flags():
     assert "--eval" in argv
     assert "--sampled" in argv
     assert _flag_value(argv, "--games") == "25"
+
+
+def test_run_dir_is_unique_per_run_id_and_created_on_disk(monkeypatch, tmp_path):
+    monkeypatch.setattr(runs_module, "RUNS_ROOT", tmp_path)
+    d1 = _run_dir("league", "aaaaaaaaaaaa")
+    d2 = _run_dir("league", "bbbbbbbbbbbb")
+    assert d1 != d2
+    assert d1.is_dir() and d2.is_dir()
+    assert d1.parent == tmp_path
+    assert "league" in d1.name
 
 
 @pytest.mark.slow

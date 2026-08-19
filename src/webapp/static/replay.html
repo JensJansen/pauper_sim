@@ -66,7 +66,7 @@
   #controls { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
   #scrubber { flex: 1; min-width: 200px; }
   #step-desc { font-size: 15px; margin: 8px 0 2px; }
-  #turn-phase { color: #8890a0; font-size: 12px; }
+  #turn-phase { color: #b8c0d0; font-size: 13px; font-weight: 600; }
 
   /* Full-height stack on the left, spanning both players (align-items: stretch
      makes it match players-col's combined height with no manual calc); split
@@ -190,7 +190,9 @@
   <a class="drawer-link" href="/">🏠 Home</a>
   <button class="drawer-link" id="btn-open-file">📂 Open new file</button>
   <input type="file" id="file-input" accept=".json" hidden>
+  <button class="drawer-link" id="btn-browse-runs">🗄️ Browse server logs</button>
   <p class="hint" id="file-hint"></p>
+  <div id="runs-list" style="display:none"></div>
 
   <div class="drawer-section">
     <h2>Games</h2>
@@ -447,8 +449,17 @@ function renderStep(i) {
   document.getElementById('scrubber').value = i;
   document.getElementById('step-counter').textContent = `Step ${i + 1} / ${currentSteps.length}`;
   document.getElementById('step-desc').textContent = step.description;
+  // turn_player_idx is whose turn it structurally is; active_player_idx is
+  // whoever's actually deciding right now (step.active_player_idx --
+  // rl/agent.py's _seat_step docstring on why that's the deciding seat) --
+  // shown separately since they diverge whenever a player is doing
+  // something (a response, a block) on the other player's turn.
+  let who = step.turn_player_idx != null ? ` — P${step.turn_player_idx}'s turn` : '';
+  if (step.active_player_idx != null && step.active_player_idx !== step.turn_player_idx) {
+    who += `, P${step.active_player_idx} acting`;
+  }
   document.getElementById('turn-phase').textContent =
-    `Turn ${step.turn ?? '?'}${step.phase ? ' — ' + step.phase.replace(/_/g, ' ') : ''}`;
+    `Turn ${step.turn ?? '?'}${step.phase ? ' — ' + step.phase.replace(/_/g, ' ') : ''}${who}`;
   document.getElementById('btn-prev').disabled = i === 0;
   document.getElementById('btn-next').disabled = i === currentSteps.length - 1;
   renderBoard(step);
@@ -462,12 +473,10 @@ async function postJson(url, body) {
   return data;
 }
 
-async function onFile(ev) {
-  const file = ev.target.files[0];
-  if (!file) return;
+async function loadContent(content, label) {
   document.getElementById('file-hint').textContent = 'parsing…';
   try {
-    fileContent = await file.text();
+    fileContent = content;
     const data = await postJson('/api/replay/games', { content: fileContent });
     allGames = data.games;
     selectedGameIndex = null;
@@ -475,11 +484,52 @@ async function onFile(ev) {
     search.disabled = allGames.length === 0;
     search.value = '';
     applyGameSearch('');
-    document.getElementById('file-hint').textContent = `${file.name}: ${allGames.length} game(s)`;
+    document.getElementById('file-hint').textContent = `${label}: ${allGames.length} game(s)`;
   } catch (err) {
     document.getElementById('file-hint').textContent = '';
     alert('Failed to load log: ' + err.message);
   }
+}
+
+async function onFile(ev) {
+  const file = ev.target.files[0];
+  if (!file) return;
+  document.getElementById('runs-list').style.display = 'none';
+  await loadContent(await file.text(), file.name);
+}
+
+async function toggleRunsList() {
+  const listEl = document.getElementById('runs-list');
+  if (listEl.style.display !== 'none') {
+    listEl.style.display = 'none';
+    return;
+  }
+  listEl.style.display = '';
+  listEl.innerHTML = '<p class="hint">loading…</p>';
+  try {
+    const res = await fetch('/api/replay/runs');
+    const runs = await res.json();
+    if (!res.ok) throw new Error(runs.error || res.statusText);
+    listEl.innerHTML = runs.length
+      ? runs.map(r => `
+        <button class="game-item" data-run-name="${escapeHtml(r.name)}">
+          <div class="game-item-header">${escapeHtml(r.name)}</div>
+          <div class="game-item-detail">${new Date(r.mtime * 1000).toLocaleString()} — ${r.size_kb.toFixed(0)} KB</div>
+        </button>`).join('')
+      : '<p class="hint">no server logs yet</p>';
+  } catch (err) {
+    listEl.innerHTML = `<p class="hint">failed to list: ${escapeHtml(err.message)}</p>`;
+  }
+}
+
+async function onSelectRun(name) {
+  const res = await fetch(`/api/replay/runs/${encodeURIComponent(name)}/raw`);
+  if (!res.ok) {
+    alert('Failed to load log: ' + res.statusText);
+    return;
+  }
+  document.getElementById('runs-list').style.display = 'none';
+  await loadContent(await res.text(), name);
 }
 
 function applyGameSearch(query) {
@@ -592,6 +642,11 @@ document.addEventListener('mouseout', e => {
 
 document.getElementById('file-input').addEventListener('change', onFile);
 document.getElementById('btn-open-file').addEventListener('click', () => document.getElementById('file-input').click());
+document.getElementById('btn-browse-runs').addEventListener('click', toggleRunsList);
+document.getElementById('runs-list').addEventListener('click', e => {
+  const btn = e.target.closest('[data-run-name]');
+  if (btn) onSelectRun(btn.dataset.runName);
+});
 document.getElementById('game-search').addEventListener('input', e => applyGameSearch(e.target.value));
 document.getElementById('game-list').addEventListener('click', e => {
   const btn = e.target.closest('.game-item');
