@@ -1,0 +1,7 @@
+services:
+  - type: web
+    name: pauper-sim-replay
+    runtime: python
+    plan: free
+    buildCommand: pip install -r src/webapp/requirements-public.txt
+    startCommand: gunicorn --chdir src/webapp app_public:app

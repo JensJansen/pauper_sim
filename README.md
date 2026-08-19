@@ -184,7 +184,10 @@ src/
                            bootstrap it imports for its side effect).
   webapp/                  Local Flask UI: app.py (routes) + runs.py (subprocess/
                            registry logic) + static/*.html (landing, training-ops,
-                           replay viewer -- no build step). See its own section below.
+                           replay viewer -- no build step). app_public.py is a
+                           separate deploy-only entrypoint exposing just the
+                           replay viewer (safe to host publicly). See its own
+                           section below.
 
 data/                      Decklists (*.txt) + league_decks.json roster.
 checkpoints/               Trained weights + vocab.json (gitignored; see below).
@@ -1248,6 +1251,20 @@ viewing).
   "— Upkeep —" the player never actually did anything in.
 - Deferred, not in MVP scope: live re-inference against an arbitrary
   checkpoint (the decision-point overlay above has shipped).
+
+### Public hosting (`app_public.py`)
+
+`src/webapp/app_public.py` is a deploy-only entrypoint exposing **just** the
+`/replay` viewer and its two `/api/replay/*` endpoints — never `/train`,
+which starts real OS subprocesses from POST'd args and must stay
+localhost-only (see `app.py`'s module docstring). It has no filesystem
+access of its own: both endpoints take raw log JSON text in the POST body
+(the browser reads the file, not the server), and `replay_engine.py` has no
+imports beyond the stdlib, so hosting it needs only
+`src/webapp/requirements-public.txt` (`flask` + `gunicorn`), not the repo's
+full CUDA-pinned `requirements.txt`. `render.yaml` at the repo root deploys
+it as a Render free-tier web service (`gunicorn --chdir src/webapp
+app_public:app`).
 
 ---
 
