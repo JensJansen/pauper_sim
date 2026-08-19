@@ -19,7 +19,7 @@ framework dependencies beyond PyTorch.
 | **DRL system** | `src/rl/` | A per-deck Set-Transformer + FiLM perception encoder, trunk/critic/pointer-network action heads, and a PPO self-play + league training loop. |
 | **Decks** | `data/*.txt` + `league_decks.json` | An 11-deck roster (see below). |
 | **Training drivers** | `src/run_league.py` | Trains every deck continuously in a league, encoder and policy together. |
-| **Training-ops UI** | `src/webapp/` | A local Flask web app to start/stop/configure training runs and watch their logs live in a browser, instead of hand-building CLI invocations. |
+| **Replay viewer** | `src/webapp/` | A local Flask web app that steps through a logged game's board state one event at a time, plus a publicly-hostable subset for sharing a run. |
 
 **Roster** (`data/league_decks.json`): `mono_red_madness`, `rakdos_madness`,
 `spy_combo`, `boggles`, `monster_tron`, `dmir_terror`, `elves`,
@@ -160,7 +160,7 @@ src/
   analysis/                Read-only inspection tools. Run them from src/, e.g.
                            `python analysis/report_metrics.py ../checkpoints/<league>`
                            -- each adds src/ to sys.path itself, the same way
-                           webapp/runs.py does.
+                           webapp/app.py does.
     report_metrics.py      Plain-text summary of a league's metrics.jsonl -- per-record
                            trends first, then pooled stats with IMPROVING/FLAT/
                            REGRESSING/PAST PEAK verdicts and CIs.
@@ -182,12 +182,14 @@ src/
   benchmarking/            training_run.py (benchmarks the real league loop under
                            different collection configs) + _common.py (path/stdout
                            bootstrap it imports for its side effect).
-  webapp/                  Local Flask UI: app.py (routes) + runs.py (subprocess/
-                           registry logic) + static/*.html (landing, training-ops,
-                           replay viewer -- no build step). app_public.py is a
-                           separate deploy-only entrypoint exposing just the
-                           replay viewer (safe to host publicly). See its own
-                           section below.
+  webapp/                  Local Flask UI: app.py (routes) + replay_engine.py
+                           (event-log-to-board-state reducer) + static/replay.html
+                           (no build step) -- just the replay viewer; training runs
+                           are launched via run_league.py directly (CLI or the
+                           `/train` skill), not through this app. app_public.py is
+                           a separate deploy-only entrypoint exposing the same
+                           viewer minus its local-only server-side log browser
+                           (safe to host publicly). See its own section below.
 
 data/                      Decklists (*.txt) + league_decks.json roster.
 checkpoints/               Trained weights + vocab.json (gitignored; see below).
@@ -652,10 +654,13 @@ noisy windows is high by selection. `FLAT` is annotated with the minimum
 effect the sample size could have detected, so "no change" is never confused
 with "cannot tell".
 
-The webapp's escalation loop calls the same statistics via
-`webapp/runs.py:learning_health` after every batch, so a run that has stopped
-buying anything says so in its own log. It **warns rather than stops** by
-default — set `stop_on_regression` on the run entry to opt in.
+These are `report_metrics.py`'s own `peak_comparison`/`trend_z` functions —
+formerly also called after every batch by the webapp's escalation loop
+(`webapp/runs.py`'s `learning_health`, removed along with the rest of the
+webapp's training-launch surface) to auto-detect a run that had stopped
+buying anything. That automatic per-batch gate no longer exists; checking
+whether a league is still improving is a `report_metrics.py` run away, same
+as always, just no longer wired to auto-stop a specific in-flight session.
 
 ### Gauntlet
 
@@ -990,95 +995,6 @@ wired only through `--matchup` mode.)
 - **Win condition**: the engine's real one — an opponent's life total hitting
   0, or a player decking out. There is no separate termination heuristic.
 
----
-
-## Training-ops UI (`src/webapp/`)
-
-A local Flask web app for starting, stopping, configuring, and watching
-training runs from a browser instead of hand-building `run_league.py`
-invocations, plus a game replay viewer (below) for
-stepping through a logged game's board state.
-
-```
-cd src/webapp
-python app.py          # http://127.0.0.1:5000 -- localhost only, no auth
-```
-
-`/` is a landing page linking to the two tools; the training-run panel
-described below lives at `/train`, the replay viewer (below) at `/replay`.
-Each page links back to `/` and to the other tool.
-
-- **Runs are plain subprocesses.** Starting one spawns `run_league.py` with
-  fully explicit CLI flags built from whatever's in
-  the form — never a `--run-config`/`--league-config` *path*. The league
-  form is generated by introspecting `rl.league_cli_spec.build_arg_parser()`
-  directly (`webapp/runs.py`'s `argspec_from_parser`) — a torch-free module
-  holding the same `build_arg_parser()` run_league.py's own CLI uses, so the
-  webapp never pays run_league.py's full torch/rl.* import cost just to read
-  its flag spec — so the form always matches the script's real CLI with no
-  hand-maintained duplicate field list to drift out of sync as flags change.
-- **Fields are grouped by run_league.py's real modes**, in collapsible
-  sections (`rl.league_cli_spec`'s `LEAGUE_GLOBAL` / `LEAGUE_MODES`,
-  re-exported from `webapp/runs.py`), so a field
-  a mode doesn't read never shows up while configuring it — e.g. **League
-  training** never shows `--matchup`, and **Matchup training**/**Eval** never
-  show `--roster` or the auto-sizing fields. A few fields deliberately appear
-  in more than one section (e.g. `train-deck-only`/`train-mulligan-only` matter
-  to both League and Matchup training, which both actually train); `league_name`/
-  `seed`/`log` apply to every mode and stay always-visible above the sections
-  instead. The form only ever shows a *reduced* parameter surface in the first
-  place — see "Reduced parameter surface" below.
-- **`training_configs/*.json` are optional preconfigurations, not live
-  config.** Picking one from the dropdown copies its values into the
-  League-training section's fields client-side (e.g. `league_main.json`'s
-  `total_games: 3000` fills the Total Games field) — the fields stay
-  ordinary, editable inputs after that. Once "Start run" is clicked, the
-  values on screen are the whole story; the JSON file itself is never
-  referenced again.
-- **League training auto-escalates to `--total-games`.** Leaving
-  `--n-iterations` blank there takes `run_league.py`'s own auto-sizing path,
-  which (by design) only ever plays ONE batch of its own doubling ladder per
-  invocation — the same "start tiny, verify, double" behavior the `/train`
-  skill drives by hand across many separate invocations
-  (`rl.league_runner._next_batch_games`). The webapp automates that loop itself
-  (`RunManager._escalating_loop`): after each batch it re-invokes the same
-  command until this league's cumulative games/deck reaches the target, a
-  batch comes back unhealthy, or Stop is clicked. Health is judged from log
-  *content* (a `session N done` line, no `Traceback`), never the subprocess
-  exit code — a parallel run (`--n-workers > 1`) reliably exits 1 on Windows
-  from `ProcessPoolExecutor` teardown even on full success, exactly the
-  false-failure the `/train` skill already works around by grepping the log.
-  Setting `--n-iterations` explicitly (a forced one-off size, never fed back
-  into the doubling sequence) or using Matchup/Eval mode always runs as a
-  single batch instead. The runs table shows live progress
-  (`cumulative/total games/deck`, batch count) for an escalating session.
-- **Stop** kills the whole process tree (Windows: `taskkill /T /F`), not
-  just the parent — `--n-workers > 1` spawns a `ProcessPoolExecutor`, and
-  terminating only the parent would orphan its worker processes. For an
-  escalating session, it also stops the next batch from being queued.
-- **Each run gets its own folder**, `logs/<timestamp>-<script>-<short-id>/`
-  (`RunManager._run_dir`), holding `stdout.log` and, if the form's `log`
-  field was filled in, `event_log.json` — replacing the old scheme of a
-  hand-typed `--log` path plus a same-named stdout file off in
-  `logs/webapp_runs/`. Filling in `log` still just means "log this run";
-  the path itself is generated, not taken literally, so every logged run
-  ends up somewhere the replay viewer's server-side browser (below) can
-  find it.
-- **Logs** stream live over Server-Sent Events, reading that run's
-  `stdout.log` — one continuous file per run, so an escalating session's
-  log runs straight through every batch with a `=== batch N ===` marker
-  between them; a finished run's log stays readable afterward.
-- **Known limitation**: run tracking (start/stop/status) only works for
-  runs started by the currently-running server process — restarting the
-  server orphans any run still in flight (it keeps training to completion
-  untouched, just no longer stoppable/pollable from the UI). The on-disk
-  registry (`logs/webapp_runs/registry.json`, unchanged location — only
-  the per-run stdout/event logs it points to moved) still shows its
-  history and log once it's done.
-- **CPU contention**: training already saturates every core at
-  `--n-workers 6`; the UI warns (not blocks) before starting a second run
-  while one is already active.
-
 ### Reduced parameter surface
 
 `run_league.py`'s CLI/config surface was audited 2026-07-31 for knobs that
@@ -1117,9 +1033,9 @@ Three were removed/derived, three were kept as-is:
   protecting the auto-sizing doubling ladder's safety property (never jump
   from a small, verified-healthy batch straight to a huge one) — but that's
   now provided by whatever repeatedly re-invokes `run_league.py` and
-  health-checks between calls (the `/train` skill, or the webapp's
-  auto-escalation loop above), which has to exist for the ladder to mean
-  anything regardless. A second, hand-picked ceiling on top of that was
+  health-checks between calls (the `/train` skill's own escalation loop),
+  which has to exist for the ladder to mean anything regardless. A second,
+  hand-picked ceiling on top of that was
   redundant, and every prior value (1024, 2048, 4000 across the three
   `training_configs/league_*.json` files) was picked ad hoc with no
   principled basis.
@@ -1132,7 +1048,23 @@ choices for matchup/eval), `--n-iterations` (a documented debug escape
 hatch). `--snapshot-every`/`snapshot_every_games` (~200 games between
 snapshots) has a real but looser rationale and was left alone.
 
-### Game replay viewer (`/replay`)
+---
+
+## Replay viewer (`src/webapp/`)
+
+A local Flask web app that steps through a logged game's board state one
+event at a time, backed by the same event-log JSON `--log` writes. Training
+runs are launched via `run_league.py` directly (CLI, or the `/train` skill)
+— this app has no training-launch surface of its own.
+
+```
+cd src/webapp
+python app.py          # http://127.0.0.1:5000 -- localhost only, no auth
+```
+
+`/` serves the replay viewer directly.
+
+### Game replay viewer (`/`)
 
 Step through a logged game's board state one event at a time. MVP scope:
 retroactive viewing of an already-completed `--log` file only (no live game
@@ -1289,13 +1221,15 @@ viewing).
 
 ### Public hosting (`app_public.py`)
 
-`src/webapp/app_public.py` is a deploy-only entrypoint exposing **just** the
-`/replay` viewer and its two `/api/replay/*` endpoints — never `/train`,
-which starts real OS subprocesses from POST'd args and must stay
-localhost-only (see `app.py`'s module docstring). It has no filesystem
-access of its own: both endpoints take raw log JSON text in the POST body
-(the browser reads the file, not the server), and `replay_engine.py` has no
-imports beyond the stdlib, so hosting it needs only
+`src/webapp/app_public.py` is a deploy-only entrypoint exposing the replay
+viewer's file-picker path (`/`, `/api/replay/games`, `/api/replay/game`) —
+never `app.py`'s local-only server-side log browser
+(`/api/replay/runs*`, which lists whatever's sitting in this machine's own
+`logs/`), since that's not something to expose off localhost. Otherwise it
+has no filesystem access of its own: both endpoints it does expose take raw
+log JSON text in the POST body (the browser reads the file, not the
+server), and `replay_engine.py` has no imports beyond the stdlib, so
+hosting it needs only
 `src/webapp/requirements-public.txt` (`flask` + `gunicorn`), not the repo's
 full CUDA-pinned `requirements.txt`. `render.yaml` at the repo root deploys
 it as a Render free-tier web service (`gunicorn --chdir src/webapp
@@ -1313,7 +1247,7 @@ pip install -r requirements.txt
 **training runs on CPU** and doesn't need a GPU — the pinned wheel just
 prevents pip from silently swapping to a CPU-only build on a machine that does
 have one. The replay converter additionally needs `grpcio-tools` (for
-protobuf codegen). The training-ops UI (`src/webapp/`) additionally needs
+protobuf codegen). The replay viewer (`src/webapp/`) additionally needs
 `flask`.
 
 ---
