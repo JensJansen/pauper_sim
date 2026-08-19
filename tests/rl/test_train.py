@@ -623,3 +623,63 @@ def test_recurrent_state_is_per_seat_and_cleared_between_games():
     assert set(agent.hidden) == {0, 1}
     agent.reset()
     assert agent.hidden == {}, "reset must clear every seat, not just the last one written"
+
+
+def test_non_progressing_priority_round_raises_instead_of_hanging(monkeypatch):
+    # A legal-but-non-progressing action spins forever inside a priority round:
+    # `horizon` bounds state.turn_number, and turn_number does not advance
+    # between decisions within one turn, so nothing in the ENGINE stops it (by
+    # design -- capping a priority round would deviate from real Magic, which
+    # sets no limit on how many legal actions a player may take). Left
+    # unguarded that is a silent HANG, not a crash: the buffer grows ~42 KB per
+    # decision at ~400 decisions/s until a collect worker dies pickling its
+    # result, after burning hours of an unattended run looking alive. That
+    # happened for real on 2026-08-19 (a flying/reach predicate mismatch in
+    # blocker assignment, fixed at the source in drl_env._assign_blocker_execute).
+    #
+    # So collect_rollout refuses to spin. This drives the guard directly with a
+    # frozen turn_number -- the defining property of the failure -- rather than
+    # trying to reconstruct a specific engine state that loops, which would
+    # re-break the moment that particular bug's fix changed.
+    import rl.train as train_mod
+
+    fx = _base_fixture()
+    agent = SeatAgent(fx["net_a"], AlwaysKeep(), fx["deck_ctx_a"])
+    pairing = _constant_pairing([agent, agent], [fx["decklist_a"]] * 2,
+                                [fx["reward_fn"]] * 2, ["m", "m"])
+
+    # Freeze turn_number: every decision then counts against the SAME turn,
+    # which is exactly what a non-progressing round looks like to the guard.
+    monkeypatch.setattr(train_mod, "MAX_DECISIONS_PER_TURN", 25)
+    real_run = game.run_multiplayer_game
+
+    def frozen_turn_game(*a, **kw):
+        choose = kw["choose_action"]
+
+        def wrapped(state):
+            state.turn_number = 0  # never advances -- the loop's signature
+            return choose(state)
+        kw["choose_action"] = wrapped
+        return real_run(*a, **kw)
+
+    monkeypatch.setattr(game, "run_multiplayer_game", frozen_turn_game)
+
+    with pytest.raises(RuntimeError, match="non-progressing priority round"):
+        collect_rollout(pairing, 1, HORIZON, _random.Random(0), device=DEVICE)
+
+
+def test_the_guard_does_not_fire_on_ordinary_games():
+    # The other half: a guard that trips on legitimate play would abort real
+    # training runs. Largest legitimate turn ever measured in this repo is 61
+    # decisions (140 recorded round-robin games); the shipped limit is 5000.
+    # Real games here must complete untouched at the real constant.
+    from rl.train import MAX_DECISIONS_PER_TURN
+    assert MAX_DECISIONS_PER_TURN >= 1000, "limit must stay far above any legitimate turn"
+
+    fx = _base_fixture()
+    agent = SeatAgent(fx["net_a"], AlwaysKeep(), fx["deck_ctx_a"])
+    pairing = _constant_pairing([agent, agent], [fx["decklist_a"]] * 2,
+                                [fx["reward_fn"]] * 2, ["m", "m"])
+    buffers, _mull, played = collect_rollout(pairing, 2, HORIZON, _random.Random(0), device=DEVICE)
+    assert played == 2
+    assert len(buffers["m"]) > 0

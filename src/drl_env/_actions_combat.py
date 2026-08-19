@@ -148,8 +148,11 @@ def _done_blocking_legal(state):
     # attacker blocked by exactly one creature -- the defender must add a
     # second blocker. No undo available (by design -- see
     # game.menace_block_incomplete's own docstring): if no second blocker is
-    # available, this stays illegal until the phase's action cap forces
-    # completion and combat.enforce_menace drops the illegal lone block.
+    # available, this stays illegal and game.turn._declare_blockers_gen's own
+    # zero-legal-actions check abandons the declaration, after which
+    # combat.enforce_menace drops the illegal lone block at combat damage.
+    # (This used to cite a "phase action cap" forcing completion. No such cap
+    # exists -- corrected 2026-08-19.)
     return not game.menace_block_incomplete(state)
 
 

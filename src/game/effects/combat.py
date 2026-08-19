@@ -418,11 +418,20 @@ def menace_block_incomplete(state):
     finishing ("Done blocking") while this holds -- declaration-time
     enforcement, not a post-hoc correction. No undo exists (standing engine
     policy, see todo/no_undo_policy.md): the ONLY way forward once a menace
-    attacker has exactly one committed blocker is to add a second one. If none
-    is available, this stays illegal until the phase's action cap forces
-    completion and enforce_menace (below) drops the illegal lone block --
-    bounded, not a softlock, and reachable by a rational policy too, not just
-    a pathological one (see enforce_menace's own docstring). Called only during the
+    attacker has exactly one committed blocker is to add a second one.
+
+    If none is available, game.turn._declare_blockers_gen's own
+    zero-legal-actions check abandons the declaration (it drops the pending and
+    returns; enforce_menace below then drops the illegal lone block at combat
+    damage, so the OUTCOME is unchanged). CORRECTION 2026-08-19: this used to
+    say the round was bounded "until the phase's action cap forces
+    completion". THERE IS NO SUCH CAP -- that round is explicitly unbounded and
+    escapes only when ZERO legal actions remain. The distinction is not
+    academic: an action that is legal but non-progressing spins forever there,
+    which is exactly what a flying/reach predicate mismatch did to real
+    training runs (see drl_env._assign_blocker_execute). Detection lives in the
+    training harness instead (rl.train.collect_rollout's per-turn decision
+    guard), not as an engine-side cap. Called only during the
     declare-blockers step, where active_idx is the defender, so the
     attacker's own blocked_by/attackers are reached via state.opponent (the
     attacking player, from the defender's point of view -- same accessor the

@@ -42,6 +42,17 @@ from rl.agent import SeatAgent, AlwaysKeep
 from rl.ppo import ppo_update
 
 
+# Decisions one seat may take within a SINGLE turn before collect_rollout
+# treats the priority round as non-progressing and raises. See the guard in
+# collect_rollout's choose_action for the full rationale; in short, `horizon`
+# bounds turns and cannot bound work inside a turn, so this is the only thing
+# standing between a legal-but-non-progressing action and a multi-hour silent
+# hang. 5,000 is ~80x the largest legitimate turn ever measured here (61
+# decisions across 140 recorded games; a 1,920-game sampled soak never passed
+# 300), and still trips within ~10s of a real spin.
+MAX_DECISIONS_PER_TURN = 5000
+
+
 class RolloutBuffer:
     def __init__(self):
         self.token_lists, self.scalar, self.mask, self.action, self.logp, self.value, self.reward, self.done = (
@@ -278,11 +289,52 @@ def collect_rollout(pairing, n_games, horizon, rng, device="cpu", record=True, g
             deferred_charges = [[], []]
             winner_only_burn = _winner_only_burn_for(reward_fns)
 
+            # Turn-decision guard state: [turn_number_being_counted, count].
+            # A list, not two locals, so the closure below can mutate it.
+            turn_watch = [None, 0]
+
             def choose_action(state, agents=agents, reward_fns=reward_fns, record_as=record_as,
                               game_buffers=game_buffers, pending=pending,
                               mull_game=mull_game, open_taps=open_taps,
-                              prev_single_pip_sum=prev_single_pip_sum, charge_fns=charge_fns):
+                              prev_single_pip_sum=prev_single_pip_sum, charge_fns=charge_fns,
+                              turn_watch=turn_watch):
                 seat = state.active_idx
+                # NON-PROGRESSING-LOOP GUARD. `horizon` bounds state.turn_number,
+                # and turn_number does not advance inside a priority round -- so a
+                # legal-but-non-progressing action spins here forever, appending a
+                # transition (~42 KB) per iteration at ~400/s. Left unguarded that
+                # is not a crash but a HANG: the buffer grows ~1 GB/min until the
+                # collect worker dies pickling its result, after burning hours of
+                # an unattended run looking alive. Happened for real on
+                # 2026-08-19 (a flying/reach predicate mismatch in blocker
+                # assignment, since fixed at the source).
+                #
+                # Deliberately here and not in game/turn.py: capping a priority
+                # round would be a real rules deviation (Magic sets no limit on
+                # how many legal actions a player may take), so the ENGINE stays
+                # faithful and the TRAINING HARNESS refuses to spin. Owner
+                # decision, 2026-08-19.
+                #
+                # MAX_DECISIONS_PER_TURN is deliberately ~80x the largest
+                # legitimate turn ever measured (61 decisions, across 140 recorded
+                # round-robin games; a 1,920-game sampled soak never passed 300),
+                # so a false positive would take a turn unlike anything observed.
+                # At the ~400 decisions/s a real spin runs at, even this generous
+                # bound trips in about ten seconds.
+                if state.turn_number != turn_watch[0]:
+                    turn_watch[0], turn_watch[1] = state.turn_number, 0
+                turn_watch[1] += 1
+                if turn_watch[1] > MAX_DECISIONS_PER_TURN:
+                    pend = state.pending_resolution
+                    raise RuntimeError(
+                        f"non-progressing priority round: {turn_watch[1]} decisions in turn "
+                        f"{state.turn_number} (limit {MAX_DECISIONS_PER_TURN}). "
+                        f"phase={getattr(state.phase, 'value', state.phase)} "
+                        f"pending={pend['kind'] if pend else None} seat={seat} "
+                        f"stack={len(state.stack)} battlefield={len(state.battlefield)}. "
+                        "Some action is legal but makes no progress -- see "
+                        "analysis/soak_priority_loop.py to identify it."
+                    )
                 current_sum = sum(state.players[seat].mana_pool_single_pip.values())
                 dr = agents[seat].decide(state, seat, horizon, device, greedy=greedy)
                 if record and record_as[seat] is not None:

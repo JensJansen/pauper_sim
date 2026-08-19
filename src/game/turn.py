@@ -370,11 +370,23 @@ def _declare_blockers_gen(state):
     No-op (no yield at all) if there's no real opponent to consult
     (len(state.players) < 2).
 
-    Unbounded -- no iteration cap (see this module's top-of-file note on
-    why none exists anywhere in this loop). Runs until the defender is
-    done declaring blocks (state.pending_resolution clears) or a
-    genuinely-stuck state is detected below (zero legal actions left, not
-    just an unproductive one)."""
+    Unbounded -- no iteration cap anywhere in this loop, by deliberate
+    choice: capping it would be a real deviation from Magic's own rules
+    (nothing limits how many legal actions a player may take in one priority
+    round), so the engine stays faithful and DETECTION lives in the training
+    harness instead -- rl.train.collect_rollout raises if one turn exceeds a
+    generous decision budget, turning a silent multi-hour hang into a loud,
+    bounded failure. Owner decision, 2026-08-19.
+
+    Runs until the defender is done declaring blocks
+    (state.pending_resolution clears) or a genuinely-stuck state is detected
+    below (zero legal actions left, not just an unproductive one). Note the
+    gap that leaves, and that a caller must not assume away: an action which
+    is LEGAL but makes no progress spins here forever, since zero-legal-actions
+    never becomes true. A flying/reach mismatch between an action's legality
+    check and its own executor did exactly that until 2026-08-19 (see
+    drl_env._assign_blocker_execute) -- the fix was to make those agree, not to
+    cap this loop."""
     if len(state.players) < 2:
         return
     attacker_idx = state.active_idx
