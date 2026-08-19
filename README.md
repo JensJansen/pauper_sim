@@ -1077,10 +1077,12 @@ python app.py          # http://127.0.0.1:5000 -- localhost only, no auth
 `/` serves the replay viewer directly. **`--log` output needs to land
 inside the submodule's own checkout** for the server-side "Browse server
 logs" list to find it (`logs/` now resolves relative to `src/webapp/`
-itself, not this repo's root) — e.g. from `src/`:
+itself, not this repo's root) — any filename, any depth under that
+`logs/`, e.g. from `src/`:
 ```
 python run_league.py --matchup deck_a deck_b --log webapp/logs/<run-name>/event_log.json
 ```
+(the filename `event_log.json` is a convention, not a requirement).
 
 ### Game replay viewer (`/`)
 
@@ -1106,14 +1108,18 @@ viewing).
   backend, which returns that file's game list (one file can hold an entire
   round-robin `--eval` run) before reducing any board state, then reduces
   just the selected game.
-- **"Browse server logs" (local-only)** lists every
-  `logs/<run>/event_log.json` a webapp-launched run has written
-  (`GET /api/replay/runs`, newest first), so a run started from `/train`
-  doesn't need its output file hunted down by hand afterward — clicking an
-  entry fetches it (`GET /api/replay/runs/<name>/raw`) and feeds it through
-  the exact same client-side flow as a picked file. `app_public.py` (the
-  publicly-hostable subset, see its own section below) has no equivalent
-  route — the hosted viewer stays file-picker-only.
+- **"Browse server logs" (local-only)** lists every `*.json` file sitting
+  under the submodule's own `logs/`, any depth, any filename — no naming
+  convention required (`GET /api/replay/runs`, newest first, named by its
+  path relative to `logs/`), so a `--log` PATH run by hand or by the
+  `/train` skill doesn't need its output file hunted down afterward —
+  clicking an entry fetches it (`GET /api/replay/runs/<path:name>/raw`)
+  and feeds it through the exact same client-side flow as a picked file.
+  An invalid file just fails to load with a normal error, same as picking
+  a bad one by hand — the listing endpoint only stats files, never opens
+  them. `app_public.py` (the publicly-hostable subset, see its own section
+  below) has no equivalent route — the hosted viewer stays
+  file-picker-only.
 - Each game in the list is labeled from its own
   `deck_a`/`deck_b` fields (`rl.league_runner`'s `_write_event_log` stamps
   every game with which pairing it actually was) as `"deck A vs deck B (game
