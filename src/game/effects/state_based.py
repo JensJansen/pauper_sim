@@ -152,6 +152,8 @@ def _destroy_creature(state, permanent):
     # controller instead of misreading whoever's turn it now is.
     permanent.flags["owner_idx"] = owner_idx
     owner.battlefield.remove(permanent)
+    from .combat import remove_from_combat  # local: combat imports this module (SBAs run in the damage step)
+    remove_from_combat(state, permanent)  # 506.4 -- see that helper for the loop this prevents
     departing = departing_card_def(permanent)  # front face for a DFC leaving the battlefield
     departed_is_token = is_token(departing.name)
     if not departed_is_token:
@@ -251,6 +253,8 @@ def sacrifice_to_graveyard(state, permanent):
     mana.discount_departing_source(state, permanent, owner_idx)
     permanent.flags["owner_idx"] = owner_idx  # see _destroy_creature's own comment -- true controller for a later-resolving ltb_trigger
     owner.battlefield.remove(permanent)
+    from .combat import remove_from_combat  # local: combat imports this module (SBAs run in the damage step)
+    remove_from_combat(state, permanent)  # 506.4 -- a sacrificed attacker/blocker leaves combat too
     departing = departing_card_def(permanent)  # front face for a DFC leaving the battlefield
     departed_is_token = is_token(departing.name)
     if not departed_is_token:

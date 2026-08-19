@@ -1041,3 +1041,48 @@ def test_reach_blocker_vs_flying_attacker_is_not_a_no_op():
     assert game.choose_opponent_permanent_options(state) == [("Sneaky Snacker", 1)]
     game.execute_choose_opponent_permanent_option(state, "Sneaky Snacker", 1)
     assert state.players[0].blocked_by == {attacker: [ent]}, "the block must actually be recorded"
+
+
+def test_attacker_that_left_the_battlefield_is_removed_from_combat():
+    # REGRESSION (2026-08-19), second declare-blockers infinite loop -- same
+    # legal-but-unfulfillable shape as the reach test above, reached by a
+    # completely different divergence.
+    #
+    # 506.4: a permanent removed from the battlefield stops being an attacking
+    # creature. Nothing pruned state.attackers, so a declared attacker killed
+    # during the declare-attackers priority window (dmir_terror's removal, on
+    # a developed board) stayed in the list while being gone from the
+    # battlefield. The two halves of "Assign Blocker" then disagreed:
+    #   creature_block_eligible          iterates state.opponent.attackers   -> still sees it
+    #   choose_opponent_permanent_options iterates state.opponent.battlefield -> does not
+    # so the action stayed legal, its nested choice matched nothing, fizzled
+    # with None, recorded no block, and re-opened begin_declare_blockers on an
+    # identical state -- forever. begin_declare_blockers' own "no attackers"
+    # early-out could not save it either: that tests the same stale list.
+    decklist = [("Generous Ent", 2), ("Sneaky Snacker", 2), ("Forest", 8)]
+    actions = _actions_table.build_action_table(decklist, game.EFFECT_REGISTRY, opponent_decklist=decklist)
+    _, ent_legal, ent_execute = actions[_action_index(actions, "Assign Blocker: Generous Ent (slot 1)")]
+
+    attacker = Permanent(game.CARD_DEFS["Sneaky Snacker"])
+    attacker.tapped = True  # already attacking
+    ent = Permanent(game.CARD_DEFS["Generous Ent"])
+    state = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
+    state.players[0].battlefield = [attacker]
+    state.players[0].attackers = [attacker]
+    state.players[1].battlefield = [ent]
+    state.active_idx = 1  # _declare_blockers_gen's own flip to the defender
+
+    # The removal spell resolves: the attacker leaves the battlefield.
+    from game.effects.state_based import destroy_permanent
+    destroy_permanent(state, attacker)
+    assert attacker not in state.players[0].battlefield, "fixture: the attacker must be gone"
+
+    assert attacker not in state.players[0].attackers, (
+        "506.4: a permanent removed from the battlefield stops being an attacking creature"
+    )
+
+    game.begin_declare_blockers(state, on_complete=lambda s: None)
+    assert state.pending_resolution is None, (
+        "nothing is attacking any more -- the declare-blockers step must not open at all"
+    )
+    assert not ent_legal(state), "no attackers on the battlefield means no blocker is assignable"

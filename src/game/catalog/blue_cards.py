@@ -20,6 +20,7 @@ from ..effects.shared import (
 )
 from ..effects.stack import counter_spell, push_ability_to_stack, push_to_stack
 from ..effects.state_based import departing_card_def, sacrifice_to_graveyard
+from ..effects.combat import remove_from_combat
 from ..effects.stats import can_be_targeted, controller_idx
 from ..effects.tokens import BIRD_ILLUSION_TOKEN_CARD_DEF, create_token
 from ..effects.win_check import lose_life
@@ -106,6 +107,7 @@ def cast_deem_inferior(state, card_def):
             permanent = captured[1]
             owner_idx = controller_idx(state, permanent)  # controller == owner (no control-changing in this pool)
             state.players[owner_idx].battlefield.remove(permanent)
+            remove_from_combat(state, permanent)  # 506.4 -- tucking an attacker removes it from combat
             # a DFC tucked into the library reverts to its front face (Delver, not Insectile)
             begin_tuck_to_library(state, departing_card_def(permanent), owner_idx)
 

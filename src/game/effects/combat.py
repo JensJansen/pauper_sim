@@ -49,6 +49,45 @@ def _blocked_by_creatures(blocked_by):
     return {b for blockers in blocked_by.values() for b in blockers}
 
 
+def remove_from_combat(state, permanent):
+    """506.4: a permanent removed from the battlefield stops being an attacking,
+    blocking, blocked and/or unblocked creature, simultaneously. Call this from
+    EVERY battlefield-exit path that can move a creature (death, sacrifice,
+    bounce, exile) -- there is no single zone-change choke point in this engine,
+    so each one calls this itself.
+
+    Not merely tidiness. state.attackers used to keep a killed attacker, and the
+    two halves of drl_env's "Assign Blocker" read different sources:
+    creature_block_eligible iterates state.opponent.attackers (which still had
+    it) while choose_opponent_permanent_options iterates state.opponent.
+    battlefield (which did not). The action stayed legal, its nested attacker
+    choice matched nothing, fizzled with None, recorded no block, and re-opened
+    begin_declare_blockers on an identical state -- a second infinite declare-
+    blockers loop, distinct from the reach/flying one fixed the same day (see
+    can_block below). begin_declare_blockers' own "no attackers" early-out could
+    not stop it either, since that tests the same stale list. Leaving a dead
+    attacker in the list ALSO let it deal combat damage from the graveyard.
+
+    Idempotent, and safe to call for a permanent that was never in combat.
+
+    Scope note (deliberate, not an oversight): this removes `permanent` itself
+    from combat, which is exactly what 506.4 states. It does NOT drop the
+    blocked_by ENTRY keyed by a removed attacker. Dropping it would free that
+    attacker's already-declared blockers to be offered a second block, and real
+    Magic declares blockers once, simultaneously (509.1) -- a creature never
+    blocks twice. Leaving the entry is also what HEAD already did, so this adds
+    no new deviation. The stale key is separately suspect (menace_block_
+    incomplete and combat_damage_step both iterate blocked_by.items(), so a dead
+    menace attacker could read as permanently under-blocked) -- tracked as its
+    own question rather than silently decided here."""
+    for player in state.players:
+        if permanent in player.attackers:
+            player.attackers.remove(permanent)
+        for blockers in player.blocked_by.values():
+            if permanent in blockers:
+                blockers.remove(permanent)  # 506.4: a removed blocker stops being a blocking creature
+
+
 def can_block(state, blocker, attacker):
     """Whether `blocker` is allowed to block `attacker`. Two real evasion/blocking rules modeled:
     - An attacker that can only be blocked by flying -- real flying (Kitchen
