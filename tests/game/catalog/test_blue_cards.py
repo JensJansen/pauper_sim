@@ -957,3 +957,30 @@ def test_sleep_escape_illegal_no_creature_target():
     sd = CardInstance(registry.CARD_DEFS["Sleep of the Dead"])
     state.graveyard = [sd] + [CardInstance(CardDef(f"g{i}", CardType.INSTANT, {"U": 1}, EffectId.FILLER)) for i in range(3)]
     assert not _sleep_escape_legal(state)  # no creature anywhere
+
+
+def test_deem_inferior_tuck_removes_an_attacker_from_combat():
+    """506.4 via the tuck exit path: bouncing an attacker to the library
+    removes it from combat, so it can no longer be blocked or deal damage.
+
+    Deem Inferior is the one catalog card that removes a creature from the
+    battlefield with a raw battlefield.remove() rather than routing through
+    state_based's destroy/sacrifice choke points, so it needs its own
+    remove_from_combat call and its own test."""
+    state = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
+    state.active_idx = 0
+    victim = Permanent(CardDef("Threat", CardType.CREATURE, None, EffectId.FILLER, power=3, toughness=3))
+    victim.slot = 1
+    state.players[1].battlefield = [victim]
+    state.players[1].attackers = [victim]  # player 1 is attacking; player 0 answers during blocks
+    state.players[1].library = [CardDef(f"lib{i}", CardType.LAND, None, EffectId.ISLAND) for i in range(3)]
+    di = registry.CARD_DEFS["Deem Inferior"]
+    state.players[0].hand = [di]
+
+    cast_deem_inferior(state, di)
+    execute_choose_any_target_creature(state, 1, "Threat", 1)
+    resolve_top_of_stack(state)
+    execute_tuck_position(state, "bottom")
+
+    assert victim not in state.players[1].battlefield
+    assert victim not in state.players[1].attackers, "506.4: a tucked attacker leaves combat"

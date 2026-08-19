@@ -666,3 +666,91 @@ def test_multi_blocker_damage_splits_over_living_blockers_only():
     assert live_blocker.damage_marked == 4, "all 4 power goes to the one living blocker"
     assert dead_blocker.damage_marked == 0
     assert attacker.damage_marked == 1, "only the living blocker deals damage back"
+
+
+def test_menace_attacker_legally_blocked_stays_blocked_when_one_blocker_dies():
+    # 509.1h vs 509.1c. A menace attacker legally blocked by TWO creatures,
+    # one of which then dies in the post-declare-blockers priority window,
+    # REMAINS blocked -- it does not revert to unblocked and hit the player.
+    # This works because game.turn calls enforce_menace once, right after the
+    # declaration is finalized and BEFORE that priority window (turn.py's own
+    # ordering comment); enforce_menace's lone-blocker drop is only ever the
+    # abandoned-declaration backstop, never a re-check after blocks are legal.
+    _fb = registry.EFFECT_REGISTRY[EffectId.FILLER]
+    registry.EFFECT_REGISTRY[EffectId.FILLER] = {"keywords": {"menace"}}
+    try:
+        from game.effects.combat import remove_from_combat
+
+        state = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
+        menacer = Permanent(CardDef("Menacer", CardType.CREATURE, None, EffectId.FILLER, power=4, toughness=5))
+        menacer.summoning_sick = False
+        b1 = Permanent(CardDef("B1", CardType.CREATURE, None, None, power=1, toughness=1))
+        b2 = Permanent(CardDef("B2", CardType.CREATURE, None, None, power=1, toughness=1))
+        state.players[0].battlefield = [menacer]
+        state.players[1].battlefield = [b1, b2]
+
+        declare_attackers_step(state)
+        declare_attacker(state, menacer)
+        state.blocked_by[menacer] = [b1, b2]
+        enforce_menace(state)  # runs here, while the block is still legal
+        assert state.blocked_by[menacer] == [b1, b2]
+
+        # Now b1 dies, during the priority window that follows.
+        state.players[1].battlefield.remove(b1)
+        remove_from_combat(state, b1)
+        assert state.blocked_by[menacer] == [b2], "506.4: the dead blocker stops being a blocking creature"
+
+        combat_damage_step(state)
+        assert state.players[1].life_total == 20, "509.1h: still blocked -- it must not hit the player"
+        assert b2.damage_marked == 4
+    finally:
+        registry.EFFECT_REGISTRY[EffectId.FILLER] = _fb
+
+
+def test_sacrificed_attacker_is_removed_from_combat():
+    # 506.4 via the sacrifice exit path (sacrifice_to_graveyard), the choke
+    # point every "Sacrifice this" ability and artifact-sac cost routes
+    # through -- distinct from the SBA-death path below.
+    from game.effects.state_based import sacrifice_to_graveyard
+
+    state = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
+    attacker = Permanent(CardDef("Fling Fodder", CardType.CREATURE, None, EffectId.FILLER, power=6, toughness=1))
+    attacker.summoning_sick = False
+    state.players[0].battlefield = [attacker]
+
+    declare_attackers_step(state)
+    declare_attacker(state, attacker)
+    assert attacker in state.attackers
+
+    sacrifice_to_graveyard(state, attacker)
+    assert attacker not in state.attackers, "506.4: a sacrificed attacker leaves combat"
+
+    combat_damage_step(state)
+    assert state.players[1].life_total == 20, "a sacrificed attacker deals no combat damage"
+
+
+def test_attacker_killed_by_state_based_actions_is_removed_from_combat():
+    # 506.4 via the SBA-death exit path (check_state_based_actions ->
+    # _destroy_creature) -- the most common way an attacker leaves combat, and
+    # the one the second infinite declare-blockers loop was reached through.
+    from game.effects.state_based import check_state_based_actions
+
+    state = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
+    attacker = Permanent(CardDef("Shocked", CardType.CREATURE, None, EffectId.FILLER, power=3, toughness=2))
+    attacker.summoning_sick = False
+    survivor = Permanent(CardDef("Survivor", CardType.CREATURE, None, EffectId.FILLER, power=2, toughness=4))
+    survivor.summoning_sick = False
+    state.players[0].battlefield = [attacker, survivor]
+
+    declare_attackers_step(state)
+    declare_attacker(state, attacker)
+    declare_attacker(state, survivor)
+
+    attacker.damage_marked = 2  # a burn spell resolved -- lethal
+    check_state_based_actions(state)
+    assert attacker not in state.players[0].battlefield
+    assert attacker not in state.attackers, "506.4: an attacker that dies leaves combat"
+    assert survivor in state.attackers, "the survivor is untouched"
+
+    combat_damage_step(state)
+    assert state.players[1].life_total == 18, "only the survivor's 2 power connects"
