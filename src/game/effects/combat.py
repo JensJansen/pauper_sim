@@ -358,8 +358,18 @@ def combat_damage_step(state):
     defender_idx = 1 - state.active_idx if len(state.players) > 1 else None
     damage_dealt_to_defender = 0
 
+    # BOTH halves derive from state.attackers -- the one authority on what is
+    # still attacking. groups used to be `list(state.blocked_by.items())`, a
+    # second, independent source, and the two disagreed the moment 506.4
+    # removed an attacker from combat (remove_from_combat prunes state.attackers
+    # but deliberately keeps the blocked_by entry, so its declared blockers are
+    # not freed to block twice -- 509.1). That left a group whose attacker was
+    # absent from all_combatants below: KeyError in the first-strike sub-step,
+    # and before that a removed attacker still dealing its combat damage.
+    # Same two-readers-one-rule divergence that caused both declare-blockers
+    # infinite loops; combat state has exactly one source of truth now.
     unblocked = [p for p in state.attackers if p not in state.blocked_by]
-    groups = list(state.blocked_by.items())  # [(attacker, [blockers, ...])] -- gang-blocking (list-valued)
+    groups = [(a, state.blocked_by[a]) for a in state.attackers if a in state.blocked_by]  # gang-blocking: list-valued
     all_combatants = set(state.attackers) | {b for _a, blockers in groups for b in blockers}
 
     # Scan taken once and reused for every combatant checked below -- see

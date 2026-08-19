@@ -589,3 +589,80 @@ def test_free_damage_assignment_skips_blockers_that_already_left():
     finally:
         registry.CARD_DEFS.clear()
         registry.CARD_DEFS.update(_card_defs_backup)
+
+
+def test_blocked_attacker_without_trample_deals_nothing_when_its_blocker_is_gone():
+    # 509.1h: a creature that was blocked REMAINS blocked even if every
+    # creature blocking it leaves combat. Without trample it therefore deals
+    # no combat damage at all -- it does NOT "become unblocked" and hit the
+    # player. The trample counterpart of this is
+    # test_trample_all_through_when_every_blocker_already_gone above; this is
+    # the case that must NOT spill through.
+    state = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
+    attacker = Permanent(CardDef("Grounded", CardType.CREATURE, None, EffectId.FILLER, power=5, toughness=3))
+    attacker.summoning_sick = False
+    gone_blocker = Permanent(CardDef("Gone Blocker", CardType.CREATURE, None, EffectId.FILLER, power=1, toughness=2))
+    state.players[0].battlefield = [attacker]  # blocker deliberately on no battlefield -- already dead
+
+    declare_attackers_step(state)
+    declare_attacker(state, attacker)
+    state.blocked_by[attacker] = [gone_blocker]
+    combat_damage_step(state)
+
+    assert state.players[1].life_total == 20, "a blocked non-trampler must not hit the player when its blocker dies"
+    assert attacker.damage_marked == 0, "a dead blocker deals no damage back"
+
+
+def test_attacker_removed_after_blocks_deals_and_takes_no_damage():
+    # 506.4: an attacker removed from the battlefield after blockers were
+    # declared stops being an attacking creature -- it deals no combat damage
+    # to its blocker or the player, and its blocker deals none back to it.
+    # remove_from_combat prunes state.attackers but deliberately leaves the
+    # blocked_by ENTRY (509.1: its blockers stay declared and must not be
+    # freed to block again), so combat_damage_step -- which iterates
+    # blocked_by.items() -- has to skip the group on its own.
+    from game.effects.combat import remove_from_combat
+
+    state = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
+    attacker = Permanent(CardDef("Doomed", CardType.CREATURE, None, EffectId.FILLER, power=5, toughness=3))
+    attacker.summoning_sick = False
+    blocker = Permanent(CardDef("Blocker", CardType.CREATURE, None, EffectId.FILLER, power=2, toughness=4))
+    state.players[0].battlefield = [attacker]
+    state.players[1].battlefield = [blocker]
+
+    declare_attackers_step(state)
+    declare_attacker(state, attacker)
+    state.blocked_by[attacker] = [blocker]
+
+    # The removal spell resolves after blocks: the attacker leaves.
+    state.players[0].battlefield.remove(attacker)
+    remove_from_combat(state, attacker)
+    assert attacker not in state.attackers
+
+    combat_damage_step(state)
+    assert state.players[1].life_total == 20, "a removed attacker deals no damage to the player"
+    assert blocker.damage_marked == 0, "a removed attacker deals no damage to its blocker"
+    assert attacker.damage_marked == 0, "a blocker deals no damage to an attacker that left combat"
+
+
+def test_multi_blocker_damage_splits_over_living_blockers_only():
+    # Gang block, then one blocker dies before combat damage. The attacker's
+    # damage is assigned across the LIVING blockers only -- the dead one
+    # absorbs nothing and deals nothing back.
+    state = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
+    attacker = Permanent(CardDef("Big", CardType.CREATURE, None, EffectId.FILLER, power=4, toughness=6))
+    attacker.summoning_sick = False
+    dead_blocker = Permanent(CardDef("Dead Blocker", CardType.CREATURE, None, EffectId.FILLER, power=3, toughness=1))
+    live_blocker = Permanent(CardDef("Live Blocker", CardType.CREATURE, None, EffectId.FILLER, power=1, toughness=9))
+    state.players[0].battlefield = [attacker]
+    state.players[1].battlefield = [live_blocker]  # dead_blocker deliberately absent
+
+    declare_attackers_step(state)
+    declare_attacker(state, attacker)
+    state.blocked_by[attacker] = [dead_blocker, live_blocker]
+    combat_damage_step(state)
+
+    assert state.players[1].life_total == 20, "a blocked non-trampler never reaches the player"
+    assert live_blocker.damage_marked == 4, "all 4 power goes to the one living blocker"
+    assert dead_blocker.damage_marked == 0
+    assert attacker.damage_marked == 1, "only the living blocker deals damage back"
