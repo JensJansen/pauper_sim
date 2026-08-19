@@ -2,17 +2,15 @@
 
 build_arg_parser() (moved here verbatim from run_league.py) only calls
 argparse.ArgumentParser()/add_argument() -- it never touches torch or rl.*
--- so it lives in its own module that imports nothing but argparse/stdlib.
-That lets webapp/runs.py introspect run_league.py's real flags (for the
-training-ops UI's argspec) without dragging in run_league.py itself, which
-imports rl.arch/rl.deck/rl.league/rl.agent/rl.train/rl.mulligan and, through
-them, torch -- a multi-second cost otherwise paid on every league-run start.
+-- so it lives in its own module that imports nothing but argparse/stdlib,
+independent of run_league.py itself, which imports rl.arch/rl.deck/
+rl.league/rl.agent/rl.train/rl.mulligan and, through them, torch -- a
+multi-second cost this module avoids paying just to read the flag spec.
 
-LEAGUE_MODES/LEAGUE_GLOBAL (moved here from webapp/runs.py) are hand-authored
-UI-grouping metadata with no structural counterpart in build_arg_parser()
-itself -- see their own comments below for what they mean and
-tests/webapp/test_runs.py's cross-check that they still cover every real flag.
-"""
+This module used to also hold LEAGUE_MODES/LEAGUE_GLOBAL, hand-authored
+UI-grouping metadata for the training-ops web UI's form -- removed along
+with that UI (2026-08-19); run_league.py's real CLI (below) is the only
+surface now."""
 import argparse
 
 
@@ -20,9 +18,7 @@ def build_arg_parser(description=None):
     """description defaults to None (no --help description) since this
     module's own __doc__ is about league_cli_spec.py, not run_league.py --
     run_league.py's main() passes its own __doc__ explicitly so `python
-    run_league.py --help` still shows the real script's usage text unchanged.
-    webapp/runs.py's introspection callers don't need it (argspec_from_parser
-    reads flags/types/help per-action, never parser.description)."""
+    run_league.py --help` still shows the real script's usage text unchanged."""
     parser = argparse.ArgumentParser(description=description, formatter_class=argparse.RawDescriptionHelpFormatter)
     # Every flag below whose default is None (instead of a real value) is
     # CONFIG-BACKED: main() resolves it as explicit-flag > --run-config /
@@ -122,44 +118,3 @@ def build_arg_parser(description=None):
                               "training_configs/league_*.json. Drives automatic batch sizing whenever "
                               "--n-iterations is not given.")
     return parser
-
-
-# Applies identically no matter which of the three modes below is active.
-LEAGUE_GLOBAL = ["league_name", "seed", "log"]
-
-# One entry per real run_league.py mode (see its module docstring's Usage
-# section and main()'s --eval / --matchup branches). A dest may appear in
-# more than one mode -- duplicated deliberately rather than forced into one
-# shared "misc" bucket, so each mode only ever shows what IT reads.
-#
-# games_per_iteration, the PPO batch-size ramp (batch_size_start/cap/steps),
-# and max_batch_size used to be fields here too -- removed 2026-07-31 along
-# with their CLI flags (see run_league.py's own comments at each removal
-# site): games_per_iteration is now always derived from n_workers, the PPO
-# ramp is hardcoded (nobody had ever overridden it), and max_batch_size's
-# safety role is now covered by this webapp's own auto-escalation loop
-# health-checking between every batch.
-LEAGUE_MODES = [
-    {
-        "key": "league", "label": "League training",
-        "help": "The continuous loop: every deck in --roster trains against opponents "
-                "resampled from its history. Leave n-iterations blank to auto-size batches "
-                "toward total-games (see below); set it to force one exact debug-sized run instead.",
-        "dests": ["roster", "decks", "total_games", "n_iterations",
-                  "n_workers", "snapshot_every", "checkpoint_opponent_rate", "pfsp",
-                  "gauntlet_league_name", "heuristic_decks", "train_deck_only", "train_mulligan_only"],
-    },
-    {
-        "key": "matchup_train", "label": "Matchup training",
-        "help": "Fixed A-vs-B pairing, no opponent sampling -- still trains and checkpoints "
-                "both decks, for exactly --games total games in one run (no auto-sizing).",
-        "dests": ["matchup", "games", "train_deck_only", "train_mulligan_only"],
-    },
-    {
-        "key": "eval", "label": "Eval (no training)",
-        "help": "Play games with the CURRENT live agents, no updates, no checkpointing. "
-                "Round-robin over the decks below, or a specific pairing.",
-        "implies": {"eval": True},
-        "dests": ["decks", "matchup", "games", "sampled"],
-    },
-]

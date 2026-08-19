@@ -159,8 +159,7 @@ src/
                            analysis/ only reads them.
   analysis/                Read-only inspection tools. Run them from src/, e.g.
                            `python analysis/report_metrics.py ../checkpoints/<league>`
-                           -- each adds src/ to sys.path itself, the same way
-                           webapp/app.py does.
+                           -- each adds src/ to sys.path itself.
     report_metrics.py      Plain-text summary of a league's metrics.jsonl -- per-record
                            trends first, then pooled stats with IMPROVING/FLAT/
                            REGRESSING/PAST PEAK verdicts and CIs.
@@ -182,7 +181,9 @@ src/
   benchmarking/            training_run.py (benchmarks the real league loop under
                            different collection configs) + _common.py (path/stdout
                            bootstrap it imports for its side effect).
-  webapp/                  Local Flask UI: app.py (routes) + replay_engine.py
+  webapp/                  GIT SUBMODULE (github.com/JensJansen/pauper-sim-replay) --
+                           `git submodule update --init` after a plain clone. Local
+                           Flask UI: app.py (routes) + replay_engine.py
                            (event-log-to-board-state reducer) + static/replay.html
                            (no build step) -- just the replay viewer; training runs
                            are launched via run_league.py directly (CLI or the
@@ -1057,12 +1058,29 @@ event at a time, backed by the same event-log JSON `--log` writes. Training
 runs are launched via `run_league.py` directly (CLI, or the `/train` skill)
 — this app has no training-launch surface of its own.
 
+**A git submodule** (2026-08-19), not a regular tracked directory —
+[github.com/JensJansen/pauper-sim-replay](https://github.com/JensJansen/pauper-sim-replay).
+`git clone`ing this repo alone leaves `src/webapp/` empty; either clone with
+`--recurse-submodules`, or after a plain clone run
+`git submodule update --init`. A change to the viewer itself is a commit in
+*that* repo, then a second commit here bumping the pinned submodule SHA —
+two repos, not one, going forward. It was split out once the training-ops
+panel was removed left it with zero dependency on the rest of this repo
+(`replay_engine.py` has no imports beyond the stdlib) — see that repo's own
+README for why and for its hosting setup.
+
 ```
 cd src/webapp
 python app.py          # http://127.0.0.1:5000 -- localhost only, no auth
 ```
 
-`/` serves the replay viewer directly.
+`/` serves the replay viewer directly. **`--log` output needs to land
+inside the submodule's own checkout** for the server-side "Browse server
+logs" list to find it (`logs/` now resolves relative to `src/webapp/`
+itself, not this repo's root) — e.g. from `src/`:
+```
+python run_league.py --matchup deck_a deck_b --log webapp/logs/<run-name>/event_log.json
+```
 
 ### Game replay viewer (`/`)
 
@@ -1221,19 +1239,23 @@ viewing).
 
 ### Public hosting (`app_public.py`)
 
-`src/webapp/app_public.py` is a deploy-only entrypoint exposing the replay
-viewer's file-picker path (`/`, `/api/replay/games`, `/api/replay/game`) —
-never `app.py`'s local-only server-side log browser
-(`/api/replay/runs*`, which lists whatever's sitting in this machine's own
-`logs/`), since that's not something to expose off localhost. Otherwise it
-has no filesystem access of its own: both endpoints it does expose take raw
-log JSON text in the POST body (the browser reads the file, not the
-server), and `replay_engine.py` has no imports beyond the stdlib, so
-hosting it needs only
-`src/webapp/requirements-public.txt` (`flask` + `gunicorn`), not the repo's
-full CUDA-pinned `requirements.txt`. `render.yaml` at the repo root deploys
-it as a Render free-tier web service (`gunicorn --chdir src/webapp
-app_public:app`).
+`app_public.py` is a deploy-only entrypoint exposing the replay viewer's
+file-picker path (`/`, `/api/replay/games`, `/api/replay/game`) — never
+`app.py`'s local-only server-side log browser (`/api/replay/runs*`, which
+lists whatever's sitting in the submodule's own `logs/`), since that's not
+something to expose off localhost. Otherwise it has no filesystem access of
+its own: both endpoints it does expose take raw log JSON text in the POST
+body (the browser reads the file, not the server), and `replay_engine.py`
+has no imports beyond the stdlib.
+
+Hosting is driven from the [pauper-sim-replay](https://github.com/JensJansen/pauper-sim-replay)
+repo directly, not from here — that repo's own `render.yaml` (its root now
+*is* the app's own directory, so no `--chdir` or path prefixing needed)
+deploys `app_public.py` as a Render free-tier web service off its own
+`requirements-public.txt` (`flask` + `gunicorn`), independent of this
+repo's full CUDA-pinned `requirements.txt`. Pushing a change here bumps
+this repo's pinned submodule commit; Render only redeploys on a push to
+the *other* repo.
 
 ---
 
@@ -1247,8 +1269,9 @@ pip install -r requirements.txt
 **training runs on CPU** and doesn't need a GPU — the pinned wheel just
 prevents pip from silently swapping to a CPU-only build on a machine that does
 have one. The replay converter additionally needs `grpcio-tools` (for
-protobuf codegen). The replay viewer (`src/webapp/`) additionally needs
-`flask`.
+protobuf codegen). The replay viewer (`src/webapp/`, a git submodule --
+`git submodule update --init` first if it's empty) has its own, separate
+dependency: `flask`.
 
 ---
 
