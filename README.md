@@ -188,9 +188,10 @@ src/
                            (no build step) -- just the replay viewer; training runs
                            are launched via run_league.py directly (CLI or the
                            `/train` skill), not through this app. app_public.py is
-                           a separate deploy-only entrypoint exposing the same
-                           viewer minus its local-only server-side log browser
-                           (safe to host publicly). See its own section below.
+                           a separate deploy-only entrypoint with the same routes
+                           (including the server-side log browser -- safe to host
+                           publicly since a deploy only ever contains this repo's
+                           own committed files). See its own section below.
 
 data/                      Decklists (*.txt) + league_decks.json roster.
 checkpoints/               Trained weights + vocab.json (gitignored; see below).
@@ -1108,18 +1109,20 @@ viewing).
   backend, which returns that file's game list (one file can hold an entire
   round-robin `--eval` run) before reducing any board state, then reduces
   just the selected game.
-- **"Browse server logs" (local-only)** lists every `*.json` file sitting
-  under the submodule's own `logs/`, any depth, any filename — no naming
-  convention required (`GET /api/replay/runs`, newest first, named by its
-  path relative to `logs/`), so a `--log` PATH run by hand or by the
-  `/train` skill doesn't need its output file hunted down afterward —
-  clicking an entry fetches it (`GET /api/replay/runs/<path:name>/raw`)
-  and feeds it through the exact same client-side flow as a picked file.
-  An invalid file just fails to load with a normal error, same as picking
-  a bad one by hand — the listing endpoint only stats files, never opens
-  them. `app_public.py` (the publicly-hostable subset, see its own section
-  below) has no equivalent route — the hosted viewer stays
-  file-picker-only.
+- **"Browse server logs"** lists every `*.json` file sitting under the
+  submodule's own `logs/`, any depth, any filename — no naming convention
+  required (`GET /api/replay/runs`, newest first, named by its path
+  relative to `logs/`), so a `--log` PATH run by hand or by the `/train`
+  skill doesn't need its output file hunted down afterward — clicking an
+  entry fetches it (`GET /api/replay/runs/<path:name>/raw`) and feeds it
+  through the exact same client-side flow as a picked file. An invalid
+  file just fails to load with a normal error, same as picking a bad one
+  by hand — the listing endpoint only stats files, never opens them.
+  `app_public.py` (the publicly-hostable subset, see its own section
+  below) has the identical routes, pointed at its own `logs/` — since a
+  deploy only ever contains this repo's own committed files, there's no
+  local-machine privacy concern left to gate this behind, unlike the
+  training-launch surface `app_public.py` still never exposes.
 - Each game in the list is labeled from its own
   `deck_a`/`deck_b` fields (`rl.league_runner`'s `_write_event_log` stamps
   every game with which pairing it actually was) as `"deck A vs deck B (game
@@ -1245,14 +1248,16 @@ viewing).
 
 ### Public hosting (`app_public.py`)
 
-`app_public.py` is a deploy-only entrypoint exposing the replay viewer's
-file-picker path (`/`, `/api/replay/games`, `/api/replay/game`) — never
-`app.py`'s local-only server-side log browser (`/api/replay/runs*`, which
-lists whatever's sitting in the submodule's own `logs/`), since that's not
-something to expose off localhost. Otherwise it has no filesystem access of
-its own: both endpoints it does expose take raw log JSON text in the POST
-body (the browser reads the file, not the server), and `replay_engine.py`
-has no imports beyond the stdlib.
+`app_public.py` is a deploy-only entrypoint with the same routes as
+`app.py`, including the server-side log browser (`/api/replay/runs*`) —
+that only ever lists/serves files already committed to this public repo's
+own `logs/`, since a deploy contains nothing beyond what's committed
+(2026-08-19: `logs/` is deliberately NOT gitignored there, so a log
+committed to it rides along to the hosted instance too, and shows up in
+that instance's own browse list). The two POST endpoints
+(`/api/replay/games`, `/api/replay/game`) still take raw log JSON text in
+the body regardless (the browser reads a picked file itself, never the
+server), and `replay_engine.py` has no imports beyond the stdlib.
 
 Hosting is driven from the [pauper-sim-replay](https://github.com/JensJansen/pauper-sim-replay)
 repo directly, not from here — that repo's own `render.yaml` (its root now
