@@ -16,7 +16,7 @@ from game.effects.win_check import deal_damage_to_opponent
 from game.resolution.handlers_casting import execute_madness_decline
 from game.state import GameState, Permanent, PlayerState
 from game.turn import (
-    Phase, Speed, _declare_blockers_gen, new_multiplayer_game_state,
+    Phase, Speed, _declare_blockers_gen, _run_priority_round_gen, new_multiplayer_game_state,
     run_multiplayer_game, run_turn, speed_legal,
 )
 
@@ -258,14 +258,17 @@ def test_declare_blockers_gen_abandons_stuck_menace_instead_of_deadlocking():
     # never 1. If the defender has no OTHER creature left to add as a
     # second blocker, "Assign Blocker" is also illegal for everyone
     # (creature_block_eligible excludes an already-committed blocker) -- a
-    # genuine zero-legal-action deadlock, not merely an unproductive one
-    # (unlike the ordinary action-cap-exhaustion path the sibling test
-    # above covers, where some action is always resubmittable). This
-    # proves the generator detects that exact dead end proactively and
-    # abandons immediately instead of hanging -- the OUTCOME (a lone
-    # menace block gets dropped) is enforce_menace's job at combat damage,
-    # a separate call site already covered by
-    # test_menace_block_incomplete_and_enforce_menace in
+    # genuine zero-legal-action deadlock: this is the ONLY case
+    # _declare_blockers_gen still proactively abandons on its own. No
+    # iteration cap exists anywhere in this loop (removed 2026-08-19,
+    # game/turn.py) -- an unproductive-but-technically-legal action (some
+    # OTHER action always resubmittable) is no longer force-ended and will
+    # loop forever if a policy keeps re-issuing it; only this specific
+    # zero-legal-action case gets caught. This test proves the generator
+    # detects that exact dead end proactively and abandons immediately
+    # instead of hanging -- the OUTCOME (a lone menace block gets dropped)
+    # is enforce_menace's job at combat damage, a separate call site
+    # already covered by test_menace_block_incomplete_and_enforce_menace in
     # tests/game/effects/test_combat.py; this test only proves the
     # generator itself doesn't hang on the way there.
     _fb = registry.EFFECT_REGISTRY[EffectId.FILLER]
@@ -310,6 +313,62 @@ def test_declare_blockers_gen_abandons_stuck_menace_instead_of_deadlocking():
         assert state.players[0].blocked_by == {bear: [grizzly]}
     finally:
         registry.EFFECT_REGISTRY[EffectId.FILLER] = _fb
+
+
+def test_priority_round_has_no_iteration_cap():
+    """The bug this closes (2026-08-19): a since-removed
+    PRIORITY_ROUND_ACTION_CAP=20 could silently end a priority round --
+    letting the phase/step advance -- with real spells still on the stack,
+    once enough granular decisions (mana taps, targeting, a Ward payment,
+    ...) consumed the whole budget in one round. Confirmed live: turn 19 of
+    a dmir_terror mirror (logs/4_deck_subleague_test_double_round_robin_
+    20016games.json, game index 8) -- a warded Snuff Out's cast alone ate
+    the cap, so Spell Pierce's response got carried into the NEXT step
+    instead of resolving in this one, and the mana emptied at that
+    (illegitimate) step boundary along the way denied Snuff Out's
+    controller the floating mana they'd otherwise have had to pay Spell
+    Pierce's tax. No cap exists anywhere in this loop now (game/turn.py) --
+    this drives a priority round through more real stack activity than the
+    old cap ever allowed (25 casts, well past 20) and confirms it only
+    ever ends with an empty stack, never truncates mid-resolution."""
+    state = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
+    state.turn_player_idx = 0
+    state.active_idx = 0
+
+    ITEMS = 25  # comfortably past the old cap of 20
+    pushed = []
+
+    def _push(name):
+        card_def = CardDef(name, CardType.INSTANT, None, None)
+
+        def _resolve(s, cd):
+            pushed.append(cd.name)
+
+        def _do():
+            push_to_stack(state, card_def, _resolve)
+        return _do
+
+    # P0 casts ITEMS filler spells in a row (retaining priority each time,
+    # rule 2 -- no pass needed between them), then both players pass in
+    # pairs to let every stack item resolve (2 passes each), then a final
+    # pair to end the round on the now-empty stack.
+    plan = [_push(f"filler{i}") for i in range(ITEMS)] + [None] * (ITEMS * 2 + 2)
+
+    gen = _run_priority_round_gen(state)
+    yields = 0
+    try:
+        next(gen)
+        yields = 1
+        for step in plan:
+            gen.send(step)
+            yields += 1
+    except StopIteration:
+        pass
+
+    assert yields > 20, f"only {yields} yields -- test didn't actually exceed the old cap"
+    assert state.stack == [], "priority round returned with the stack still non-empty"
+    assert pushed == [f"filler{i}" for i in reversed(range(ITEMS))]  # LIFO: last pushed resolves first
+    assert state.active_idx == state.turn_player_idx  # rule 1 invariant restored on clean exit
 
 
 def test_speed_legal_turn_owner_vs_priority_holder():

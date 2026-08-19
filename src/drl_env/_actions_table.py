@@ -724,10 +724,13 @@ def build_action_table(decklist, registry, token_card_defs=(),
     # agent reconsider/reverse an earlier commitment -- see
     # todo/no_undo_policy.md for the broader rationale).
     # An "Unassign Blocker" action would let assign/unassign cycle
-    # indefinitely with turn_number never advancing (turn.py's own
-    # PRIORITY_ROUND_ACTION_CAP docstring: tens of thousands of iterations in
-    # one boggles_mirror evaluation) -- the no-undo rule is what forecloses
-    # that pathology.
+    # indefinitely with turn_number never advancing (a real, observed
+    # pathology -- tens of thousands of iterations in one boggles_mirror
+    # evaluation, back when a per-round action cap existed to force an end
+    # to it). That cap is gone now (game/turn.py, 2026-08-19 -- no
+    # iteration cap exists anywhere in the turn loop), so the no-undo rule
+    # is the ONLY thing foreclosing this pathology -- there is no longer a
+    # backstop if it were ever reintroduced.
     for name in attackable_names:
         max_slot = qty_by_name.get(name, game.TOKEN_LIMIT)
         for slot in range(1, max_slot + 1):

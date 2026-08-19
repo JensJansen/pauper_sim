@@ -15,7 +15,7 @@ from .effects.stack import resolve_top_of_stack
 from .effects.state_based import check_state_based_actions, cleanup_step
 from .effects.triggers import promote_triggers_to_stack
 from .resolution import (
-    begin_assign_combat_damage, begin_declare_blockers, begin_mulligan, complete_resolution,
+    begin_assign_combat_damage, begin_declare_blockers, begin_mulligan,
     refizzle_if_now_targetless,
 )
 from .state import DeckedOut, new_multiplayer_game_state
@@ -232,36 +232,31 @@ def speed_legal(state, speed):
 FULL_PHASES = tuple(Phase)
 MINIMAL_PHASES = (Phase.UNTAP, Phase.DRAW, Phase.MAIN1, Phase.END)
 
-# Per-phase cap on model-action loop iterations -- guards against an
-# infinite policy loop, not expected. A single "logical" action (cast a
-# spell, activate an ability) can cost multiple loop iterations to fully
-# resolve (one per mana tap, plus any search/scry/take decisions) -- and
-# Speed.INSTANT actions/activated abilities (unrestricted by phase) can
-# still bring that full complexity to any phase, not just the main phases
-# (only Speed.SORCERY actions are confined to MAIN1/MAIN2). Kept uniform
-# at 200 for every phase, precisely to avoid capping a non-main phase low
-# enough to truncate a resolution mid-flight; trim per-phase if a real
-# training run ever shows a phase needs a tighter bound.
-PHASE_ACTION_CAPS = {phase: 200 for phase in Phase}
-
-# Safety cap on ONE priority round's own inner loop (_run_priority_round_gen
-# below) -- same "guard against an infinite policy loop, not expected"
-# reasoning as PHASE_ACTION_CAPS, just scoped to a single round (bounded by
-# how many times priority could plausibly pass back and forth, and by how
-# many stack items could plausibly need resolving, before real resource
-# limits -- mana, cards in hand -- stop a policy cold) rather than a whole
-# phase, since a priority round can now run more than once per phase (once
-# per stack resolution).
+# No action/iteration cap of any kind exists on these loops (removed
+# 2026-08-19, owner directive): a prior PRIORITY_ROUND_ACTION_CAP silently
+# ended a priority round -- and let the phase/step advance -- even with a
+# non-empty stack, which is a real rules violation (a step/phase can only
+# end when the stack is empty and all players have passed in succession,
+# CR 500.3/405.4). Confirmed live: turn 19 of a dmir_terror mirror (see
+# logs/4_deck_subleague_test_double_round_robin_20016games.json, game
+# index 8) hit the cap mid-response to a warded Snuff Out, which let the
+# engine draw for the next step and empty mana pools (rule 500.4) while
+# Snuff Out and Spell Pierce were still unresolved on the stack -- and
+# that premature mana-empty then denied Snuff Out's controller the
+# floating mana they'd otherwise have had to pay Spell Pierce's "counter
+# unless you pay {2}" clause, an observable-outcome bug, not just a
+# display one. A dead PHASE_ACTION_CAPS (per-phase, never actually
+# consulted anywhere) existed alongside it and is also gone.
 #
-# ponytail: capped well below PHASE_ACTION_CAPS (20, not 200) so a policy
-# stuck re-issuing the same non-progressing action gets cut off quickly
-# rather than burning a large budget silently. 20 leaves room for a couple
-# of real casts plus combat per phase without truncating a resolution
-# mid-flight (casting a single spell -- tap + spend + both players passing
-# to resolve -- already costs 4 by itself). Raise it back toward 200, or
-# replace it with a smarter "no observable progress" detector, if a real
-# training run ever needs more headroom than 20 provides.
-PRIORITY_ROUND_ACTION_CAP = 20
+# This removes the only defense against a policy that never converges on
+# a legal, progress-making action (e.g. endlessly re-querying the same
+# pay-cost sub-decision) -- these loops are now genuinely unbounded and
+# will hang if that happens. That trade was made deliberately: correctness
+# of turn structure over that removed defense-in-depth. If a policy that
+# never terminates its own decision turns out to be a real problem again,
+# the fix belongs above this layer (e.g. a wall-clock timeout on the
+# training/eval process), not another silent mid-resolution truncation
+# inside the rules engine.
 
 
 def untap_step(state):
@@ -375,15 +370,11 @@ def _declare_blockers_gen(state):
     No-op (no yield at all) if there's no real opponent to consult
     (len(state.players) < 2).
 
-    Bounded at PRIORITY_ROUND_ACTION_CAP iterations, same constant and same
-    reasoning _run_priority_round_gen's own cap-exhaustion path already
-    documents: a deterministic or barely-trained policy can keep
-    re-issuing the same unproductive action forever, so this loop cannot
-    be left unbounded. Exhausting the cap force-completes with whatever's
-    already been assigned (complete_resolution, same "can't finish, so the
-    attempt ends outright" precedent the priority round's own
-    cap-exhaustion below already uses) rather than leaving
-    declare_blockers open forever."""
+    Unbounded -- no iteration cap (see this module's top-of-file note on
+    why none exists anywhere in this loop). Runs until the defender is
+    done declaring blocks (state.pending_resolution clears) or a
+    genuinely-stuck state is detected below (zero legal actions left, not
+    just an unproductive one)."""
     if len(state.players) < 2:
         return
     attacker_idx = state.active_idx
@@ -391,7 +382,7 @@ def _declare_blockers_gen(state):
     state.log_event("priority_flip", reason="declare_blockers", to_idx=state.active_idx)
     try:
         begin_declare_blockers(state, on_complete=lambda s: None)
-        for _ in range(PRIORITY_ROUND_ACTION_CAP):
+        while True:
             if state.pending_resolution is None:
                 return
             if (state.pending_resolution["kind"] == "declare_blockers" and menace_block_incomplete(state)
@@ -399,40 +390,21 @@ def _declare_blockers_gen(state):
                 # Genuinely stuck, not just unproductive: a menace attacker has
                 # exactly one committed blocker (so "Done" stays illegal, per
                 # menace_block_incomplete), and no creature remains that could be
-                # added as a second one -- zero legal actions exist at all, not
-                # merely a bad one to keep re-submitting. The cap below assumes
-                # SOME action can always be resubmitted to consume its budget
-                # (the boggles_mirror precedent this cap was built for -- a
-                # policy re-issuing the SAME unproductive assignment forever);
-                # it can never fire here because there is nothing to submit in
-                # the first place. Abandon right now instead of waiting for a
-                # cap that's unreachable -- identical recovery to the
-                # cap-exhaustion path below (enforce_menace already documents
-                # this exact scenario and drops the illegal lone block at
-                # combat damage, so the OUTCOME doesn't change, only when the
-                # abandon happens).
-                state.log_event("declare_blockers_cap_abandoned", pending_kind=state.pending_resolution["kind"])
+                # added as a second one -- zero legal actions exist at all. This
+                # is the engine's own one-at-a-time linearization of Magic's
+                # single simultaneous declare-blockers action (509.2) reaching a
+                # state paper Magic never can; abandon now rather than loop
+                # forever offering a decision with nothing legal to submit
+                # (enforce_menace already documents this exact scenario and
+                # drops the illegal lone block at combat damage, so the OUTCOME
+                # doesn't change, only that this returns immediately instead of
+                # spinning).
+                state.log_event("declare_blockers_abandoned", pending_kind=state.pending_resolution["kind"])
                 state.pending_resolution = None
                 return
             action = yield
             state.players[state.active_idx].actions_taken += 1
             action()  # "Done" is its own explicit action here -- None (Pass) is never expected, same as before
-        if state.pending_resolution is not None:
-            # Cap exhausted mid-blocking. The pending resolution here may be
-            # the top-level "declare_blockers" (on_complete takes only
-            # state) OR a NESTED "choose which attacker to block"
-            # (begin_choose_opponent_permanent, whose on_complete is
-            # _on_attacker_chosen(s, choice) and REQUIRES a choice arg) --
-            # complete_resolution(state) with no payload crashes the latter
-            # (confirmed live: a barely-trained defender looped on
-            # Assign-Blocker and hit the cap with the attacker-choice still
-            # open). Abandon outright instead: keep whatever blocks are
-            # already recorded in blocked_by, drop the in-progress one, end
-            # blocking regardless of nesting depth. Same "can't finish, so
-            # the attempt ends" precedent the priority round's own
-            # cap-exhaustion already uses.
-            state.log_event("declare_blockers_cap_abandoned", pending_kind=state.pending_resolution["kind"])
-            state.pending_resolution = None
     finally:
         state.active_idx = attacker_idx
         state.log_event("priority_flip", reason="declare_blockers_done", to_idx=state.active_idx)
@@ -450,10 +422,9 @@ def _assign_combat_damage_gen(state):
     they're a mechanical consequence of a multi-block, not a discretionary
     action the action-count reward should penalize.
 
-    Cap-bounded purely as defense: unlike blocking's own no-op trap, each
+    Unbounded, and needs no cap: unlike blocking's own no-op trap, each
     pick strictly decrements the pending's `remaining`, so this always
-    finishes in exactly `power` picks -- it cannot loop. On the (unreachable)
-    cap exhaustion, abandon and let combat_damage_step auto-assign."""
+    finishes in exactly `power` picks -- it cannot loop."""
     for attacker, blockers, power, has_trample in attackers_needing_damage_assignment(state):
         # Rule 510.1a: an attacker assigns its combat damage only among the
         # creatures CURRENTLY blocking it. A blocker can leave the battlefield
@@ -474,13 +445,9 @@ def _assign_combat_damage_gen(state):
         if len(living) < 2:
             continue
         begin_assign_combat_damage(state, attacker, living, power, has_trample, on_complete=lambda s: None)
-        for _ in range(PRIORITY_ROUND_ACTION_CAP):
-            if state.pending_resolution is None:
-                break
+        while state.pending_resolution is not None:
             action = yield
             action()
-        else:
-            state.pending_resolution = None  # cap defense only; fall back to auto-assign
 
 
 def _run_priority_round_gen(state):
@@ -517,7 +484,7 @@ def _run_priority_round_gen(state):
     other phase."""
     state.active_idx = state.turn_player_idx
     consecutive_passes = 0
-    for _ in range(PRIORITY_ROUND_ACTION_CAP):
+    while True:
         check_state_based_actions(state)
         refizzle_if_now_targetless(state)
         # Move queued triggers (ETBs, cast triggers, Madness decisions,
@@ -577,37 +544,6 @@ def _run_priority_round_gen(state):
             state.players[state.active_idx].actions_taken += 1  # Pass itself doesn't count -- see PlayerState.actions_taken's own docstring
             action()
             consecutive_passes = 0  # the priority holder keeps priority (rule 2) -- state.active_idx unchanged
-
-    # PRIORITY_ROUND_ACTION_CAP exhausted without ever reaching the clean
-    # "everyone passed, stack empty" exit above -- same invariant that exit
-    # already enforces before returning: state.active_idx must be back to
-    # state.turn_player_idx by the time this generator ends, or whoever
-    # last held priority (not necessarily the turn player) would incorrectly
-    # stay "active" going into the next phase.
-    state.active_idx = state.turn_player_idx
-    # A pending_resolution can ALSO still be open here (e.g. a deterministic
-    # or barely-trained policy oscillating on the same cost payment for the
-    # full cap without ever completing it). Every other exit from this loop
-    # guarantees pending_resolution is None (the clean exit above only
-    # returns once the stack's empty AND no cost/choice is outstanding);
-    # this is the one path that doesn't, so it has to drop it itself rather
-    # than let it leak across a phase boundary no caller expects.
-    # ponytail: there is no undo mechanism at all (payment is an irreversible
-    # pool spend, not a reversible tap), so a dropped pay_cost is simply left
-    # as-is here: any mana already spent toward it via execute_pool_spend is
-    # gone, and any floated-but-unspent mana sits in the pool until the next
-    # phase-boundary clear -- both are ordinary "burned floating mana" outcomes
-    # real Magic itself produces whenever a player floats more than they use.
-    #
-    # Under cast-then-pay (2026-08-17) this drops slightly more: the ANNOUNCED
-    # SPELL is abandoned too, not just floating mana. The card is unharmed --
-    # push_to_stack only runs in the payment's own on_complete, so it never
-    # left hand -- but the taps and spends made toward it are lost. The action
-    # COUNT of a cast did not change (taps merely moved from before the cast to
-    # inside it), so the cap is left at 20; watch for truncations in training
-    # before raising it, and prefer a real "no observable progress" detector to
-    # a bigger number.
-    state.pending_resolution = None
 
 
 def _run_turn_gen(state, combat_enabled=False):
@@ -780,23 +716,10 @@ def _run_turn_gen(state, combat_enabled=False):
                 state.in_cleanup = True
                 try:
                     while True:
-                        for _ in range(PRIORITY_ROUND_ACTION_CAP):
-                            if state.pending_resolution is None:
-                                break
+                        while state.pending_resolution is not None:
                             action = yield
                             state.players[state.active_idx].actions_taken += 1
                             action()
-                        else:
-                            # Same defensive cap _declare_blockers_gen now has,
-                            # for the same reason (an uncapped yield loop here
-                            # could spin forever the same way that one did) --
-                            # naturally bounded by hand size in practice (a
-                            # discard resolution can only ask for as many cards
-                            # as are actually over the hand-size limit), so this
-                            # is defense-in-depth rather than a confirmed-live
-                            # bug like that one was.
-                            if state.pending_resolution is not None:
-                                complete_resolution(state)
                         if state.turn_won is not None:
                             return
                         if not state.trigger_queue:
@@ -902,11 +825,15 @@ def run_multiplayer_game(decklists, rng, starting_player_idx, choose_action,
     uncapped: the loop instead ends only on an actual game-loss condition
     (state.turn_won, set by a life_total hitting 0 -- via
     game.effects.win_check._check_end_of_game -- or a decked-out draw).
-    This can't hang: draw_step draws exactly one card
-    every turn for whichever player is active, so total combined library
-    size across every player is a hard upper bound on turns regardless of
-    board state, independent of PHASE_ACTION_CAPS' own per-phase bound.
-    Pass an int horizon to still cap it (e.g. for a bounded self-check).
+    Turn count alone can't run away: draw_step draws exactly one card every
+    turn for whichever player is active, so total combined library size
+    across every player is a hard upper bound on turns regardless of board
+    state. That bounds turns, not iterations WITHIN one -- no cap of any
+    kind exists on a single priority round's own inner loop (see turn.py's
+    top-of-file note), so a policy that never converges on a legal action
+    there can still hang this indefinitely. Pass an int horizon to bound
+    the turn count for a bounded self-check; it does not protect against
+    that inner case.
 
     Flips active_idx lazily -- right before the NEXT turn starts, not
     right after the current one ends -- so state.active_idx always names

@@ -43,9 +43,12 @@ def test_build_fixed_action_table_basic():
     # NO-UNDO POLICY tripwire (todo/no_undo_policy.md): the engine must never
     # expose an action letting the agent reconsider/reverse an earlier
     # commitment -- an "Unassign Blocker" action would let the agent cycle
-    # assign/unassign indefinitely (turn.py's own PRIORITY_ROUND_ACTION_CAP
-    # docstring: tens of thousands of assign/unassign iterations in one
-    # boggles_mirror evaluation is exactly the pathology this rules out).
+    # assign/unassign indefinitely (a real, observed pathology: tens of
+    # thousands of iterations in one boggles_mirror evaluation, back when a
+    # per-round action cap forced an end to it). That cap is gone now
+    # (game/turn.py, 2026-08-19 -- no iteration cap exists anywhere in the
+    # turn loop), so this no-undo rule is the ONLY thing ruling the
+    # pathology out; nothing would stop it if reintroduced.
     # Hardcodes the literal substring independently of any prefix-filter
     # tuple, so a future reintroduction of this exact shape fails loudly here
     # rather than silently passing whatever filter happens to exist at the
