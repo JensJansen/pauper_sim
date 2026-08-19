@@ -276,10 +276,24 @@ def _default_damage_assignment(attacker_facts, blockers, facts_by_id):
     replaces this -- any portion to any blocker, non-lethal allowed."""
     remaining = attacker_facts["power"]
     amounts = [0] * len(blockers)
+    deathtouch = attacker_facts["deathtouch"]
     for i, blocker in enumerate(blockers):
         if remaining <= 0:
             break
-        lethal = max(facts_by_id[id(blocker)]["toughness"] - blocker.damage_marked, 0)
+        # 702.2b + 510.1a: when ASSIGNING combat damage, any nonzero damage from
+        # a deathtouch source counts as lethal, so one point per blocker frees
+        # the rest to trample through (or to kill further blockers). Without
+        # this the split over-assigned full toughness and a 5-power deathtouch
+        # trampler blocked by a 4-toughness creature spilled 1 instead of 4.
+        # Over-assigning was itself legal, but a SINGLE-blocked attacker never
+        # gets an assign_combat_damage decision (attackers_needing_damage_
+        # assignment fires only for 2+ blockers), so the auto split IS the whole
+        # decision -- it should be the attacker-optimal legal one. Minimum-lethal
+        # is dominant: over-assigning to a blocker never helps the attacker.
+        if deathtouch:
+            lethal = 1
+        else:
+            lethal = max(facts_by_id[id(blocker)]["toughness"] - blocker.damage_marked, 0)
         assign = min(remaining, lethal)
         amounts[i] = assign
         remaining -= assign

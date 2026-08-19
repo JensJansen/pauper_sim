@@ -640,8 +640,13 @@ def _run_session(n_iterations, games_per_iteration, snapshot_every, executor, n_
             # Accumulate mulligan transitions for each TRAIN deck that generated
             # some this round (training deck + any live-opponent salvage); a frozen
             # opponent's are discarded (it isn't being trained).
+            # Gated on train_mulligan to match the FLUSH below, which is. Without
+            # that symmetry a --train-deck-only session extended this list every
+            # deck-round and never drained it, growing unboundedly for the whole
+            # session (found 2026-08-19 while hunting a parent-process memory
+            # leak; not the cause of that, but a real latent one).
             for deck_name, tr in mull_by_deck.items():
-                if deck_name in train_set:
+                if train_mulligan and deck_name in train_set:
                     mull_by_deck_accum[deck_name].extend(tr)
             t_update0 = time.time()
             # PPO-update every TRAIN deck that received transitions this round (only

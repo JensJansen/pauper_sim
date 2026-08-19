@@ -50,22 +50,20 @@ def test_deathtouch_attacker_kills_a_larger_blocker_through_combat_damage_step()
         registry.EFFECT_REGISTRY[EffectId.FILLER] = original
 
 
-def test_deathtouch_trample_default_split_assigns_full_toughness_not_one():
-    # OPEN RULES QUESTION. This pins CURRENT behavior so it cannot drift
-    # silently; it is deliberately NOT a claim about what real Magic requires.
-    #
+def test_deathtouch_trample_default_split_assigns_one_per_blocker():
     # 702.2b + 510.1a: when ASSIGNING combat damage, any nonzero damage from a
-    # deathtouch source counts as lethal. So a 5-power deathtouch trampler
-    # blocked by one 4-toughness creature may legally assign 1 and trample 4.
-    # _default_damage_assignment computes lethal as (toughness - damage_marked)
-    # and is deathtouch-blind, so it assigns 4 and tramples 1.
+    # deathtouch source counts as lethal, so a 5-power deathtouch trampler
+    # blocked by one 4-toughness creature assigns 1 and tramples 4.
     #
-    # Over-assigning to a blocker is itself LEGAL in real Magic, so this is not
-    # an illegal-state bug. The substantive issue is that a SINGLE-blocked
-    # attacker never gets an assign_combat_damage decision at all
+    # _default_damage_assignment used to compute lethal as (toughness -
+    # damage_marked) with no deathtouch case, assigning 4 and spilling only 1.
+    # That was a LEGAL assignment -- over-assigning to a blocker is allowed --
+    # so it was not an illegal-state bug. It was the wrong DEFAULT: a
+    # single-blocked attacker never gets an assign_combat_damage decision
     # (attackers_needing_damage_assignment fires only for 2+ blockers), so the
-    # attacking player is denied a choice real Magic gives them. Fixing that
-    # widens the action space, so it is raised for the owner, not changed here.
+    # auto split is the entire decision and should be the attacker-optimal
+    # legal one. Minimum-lethal is dominant -- over-assigning to a blocker
+    # never helps the attacker -- so automating it needs no new action.
     original = _with_filler_keywords({"deathtouch", "trample"})
     try:
         state = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
@@ -80,8 +78,8 @@ def test_deathtouch_trample_default_split_assigns_full_toughness_not_one():
         state.blocked_by[killer] = [wall]
         combat_damage_step(state)
 
-        assert wall.damage_marked == 4, "current: lethal from toughness, deathtouch ignored in assignment"
-        assert state.players[1].life_total == 19, "current: only the leftover 1 tramples over"
+        assert wall.damage_marked == 1, "deathtouch makes 1 damage lethal for assignment purposes"
+        assert state.players[1].life_total == 16, "the other 4 trample over (20 - 4)"
     finally:
         registry.EFFECT_REGISTRY[EffectId.FILLER] = original
 

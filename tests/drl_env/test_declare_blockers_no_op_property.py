@@ -46,6 +46,18 @@ def _creature_names():
     )
 
 
+def _names_with_keyword(keyword):
+    """Creature names whose registry entry grants `keyword`. Read from the
+    registry rather than hardcoded, so a new flier/reach creature joins the
+    board generator automatically."""
+    out = []
+    for name in _creature_names():
+        entry = registry.EFFECT_REGISTRY.get(registry.CARD_DEFS[name].effect_id) or {}
+        if keyword in (entry.get("keywords") or ()):
+            out.append(name)
+    return out
+
+
 def _blocking_fingerprint(state):
     """Everything the declare-blockers step can legitimately change. Two
     consecutive decisions with an identical fingerprint mean the action in
@@ -69,7 +81,18 @@ def _build_board(rng, names):
     """A random mid-combat board: player 0 attacking, player 1 defending, with
     attackers already declared and (sometimes) one of them already dead -- the
     exact 506.4 situation that produced loop #2."""
-    pool = rng.sample(names, k=min(4, len(names)))
+    # Bias the pool toward EVASION matchups. A uniform sample of the whole
+    # creature pool caught the reach/flying divergence (bug #1) with only 1 of
+    # 301 seeds, because boards mixing an evasive attacker with a reach-but-not-
+    # flying blocker are rare by chance. Seeding one flier and one reach
+    # creature into every board raises that to a dependable margin; the
+    # remaining slots stay uniformly sampled so nothing else loses coverage.
+    pool = rng.sample(names, k=min(2, len(names)))
+    for keyword in ("flying", "reach"):
+        candidates = _names_with_keyword(keyword)
+        if candidates:
+            pool.append(rng.choice(candidates))
+    pool = list(dict.fromkeys(pool))  # dedupe, preserve order
     decklist = [(n, 4) for n in pool]
 
     state = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
