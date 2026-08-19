@@ -1,4 +1,5 @@
 """Tests for rl.features: CardVocab indexing/persistence and build_token_set tokenization."""
+import numpy as np
 import os
 import shutil
 import tempfile
@@ -471,20 +472,25 @@ def test_an_unblocked_attacker_is_distinguishable_from_a_creature_at_home():
     seat0.attackers = [attacking]  # declared, and NOT blocked -> absent from blocked_by
 
     rows = {ident: row for _idx, row, ident in build_token_set(state, 0, vocab)}
-    assert rows[attacking] != rows[at_home], (
+    # np.array_equal, not != : feature rows are float32 ARRAYS as of 2026-08-19
+    # (see _token_row's own note on the per-deck-round pickling cost of lists),
+    # and `!=` on an array is elementwise, so bare truthiness raises.
+    assert not np.array_equal(rows[attacking], rows[at_home]), (
         "an unblocked attacker must not be feature-identical to an identical creature that stayed home"
     )
     # Same two creatures from the DEFENDER's perspective: the bit tracks the
     # permanent's own controller, not whoever is looking at it.
     rows_defender = {ident: row for _idx, row, ident in build_token_set(state, 1, vocab)}
-    assert rows_defender[attacking] != rows_defender[at_home], (
+    assert not np.array_equal(rows_defender[attacking], rows_defender[at_home]), (
         "the defender is the seat that most needs to see which creatures are attacking"
     )
     fresh_rows = build_token_set(state, 1, vocab)
     sick_row = next(row for _i, row, ident in fresh_rows if ident is sick)
     seat1.battlefield[0].summoning_sick = False
     ready_row = next(row for _i, row, ident in build_token_set(state, 1, vocab) if ident is sick)
-    assert sick_row != ready_row, "summoning sickness must be visible: it gates both attacking and tapping for mana"
+    assert not np.array_equal(sick_row, ready_row), (
+        "summoning sickness must be visible: it gates both attacking and tapping for mana"
+    )
 
 
 @pytest.mark.slow

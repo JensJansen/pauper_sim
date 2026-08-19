@@ -44,6 +44,8 @@ addressable identity.
 import json
 import os
 
+import numpy as np
+
 import game
 
 # Full keyword vocabulary across every card in the game (scanned from the
@@ -448,7 +450,19 @@ def _token_row(name, zone, is_mine, vocab, permanent=None, owner_idx=None, encha
     row += [1.0 if zone == z else 0.0 for z in ZONES]
     row.append(1.0 if is_mine else 0.0)
     assert len(row) == TOKEN_FEATURE_DIM
-    return row
+    # Returned as a float32 ARRAY, not the Python list it was built as. The row
+    # is built by list concatenation because that is the readable way to
+    # assemble it, but it is stored in a RolloutBuffer and then PICKLED to the
+    # parent process once per deck-round. As a list it is TOKEN_FEATURE_DIM
+    # separate float objects; measured 2026-08-19, the parent was materialising
+    # ~16.7 MILLION ~32-byte objects per deck-round in Connection.recv's
+    # unpickle path, and transiently holding 9-13GB. One array per token
+    # collapses that by ~TOKEN_FEATURE_DIM.
+    #
+    # float32 (not float64) because pad_token_batch's features buffer is
+    # float32 already, so this only moves that same narrowing earlier -- the
+    # values the network sees are unchanged.
+    return np.asarray(row, dtype=np.float32)
 
 
 def _stack_target_map(state):
