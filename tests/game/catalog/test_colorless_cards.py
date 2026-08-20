@@ -2,9 +2,6 @@
 the card-implementation rationale (real-rules citations, etc.) each test
 below guards."""
 
-import contextlib
-import io
-
 import drl_env
 from game import registry, resolution
 from game.cards import CardDef, CardType, EffectId
@@ -589,14 +586,15 @@ def test_pinnacle_kill_ship_etb_fizzles_if_target_leaves_before_resolution():
     state = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
     doomed = Permanent(CardDef("Doomed", CardType.CREATURE, None, EffectId.FILLER, power=1, toughness=3))
     doomed.slot = 1
-    state.players[1].battlefield = [doomed]
+    bystander = Permanent(CardDef("Bystander", CardType.CREATURE, None, EffectId.FILLER, power=1, toughness=3))
+    bystander.slot = 2
+    state.players[1].battlefield = [doomed, bystander]
     pinnacle_kill_ship_etb(state)
     resolution.execute_choose_any_target_creature(state, 1, "Doomed", 1)
-    state.players[1].battlefield = []  # exiled/bounced before resolution
-    log = io.StringIO()
-    with contextlib.redirect_stdout(log):
-        resolve_top_of_stack(state)
-    assert "fizzle" in log.getvalue().lower()
+    state.players[1].battlefield.remove(doomed)  # exiled/bounced before resolution
+    resolve_top_of_stack(state)
+    assert state.pending_resolution is None and state.stack == []  # nothing left waiting
+    assert bystander in state.players[1].battlefield and bystander.damage_marked == 0  # untouched by the fizzle
 
 
 def test_twisted_landscape_sacrifice_fetch_basic_tapped():

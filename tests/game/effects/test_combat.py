@@ -3,6 +3,8 @@
 combat+SBA creature-death handoff lives in
 tests/game/effects/test_integration_check.py instead (it exercises
 state_based.py just as much as this module)."""
+import pytest
+
 from game import registry
 from game.cards import CardDef, CardType, EffectId
 from game.effects.combat import (
@@ -54,39 +56,25 @@ def test_creature_attack_eligibility_and_damage():
     assert state.turn_won is None
 
 
-def test_haste_registry_spec():
-    # Haste (Kitchen Imp): a flat "haste": True registry spec lets a
-    # summoning-sick creature be attack-eligible anyway, via stats.has_haste
-    # (the one canonical haste check creature_attack_eligible and mana.py's
-    # tap_summoning_locked both share).
+@pytest.mark.parametrize(
+    "spec",
+    [{"haste": True}, {"keywords": {"haste"}}],
+    ids=["flat_bool", "keyword_set"],
+)
+def test_haste_registry_spec(spec):
+    # Haste, both registry spec forms: a flat "haste": True (Kitchen Imp) and
+    # haste granted via the "keywords" set (Reckless Lackey, Clockwork
+    # Percussionist) must both let a summoning-sick creature be
+    # attack-eligible anyway. Regression (2026-08): creature_attack_eligible
+    # used to check ONLY the flat boolean, so a keyword-set haste creature
+    # could never attack the turn it was cast. Both are real branches of
+    # stats.has_haste -- the one canonical haste check creature_attack_eligible
+    # and mana.py's tap_summoning_locked both share.
     state = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
     _filler_backup = registry.EFFECT_REGISTRY[EffectId.FILLER]
-    registry.EFFECT_REGISTRY[EffectId.FILLER] = {"haste": True}
+    registry.EFFECT_REGISTRY[EffectId.FILLER] = spec
     try:
         hasty = Permanent(CardDef("Hasty", CardType.CREATURE, None, EffectId.FILLER, power=2))
-        assert hasty.summoning_sick
-        state.battlefield = [hasty]
-        declare_attackers_step(state)
-        assert creature_attack_eligible(state, hasty)
-        declare_attacker(state, hasty)
-        combat_damage_step(state)
-        assert state.players[1].life_total == 18 and hasty.tapped  # 20 - hasty's power (2)
-    finally:
-        registry.EFFECT_REGISTRY[EffectId.FILLER] = _filler_backup
-
-
-def test_haste_intrinsic_keyword_spec_regression():
-    # Regression (2026-08): creature_attack_eligible used to check ONLY the
-    # flat "haste": True boolean, missing haste granted via the "keywords"
-    # set (Reckless Lackey, Clockwork Percussionist both use this form) --
-    # such a creature could never attack the turn it was cast. Confirms
-    # stats.has_haste's other branch (creature_keywords) now gates
-    # attack-eligibility too, not just mana.py's tap_summoning_locked.
-    state = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
-    _filler_backup = registry.EFFECT_REGISTRY[EffectId.FILLER]
-    registry.EFFECT_REGISTRY[EffectId.FILLER] = {"keywords": {"haste"}}
-    try:
-        hasty = Permanent(CardDef("Hasty Keyword", CardType.CREATURE, None, EffectId.FILLER, power=2))
         assert hasty.summoning_sick
         state.battlefield = [hasty]
         declare_attackers_step(state)

@@ -2,6 +2,8 @@
 the card-implementation rationale (real-rules citations, etc.) each test
 below guards."""
 
+import pytest
+
 from game import mana, registry, resolution
 from game.cards import CardDef, CardType, EffectId, card_colors, is_artifact
 from game.catalog.blue_cards import islandcycle_lorien_revealed
@@ -138,23 +140,35 @@ def test_sneaky_snacker_has_flying():
     assert not can_block(state, ground, snacker)
 
 
-def test_wooded_ridgeline_taps_for_r_or_g_and_enters_tapped():
-    """Wooded Ridgeline: real {T}: Add {R} or {G} -- a flexible dual, one
-    tap producing either color (mirrors how a flexible source like Saruli
-    Caretaker/Bonder's Ornament is exercised via mana.activate_mana_source's
-    color_choice), plus its own real "enters tapped" text."""
+@pytest.mark.parametrize("card_name,colors,enters_tapped", [
+    ("Wooded Ridgeline", ("R", "G"), True),
+    ("Jagged Barrens", ("B", "R"), False),
+    ("Drossforge Bridge", ("B", "R"), False),
+    ("Mistvault Bridge", ("U", "B"), False),
+    ("Silverbluff Bridge", ("U", "R"), False),
+    ("Slagwoods Bridge", ("R", "G"), False),
+    ("Contaminated Aquifer", ("U", "B"), False),
+    ("Ice Tunnel", ("U", "B"), False),
+])
+def test_flexible_dual_land_taps_for_two_colors(card_name, colors, enters_tapped):
+    """Flexible duals: real {T}: Add <color> or <color> -- one tap producing
+    either color (mirrors how a flexible source like Saruli Caretaker/
+    Bonder's Ornament is exercised via mana.activate_mana_source's
+    color_choice). Wooded Ridgeline additionally has real "enters tapped"
+    text -- checked here too instead of a separate test."""
     state = _two()
-    ridgeline = registry.CARD_DEFS["Wooded Ridgeline"]
-    for color in ("R", "G"):
-        land = Permanent(ridgeline)
+    card = registry.CARD_DEFS[card_name]
+    for color in colors:
+        land = Permanent(card)
         state.battlefield = [land]
         state.mana_pool = {}
         state.mana_pool_single_pip = {}
         mana.activate_mana_source(state, land, color)
         assert state.mana_pool == {color: 1} and land.tapped
         assert state.mana_pool_single_pip == {color: 1}  # a 1-symbol event -- tagged single-pip
-    entered = enters_battlefield(state, ridgeline, from_zone=None)
-    assert entered.tapped
+    if enters_tapped:
+        entered = enters_battlefield(state, card, from_zone=None)
+        assert entered.tapped
 
 
 def test_rakdos_carnarium_taps_for_b_and_r_simultaneously():
@@ -200,36 +214,6 @@ def test_rakdos_carnarium_etb_bounce_is_queued_through_real_card():
     assert [c.name for c in state.hand] == ["Swamp"]
 
 
-def test_jagged_barrens_taps_for_b_or_r():
-    """Jagged Barrens: real {T}: Add {B} or {R} -- flexible dual (its ETB
-    damage trigger is already covered above; just the mana ability here)."""
-    state = _two()
-    barrens = registry.CARD_DEFS["Jagged Barrens"]
-    for color in ("B", "R"):
-        land = Permanent(barrens)
-        state.battlefield = [land]
-        state.mana_pool = {}
-        state.mana_pool_single_pip = {}
-        mana.activate_mana_source(state, land, color)
-        assert state.mana_pool == {color: 1} and land.tapped
-        assert state.mana_pool_single_pip == {color: 1}  # a 1-symbol event -- tagged single-pip
-
-
-def test_drossforge_bridge_taps_for_b_or_r():
-    """Drossforge Bridge: real {T}: Add {B} or {R} (its indestructible is
-    already tested elsewhere -- just the mana ability here)."""
-    state = _two()
-    bridge = registry.CARD_DEFS["Drossforge Bridge"]
-    for color in ("B", "R"):
-        land = Permanent(bridge)
-        state.battlefield = [land]
-        state.mana_pool = {}
-        state.mana_pool_single_pip = {}
-        mana.activate_mana_source(state, land, color)
-        assert state.mana_pool == {color: 1} and land.tapped
-        assert state.mana_pool_single_pip == {color: 1}  # a 1-symbol event -- tagged single-pip
-
-
 def test_drossforge_bridge_counts_for_affinity_and_metalcraft():
     """Drossforge Bridge is BOTH a land and an artifact (extra["artifact"])
     -- counts toward "artifacts you control" for affinity (Myr Enforcer,
@@ -240,66 +224,6 @@ def test_drossforge_bridge_counts_for_affinity_and_metalcraft():
     state = GameState(on_the_play=True)
     state.battlefield = [Permanent(registry.CARD_DEFS["Drossforge Bridge"]) for _ in range(3)]
     assert affinity_reduction(state) == 3  # 3 artifact lands -> metalcraft threshold met / {3} affinity reduction
-
-
-def test_mistvault_bridge_taps_for_u_or_b():
-    """Mistvault Bridge: real {T}: Add {U} or {B} -- completely untested
-    entry (mana ability, indestructible, artifact) before this."""
-    state = _two()
-    bridge = registry.CARD_DEFS["Mistvault Bridge"]
-    for color in ("U", "B"):
-        land = Permanent(bridge)
-        state.battlefield = [land]
-        state.mana_pool = {}
-        state.mana_pool_single_pip = {}
-        mana.activate_mana_source(state, land, color)
-        assert state.mana_pool == {color: 1} and land.tapped
-        assert state.mana_pool_single_pip == {color: 1}  # a 1-symbol event -- tagged single-pip
-
-
-def test_silverbluff_bridge_taps_for_u_or_r():
-    """Silverbluff Bridge: real {T}: Add {U} or {R} -- completely untested
-    entry (mana ability, indestructible, artifact) before this."""
-    state = _two()
-    bridge = registry.CARD_DEFS["Silverbluff Bridge"]
-    for color in ("U", "R"):
-        land = Permanent(bridge)
-        state.battlefield = [land]
-        state.mana_pool = {}
-        state.mana_pool_single_pip = {}
-        mana.activate_mana_source(state, land, color)
-        assert state.mana_pool == {color: 1} and land.tapped
-        assert state.mana_pool_single_pip == {color: 1}  # a 1-symbol event -- tagged single-pip
-
-
-def test_slagwoods_bridge_taps_for_r_or_g():
-    """Slagwoods Bridge: real {T}: Add {R} or {G} -- completely untested
-    entry (mana ability, indestructible, artifact) before this."""
-    state = _two()
-    bridge = registry.CARD_DEFS["Slagwoods Bridge"]
-    for color in ("R", "G"):
-        land = Permanent(bridge)
-        state.battlefield = [land]
-        state.mana_pool = {}
-        state.mana_pool_single_pip = {}
-        mana.activate_mana_source(state, land, color)
-        assert state.mana_pool == {color: 1} and land.tapped
-        assert state.mana_pool_single_pip == {color: 1}  # a 1-symbol event -- tagged single-pip
-
-
-def test_contaminated_aquifer_taps_for_u_or_b():
-    """Contaminated Aquifer: real {T}: Add {U} or {B} -- completely
-    untested entry before this."""
-    state = _two()
-    aquifer = registry.CARD_DEFS["Contaminated Aquifer"]
-    for color in ("U", "B"):
-        land = Permanent(aquifer)
-        state.battlefield = [land]
-        state.mana_pool = {}
-        state.mana_pool_single_pip = {}
-        mana.activate_mana_source(state, land, color)
-        assert state.mana_pool == {color: 1} and land.tapped
-        assert state.mana_pool_single_pip == {color: 1}  # a 1-symbol event -- tagged single-pip
 
 
 def test_contaminated_aquifer_is_legal_islandcycling_target():
@@ -319,22 +243,6 @@ def test_contaminated_aquifer_is_legal_islandcycling_target():
     assert resolution.search_fetch_options(state) == ["Contaminated Aquifer"]  # Mountain excluded (no Island subtype)
     resolution.execute_search_fetch_option(state, "Contaminated Aquifer")
     assert any(c.name == "Contaminated Aquifer" for c in state.hand)
-
-
-def test_ice_tunnel_taps_for_u_or_b():
-    """Ice Tunnel: real {T}: Add {U} or {B} (its Islandcycling-target
-    relevance via subtypes is already tested elsewhere -- just the mana
-    ability here)."""
-    state = _two()
-    tunnel = registry.CARD_DEFS["Ice Tunnel"]
-    for color in ("U", "B"):
-        land = Permanent(tunnel)
-        state.battlefield = [land]
-        state.mana_pool = {}
-        state.mana_pool_single_pip = {}
-        mana.activate_mana_source(state, land, color)
-        assert state.mana_pool == {color: 1} and land.tapped
-        assert state.mana_pool_single_pip == {color: 1}  # a 1-symbol event -- tagged single-pip
 
 
 def test_sneaky_snacker_real_draw_trigger_orders_and_returns():

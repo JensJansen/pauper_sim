@@ -4,6 +4,8 @@ explore, and up-to-N graveyard selection. Exercises these primitives
 directly against hand-built states, bypassing drl_env entirely (no card
 wires into every one of these yet)."""
 
+import pytest
+
 from game import registry
 from game.cards import CardDef, CardType, EffectId
 from game.resolution import (
@@ -63,30 +65,26 @@ def test_discard_mandatory_exactly_n():
     assert sorted(c.name for c in state.graveyard) == ["A", "B"]
 
 
-def test_discard_optional_declined():
-    # Optional discard, declined: hand/graveyard untouched, still completes
-    # with an empty discarded_cards list (Highway Robbery/Melded Moxite's
-    # own "if you do" check reads bool(discarded_cards) for exactly this).
+@pytest.mark.parametrize("take", [False, True], ids=["declined", "taken"])
+def test_discard_optional(take):
+    # Optional discard, both branches: declined leaves hand/graveyard
+    # untouched but still completes with an empty discarded_cards list
+    # (Highway Robbery/Melded Moxite's own "if you do" check reads
+    # bool(discarded_cards) for exactly this); taken moves the card for real.
     state = GameState(on_the_play=True)
     state.hand = [_card("A")]
     completed = []
     begin_discard(state, 1, optional=True, on_complete=lambda s, cards: completed.append(cards))
-    execute_discard_decline(state)
-    assert completed == [[]]
-    assert [c.name for c in state.hand] == ["A"]
-    assert state.graveyard == []
-
-
-def test_discard_optional_taken():
-    # Optional discard, taken.
-    state = GameState(on_the_play=True)
-    state.hand = [_card("A")]
-    completed = []
-    begin_discard(state, 1, optional=True, on_complete=lambda s, cards: completed.append(cards))
-    execute_discard_option(state, "A")
-    assert len(completed) == 1 and [c.name for c in completed[0]] == ["A"]
-    assert state.hand == []
-    assert [c.name for c in state.graveyard] == ["A"]
+    if take:
+        execute_discard_option(state, "A")
+        assert len(completed) == 1 and [c.name for c in completed[0]] == ["A"]
+        assert state.hand == []
+        assert [c.name for c in state.graveyard] == ["A"]
+    else:
+        execute_discard_decline(state)
+        assert completed == [[]]
+        assert [c.name for c in state.hand] == ["A"]
+        assert state.graveyard == []
 
 
 def test_discard_madness_routes_to_exile_and_queues_decision():

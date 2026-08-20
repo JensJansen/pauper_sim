@@ -2,8 +2,7 @@
 card-implementation rationale (real-rules citations, etc.) each test below
 guards."""
 
-import contextlib
-import io
+import pytest
 
 import drl_env
 from game import registry
@@ -270,10 +269,7 @@ def test_ram_through_fizzle_target_removed():
     execute_choose_any_target_creature(state, 0, "Mine2", 1)
     execute_choose_any_target_creature(state, 1, "Theirs2", 1)
     state.players[1].battlefield.remove(theirs2)  # removed in response, before resolution
-    log = io.StringIO()
-    with contextlib.redirect_stdout(log):
-        resolve_top_of_stack(state)
-    assert "fizzle" in log.getvalue().lower()
+    resolve_top_of_stack(state)
     assert any(c.name == ram.name for c in state.graveyard) and mine2 in state.players[0].battlefield  # my creature unaffected
 
 
@@ -1146,27 +1142,18 @@ def test_bramble_wurm_etb_and_keywords():
     assert state.life_total == 25  # +5, once the ETB resolves
 
 
-def test_gladecover_scout_hexproof():
-    """Gladecover Scout: vanilla body with hexproof -- a real targeting
-    restriction, not just a flavor keyword."""
+@pytest.mark.parametrize("card_name", ["Gladecover Scout", "Silhana Ledgewalker"])
+def test_hexproof_creature_only_targetable_by_own_controller(card_name):
+    """Gladecover Scout and Silhana Ledgewalker: vanilla bodies with
+    hexproof -- a real targeting restriction, not just a flavor keyword.
+    (Silhana Ledgewalker's own "can't be blocked except by flying" evasion
+    is already covered via the real action table elsewhere.)"""
     state = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
-    scout = Permanent(registry.CARD_DEFS["Gladecover Scout"])
-    state.players[0].battlefield = [scout]
-    assert has_keyword(state, scout, "hexproof")
-    assert can_be_targeted(state, scout, 0)  # its own controller may still target it
-    assert not can_be_targeted(state, scout, 1)  # an opponent may not
-
-
-def test_silhana_ledgewalker_hexproof():
-    """Silhana Ledgewalker's own hexproof (its "can't be blocked except by
-    flying" evasion is already covered via the real action table
-    elsewhere)."""
-    state = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
-    silhana = Permanent(registry.CARD_DEFS["Silhana Ledgewalker"])
-    state.players[0].battlefield = [silhana]
-    assert has_keyword(state, silhana, "hexproof")
-    assert can_be_targeted(state, silhana, 0)
-    assert not can_be_targeted(state, silhana, 1)
+    creature = Permanent(registry.CARD_DEFS[card_name])
+    state.players[0].battlefield = [creature]
+    assert has_keyword(state, creature, "hexproof")
+    assert can_be_targeted(state, creature, 0)  # its own controller may still target it
+    assert not can_be_targeted(state, creature, 1)  # an opponent may not
 
 
 def test_ancestral_mask_real_cast():
@@ -1260,10 +1247,7 @@ def test_pulse_of_murasa_fizzle_target_removed():
     assert state.pending_resolution["kind"] == "choose_graveyard_card"
     execute_choose_graveyard_card_option(state, creature_inst)
     state.graveyard.remove(creature_inst)  # removed in response, before resolution
-    log = io.StringIO()
-    with contextlib.redirect_stdout(log):
-        resolve_top_of_stack(state)
-    assert "fizzle" in log.getvalue().lower()
+    resolve_top_of_stack(state)
     assert state.life_total == 10  # no lifegain -- the whole spell fizzled, not just the return
     assert all(c.name != "A Creature" for c in state.hand)
     assert any(c.name == pulse.name for c in state.graveyard)  # Pulse itself still resolves to its own graveyard

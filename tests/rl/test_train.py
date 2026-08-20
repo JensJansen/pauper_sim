@@ -5,13 +5,19 @@ prove the whole pipeline (rollout collection -> padded/masked batching -> PPO
 update) runs without crashing, hanging, or producing NaN/inf, before any real
 training.
 
-Each test below builds its own fresh fixture via _base_fixture() (nets get a
-fresh random init per test); every assertion here is a shape/finiteness/
-"did-something-change" check, not an exact-value one, so a fresh fixture per
-test is safe. test_league_smoke_and_frozen_cache_ppo_update keeps the league
-smoke test and the frozen-cache ppo_update check in ONE function because the
-frozen-cache check reuses the league smoke test's own collected buffer -- a
-real data dependency, not just convenience.
+Most tests below build a fresh real-network fixture via _base_fixture() (nets
+get a fresh random init per test); every assertion here is a shape/
+finiteness/"did-something-change" check, not an exact-value one, so a fresh
+fixture per test is safe. test_league_smoke_and_frozen_cache_ppo_update keeps
+the league smoke test and the frozen-cache ppo_update check in ONE function
+because the frozen-cache check reuses the league smoke test's own collected
+buffer -- a real data dependency, not just convenience.
+
+A handful of tests don't need a real network at all -- the mana-burn
+credit-attribution tests and the decision-count guard tests only need SOME
+predictable decision each turn, so they use the cheap module-level
+_ScriptedAgent (a scripted mono-Mountain deck: play land, tap once, then
+always Pass) against collect_rollout's real mechanics instead.
 """
 import random as _random
 import shutil
@@ -45,6 +51,41 @@ from rl.train import (
 
 DEVICE = "cpu"
 HORIZON = 20
+
+
+class _ScriptedAgent:
+    """Deterministic decision-only agent for tests that need real
+    collect_rollout mechanics (mulligan handling, land plays, a mana tap,
+    then Pass) but not a trained network's forward passes: keep every
+    mulligan, play the first land in hand, tap the first untapped Mountain
+    once, then always Pass. Shared by the dense-mana-burn credit-attribution
+    tests and the decision-count guard tests below -- none of them care
+    about real policy behavior, only that *something* legal and predictable
+    happens each decision. Takes fixed_table directly (rather than closing
+    over test-local action-index variables) so one class definition works
+    for every caller's own decklist/fixed_table.
+    """
+    def __init__(self, fixed_table):
+        self.deck_ctx = (None, fixed_table)
+        self.tapped = False
+        self._tap_idx = next(i for i, (name, _l, _e) in enumerate(fixed_table) if name == "Tap Mountain")
+        self._pass_idx = next(i for i, (name, _l, _e) in enumerate(fixed_table) if name == "Pass")
+        self._land_idx = next(i for i, (name, _l, _e) in enumerate(fixed_table) if name.startswith("Play land"))
+
+    def decide(self, state, seat, horizon, device, greedy=False):
+        pend = state.pending_resolution
+        if pend is not None and pend["kind"] == "mulligan_decision":
+            return DecisionResult(lambda: resolution.execute_mulligan_keep(state), None, None, False)
+        if state.lands_played_this_turn == 0 and any(c.name == "Mountain" for c in state.hand):
+            executor = lambda: play_land_from_hand(state, registry.CARD_DEFS["Mountain"])
+            return DecisionResult(executor, (None, None, None, self._land_idx, 0.0, 0.0), None, False)
+        if not self.tapped:
+            mtn = next((p for p in state.battlefield if p.card_def.name == "Mountain" and not p.tapped), None)
+            if mtn is not None:
+                self.tapped = True
+                executor = lambda: mana.activate_mana_source(state, mtn)
+                return DecisionResult(executor, (None, None, None, self._tap_idx, 0.0, 0.0), None, False)
+        return DecisionResult(None, (None, None, None, self._pass_idx, 0.0, 0.0), None, True)
 
 
 def _base_fixture():
@@ -377,32 +418,10 @@ def test_dense_mana_burn_credit_lands_on_the_tap_not_the_pass():
     fixed_table = build_fixed_action_table(decklist, token_card_defs=token_defs)
     tap_idx = next(i for i, (name, _l, _e) in enumerate(fixed_table) if name == "Tap Mountain")
     pass_idx = next(i for i, (name, _l, _e) in enumerate(fixed_table) if name == "Pass")
-    land_idx = next(i for i, (name, _l, _e) in enumerate(fixed_table) if name.startswith("Play land"))
-
-    class _ScriptedAgent:
-        deck_ctx = (None, fixed_table)
-
-        def __init__(self):
-            self.tapped = False
-
-        def decide(self, state, seat, horizon, device, greedy=False):
-            pend = state.pending_resolution
-            if pend is not None and pend["kind"] == "mulligan_decision":
-                return DecisionResult(lambda: resolution.execute_mulligan_keep(state), None, None, False)
-            if state.lands_played_this_turn == 0 and any(c.name == "Mountain" for c in state.hand):
-                executor = lambda: play_land_from_hand(state, registry.CARD_DEFS["Mountain"])
-                return DecisionResult(executor, (None, None, None, land_idx, 0.0, 0.0), None, False)
-            if not self.tapped:
-                mtn = next((p for p in state.battlefield if p.card_def.name == "Mountain" and not p.tapped), None)
-                if mtn is not None:
-                    self.tapped = True
-                    executor = lambda: mana.activate_mana_source(state, mtn)
-                    return DecisionResult(executor, (None, None, None, tap_idx, 0.0, 0.0), None, False)
-            return DecisionResult(None, (None, None, None, pass_idx, 0.0, 0.0), None, True)
 
     base = lambda state, done, horizon: 0.0
     reward_fn = with_dense_mana_burn_penalty(base, mana_burn_c=3.3, mana_burn_p=4.0, game_penalty_cap=2.0)
-    agents = [_ScriptedAgent(), _ScriptedAgent()]
+    agents = [_ScriptedAgent(fixed_table), _ScriptedAgent(fixed_table)]
     pairing = _constant_pairing(agents, [decklist, decklist], [reward_fn, reward_fn], ["m", None])
 
     bufs, _mull, played = collect_rollout(pairing, 1, horizon=3, rng=_random.Random(0), device=DEVICE, record=True)
@@ -441,33 +460,11 @@ def test_winner_only_mana_burn_charges_the_winner_and_drops_the_loser():
     fixed_table = build_fixed_action_table(decklist, token_card_defs=token_defs)
     tap_idx = next(i for i, (name, _l, _e) in enumerate(fixed_table) if name == "Tap Mountain")
     pass_idx = next(i for i, (name, _l, _e) in enumerate(fixed_table) if name == "Pass")
-    land_idx = next(i for i, (name, _l, _e) in enumerate(fixed_table) if name.startswith("Play land"))
-
-    class _ScriptedAgent:
-        deck_ctx = (None, fixed_table)
-
-        def __init__(self):
-            self.tapped = False
-
-        def decide(self, state, seat, horizon, device, greedy=False):
-            pend = state.pending_resolution
-            if pend is not None and pend["kind"] == "mulligan_decision":
-                return DecisionResult(lambda: resolution.execute_mulligan_keep(state), None, None, False)
-            if state.lands_played_this_turn == 0 and any(c.name == "Mountain" for c in state.hand):
-                executor = lambda: play_land_from_hand(state, registry.CARD_DEFS["Mountain"])
-                return DecisionResult(executor, (None, None, None, land_idx, 0.0, 0.0), None, False)
-            if not self.tapped:
-                mtn = next((p for p in state.battlefield if p.card_def.name == "Mountain" and not p.tapped), None)
-                if mtn is not None:
-                    self.tapped = True
-                    executor = lambda: mana.activate_mana_source(state, mtn)
-                    return DecisionResult(executor, (None, None, None, tap_idx, 0.0, 0.0), None, False)
-            return DecisionResult(None, (None, None, None, pass_idx, 0.0, 0.0), None, True)
 
     base = lambda state, done, horizon: 0.0
     reward_fn = with_dense_mana_burn_penalty(base, mana_burn_c=3.3, mana_burn_p=4.0,
                                               game_penalty_cap=2.0, refund_on_loss=True)
-    agents = [_ScriptedAgent(), _ScriptedAgent()]
+    agents = [_ScriptedAgent(fixed_table), _ScriptedAgent(fixed_table)]
     # Both seats recorded, into SEPARATE buckets, so winner and loser can be
     # told apart afterwards.
     pairing = _constant_pairing(agents, [decklist, decklist], [reward_fn, reward_fn], ["seat0", "seat1"])
@@ -643,10 +640,16 @@ def test_non_progressing_priority_round_raises_instead_of_hanging(monkeypatch):
     # re-break the moment that particular bug's fix changed.
     import rl.train as train_mod
 
-    fx = _base_fixture()
-    agent = SeatAgent(fx["net_a"], AlwaysKeep(), fx["deck_ctx_a"])
-    pairing = _constant_pairing([agent, agent], [fx["decklist_a"]] * 2,
-                                [fx["reward_fn"]] * 2, ["m", "m"])
+    # A scripted mono-Mountain agent, not a real net -- the guard is purely
+    # turn-number/decision-count based, so it doesn't need real policy
+    # forward passes (see _ScriptedAgent's own docstring).
+    decklist = [("Mountain", 20)]
+    token_defs = (game.BLOOD_TOKEN_CARD_DEF, game.ROBOT_TOKEN_CARD_DEF)
+    fixed_table = build_fixed_action_table(decklist, token_card_defs=token_defs)
+    reward_fn = lambda state, done, horizon: 0.0
+    agent = _ScriptedAgent(fixed_table)
+    pairing = _constant_pairing([agent, agent], [decklist, decklist],
+                                [reward_fn, reward_fn], ["m", "m"])
 
     # Freeze turn_number: every decision then counts against the SAME turn,
     # which is exactly what a non-progressing round looks like to the guard.
@@ -676,10 +679,16 @@ def test_the_guard_does_not_fire_on_ordinary_games():
     from rl.train import MAX_DECISIONS_PER_TURN
     assert MAX_DECISIONS_PER_TURN >= 1000, "limit must stay far above any legitimate turn"
 
-    fx = _base_fixture()
-    agent = SeatAgent(fx["net_a"], AlwaysKeep(), fx["deck_ctx_a"])
-    pairing = _constant_pairing([agent, agent], [fx["decklist_a"]] * 2,
-                                [fx["reward_fn"]] * 2, ["m", "m"])
+    # Same cheap scripted mono-Mountain agent as the test above -- ordinary
+    # play with real turn advancement must never trip the guard, and that
+    # property doesn't depend on a real trained network either.
+    decklist = [("Mountain", 20)]
+    token_defs = (game.BLOOD_TOKEN_CARD_DEF, game.ROBOT_TOKEN_CARD_DEF)
+    fixed_table = build_fixed_action_table(decklist, token_card_defs=token_defs)
+    reward_fn = lambda state, done, horizon: 0.0
+    agent = _ScriptedAgent(fixed_table)
+    pairing = _constant_pairing([agent, agent], [decklist, decklist],
+                                [reward_fn, reward_fn], ["m", "m"])
     buffers, _mull, played = collect_rollout(pairing, 2, HORIZON, _random.Random(0), device=DEVICE)
     assert played == 2
     assert len(buffers["m"]) > 0

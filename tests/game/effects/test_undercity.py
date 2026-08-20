@@ -59,10 +59,15 @@ def test_combat_damage_take_initiative_then_ventures_to_secret_entrance():
     # triggered ability (CR 722.2's second) for the attacker, NOT an instant
     # effect -- initiative_idx only flips once that trigger itself resolves,
     # which is also the moment its own "you took the initiative -> venture"
-    # trigger (CR 722.2's third) gets queued. A brand-new holder (dungeon_room
-    # still None -- this player never held the initiative before) still
-    # correctly enters the FIRST room once THAT trigger resolves too, exactly
-    # like take_initiative() called directly (the test above).
+    # trigger (CR 722.2's third) gets queued. The intermediate steps of that
+    # transfer (attacker connects, initiative not yet flipped, trigger
+    # queued) are covered by test_combat.py's
+    # test_initiative_transfer_on_combat_damage; this test only needs to get
+    # to the point initiative HAS flipped, then confirm a brand-new holder
+    # (dungeon_room still None -- this player never held the initiative
+    # before) correctly enters the FIRST room once the venture trigger
+    # resolves too, exactly like take_initiative() called directly (the test
+    # above).
     state = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
     state.active_idx = state.turn_player_idx = 0
     state.initiative_idx = 1  # the DEFENDER holds it; player 0 has never held it
@@ -75,13 +80,9 @@ def test_combat_damage_take_initiative_then_ventures_to_secret_entrance():
     declare_attacker(state, hitter)
 
     combat_damage_step(state)
-    assert state.initiative_idx == 1  # not yet -- the take_initiative trigger hasn't resolved
-    assert any(e["type"] == "take_initiative" for e in state.players[0].trigger_queue)
-
     promote_triggers_to_stack(state)
     resolve_top_of_stack(state)  # take_initiative resolves: initiative_idx flips, venture queued
     assert state.initiative_idx == 0
-    assert state.players[0].dungeon_room is None  # not yet -- venture hasn't resolved
 
     promote_triggers_to_stack(state)
     resolve_top_of_stack(state)  # venture resolves: first-time venturer -> Secret Entrance

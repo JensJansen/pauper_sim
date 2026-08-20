@@ -6,6 +6,8 @@ state-based action). Exercises these primitives directly against hand-built
 states, bypassing drl_env entirely (no card wires into every one of these
 yet)."""
 
+import pytest
+
 from game.cards import CardDef, CardType, EffectId
 from game.resolution import (
     begin_choose_any_target,
@@ -67,61 +69,48 @@ def test_choose_opponent_permanent_empty_options_fizzles():
     assert completed == [None]
 
 
-def test_refizzle_if_now_targetless_fizzles_choose_opponent_permanent():
-    # begin_choose_opponent_permanent only validates non-empty options ONCE,
-    # at open time. If a state_based_actions pass removes the only legal
-    # target before the next decision point, the pending resolution would
-    # otherwise sit there with an all-False mask and no recovery --
-    # game.turn._run_priority_round_gen's own refizzle_if_now_targetless call
-    # is what catches that. Simulates the gap directly: open with one legal
-    # target, remove it (standing in for an SBA), then confirm the re-check
-    # fizzles cleanly with None instead of leaving a dead resolution.
+def _open_choose_opponent_permanent(state, predicate, on_complete):
+    state.active_idx = 1  # simulating the defender's own already-flipped perspective
+    begin_choose_opponent_permanent(state, predicate, on_complete)
+
+
+def _open_choose_permanent(state, predicate, on_complete):
+    begin_choose_permanent(state, predicate, on_complete)
+
+
+def _open_choose_any_target_creature_only(state, predicate, on_complete):
+    # allow_players=False, optional=False -- the one configuration that can
+    # ever go all-False; with allow_players=True a player is always legal,
+    # and optional=True always offers a decline, so neither ever needs this
+    # re-check.
+    begin_choose_any_target(state, predicate, on_complete, allow_players=False, optional=False)
+
+
+@pytest.mark.parametrize(
+    "open_resolution",
+    [_open_choose_opponent_permanent, _open_choose_permanent, _open_choose_any_target_creature_only],
+    ids=["choose_opponent_permanent", "choose_permanent", "choose_any_target_creature_only"],
+)
+def test_refizzle_if_now_targetless_fizzles(open_resolution):
+    # begin_choose_* only validates non-empty options ONCE, at open time. If
+    # a state_based_actions pass removes the only legal target before the
+    # next decision point, the pending resolution would otherwise sit there
+    # with an all-False mask and no recovery -- game.turn._run_priority_round_gen's
+    # own refizzle_if_now_targetless call is what catches that, across all
+    # three predicate-driven "choose a target" kinds that can hit this gap
+    # (see the open_resolution variants above). Simulates the gap directly:
+    # open with one legal target, remove it (standing in for an SBA), then
+    # confirm the re-check fizzles cleanly with None instead of leaving a
+    # dead resolution.
     target = _permanent("Slippery Bogle", CardType.CREATURE)
     state = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
     state.players[0].battlefield = [target]
-    state.active_idx = 1
     completed = []
-    begin_choose_opponent_permanent(
+    open_resolution(
         state, lambda p: p.card_def.card_type == CardType.CREATURE, lambda s, choice: completed.append(choice),
     )
     assert completed == []  # still open -- one legal target existed at open time
     state.players[0].battlefield = []  # the SBA's own effect: the only target just died
-    assert refizzle_if_now_targetless(state) is True
-    assert completed == [None]
-    assert state.pending_resolution is None
-
-
-def test_refizzle_if_now_targetless_fizzles_choose_permanent():
-    # Same gap, own-battlefield half (begin_choose_permanent).
-    target = _permanent("Slippery Bogle", CardType.CREATURE)
-    state = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
-    state.players[0].battlefield = [target]
-    completed = []
-    begin_choose_permanent(
-        state, lambda p: p.card_def.card_type == CardType.CREATURE, lambda s, choice: completed.append(choice),
-    )
-    assert completed == []
-    state.players[0].battlefield = []
-    assert refizzle_if_now_targetless(state) is True
-    assert completed == [None]
-    assert state.pending_resolution is None
-
-
-def test_refizzle_if_now_targetless_fizzles_choose_any_target_creature_only():
-    # Same gap, choose_any_target's creature-only mode (allow_players=False,
-    # optional=False -- the one configuration that can ever go all-False; with
-    # allow_players=True a player is always legal, and optional=True always
-    # offers a decline, so neither ever needs this re-check).
-    target = _permanent("Slippery Bogle", CardType.CREATURE)
-    state = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
-    state.players[0].battlefield = [target]
-    completed = []
-    begin_choose_any_target(
-        state, lambda p: p.card_def.card_type == CardType.CREATURE, lambda s, choice: completed.append(choice),
-        allow_players=False, optional=False,
-    )
-    assert completed == []
-    state.players[0].battlefield = []
     assert refizzle_if_now_targetless(state) is True
     assert completed == [None]
     assert state.pending_resolution is None

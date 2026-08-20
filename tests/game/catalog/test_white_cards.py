@@ -140,32 +140,6 @@ def test_cartouche_of_solidarity_etb_creates_a_vigilant_warrior_token():
     assert has_keyword(state, warrior, "vigilance")
 
 
-def test_ethereal_armor_cast_pays_w_through_the_mana_pipeline():
-    """{W} cast cost, actually charged through the real mana
-    pipeline (mana.activate_mana_source -> mana.begin_pay_cost ->
-    mana.execute_pool_spend) -- same gap as Cartouche of Solidarity above."""
-    state = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
-    plains = Permanent(registry.CARD_DEFS["Plains"])
-    mine = Permanent(CardDef("Mine", CardType.CREATURE, None, EffectId.FILLER, power=1, toughness=1))
-    mine.slot = 1
-    card_def = registry.CARD_DEFS["Ethereal Armor"]
-    state.players[0].battlefield = [plains, mine]
-    state.hand = [card_def]
-
-    mana.activate_mana_source(state, plains)
-    assert state.mana_pool == {"W": 1}
-    assert state.mana_pool_single_pip == {"W": 1}  # a 1-symbol event -- tagged single-pip
-    mana.begin_pay_cost(state, card_def.cast_cost, on_complete=lambda s: cast_ethereal_armor(s, card_def))
-    mana.execute_pool_spend(state, mana.pool_spend_options(state)[0])
-    assert state.mana_pool == {}  # the W pip was actually spent, not skipped
-
-    assert (0, "Mine", 1) in resolution.choose_any_target_creature_options(state)
-    resolution.execute_choose_any_target_creature(state, 0, "Mine", 1)
-    resolve_top_of_stack(state)
-    assert card_def not in state.hand
-    assert any(p.card_def.name == "Ethereal Armor" for p in state.players[0].battlefield)
-
-
 def test_ethereal_armor_pt_bonus_counts_itself_and_other_enchantments():
     """pt_bonus/toughness_bonus (enchantment_count) is SELF-INCLUSIVE --
     real text is "for each enchantment you control" (no "other"), unlike

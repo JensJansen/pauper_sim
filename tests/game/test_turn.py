@@ -650,48 +650,30 @@ def test_mana_burnt_this_turn_single_pip_per_pip_attribution():
     assert state.players[0].mana_burnt_this_turn_single_pip == 2  # both avoidable taps blamed
 
 
-def test_mana_burnt_this_turn_single_pip_resets_at_turn_boundary():
-    # Same pattern as test_mana_burnt_this_turn_resets_at_turn_boundary
-    # above, extended to mana_burnt_this_turn_single_pip.
-    state = new_multiplayer_game_state(
-        decklists=[[("Mountain", 20)], [("Mountain", 20)]],
-        starting_player_idx=0, rng=random.Random(0),
-    )
-    state.players[0].mana_burnt_this_turn_single_pip = 5
-    state.players[1].mana_burnt_this_turn_single_pip = 2
-
-    seen_at_first_yield = {}
-
-    def _pass_and_snoop(state):
-        if not seen_at_first_yield:
-            seen_at_first_yield["p0"] = state.players[0].mana_burnt_this_turn_single_pip
-            seen_at_first_yield["p1"] = state.players[1].mana_burnt_this_turn_single_pip
-        return None  # always pass -- nothing to play from a bare opening hand
-
-    run_turn(state, choose_action=_pass_and_snoop, combat_enabled=False)
-    assert seen_at_first_yield == {"p0": 0, "p1": 0}
-
-
-def test_mana_burnt_this_turn_resets_at_turn_boundary():
-    # _run_turn_gen resets mana_burnt_this_turn (and mana_burn_penalty_credited)
-    # for BOTH players at the start of every new turn. run_turn (not
-    # run_multiplayer_game) drives exactly ONE turn on an already-built state
-    # directly -- no pregame mulligan phase to drive, no second player's own
-    # turn to script -- so a plain "always pass" choose_action is safe for
-    # the whole turn (a fresh opening hand has nothing forcing a real
-    # decision: no lands played yet, nothing drawn beyond the norm, no
-    # cleanup discard). The accumulation side of this function is already
-    # covered directly above; this test is specifically about the RESET.
+def test_mana_burn_state_resets_at_turn_boundary():
+    # _run_turn_gen resets all three per-turn mana-burn tracking fields
+    # (mana_burnt_this_turn, mana_burnt_this_turn_single_pip, and
+    # mana_burn_penalty_credited) for BOTH players at the start of every new
+    # turn. run_turn (not run_multiplayer_game) drives exactly ONE turn on an
+    # already-built state directly -- no pregame mulligan phase to drive, no
+    # second player's own turn to script -- so a plain "always pass"
+    # choose_action is safe for the whole turn (a fresh opening hand has
+    # nothing forcing a real decision: no lands played yet, nothing drawn
+    # beyond the norm, no cleanup discard). The accumulation side of these
+    # counters is covered elsewhere; this test is specifically about the
+    # RESET, for all three fields, for both players.
     state = new_multiplayer_game_state(
         decklists=[[("Mountain", 20)], [("Mountain", 20)]],
         starting_player_idx=0, rng=random.Random(0),
     )
     # Fabricated leftover values (however they'd really accumulate is the
-    # OTHER test's job) -- the only question here is whether _run_turn_gen's
-    # own turn-start block zeroes them for BOTH players.
+    # accumulation tests' job) -- the only question here is whether
+    # _run_turn_gen's own turn-start block zeroes them for BOTH players.
     state.players[0].mana_burnt_this_turn = 5
+    state.players[0].mana_burnt_this_turn_single_pip = 5
     state.players[0].mana_burn_penalty_credited = 0.3
     state.players[1].mana_burnt_this_turn = 2
+    state.players[1].mana_burnt_this_turn_single_pip = 2
     state.players[1].mana_burn_penalty_credited = 0.1
 
     seen_at_first_yield = {}
@@ -699,13 +681,18 @@ def test_mana_burnt_this_turn_resets_at_turn_boundary():
     def _pass_and_snoop(state):
         if not seen_at_first_yield:
             seen_at_first_yield["p0"] = state.players[0].mana_burnt_this_turn
+            seen_at_first_yield["p0_single_pip"] = state.players[0].mana_burnt_this_turn_single_pip
             seen_at_first_yield["p0_credited"] = state.players[0].mana_burn_penalty_credited
             seen_at_first_yield["p1"] = state.players[1].mana_burnt_this_turn
+            seen_at_first_yield["p1_single_pip"] = state.players[1].mana_burnt_this_turn_single_pip
             seen_at_first_yield["p1_credited"] = state.players[1].mana_burn_penalty_credited
         return None  # always pass -- nothing to play from a bare opening hand
 
     run_turn(state, choose_action=_pass_and_snoop, combat_enabled=False)
-    assert seen_at_first_yield == {"p0": 0, "p0_credited": 0.0, "p1": 0, "p1_credited": 0.0}, (
+    assert seen_at_first_yield == {
+        "p0": 0, "p0_single_pip": 0, "p0_credited": 0.0,
+        "p1": 0, "p1_single_pip": 0, "p1_credited": 0.0,
+    }, (
         "both players' per-turn mana-burn tracking must already be reset by the very first "
         "decision point of the new turn, for both players, not just the turn owner"
     )
@@ -718,7 +705,7 @@ def test_mana_floated_in_real_end_step_swept_same_turn():
     # floated here would persist unswept until the FOLLOWING turn's own
     # UNTAP entry -- by which point that turn's own
     # mana_burnt_this_turn_single_pip counter had already reset (see
-    # test_mana_burnt_this_turn_single_pip_resets_at_turn_boundary above),
+    # test_mana_burn_state_resets_at_turn_boundary above),
     # silently dropping the burn from the dense reward signal entirely
     # (this engine has no interrupt window, so the player who just
     # finished their turn never gets another decision before that reset

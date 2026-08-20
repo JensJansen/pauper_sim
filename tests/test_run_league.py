@@ -30,6 +30,21 @@ from rl.league_runner import (_load_progress, _next_batch_games, _save_progress,
                               checkpoint_progress, should_snapshot)
 from rl.train import batch_size_for_iteration, ent_coef_schedule
 
+# The training-mechanics keys that any config running the same league (main or
+# its gauntlet twin) must reproduce exactly from run_default.json -- deck
+# identity (roster, league_name, total_games, gauntlet) is deliberately
+# exempt. Shared by test_main_league_mechanics_match_the_validated_config and
+# test_the_gauntlet_twin_is_mechanically_identical_to_the_league_it_measures.
+MECHANICS = ["snapshot_every_games", "n_workers", "games_per_iteration",
+             "pfsp_power", "checkpoint_opponent_rate", "pfsp"]
+
+
+def _assert_mechanics_match(cfg, cfg_name, default):
+    for k in MECHANICS:
+        assert k in cfg, f"{cfg_name} is missing {k}; it would silently fall back to a default"
+        assert cfg[k] == default[k], (
+            f"{cfg_name} {k}={cfg[k]!r} but the validated config uses {default[k]!r}")
+
 
 def test_absent_progress_json_reads_as_zero_not_as_an_error(tmp_path):
     """The silent part of BUG 1: a missing progress.json is indistinguishable
@@ -194,33 +209,19 @@ def test_snapshot_fires_once_per_interval_never_twice():
     assert len(fired) == 210 // 21 == 10, fired
 
 
-def test_ent_coef_override_is_wired_and_off_by_default():
+def test_ent_coef_defaults_to_the_anneal():
     """Wave 2b's knob. PPO_DEFAULTS["ent_coef"]=None must reproduce the anneal
-    exactly (this is the baseline 20,016-game run's behavior and changing it
-    silently would invalidate every comparison against that run), while a float
-    pins a constant and bypasses the schedule.
+    (this is the baseline 20,016-game run's behavior and changing it silently
+    would invalidate every comparison against that run); a float pins a
+    constant and bypasses the schedule instead.
 
-    Worth a test rather than trusting the plumbing: a config key that is
-    accepted but never read would leave the A/B looking like it ran while
-    actually re-running the baseline. The `unknown` assert in _run_session
-    catches a MISSPELLED key; nothing else catches a correctly-spelled but
-    unconsumed one."""
+    Only this default value is pinned here -- the schedule actually moving
+    across sessions is covered end-to-end by
+    test_the_schedules_now_actually_move_across_sessions, and the resolution
+    of hp["ent_coef"] itself lives in _run_session (rl.league_runner), not
+    reproduced here."""
     from rl.league_runner import PPO_DEFAULTS
-    from rl.train import ent_coef_schedule
     assert PPO_DEFAULTS["ent_coef"] is None, "the anneal must stay the default"
-
-    # The exact expression _run_session evaluates, both branches.
-    def resolve(hp, cumulative):
-        return hp["ent_coef"] if hp["ent_coef"] is not None else ent_coef_schedule(cumulative)
-
-    anneal = {**PPO_DEFAULTS}
-    assert resolve(anneal, 0) == ent_coef_schedule(0) == 0.02
-    assert resolve(anneal, 20_016) == ent_coef_schedule(20_016)
-    assert resolve(anneal, 0) > resolve(anneal, 20_016), "default must still anneal DOWNWARD"
-
-    pinned = {**PPO_DEFAULTS, "ent_coef": 0.05}
-    assert resolve(pinned, 0) == 0.05
-    assert resolve(pinned, 20_016) == 0.05, "a pinned constant must not decay"
 
 
 def test_the_adopted_lr_matches_the_arm_that_justified_it():
@@ -296,12 +297,7 @@ def test_main_league_mechanics_match_the_validated_config():
     default = json.loads((cfgs / "run_default.json").read_text())
     main = json.loads((cfgs / "league_main.json").read_text())
 
-    MECHANICS = ["snapshot_every_games", "n_workers", "games_per_iteration",
-                 "pfsp_power", "checkpoint_opponent_rate", "pfsp"]
-    for k in MECHANICS:
-        assert k in main, f"league_main.json is missing {k}; it would silently fall back to a default"
-        assert main[k] == default[k], (
-            f"league_main.json {k}={main[k]!r} but the validated config uses {default[k]!r}")
+    _assert_mechanics_match(main, "league_main.json", default)
 
     # The full manifest, not a subset -- this league's whole point is the 11-deck meta.
     manifest = json.loads((REPO_ROOT / "data" / "league_decks.json").read_text())
@@ -329,12 +325,7 @@ def test_the_gauntlet_twin_is_mechanically_identical_to_the_league_it_measures()
     default = json.loads((cfgs / "run_default.json").read_text())
     twin = json.loads((cfgs / "run_gauntlet_twin.json").read_text())
 
-    MECHANICS = ["snapshot_every_games", "n_workers", "games_per_iteration",
-                 "pfsp_power", "checkpoint_opponent_rate", "pfsp"]
-    for k in MECHANICS:
-        assert k in twin, f"run_gauntlet_twin.json is missing {k}; it would silently fall back to a default"
-        assert twin[k] == default[k], (
-            f"run_gauntlet_twin.json {k}={twin[k]!r} but the league it measures uses {default[k]!r}")
+    _assert_mechanics_match(twin, "run_gauntlet_twin.json", default)
 
     assert set(twin["roster"]) == set(default["roster"]), "a twin must play the same decks"
     assert twin["league_name"] != default["league_name"], "the twin must be a SEPARATE population"

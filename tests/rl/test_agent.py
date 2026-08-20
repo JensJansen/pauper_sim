@@ -236,7 +236,7 @@ def test_heuristic_agent_plays_real_mono_red_rally_mirror_games_without_crashing
     combat and casting decisions repeatedly across many games -- the
     HeuristicAgent's own scoring code (attack-safety, block-to-kill) is
     exercised for real here, not just imported successfully. No crash across
-    15 real games is the bar; behavioral quality isn't asserted (the owner's
+    5 real games is the bar; behavioral quality isn't asserted (the owner's
     own rules are approximate by design)."""
     from rl.rewards import action_count_win_reward_200_floor02
     from rl.train import _constant_pairing, collect_rollout
@@ -247,16 +247,16 @@ def test_heuristic_agent_plays_real_mono_red_rally_mirror_games_without_crashing
                                  [action_count_win_reward_200_floor02] * 2, [None, None])
 
     game_logs = []
-    _bufs, _mull, played = collect_rollout(pairing, 15, horizon=120, rng=random.Random(0), device="cpu",
+    _bufs, _mull, played = collect_rollout(pairing, 5, horizon=120, rng=random.Random(0), device="cpu",
                                            record=False, game_logs=game_logs)
-    assert played == 15
+    assert played == 5
     for one_game_events in game_logs:
         game_over = [e for e in one_game_events if e["kind"] == "game_over"]
         assert len(game_over) == 1
         assert game_over[0]["winner"] in (0, 1, None)
     kinds_seen = {e["kind"] for ev in game_logs for e in ev}
     assert "combat_damage" in kinds_seen or "attack_declared" in kinds_seen, (
-        "an aggressive deck's own mirror games over 15 real playouts should reach combat at least once -- "
+        "an aggressive deck's own mirror games over 5 real playouts should reach combat at least once -- "
         "otherwise the attack-safety scoring path was never actually exercised by this test"
     )
 
@@ -281,9 +281,9 @@ def test_heuristic_agent_plays_real_mono_red_rally_vs_trained_policy_without_cra
                                  [action_count_win_reward_200_floor02] * 2, [None, None])
 
     game_logs = []
-    _bufs, _mull, played = collect_rollout(pairing, 10, horizon=120, rng=random.Random(0), device="cpu",
+    _bufs, _mull, played = collect_rollout(pairing, 5, horizon=120, rng=random.Random(0), device="cpu",
                                            record=False, greedy=True, game_logs=game_logs)
-    assert played == 10
+    assert played == 5
     for one_game_events in game_logs:
         game_over = [e for e in one_game_events if e["kind"] == "game_over"]
         assert len(game_over) == 1

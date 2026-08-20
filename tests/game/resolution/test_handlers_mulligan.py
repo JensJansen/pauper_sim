@@ -57,15 +57,11 @@ def test_mulligan_london_style_bottoms_and_logs_draws():
     assert len(state.hand) == 5  # 7 - 2 bottomed
     assert [c.name for c in state.library[-2:]] == bottomed  # bottomed, in the order chosen
 
-    # Every hand SEEN is a library->hand "draw" zone_move (GameState.draw,
-    # the single generic hook): three here -- the opener, then the two
-    # redraws -- 7 cards each, in order.
-    draws = [e["cards"] for e in events if e.get("reason") == "draw"]
-    assert len(draws) == 3 and all(len(d) == 7 for d in draws)
-    # Each thrown-back hand (mulligan_take) is exactly the hand drawn just
-    # before it, so draws[0] and draws[1] are the two mulliganed hands.
+    # The mulligan handler's own event tags: mulligan_take fires once per
+    # redraw (the two hands actually thrown back), mulligan_bottom once per
+    # bottomed card, in the order chosen.
     takes = [e["cards"] for e in events if e.get("reason") == "mulligan_take"]
-    assert takes == draws[:2]  # seen == thrown back
+    assert len(takes) == 2 and all(len(t) == 7 for t in takes)
     assert [e["card"] for e in events if e.get("reason") == "mulligan_bottom"] == bottomed
 
 

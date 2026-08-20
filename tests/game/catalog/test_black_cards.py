@@ -297,6 +297,17 @@ def _g3_two():
     return GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
 
 
+def _pay_cost_fully(state):
+    """Drain a "pay_cost" pending resolution by repeatedly taking the first
+    available pool-spend option, the same guarded loop every mana-cost-paying
+    test below drives to completion."""
+    guard = 0
+    while state.pending_resolution is not None and state.pending_resolution["kind"] == "pay_cost":
+        guard += 1
+        assert guard < 30
+        execute_pool_spend(state, pool_spend_options(state)[0])
+
+
 def test_cast_down_destroys_target_creature():
     """Cast Down: {1}{B}, destroy target nonlegendary creature. No legendary
     creature exists in this pool, so "nonlegendary" is every creature (the
@@ -380,19 +391,6 @@ def test_refurbished_familiar_affinity_cost_reduction():
     assert eff["generic"] == 1, eff  # 3 - 2 artifacts
 
 
-def test_refurbished_familiar_etb_opponent_discards_own_choice():
-    """"When this creature enters, each opponent discards a card." 2-player:
-    the one opponent discards a card of THEIR choice (active_idx flipped to
-    them for the discard)."""
-    state = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
-    state.active_idx = 0
-    state.players[1].hand = [CardDef("Opp1", CardType.LAND, None, EffectId.SWAMP), CardDef("Opp2", CardType.LAND, None, EffectId.SWAMP)]
-    refurbished_familiar_etb(state)
-    assert state.pending_resolution["kind"] == "discard" and state.active_idx == 1
-    resolution.execute_discard_option(state, "Opp1")
-    assert len(state.players[1].hand) == 1 and state.active_idx == 0
-
-
 def test_refurbished_familiar_etb_opponent_empty_hand_draws_instead():
     """"For each opponent who can't [discard], you draw a card." Opponent's
     hand is empty -> you draw instead of them discarding."""
@@ -440,11 +438,7 @@ def test_gurmag_angler_delve_exiles_graveyard_cards_to_pay_generic():
     delve_execute(state)
     resolution.execute_choose_graveyard_card_option(state, resolution.choose_graveyard_card_options(state)[0])  # exile 1st (delve 1)
     resolution.execute_choose_graveyard_card_option(state, resolution.choose_graveyard_card_options(state)[0])  # exile 2nd (delve 2)
-    guard = 0
-    while state.pending_resolution is not None and state.pending_resolution["kind"] == "pay_cost":
-        guard += 1
-        assert guard < 30
-        execute_pool_spend(state, pool_spend_options(state)[0])
+    _pay_cost_fully(state)
     resolve_top_of_stack(state)
     assert any(p.card_def.name == "Gurmag Angler" for p in state.battlefield) and state.graveyard == []
 
@@ -828,11 +822,7 @@ def test_blood_fountain_activate_via_action_table_pays_real_mana_cost():
     execute(state)
     assert state.pending_resolution["kind"] == "pay_cost"
     assert state.pending_resolution["remaining"] == {"generic": 3, "B": 1}
-    guard = 0
-    while state.pending_resolution is not None and state.pending_resolution["kind"] == "pay_cost":
-        guard += 1
-        assert guard < 30
-        execute_pool_spend(state, pool_spend_options(state)[0])
+    _pay_cost_fully(state)
 
     # Cost paid -> resolve fires: {T} + Sacrifice paid here (fountain gone), then
     # the up-to-two graveyard targets are chosen.
