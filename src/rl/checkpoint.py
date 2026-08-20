@@ -44,12 +44,35 @@ _SAVE_RETRY_BASE_DELAY = 0.5
 
 
 def _save_with_retry(obj, path):
+    """ATOMIC: writes to a temp file beside `path`, then os.replace()s it into
+    place. torch.save streams into the destination, truncating it first, so a
+    write that dies partway (crash, OOM kill, Ctrl-C, power loss) used to leave
+    a truncated file that had ALREADY destroyed the previous good checkpoint --
+    unrecoverable, and live.pt carries the whole training history. os.replace
+    is a single filesystem operation on both Windows and POSIX, so `path` names
+    either the complete old file or the complete new one and never a partial
+    write. A crash now costs only a stray .tmp.
+
+    That also narrows the OneDrive window described above: the sync daemon can
+    no longer observe a checkpoint mid-truncation, only a finished file
+    appearing at once.
+
+    The temp name carries the pid so two processes writing the same league
+    directory cannot scribble on each other's partial file. Same filesystem
+    (same directory) is required -- os.replace is only atomic within one."""
+    tmp = f"{path}.{os.getpid()}.tmp"
     for attempt in range(_SAVE_RETRY_ATTEMPTS):
         try:
-            torch.save(obj, path)
+            torch.save(obj, tmp)
+            os.replace(tmp, path)  # retried too: OneDrive can lock the DESTINATION, not just the write
             return
         except (RuntimeError, OSError):
             if attempt == _SAVE_RETRY_ATTEMPTS - 1:
+                # Give up without leaving a half-written temp file behind.
+                try:
+                    os.remove(tmp)
+                except OSError:
+                    pass
                 raise
             time.sleep(_SAVE_RETRY_BASE_DELAY * (2 ** attempt))
 

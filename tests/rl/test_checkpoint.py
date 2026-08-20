@@ -23,7 +23,7 @@ def _tiny_encoder():
     return SetTransformer(vocab_size=5, d_model=8, n_heads=2, n_layers=1, dim_feedforward=16)
 
 
-def test_save_with_retry_recovers_from_transient_lock_then_gives_up_if_it_never_clears(monkeypatch):
+def test_save_with_retry_recovers_from_transient_lock_then_gives_up_if_it_never_clears(monkeypatch, tmp_path):
     """Regression (2026-08): this repo lives inside a OneDrive-synced folder,
     and a real multi-hour training run hit torch.save failing mid-write with
     Windows error 1224 (ERROR_USER_MAPPED_FILE) -- OneDrive transiently
@@ -33,23 +33,30 @@ def test_save_with_retry_recovers_from_transient_lock_then_gives_up_if_it_never_
     swallowed forever)."""
     monkeypatch.setattr(ckpt_io.time, "sleep", lambda seconds: None)  # don't actually wait in a test
 
+    target = str(tmp_path / "live.pt")
     calls = []
 
     def flaky_twice(obj, path):
         calls.append(1)
         if len(calls) < 3:
             raise RuntimeError("open file failed with error code: 1224")
+        # The save is ATOMIC now: torch.save writes a TEMP file which
+        # _save_with_retry then os.replace()s into position, so a stand-in has
+        # to actually create the file it was handed or the replace has nothing
+        # to move.
+        open(path, "wb").close()
 
     monkeypatch.setattr(ckpt_io.torch, "save", flaky_twice)
-    ckpt_io._save_with_retry({"x": 1}, "irrelevant.pt")
+    ckpt_io._save_with_retry({"x": 1}, target)
     assert len(calls) == 3  # failed twice, succeeded on the 3rd attempt
+    assert os.path.exists(target)
 
     def always_fails(obj, path):
         raise RuntimeError("open file failed with error code: 1224")
 
     monkeypatch.setattr(ckpt_io.torch, "save", always_fails)
     with pytest.raises(RuntimeError):
-        ckpt_io._save_with_retry({"x": 1}, "irrelevant.pt")  # never clears -- must still raise, not hang or swallow
+        ckpt_io._save_with_retry({"x": 1}, target)  # never clears -- must still raise, not hang or swallow
 
 
 @pytest.mark.slow
@@ -163,3 +170,45 @@ def test_freezing_one_net_leaves_another_nets_encoder_alone():
 
     assert not any(p.requires_grad for p in frozen.encoder.parameters()),         "a frozen snapshot's own encoder must be frozen with it"
     assert all(p.requires_grad for p in other.encoder.parameters()),         "freezing one net must never reach another net's encoder"
+
+
+def test_a_save_killed_mid_write_leaves_the_previous_checkpoint_intact(monkeypatch, tmp_path):
+    """The reason _save_with_retry is atomic. torch.save streams into its
+    destination, truncating it first, so a write that dies partway used to
+    leave a truncated file that had ALREADY destroyed the previous good
+    checkpoint -- and live.pt carries the entire training history (22,848
+    games/deck at the time this was written), so that is unrecoverable, not
+    merely a lost session.
+
+    Writing to a temp file and os.replace()ing it means `path` always names
+    either the complete old checkpoint or the complete new one."""
+    monkeypatch.setattr(ckpt_io.time, "sleep", lambda seconds: None)
+    target = str(tmp_path / "live.pt")
+
+    ckpt_io._save_with_retry({"generation": 1}, target)
+    assert torch.load(target, weights_only=False)["generation"] == 1
+
+    def killed_mid_write(obj, path):
+        # Half a file on disk, then the process dies -- exactly what an OOM
+        # kill or Ctrl-C during torch.save looks like.
+        with open(path, "wb") as handle:
+            handle.write(b"\x00" * 2048)
+        raise RuntimeError("killed mid-write")
+
+    monkeypatch.setattr(ckpt_io.torch, "save", killed_mid_write)
+    with pytest.raises(RuntimeError):
+        ckpt_io._save_with_retry({"generation": 2}, target)
+
+    # The whole point: generation 1 is still there and still loadable.
+    assert torch.load(target, weights_only=False)["generation"] == 1, (
+        "a failed write must not damage the previous checkpoint"
+    )
+    leftovers = [p.name for p in tmp_path.iterdir() if p.name.endswith(".tmp")]
+    assert not leftovers, f"a failed save must not leave a temp file behind, found {leftovers}"
+
+
+def test_atomic_save_does_not_leave_a_temp_file_on_success(tmp_path):
+    target = str(tmp_path / "snapshot_1.pt")
+    ckpt_io._save_with_retry({"generation": 7}, target)
+    assert [p.name for p in tmp_path.iterdir()] == ["snapshot_1.pt"], "os.replace must consume the temp file"
+    assert torch.load(target, weights_only=False)["generation"] == 7
