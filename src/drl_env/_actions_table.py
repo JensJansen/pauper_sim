@@ -740,10 +740,12 @@ def build_action_table(decklist, registry, token_card_defs=(),
                 _assign_blocker_execute(name, slot),
             ))
     actions.append(("Done blocking", _done_blocking_legal, _done_blocking_execute))
-    # Trample's "assign a combat-damage point to the defending player" half
-    # of a gang-blocking damage assignment (the blocker half is the pointer
-    # scheme). One fixed action, runtime-gated to a trampling attacker mid-
-    # assign_combat_damage -- masked illegal otherwise.
+    # Trample-to-player is no longer an agent choice (game.resolution.
+    # handlers_combat._autoresolve_if_no_choices_left applies it
+    # automatically instead) -- this row's legal() is now permanently
+    # False. Kept registered anyway, purely so the fixed table's length --
+    # and every trained DeckNetwork's action-output shape -- stays stable;
+    # see _assign_damage_to_opponent_legal's own docstring.
     actions.append((
         "Assign combat damage to opponent", _assign_damage_to_opponent_legal, _assign_damage_to_opponent_execute,
     ))

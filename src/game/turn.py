@@ -8,7 +8,7 @@ import enum
 
 from . import registry
 from .effects.combat import (
-    attackers_needing_damage_assignment, combat_damage_step, creature_block_eligible,
+    attackers_needing_damage_assignment, blocker_lethal_capacities, combat_damage_step, creature_block_eligible,
     declare_attackers_step, enforce_menace, menace_block_incomplete,
 )
 from .effects.stack import resolve_top_of_stack
@@ -456,7 +456,10 @@ def _assign_combat_damage_gen(state):
         living = [b for b in blockers if b in state.opponent.battlefield]
         if len(living) < 2:
             continue
-        begin_assign_combat_damage(state, attacker, living, power, has_trample, on_complete=lambda s: None)
+        lethal_by_blocker = blocker_lethal_capacities(state, attacker, living)
+        begin_assign_combat_damage(
+            state, attacker, living, power, has_trample, lethal_by_blocker, on_complete=lambda s: None,
+        )
         while state.pending_resolution is not None:
             action = yield
             action()

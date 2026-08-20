@@ -8,8 +8,9 @@ the Phase 3 gap fill from the 2026-08-19 combat review.
 """
 from game import registry
 from game.cards import CardDef, CardType, EffectId
-from game.effects.combat import combat_damage_step, declare_attacker, declare_attackers_step
+from game.effects.combat import blocker_lethal_capacities, combat_damage_step, declare_attacker, declare_attackers_step
 from game.effects.state_based import check_state_based_actions
+from game.resolution import assign_combat_damage_options, begin_assign_combat_damage, execute_assign_combat_damage_option
 from game.state import GameState, Permanent, PlayerState
 
 
@@ -84,14 +85,19 @@ def test_deathtouch_trample_default_split_assigns_one_per_blocker():
         registry.EFFECT_REGISTRY[EffectId.FILLER] = original
 
 
-def test_agent_chosen_multi_blocker_split_is_honored():
-    # A 2+-blocked attacker's controller freely assigns its damage
-    # (begin_assign_combat_damage stashes the choice on
-    # flags["combat_damage_split"]). combat_damage_step must consume that split
-    # verbatim rather than recomputing the lethal-in-order default -- including
-    # a deliberately lopsided, non-lethal assignment.
+def test_multi_blocker_split_caps_each_blocker_at_lethal_and_spares_the_rest_only_if_power_runs_out():
+    # A 2+-blocked attacker's controller assigns its damage one point at a
+    # time (begin_assign_combat_damage/execute_assign_combat_damage_option),
+    # but never past a blocker's own lethal cap (blocker_lethal_capacities)
+    # -- no overkill. Once a blocker is capped it drops out of assign_
+    # combat_damage_options entirely. The only real discretion left is which
+    # blocker(s) get lethal first when total power can't cover every
+    # blocker's cap -- real Magic's own damage-assignment-order rule
+    # (510.1c) -- so this is the one case a blocker can still end up
+    # non-lethally damaged: power ran out, not because the controller chose
+    # to leave a capped-eligible blocker alone.
     state = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
-    attacker = Permanent(CardDef("Chooser", CardType.CREATURE, None, EffectId.FILLER, power=6, toughness=6))
+    attacker = Permanent(CardDef("Chooser", CardType.CREATURE, None, EffectId.FILLER, power=4, toughness=6))
     attacker.summoning_sick = False
     b1 = Permanent(CardDef("B1", CardType.CREATURE, None, None, power=1, toughness=3))
     b2 = Permanent(CardDef("B2", CardType.CREATURE, None, None, power=1, toughness=3))
@@ -101,14 +107,108 @@ def test_agent_chosen_multi_blocker_split_is_honored():
     declare_attackers_step(state)
     declare_attacker(state, attacker)
     state.blocked_by[attacker] = [b1, b2]
-    # All 6 onto b1, none to b2 -- allowed by the engine's free-assignment
-    # spec, and NOT what the lethal-in-order default (3/3) would produce.
-    attacker.flags["combat_damage_split"] = ({b1: 6, b2: 0}, 0)
-    combat_damage_step(state)
 
-    assert b1.damage_marked == 6 and b2.damage_marked == 0, "the recorded split must beat the default"
-    assert attacker.damage_marked == 2, "both blockers still deal their power back"
+    lethal_by_blocker = blocker_lethal_capacities(state, attacker, [b1, b2])
+    assert lethal_by_blocker == {b1: 3, b2: 3}
+    begin_assign_combat_damage(
+        state, attacker, [b1, b2], power=4, has_trample=False,
+        lethal_by_blocker=lethal_by_blocker, on_complete=lambda s: None,
+    )
+
+    for _ in range(3):  # fill b1 to its own cap
+        execute_assign_combat_damage_option(state, "B1", b1.slot)
+    assert ("B1", b1.slot) not in assign_combat_damage_options(state), "capped -- no more overkill onto b1"
+    assert state.pending_resolution is not None, "1 point still remains and b2 is still open"
+
+    execute_assign_combat_damage_option(state, "B2", b2.slot)  # the 4th and last point -- only b2 is legal
+    assert state.pending_resolution is None, "remaining hit 0 -- resolves without forcing b2 to its own cap"
+
+    combat_damage_step(state)
+    assert b1.damage_marked == 3 and b1 not in state.players[1].battlefield
+    assert b2.damage_marked == 1 and b2 in state.players[1].battlefield, "spared -- power simply ran out first"
     assert state.players[1].life_total == 20, "no trample -- nothing reaches the player"
+
+
+def test_multi_blocker_trample_spills_to_player_automatically_once_every_blocker_is_capped():
+    # 702.19e/510.1c: once every blocker in a multi-blocked trampler's split
+    # is at its own lethal cap, whatever combat damage remains is a FORCED
+    # outcome, never an agent choice -- there is no "assign to player"
+    # action anymore (drl_env._assign_damage_to_opponent_legal is now
+    # permanently False). The spillover happens as a direct side effect of
+    # the point that caps the LAST still-open blocker.
+    original = _with_filler_keywords({"trample"})
+    try:
+        state = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
+        trampler = Permanent(CardDef("Stomper2", CardType.CREATURE, None, EffectId.FILLER, power=8, toughness=8))
+        trampler.summoning_sick = False
+        b1 = Permanent(CardDef("B1", CardType.CREATURE, None, None, power=1, toughness=3))
+        b2 = Permanent(CardDef("B2", CardType.CREATURE, None, None, power=1, toughness=3))
+        state.players[0].battlefield = [trampler]
+        state.players[1].battlefield = [b1, b2]
+
+        declare_attackers_step(state)
+        declare_attacker(state, trampler)
+        state.blocked_by[trampler] = [b1, b2]
+
+        lethal_by_blocker = blocker_lethal_capacities(state, trampler, [b1, b2])
+        begin_assign_combat_damage(
+            state, trampler, [b1, b2], power=8, has_trample=True,
+            lethal_by_blocker=lethal_by_blocker, on_complete=lambda s: None,
+        )
+
+        for _ in range(3):
+            execute_assign_combat_damage_option(state, "B1", b1.slot)
+        assert state.pending_resolution is not None, "b2 still open -- 5 points left, nothing forced yet"
+        for _ in range(2):
+            execute_assign_combat_damage_option(state, "B2", b2.slot)
+        assert state.pending_resolution is not None, "b2 not capped yet"
+        execute_assign_combat_damage_option(state, "B2", b2.slot)  # caps b2 -- the LAST open blocker
+
+        assert state.pending_resolution is None, "both blockers capped -- the remaining 2 must auto-spill"
+        assert trampler.flags["combat_damage_split"] == ({b1: 3, b2: 3}, 2)
+
+        combat_damage_step(state)
+        assert state.players[1].life_total == 18, "20 - the 2 that spilled over with no explicit action taken"
+    finally:
+        registry.EFFECT_REGISTRY[EffectId.FILLER] = original
+
+
+def test_multi_blocker_non_trample_excess_piles_onto_last_blocker_when_all_are_capped():
+    # RULES EXCEPTION (owner-approved 2026-08-20): without trample, real
+    # Magic still requires leftover combat damage be assigned to a blocking
+    # creature even once every blocker is already at its own lethal cap --
+    # it just does nothing further (that blocker is already dead). Rather
+    # than model exactly which blocker "in reality" absorbs it, this engine
+    # piles all of it onto the last blocker in the split. Inert: nothing in
+    # this card pool reads how much *excess* damage an already-dead blocker
+    # received, and the defending player takes none of it either way.
+    state = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
+    attacker = Permanent(CardDef("Chooser2", CardType.CREATURE, None, EffectId.FILLER, power=8, toughness=8))
+    attacker.summoning_sick = False
+    b1 = Permanent(CardDef("B1", CardType.CREATURE, None, None, power=1, toughness=3))
+    b2 = Permanent(CardDef("B2", CardType.CREATURE, None, None, power=1, toughness=3))
+    state.players[0].battlefield = [attacker]
+    state.players[1].battlefield = [b1, b2]
+
+    declare_attackers_step(state)
+    declare_attacker(state, attacker)
+    state.blocked_by[attacker] = [b1, b2]
+
+    lethal_by_blocker = blocker_lethal_capacities(state, attacker, [b1, b2])
+    begin_assign_combat_damage(
+        state, attacker, [b1, b2], power=8, has_trample=False,
+        lethal_by_blocker=lethal_by_blocker, on_complete=lambda s: None,
+    )
+    for _ in range(3):
+        execute_assign_combat_damage_option(state, "B1", b1.slot)
+    for _ in range(3):
+        execute_assign_combat_damage_option(state, "B2", b2.slot)
+
+    assert state.pending_resolution is None, "both blockers capped -- the remaining 2 must auto-pile, not wait"
+    assert attacker.flags["combat_damage_split"] == ({b1: 3, b2: 5}, 0), "the last blocker absorbs the dead-letter 2"
+
+    combat_damage_step(state)
+    assert state.players[1].life_total == 20, "no trample -- none of the overkill reaches the player"
 
 
 def test_lethal_calculation_uses_aura_modified_toughness():

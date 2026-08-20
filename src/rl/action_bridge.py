@@ -147,14 +147,22 @@ def pointer_legal_mask(state, identities_row):
 
     if pending is not None and pending["kind"] == "assign_combat_damage":
         # The attacker assigns its next combat-damage point to one of its
-        # blockers (gang-blocking). Match by IDENTITY against the pending's
-        # own blocker list -- NOT (name, slot), which collides across sides
-        # (a same-named creature on the attacker's own board) -- so only the
-        # actual blockers are offered. "Assign to the player" (trample) is a
-        # separate FIXED action, not a pointer target.
+        # blockers still under its own lethal cap (gang-blocking) -- a
+        # blocker already assigned its lethal_by_blocker share is not a
+        # legal target (no overkill; see game.resolution.handlers_combat.
+        # assign_combat_damage_options, the non-RL-path twin of this same
+        # rule). Match by IDENTITY against the pending's own blocker list --
+        # NOT (name, slot), which collides across sides (a same-named
+        # creature on the attacker's own board) -- so only the actual
+        # blockers are offered. "Assign to the player" (trample) is no
+        # longer a pointer OR fixed choice at all -- it's now a forced,
+        # automatic outcome once every blocker is capped (handlers_combat.
+        # _autoresolve_if_no_choices_left).
         blockers = pending["blockers"]
+        lethal_by_blocker = pending["lethal_by_blocker"]
+        amounts = pending["amounts"]
         for i, p in enumerate(identities_row):
-            if p is not None and p in blockers:
+            if p is not None and p in blockers and amounts.get(p, 0) < lethal_by_blocker[p]:
                 mask[i] = True
         return mask
 

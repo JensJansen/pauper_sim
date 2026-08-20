@@ -80,25 +80,29 @@ def declare_blocker_assignment(state, blocker, on_complete, extra_predicate=lamb
     )
 
 
-def begin_assign_combat_damage(state, attacker, blockers, power, has_trample, on_complete):
-    """A MULTI-blocked attacker's controller freely assigns `power` points
-    of the attacker's combat damage across `blockers` -- any portion to any
-    blocker, non-lethal allowed (user spec) -- plus to the defending player
-    if the attacker has trample. One point at a time: assign_combat_damage_
-    options (pick a blocker, (name, slot)-addressed for the pointer head) /
-    execute_assign_combat_damage_option, or execute_assign_combat_damage_to_
-    player (trample only, a fixed action), until every point is spent. The
-    finished split is stashed on attacker.flags['combat_damage_split'] =
-    ({blocker: amount}, opponent_amount) for combat_damage_step to apply --
-    NOT passed through complete_resolution's own *args (which would try to
-    log a Permanent-keyed dict, not serialisable). Only ever opened for 2+
-    blockers -- a lone blocker has no choice (combat_damage_step auto-
-    assigns). Auto-finishes immediately if power is 0."""
+def begin_assign_combat_damage(state, attacker, blockers, power, has_trample, lethal_by_blocker, on_complete):
+    """A MULTI-blocked attacker's controller assigns `power` points of the
+    attacker's combat damage across `blockers`, one point at a time
+    (assign_combat_damage_options -> execute_assign_combat_damage_option,
+    (name, slot)-addressed for the pointer head): any portion to any
+    blocker up to its own lethal_by_blocker[blocker] cap, non-lethal (less
+    than the cap) allowed, never more (no overkill). Damage the controller
+    can no longer legally put on any blocker -- every blocker in the split
+    already at its own cap -- is a forced, automatic outcome, never an
+    agent choice: it spills to the defending player if the attacker has
+    trample (702.19e/510.1c), or piles onto the last blocker otherwise (see
+    _autoresolve_if_no_choices_left's own docstring for that non-trample
+    case). The finished split is stashed on attacker.flags[
+    'combat_damage_split'] = ({blocker: amount}, opponent_amount) for
+    combat_damage_step to apply -- NOT passed through complete_resolution's
+    own *args (which would try to log a Permanent-keyed dict, not
+    serialisable). Only ever opened for 2+ blockers -- a lone blocker has
+    no choice (combat_damage_step auto-assigns). Auto-finishes immediately
+    if power is 0 (or if every blocker's own cap is already 0)."""
     begin_resolution(state, "assign_combat_damage", on_complete,
                      attacker=attacker, blockers=list(blockers), remaining=power, amounts={}, opponent=0,
-                     has_trample=has_trample)
-    if power <= 0:
-        _finish_assign_combat_damage(state)
+                     has_trample=has_trample, lethal_by_blocker=dict(lethal_by_blocker))
+    _autoresolve_if_no_choices_left(state)
 
 
 def _finish_assign_combat_damage(state):
@@ -107,16 +111,57 @@ def _finish_assign_combat_damage(state):
     complete_resolution(state)
 
 
+def _autoresolve_if_no_choices_left(state):
+    """Once every blocker still in the split has been assigned its own
+    lethal_by_blocker cap, nothing about where the rest of this attacker's
+    power goes is a real decision anymore -- so it's applied directly
+    instead of asking the agent to spend the remaining points one at a
+    time. Trample: the remainder spills to the defending player (702.19e).
+
+    RULES EXCEPTION (owner-approved 2026-08-20), non-trample case: real
+    Magic still requires that leftover be assigned to a blocking creature
+    even though every blocker here is already at its own lethal cap and it
+    changes nothing (that blocker is already dead). Rather than model which
+    specific blocker "in reality" absorbs that dead-letter overkill, this
+    engine piles all of it onto the last blocker in the split -- mirroring
+    _default_damage_assignment's own identical exception on the auto path.
+    Inert in practice (nothing in this card pool reads how much *excess*
+    damage an already-dead blocker received), but flagged per this repo's
+    rules-faithfulness mandate rather than silently assumed."""
+    pending = state.pending_resolution
+    if pending is None or pending["kind"] != "assign_combat_damage":
+        return
+    if pending["remaining"] <= 0:
+        _finish_assign_combat_damage(state)
+        return
+    lethal_by_blocker = pending["lethal_by_blocker"]
+    amounts = pending["amounts"]
+    if any(amounts.get(b, 0) < lethal_by_blocker[b] for b in pending["blockers"]):
+        return  # a real choice still remains -- wait for the next action
+    if pending["has_trample"]:
+        pending["opponent"] += pending["remaining"]
+    else:
+        last = pending["blockers"][-1]
+        amounts[last] = amounts.get(last, 0) + pending["remaining"]
+    pending["remaining"] = 0
+    _finish_assign_combat_damage(state)
+
+
 def assign_combat_damage_options(state):
-    """Every blocker is a choosable target for the next damage point (a
-    blocker may take any number of points, so all stay offered until
-    remaining hits 0), (name, slot)-addressed like choose_opponent_permanent
-    for the pointer head. The trample 'assign to the player' option is a
-    separate fixed action -- same choose-vs-fixed split blocking uses."""
+    """Every blocker still under its own lethal_by_blocker cap is a
+    choosable target for the next damage point -- once assigned that cap it
+    drops out (no overkill), (name, slot)-addressed like
+    choose_opponent_permanent for the pointer head. There is no separate
+    "assign to the player" option: trample-through is never a choice, see
+    _autoresolve_if_no_choices_left."""
     pending = state.pending_resolution
     if pending["remaining"] <= 0:
         return []
-    return sorted((b.card_def.name, b.slot) for b in pending["blockers"])
+    lethal_by_blocker = pending["lethal_by_blocker"]
+    amounts = pending["amounts"]
+    return sorted(
+        (b.card_def.name, b.slot) for b in pending["blockers"] if amounts.get(b, 0) < lethal_by_blocker[b]
+    )
 
 
 def execute_assign_combat_damage_option(state, name, slot):
@@ -124,15 +169,4 @@ def execute_assign_combat_damage_option(state, name, slot):
     blocker = next(b for b in pending["blockers"] if b.card_def.name == name and b.slot == slot)
     pending["amounts"][blocker] = pending["amounts"].get(blocker, 0) + 1
     pending["remaining"] -= 1
-    if pending["remaining"] <= 0:
-        _finish_assign_combat_damage(state)
-
-
-def execute_assign_combat_damage_to_player(state):
-    """Trample: assign the next damage point to the defending player instead
-    of a blocker. Only legal while has_trample (drl_env gates the action)."""
-    pending = state.pending_resolution
-    pending["opponent"] += 1
-    pending["remaining"] -= 1
-    if pending["remaining"] <= 0:
-        _finish_assign_combat_damage(state)
+    _autoresolve_if_no_choices_left(state)

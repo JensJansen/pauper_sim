@@ -1,7 +1,8 @@
 """Combat actions: declaring attackers, assigning blockers (incl. Done and
-Menace), and the trample combat-damage-to-player row. legal(state)/
-execute(state) factory pairs build_action_table (drl_env._actions_table)
-calls once per matching creature/slot."""
+Menace), and the now-permanently-masked trample combat-damage-to-player row
+(kept registered only for fixed-table shape stability -- see its own
+docstring). legal(state)/execute(state) factory pairs build_action_table
+(drl_env._actions_table) calls once per matching creature/slot."""
 
 import game
 
@@ -164,24 +165,29 @@ def _done_blocking_execute(state):
 
 
 def _assign_damage_to_opponent_legal(state):
-    """The trample "assign this combat-damage point to the defending player"
-    action -- legal only during an assign_combat_damage resolution whose
-    attacker HAS trample and still has points to assign (the blockers are
-    the pointer half of this decision; this fixed action is the player
-    half). NOT a targeting-prefixed name, so build_fixed_action_table keeps
-    it in the fixed table rather than stripping it to the pointer scheme."""
-    pending = state.pending_resolution
-    return (
-        pending is not None and pending["kind"] == "assign_combat_damage"
-        and pending["has_trample"] and pending["remaining"] > 0
-    )
+    """DEAD (always False): trample-to-player used to be an agent choice
+    here, but that let the agent spill combat damage to the defending
+    player before every blocker in the split had been assigned lethal
+    damage -- illegal under 702.19e/510.1c. Trample-through is now a
+    forced, automatic outcome of the assign_combat_damage resolution
+    itself (game.resolution.handlers_combat._autoresolve_if_no_choices_
+    left) once every blocker still in the split is at its own lethal cap
+    -- never something to ask the agent about.
+
+    This row stays registered (name + legal + execute all still present,
+    just permanently illegal) purely so the fixed action table's length --
+    and therefore every trained DeckNetwork's action-output layer shape --
+    doesn't change. Physically deleting the row instead would shrink
+    len(fixed_table) and break loading any existing checkpoint (shape
+    mismatch on non_targeting_head / prev_action_embed, see rl.deck)."""
+    return False
 
 
 _assign_damage_to_opponent_legal._pending_gate = frozenset({"assign_combat_damage"})
 
 
 def _assign_damage_to_opponent_execute(state):
-    game.execute_assign_combat_damage_to_player(state)
+    raise AssertionError("unreachable: _assign_damage_to_opponent_legal is always False")
 
 
 __all__ = [

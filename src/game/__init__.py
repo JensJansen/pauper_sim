@@ -197,7 +197,6 @@ from .resolution import (
     execute_mana_subdecision_target,
     execute_choose_stack_target_option,
     execute_assign_combat_damage_option,
-    execute_assign_combat_damage_to_player,
     execute_choose_target_player_option,
     execute_discard_decline,
     execute_discard_option,

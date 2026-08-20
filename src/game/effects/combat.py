@@ -264,6 +264,18 @@ def _blocker_deal_damage(state, blocker, attacker, blocker_facts):
         gain_life(state, power * lifelink_count, player_idx=1 - state.active_idx)
 
 
+def _lethal_amount(deathtouch, toughness, damage_marked):
+    """Combat damage needed to treat a blocker as 'satisfied' for lethal-
+    in-order assignment -- 1 for a deathtouch source (702.2b: any nonzero
+    deathtouch damage counts as lethal), else its own remaining toughness.
+    Shared by the auto path (_default_damage_assignment) and the free
+    multi-blocker assign_combat_damage resolution (blocker_lethal_
+    capacities) so both agree on the same cap -- neither ever over-assigns
+    past it, matching real Magic's own lethal-in-order rule (minimum-lethal
+    is dominant: over-assigning to a blocker never helps the attacker)."""
+    return 1 if deathtouch else max(toughness - damage_marked, 0)
+
+
 def _default_damage_assignment(attacker_facts, blockers, facts_by_id):
     """Auto split of an attacker's combat damage across its (living)
     blockers -- used for a SINGLE blocker (no choice to make) and as the
@@ -273,7 +285,8 @@ def _default_damage_assignment(attacker_facts, blockers, facts_by_id):
     Returns (amounts parallel to
     `blockers`, opponent_amount). For a MULTI-blocked attacker the attacking
     player's OWN freely-chosen split (assign_combat_damage resolution)
-    replaces this -- any portion to any blocker, non-lethal allowed."""
+    replaces this -- any portion to any blocker up to its own lethal cap,
+    non-lethal (less than the cap) allowed, never more."""
     remaining = attacker_facts["power"]
     amounts = [0] * len(blockers)
     deathtouch = attacker_facts["deathtouch"]
@@ -285,15 +298,11 @@ def _default_damage_assignment(attacker_facts, blockers, facts_by_id):
         # the rest to trample through (or to kill further blockers). Without
         # this the split over-assigned full toughness and a 5-power deathtouch
         # trampler blocked by a 4-toughness creature spilled 1 instead of 4.
-        # Over-assigning was itself legal, but a SINGLE-blocked attacker never
-        # gets an assign_combat_damage decision (attackers_needing_damage_
-        # assignment fires only for 2+ blockers), so the auto split IS the whole
-        # decision -- it should be the attacker-optimal legal one. Minimum-lethal
-        # is dominant: over-assigning to a blocker never helps the attacker.
-        if deathtouch:
-            lethal = 1
-        else:
-            lethal = max(facts_by_id[id(blocker)]["toughness"] - blocker.damage_marked, 0)
+        # A SINGLE-blocked attacker never gets an assign_combat_damage
+        # decision (attackers_needing_damage_assignment fires only for 2+
+        # blockers), so the auto split IS the whole decision -- it should be
+        # the attacker-optimal legal one.
+        lethal = _lethal_amount(deathtouch, facts_by_id[id(blocker)]["toughness"], blocker.damage_marked)
         assign = min(remaining, lethal)
         amounts[i] = assign
         remaining -= assign
@@ -302,8 +311,34 @@ def _default_damage_assignment(attacker_facts, blockers, facts_by_id):
         if attacker_facts["trample"]:
             opponent_amount = remaining
         elif blockers:
+            # RULES EXCEPTION (owner-approved 2026-08-20): real Magic still
+            # requires this dead-letter overkill be assigned to A blocker
+            # even though it changes nothing (every blocker here is already
+            # at its own lethal cap, so this is strictly cosmetic). Rather
+            # than model which specific blocker "in reality" absorbs it,
+            # this engine piles all of it onto the last one. Inert in
+            # practice -- nothing in this card pool reads how much *excess*
+            # damage an already-dead blocker received -- but flagged per
+            # this repo's rules-faithfulness mandate rather than silently
+            # assumed.
             amounts[-1] += remaining
     return amounts, opponent_amount
+
+
+def blocker_lethal_capacities(state, attacker, blockers):
+    """{blocker: the most combat damage this attacker's free multi-blocker
+    assignment (resolution.assign_combat_damage) may ever put on it} -- the
+    same _lethal_amount cap the auto path uses above, just computed live
+    (this runs once per multi-blocked attacker, not once per pair per
+    frame, so no facts_by_id precompute is worth it here). Consumed by
+    handlers_combat.begin_assign_combat_damage to stop the agent from
+    overkilling a blocker or trampling a point through before every blocker
+    still in the split has been assigned at least its own lethal share."""
+    deathtouch = stats.has_keyword(state, attacker, "deathtouch")
+    return {
+        b: _lethal_amount(deathtouch, stats.permanent_toughness(state, b), b.damage_marked)
+        for b in blockers
+    }
 
 
 def _damage_assignment_for(attacker, living, attacker_facts, facts_by_id):
