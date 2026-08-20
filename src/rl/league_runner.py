@@ -502,7 +502,29 @@ def _run_session(n_iterations, games_per_iteration, snapshot_every, executor, n_
             pass
     else:
         cpu_nets = {n: copy.deepcopy(net).cpu().eval() for n, net in live_nets.items()}
-        cpu_mulligan_nets = {n: copy.deepcopy(m).cpu().eval() for n, m in mulligan_nets.items()}
+        # MulliganNet holds its encoder as a PLAIN REFERENCE, not a registered
+        # child (deliberately -- see its own docstring: its REINFORCE optimizer
+        # must not train the encoder that PPO owns). nn.Module.cpu() and
+        # load_state_dict only touch REGISTERED submodules, so a deepcopy of a
+        # CUDA mulligan net comes back with a CPU trunk still wired to a CUDA
+        # encoder, and the eval path died on "index is on cpu, different from
+        # other tensors on cuda:0" the first time --device cuda ran a full
+        # session (2026-08-19).
+        #
+        # Repointing at the mirrored deck net's encoder fixes it and keeps it
+        # fixed: cpu_nets[n] IS synced below, and the live pair share an encoder
+        # the same way, so the mirror now mirrors that relationship too rather
+        # than owning a second copy that would need its own sync.
+        cpu_mulligan_nets = {}
+        for n, m in mulligan_nets.items():
+            mirror = copy.deepcopy(m).cpu().eval()
+            # object.__setattr__, exactly as MulliganNet.__init__ does it. A
+            # plain `mirror.encoder = ...` goes through nn.Module.__setattr__,
+            # which REGISTERS the encoder as a child -- the mirror's state_dict
+            # then demands encoder.* keys that the live net's state_dict does
+            # not have, and sync_cpu_mirrors below fails with 37 missing keys.
+            object.__setattr__(mirror, "encoder", cpu_nets[n].encoder)
+            cpu_mulligan_nets[n] = mirror
 
         def sync_cpu_mirrors():
             """Pull the current training weights down for the play paths."""
