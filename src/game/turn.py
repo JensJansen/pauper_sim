@@ -404,7 +404,7 @@ def _declare_blockers_gen(state):
                 # menace_block_incomplete), and no creature remains that could be
                 # added as a second one -- zero legal actions exist at all. This
                 # is the engine's own one-at-a-time linearization of Magic's
-                # single simultaneous declare-blockers action (509.2) reaching a
+                # single simultaneous declare-blockers action (509.1) reaching a
                 # state paper Magic never can; abandon now rather than loop
                 # forever offering a decision with nothing legal to submit
                 # (enforce_menace already documents this exact scenario and
@@ -439,14 +439,23 @@ def _assign_combat_damage_gen(state):
     finishes in exactly `power` picks -- it cannot loop."""
     for attacker, blockers, power, has_trample in attackers_needing_damage_assignment(state):
         # Rule 510.1a: an attacker assigns its combat damage only among the
-        # creatures CURRENTLY blocking it. A blocker can leave the battlefield
-        # between the block declaration and this point (removal cast in the
-        # post-declare-blockers priority round), and blocked_by still holds it.
-        # Offering a dead blocker is doubly wrong: it is not a legal assignment
-        # target, and it is no longer in build_token_set (which walks the
-        # battlefield), so the pointer mask could not address it even if it
-        # were -- an all-False action mask, which is a hard crash. Seen on turn
-        # 79 of an 11-deck game, 2026-08-16.
+        # creatures CURRENTLY blocking it, and blocked_by can hold a dead
+        # entry (506.4 deliberately doesn't drop it -- see remove_from_combat's
+        # own scope note). Offering a dead blocker here is doubly wrong: it is
+        # not a legal assignment target, and it is no longer in build_token_set
+        # (which walks the battlefield), so the pointer mask could not address
+        # it even if it were -- an all-False action mask, which is a hard
+        # crash. Seen on turn 79 of an 11-deck game, 2026-08-16.
+        #
+        # A DIFFERENT gap -- a blocker dying AFTER this decision is recorded
+        # but BEFORE combat_damage_step deals it (the real priority round
+        # this phase falls through to once _assign_combat_damage_gen
+        # returns, before COMBAT_DAMAGE even begins -- real Magic's own
+        # 510.1/510.2 have no such window, since assigning and dealing are
+        # one atomic turn-based action there) -- is handled separately, in
+        # game.effects.combat._damage_assignment_for (2026-08-20): a
+        # departed blocker's earmarked share is added to a trampler's excess
+        # rather than silently lost.
         #
         # Below 2 living blockers there is no free choice left to make, which
         # is the same condition attackers_needing_damage_assignment screens on:

@@ -449,6 +449,79 @@ def test_gurmag_angler_delve_exiles_graveyard_cards_to_pay_generic():
     assert any(p.card_def.name == "Gurmag Angler" for p in state.battlefield) and state.graveyard == []
 
 
+def test_no_mana_tap_during_delve_exile_step():
+    """774fe5b's actual fix: delve's exile-to-graveyard sub-cost sits BETWEEN
+    announcing the cast and the payment opening, so no mana ability may be
+    activated during it (601.2f, game.mana.mid_cast) -- begin_exile_n_from_
+    graveyard passes mid_cast=True precisely so drl_env._actions_mana.
+    _mana_timing_legal refuses every "Tap X" row for its duration. Found
+    live, not hypothetical (that commit's own docstring): dmir_terror tapped
+    both Contaminated Aquifers for {U} mid-exile, stranding the delve-reduced
+    {B} with no way to pay it. This drives the SPECIFIC exile-step pending
+    (kind="choose_graveyard_card", mid_cast stamped) that test_no_mana_
+    ability_during_a_casting_step_before_601_2f does not reach -- that test
+    only exercises the generic _CASTING_STEP_PENDING_KINDS path
+    (choose_cast_copy), a different branch of game.mana.mid_cast."""
+    dl = [("Gurmag Angler", 4), ("Contaminated Aquifer", 8)]
+    byname = {
+        a[0]: (a[1], a[2])
+        for a in drl_env.build_action_table(dl, registry.EFFECT_REGISTRY)
+    }
+    state = GameState(on_the_play=True)
+    state.phase = Phase.MAIN1
+    state.turn_player_idx = 0
+    state.active_idx = 0
+    state.hand = [registry.CARD_DEFS["Gurmag Angler"]]
+    state.graveyard = [
+        state.new_instance(CardDef("g1", CardType.INSTANT, {"U": 1}, EffectId.FILLER)),
+        state.new_instance(CardDef("g2", CardType.INSTANT, {"U": 1}, EffectId.FILLER)),
+    ]
+    # 5 Contaminated Aquifers (each U-or-B): {6}{B} minus delve 2 = {4}{B},
+    # payable from these 5 sources ONLY if at least one taps for B -- none
+    # pre-floated, so the payment is still wide open when delve starts.
+    state.battlefield = [Permanent(registry.CARD_DEFS["Contaminated Aquifer"]) for _ in range(5)]
+
+    tap_for_u_legal, _ = byname["Tap Contaminated Aquifer for U"]
+    assert tap_for_u_legal(state), "tapping is an ordinary main-phase mana ability before any cast starts"
+
+    legal, execute = byname["Cast Gurmag Angler"]
+    assert legal(state)
+    execute(state)
+    assert state.pending_resolution["kind"] == "choose_delve_amount"
+    assert not tap_for_u_legal(state), "601.2f: no mana ability is legal once a cast is announced, even before the exile step opens"
+
+    delve_legal, delve_execute = byname["Delve 2"]
+    assert delve_legal(state)
+    delve_execute(state)
+    assert state.pending_resolution["kind"] == "choose_graveyard_card" and state.pending_resolution["mid_cast"] is True
+    assert not tap_for_u_legal(state), (
+        "the actual bug: tapping a dual for U here (instead of B) can strand the delve-reduced B "
+        "cost that opens next -- mid_cast must refuse every mana ability for this pending's duration"
+    )
+
+    resolution.execute_choose_graveyard_card_option(state, resolution.choose_graveyard_card_options(state)[0])
+    resolution.execute_choose_graveyard_card_option(state, resolution.choose_graveyard_card_options(state)[0])
+    assert state.pending_resolution["kind"] == "pay_cost"
+    assert tap_for_u_legal(state), "payment is open now -- ordinary mana-ability timing (605.1a) resumes"
+
+    guard = 0
+    while state.pending_resolution is not None and state.pending_resolution["kind"] == "pay_cost":
+        guard += 1
+        assert guard < 30
+        options = pool_spend_options(state)
+        if options:
+            execute_pool_spend(state, options[0])
+        else:
+            # Nothing floated yet -- tap a source for whichever color is
+            # still owed (mirrors the live incident's fix: B must remain
+            # reachable here, which is exactly what mid_cast protected).
+            still_owed = state.pending_resolution["remaining"]
+            color = "B" if still_owed.get("B", 0) > 0 else "U"
+            byname[f"Tap Contaminated Aquifer for {color}"][1](state)
+    resolve_top_of_stack(state)
+    assert any(p.card_def.name == "Gurmag Angler" for p in state.battlefield) and state.graveyard == []
+
+
 # --- G8 sac engines (grixis_affinity / jund_wildfire) ---
 
 def _drive8(s):

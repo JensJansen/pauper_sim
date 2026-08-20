@@ -545,6 +545,45 @@ def test_no_mana_ability_during_a_casting_step_before_601_2f():
 
 
 @pytest.mark.slow
+def test_assign_combat_damage_pointer_mask_respects_lethal_cap():
+    # rl.action_bridge.pointer_legal_mask's own "assign_combat_damage" branch
+    # (the RL-layer twin of game.resolution.handlers_combat.
+    # assign_combat_damage_options, added alongside a6f4639's trample fix): a
+    # blocker already at its own lethal_by_blocker cap must drop out of the
+    # pointer mask entirely (no overkill), while an under-cap blocker stays
+    # offered. Only the engine layer had coverage for this before (tests/
+    # game/effects/test_combat_damage_detail.py) -- nothing exercised the RL
+    # pointer-head side.
+    _decklist, _token_defs, _fixed_table, vocab = _mono_red_fixture()
+    ac_me = PlayerState(on_the_play=True)
+    ac_opp = PlayerState(on_the_play=False)
+    attacker = Permanent(game.CARD_DEFS["Reckless Lackey"])
+    b1 = Permanent(game.CARD_DEFS["Slippery Bogle"])  # 1 toughness -- lethal cap 1
+    b1.slot = 1
+    b2 = Permanent(game.CARD_DEFS["Slippery Bogle"])  # a second, distinct instance -- cap 2
+    b2.slot = 2
+    ac_me.battlefield = [attacker]
+    ac_opp.battlefield = [b1, b2]
+    ac_state = GameState(on_the_play=True, players=[ac_me, ac_opp])
+    ac_state.attackers = [attacker]
+    ac_state.blocked_by = {attacker: [b1, b2]}
+    game.begin_assign_combat_damage(
+        ac_state, attacker, [b1, b2], 3, has_trample=False,
+        lethal_by_blocker={b1: 1, b2: 2}, on_complete=lambda s: None,
+    )
+    assert ac_state.pending_resolution["kind"] == "assign_combat_damage"
+
+    ac_ids = [ident for _i, _r, ident in build_token_set(ac_state, 0, vocab)]
+    ac_legal = {r for r, ok in zip(ac_ids, pointer_legal_mask(ac_state, ac_ids)) if ok}
+    assert ac_legal == {b1, b2}, f"both blockers start under their own cap, got {ac_legal}"
+
+    execute_pointer_choice(ac_state, b1)  # 1 point onto b1 -- now AT its cap (1)
+    ac_ids2 = [ident for _i, _r, ident in build_token_set(ac_state, 0, vocab)]
+    ac_legal2 = {r for r, ok in zip(ac_ids2, pointer_legal_mask(ac_state, ac_ids2)) if ok}
+    assert ac_legal2 == {b2}, f"b1 is at its own lethal cap (no overkill) -- only b2 should remain, got {ac_legal2}"
+
+
+@pytest.mark.slow
 def test_universal_cross_player_decision_rows():
     # CROSS-PLAYER DECISION ROWS must exist in EVERY deck's table. A card can pose
     # a question its OPPONENT answers -- Spell Pierce/Ward (pay_unless: the

@@ -6,6 +6,8 @@ reimplementation."""
 
 from pathlib import Path
 
+import pytest
+
 import game
 from drl_env import _actions_mana, _actions_table
 from drl_env._actions_common import *
@@ -1086,3 +1088,23 @@ def test_attacker_that_left_the_battlefield_is_removed_from_combat():
         "nothing is attacking any more -- the declare-blockers step must not open at all"
     )
     assert not ent_legal(state), "no attackers on the battlefield means no blocker is assignable"
+
+
+def test_assign_damage_to_opponent_is_permanently_dead():
+    """a6f4639's trample fix (702.19b/510.1c): trample-to-player is never an
+    agent choice -- it's a forced, automatic outcome of assign_combat_damage's
+    own resolution (game.resolution.handlers_combat._autoresolve_if_no_
+    choices_left) once every blocker is at its own lethal cap. This row stays
+    registered (name + legal + execute) only so the fixed action table's
+    length -- and every trained DeckNetwork's action-output shape -- doesn't
+    change; it must never actually be reachable. No RL/action-table test
+    previously asserted this (the engine-layer coverage in
+    tests/game/effects/test_combat_damage_detail.py doesn't touch this row at
+    all)."""
+    decklist = [("Reckless Lackey", 4), ("Mountain", 8)]
+    actions = _actions_table.build_action_table(decklist, game.EFFECT_REGISTRY)
+    _, legal, execute = actions[_action_index(actions, "Assign combat damage to opponent")]
+    state = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
+    assert not legal(state), "always False -- no pending resolution needed to prove it"
+    with pytest.raises(AssertionError):
+        execute(state)

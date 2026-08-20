@@ -718,7 +718,7 @@ def build_action_table(decklist, registry, token_card_defs=(),
     # as scry/surveil's own keep-then-order decomposition. Deliberately NO
     # AUTHORIZED SIMPLIFICATION (owner, 2026-07-31): no undo (no "Unassign
     # Blocker") -- once committed, a blocker stays committed until Done. Real
-    # Magic's declare-blockers is a single simultaneous action (509.2); this
+    # Magic's declare-blockers is a single simultaneous action (509.1); this
     # engine linearizes it into one-creature-at-a-time picks with no way
     # back, by design, across the whole engine (no action anywhere lets the
     # agent reconsider/reverse an earlier commitment -- see

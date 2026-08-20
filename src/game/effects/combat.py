@@ -348,11 +348,26 @@ def _damage_assignment_for(attacker, living, attacker_facts, facts_by_id):
     attacker.flags['combat_damage_split'] for a 2+-blocked attacker --
     popped here, consumed once), else the lethal-in-order default (a single
     blocker, or the model-less path). A model split keyed by blocker maps
-    onto `living` (every blocker is alive when its own attacker deals, so
-    this is the full assignment)."""
+    onto `living`, which can be a STRICT SUBSET of the split's own keys: this
+    engine assigns damage during DECLARE_BLOCKERS but doesn't deal it until
+    COMBAT_DAMAGE, a phase later with a full priority round in between --
+    real Magic's own 510.1/510.2 are one atomic turn-based action with no
+    such gap, so a blocker the split already earmarked damage for can die to
+    an instant in that window before this ever runs. Whatever was earmarked
+    for a since-departed blocker is added to a trampler's own excess (702.19b:
+    damage that can no longer reach a blocker becomes exactly that); a
+    non-trampler simply never deals it, matching 509.1h's "no spill without
+    trample" -- both are how that same amount would already be handled had
+    the blocker never been part of the split to begin with. Without this, the
+    departed blocker's share silently vanished: the attacker dealt less total
+    damage than its own power, with no rules basis for the loss."""
     split = attacker.flags.pop("combat_damage_split", None)
     if split is not None:
         amounts_by_blocker, opponent_amount = split
+        living_set = set(living)
+        orphaned = sum(amount for blocker, amount in amounts_by_blocker.items() if blocker not in living_set)
+        if orphaned and attacker_facts["trample"]:
+            opponent_amount += orphaned
         return [amounts_by_blocker.get(b, 0) for b in living], opponent_amount
     return _default_damage_assignment(attacker_facts, living, facts_by_id)
 
@@ -481,7 +496,7 @@ def combat_damage_step(state):
             # and opponent_amount both empty/0, so _attacker_deal_damage is a
             # no-op) -- but a TRAMPLER with no blockers left to assign lethal
             # to must have its full power go through to the defending player
-            # (702.19e/510.1c), which that same blockers=[] path already
+            # (702.19b/510.1c), which that same blockers=[] path already
             # produces correctly (opponent_amount = full power) once this is
             # actually called instead of skipped.
             amounts, opp = _damage_assignment_for(attacker, living, creature_facts[id(attacker)], creature_facts)

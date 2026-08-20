@@ -40,6 +40,7 @@ from game.catalog.red_cards import (
     voldaren_epicure_etb,
 )
 from game.effects.casting import cast_permanent_from_hand
+from game.effects.combat import combat_damage_step, declare_attacker, declare_attackers_step
 from game.effects.madness_and_plot import execute_madness_cast, plot_to_exile
 from game.effects.stack import on_cast_trigger, resolve_top_of_stack
 from game.effects.state_based import sacrifice_to_graveyard
@@ -522,6 +523,31 @@ def test_reckless_lackey_sac_draws_and_makes_treasure():
     assert lackey not in state.battlefield and any(c.name == "Reckless Lackey" for c in state.graveyard)
     resolve_top_of_stack(state)
     assert len(state.hand) == 1 and any(p.card_def.name == "Treasure" for p in state.battlefield)
+
+
+def test_reckless_lackey_sac_mid_combat_removes_it_from_combat():
+    """506.4: Reckless Lackey's sac cost has no {T}, so it stays legal after
+    attacking or blocking (haste lets it attack turn one). Sacrificing it
+    mid-combat must pull it out of state.attackers too, not just the
+    battlefield -- activate_reckless_lackey_sac used to bypass
+    sacrifice_to_graveyard (the 506.4 choke point) and leave it dealing
+    combat damage "from the graveyard."""
+    state = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
+    lackey = Permanent(registry.CARD_DEFS["Reckless Lackey"])
+    lackey.slot = 1
+    lackey.summoning_sick = False
+    state.players[0].battlefield = [lackey]
+    state.library = [CardDef("Top", CardType.LAND, None, EffectId.MOUNTAIN)]
+
+    declare_attackers_step(state)
+    declare_attacker(state, lackey)
+    assert lackey in state.attackers
+
+    activate_reckless_lackey_sac(state, lackey)
+    assert lackey not in state.attackers, "506.4: a sacrificed attacker leaves combat"
+
+    combat_damage_step(state)
+    assert state.players[1].life_total == 20, "a sacrificed attacker deals no combat damage"
 
 
 def test_goblin_tomb_raider_conditional_static():

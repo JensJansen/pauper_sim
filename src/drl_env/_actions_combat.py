@@ -168,7 +168,7 @@ def _assign_damage_to_opponent_legal(state):
     """DEAD (always False): trample-to-player used to be an agent choice
     here, but that let the agent spill combat damage to the defending
     player before every blocker in the split had been assigned lethal
-    damage -- illegal under 702.19e/510.1c. Trample-through is now a
+    damage -- illegal under 702.19b/510.1c. Trample-through is now a
     forced, automatic outcome of the assign_combat_damage resolution
     itself (game.resolution.handlers_combat._autoresolve_if_no_choices_
     left) once every blocker still in the split is at its own lethal cap

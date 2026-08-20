@@ -13,7 +13,7 @@ from ..effects.casting import (
 )
 from ..effects.madness_and_plot import plot_to_exile
 from ..effects.shared import (
-    discard_from_hand_to_graveyard, find_and_remove_by_name, fire_sacrifice_triggers, impulse_exile,
+    discard_from_hand_to_graveyard, find_and_remove_by_name, impulse_exile,
  shuffle_library,
 )
 from ..effects.stack import push_ability_to_stack, push_to_stack
@@ -170,14 +170,13 @@ def activate_reckless_lackey_sac(state, permanent):
     """{2}{R}, Sacrifice this creature: Draw a card and create a Treasure
     token. The {2}{R} + untapped precondition come from the generic cost_key
     wiring; sacrifice (a real card -> graveyard) is a cost paid now, and the
-    draw + Treasure are the effect (on the stack, after a priority window)."""
-    state.battlefield.remove(permanent)
-    state.move_card(permanent.card_def, state.graveyard)
-    state.log_event(
-        "zone_move", permanent=(permanent.card_def.name, permanent.slot), from_zone="battlefield",
-        to_zone="graveyard", reason="sacrifice",
-    )
-    fire_sacrifice_triggers(state, state.active_idx, permanent.card_def)  # Gixian Infiltrator
+    draw + Treasure are the effect (on the stack, after a priority window).
+
+    No {T} in the sac cost, so this stays legal after Reckless Lackey (haste)
+    has already attacked or blocked -- sacrifice_to_graveyard is what closes
+    506.4 for that case (removes it from state.attackers/blocked_by too, not
+    just the battlefield)."""
+    sacrifice_to_graveyard(state, permanent)  # queues the dies-trigger (Gixian Infiltrator); Reckless Lackey has no ltb_trigger of its own
 
     def _effect(st):
         st.draw(1)
@@ -566,13 +565,7 @@ def activate_melded_moxite_sac(state, permanent):
     Melded Moxite is a real (nontoken) card, so sacrificing it puts it in
     the graveyard (real Magic 701.17 -- unlike Blood/Eldrazi Spawn tokens,
     which cease to exist), same as Candy Trail's own sac ability."""
-    state.battlefield.remove(permanent)
-    state.move_card(permanent.card_def, state.graveyard)
-    state.log_event(
-        "zone_move", permanent=(permanent.card_def.name, permanent.slot), from_zone="battlefield",
-        to_zone="graveyard", reason="sacrifice",
-    )
-    fire_sacrifice_triggers(state, state.active_idx, permanent.card_def)  # Gixian Infiltrator
+    sacrifice_to_graveyard(state, permanent)  # queues the dies-trigger (Gixian Infiltrator); Melded Moxite has no ltb_trigger of its own
     push_ability_to_stack(state, permanent.card_def, lambda st: create_token(st, ROBOT_TOKEN_CARD_DEF, tapped=True))
 
 

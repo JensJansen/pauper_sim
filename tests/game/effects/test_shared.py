@@ -83,13 +83,17 @@ def test_discard_from_hand_to_graveyard_logs_zone_move():
     assert moves[-1]["reason"] == "discard"
 
 
-# Every one of these independently removes a sacrificed permanent from the
-# battlefield instead of routing through state_based.sacrifice_to_graveyard
-# (the one canonical "leave the battlefield by sacrifice" path every
-# resolution.begin_sacrifice/discard_or_sacrifice pick also goes through) --
-# each one used to skip fire_sacrifice_triggers entirely (Gixian Infiltrator
-# silently never saw these sacrifices). Regression coverage: every site now
-# queues an "on_sacrifice" entry, no exceptions.
+# Every one of these now routes through state_based.sacrifice_to_graveyard,
+# the one canonical "leave the battlefield by sacrifice" path every
+# resolution.begin_sacrifice/discard_or_sacrifice pick also goes through --
+# five of them (activate_twisted_landscape_fetch/_expedition_map/
+# _candy_trail_sac/_reckless_lackey_sac/_melded_moxite_sac) used to
+# reimplement a manual subset of it instead, which skipped
+# fire_sacrifice_triggers entirely (Gixian Infiltrator silently never saw
+# those sacrifices) AND skipped 506.4 combat removal for creature sites
+# (Reckless Lackey). Regression coverage: every site queues an
+# "on_sacrifice" entry, no exceptions -- kept as a guard against a future
+# site reintroducing its own manual bypass.
 _SACRIFICE_SITES = (
     ("activate_twisted_landscape_fetch", activate_twisted_landscape_fetch),
     ("activate_expedition_map", activate_expedition_map),

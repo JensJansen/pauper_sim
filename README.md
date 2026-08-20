@@ -104,8 +104,10 @@ src/
                              legal/execute pairs.
     _actions_cast_altzone.py Casting from a non-hand zone or non-default cost:
                              alt-cost/Flashback/Escape/Plot/Omen/Prototype.
-    _actions_combat.py       Attack / Assign Blocker / Done blocking / trample
-                             damage-to-player legal/execute pairs.
+    _actions_combat.py       Attack / Assign Blocker / Done blocking, plus the
+                             permanently-masked trample damage-to-player row
+                             (kept registered only for fixed-table shape
+                             stability -- see its own docstring).
     _actions_resolution.py   Generic pending-resolution dispatch: Pass, the shared
                              "Choose: X" by-name dispatch, exact-(name, slot)
                              permanent targeting, pool-mana spend, and every small

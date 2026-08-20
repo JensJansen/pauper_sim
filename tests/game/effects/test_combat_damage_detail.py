@@ -9,7 +9,7 @@ the Phase 3 gap fill from the 2026-08-19 combat review.
 from game import registry
 from game.cards import CardDef, CardType, EffectId
 from game.effects.combat import blocker_lethal_capacities, combat_damage_step, declare_attacker, declare_attackers_step
-from game.effects.state_based import check_state_based_actions
+from game.effects.state_based import check_state_based_actions, destroy_permanent
 from game.resolution import assign_combat_damage_options, begin_assign_combat_damage, execute_assign_combat_damage_option
 from game.state import GameState, Permanent, PlayerState
 
@@ -209,6 +209,94 @@ def test_multi_blocker_non_trample_excess_piles_onto_last_blocker_when_all_are_c
 
     combat_damage_step(state)
     assert state.players[1].life_total == 20, "no trample -- none of the overkill reaches the player"
+
+
+def test_trample_blocker_departing_after_split_recorded_spills_its_share_to_player():
+    # This engine records the free-assignment split during DECLARE_BLOCKERS
+    # but doesn't DEAL it until COMBAT_DAMAGE, a phase later, with a full
+    # priority round in between -- real Magic's own 510.1/510.2 are one
+    # atomic turn-based action with no such gap, so a blocker the split
+    # already earmarked damage for can die to an instant in that window
+    # before combat_damage_step ever runs. Before the fix, that blocker's
+    # earmarked share simply vanished (the attacker dealt less total damage
+    # than its own power, with no rules basis for the loss); with trample,
+    # it must instead flow through to the player (702.19b: damage that can
+    # no longer reach a blocker becomes exactly that).
+    original = _with_filler_keywords({"trample"})
+    try:
+        state = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
+        trampler = Permanent(CardDef("Stomper3", CardType.CREATURE, None, EffectId.FILLER, power=6, toughness=6))
+        trampler.summoning_sick = False
+        b1 = Permanent(CardDef("B1", CardType.CREATURE, None, None, power=1, toughness=2))
+        b2 = Permanent(CardDef("B2", CardType.CREATURE, None, None, power=1, toughness=2))
+        state.players[0].battlefield = [trampler]
+        state.players[1].battlefield = [b1, b2]
+
+        declare_attackers_step(state)
+        declare_attacker(state, trampler)
+        state.blocked_by[trampler] = [b1, b2]
+
+        lethal_by_blocker = blocker_lethal_capacities(state, trampler, [b1, b2])
+        begin_assign_combat_damage(
+            state, trampler, [b1, b2], power=6, has_trample=True,
+            lethal_by_blocker=lethal_by_blocker, on_complete=lambda s: None,
+        )
+        for _ in range(2):
+            execute_assign_combat_damage_option(state, "B1", b1.slot)
+        for _ in range(2):
+            execute_assign_combat_damage_option(state, "B2", b2.slot)
+        assert state.pending_resolution is None
+        assert trampler.flags["combat_damage_split"] == ({b1: 2, b2: 2}, 2), "6 power = 2+2 lethal, 2 excess tramples"
+
+        # The priority round between DECLARE_BLOCKERS and COMBAT_DAMAGE: an
+        # instant kills b1 before damage is dealt.
+        destroy_permanent(state, b1)
+        assert b1 not in state.players[1].battlefield
+
+        combat_damage_step(state)
+        assert b2.damage_marked == 2, "the surviving blocker still takes its own recorded share"
+        assert state.players[1].life_total == 16, (
+            "20 - (2 original trample + 2 orphaned from b1's departure) = 16 -- "
+            "b2's own 2 lands on b2, not the player; the other 4 of the attacker's 6 power must reach the opponent"
+        )
+    finally:
+        registry.EFFECT_REGISTRY[EffectId.FILLER] = original
+
+
+def test_non_trample_blocker_departing_after_split_recorded_does_not_spill():
+    # Same departing-blocker-after-the-split scenario as the trample test
+    # above, but without trample: 509.1h -- the attacker stays "blocked," so
+    # nothing spills to the defending player regardless. The orphaned share
+    # is correctly just never dealt (same as if that blocker had never been
+    # part of the split at all), not routed anywhere.
+    state = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
+    attacker = Permanent(CardDef("Chooser3", CardType.CREATURE, None, EffectId.FILLER, power=4, toughness=4))
+    attacker.summoning_sick = False
+    c1 = Permanent(CardDef("C1", CardType.CREATURE, None, None, power=1, toughness=2))
+    c2 = Permanent(CardDef("C2", CardType.CREATURE, None, None, power=1, toughness=2))
+    state.players[0].battlefield = [attacker]
+    state.players[1].battlefield = [c1, c2]
+
+    declare_attackers_step(state)
+    declare_attacker(state, attacker)
+    state.blocked_by[attacker] = [c1, c2]
+
+    lethal_by_blocker = blocker_lethal_capacities(state, attacker, [c1, c2])
+    begin_assign_combat_damage(
+        state, attacker, [c1, c2], power=4, has_trample=False,
+        lethal_by_blocker=lethal_by_blocker, on_complete=lambda s: None,
+    )
+    for _ in range(2):
+        execute_assign_combat_damage_option(state, "C1", c1.slot)
+    for _ in range(2):
+        execute_assign_combat_damage_option(state, "C2", c2.slot)
+    assert state.pending_resolution is None
+    assert attacker.flags["combat_damage_split"] == ({c1: 2, c2: 2}, 0)
+
+    destroy_permanent(state, c1)
+    combat_damage_step(state)
+    assert c2.damage_marked == 2
+    assert state.players[1].life_total == 20, "no trample -- c1's orphaned 2 is dropped, never spilled to the player"
 
 
 def test_lethal_calculation_uses_aura_modified_toughness():

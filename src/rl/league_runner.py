@@ -117,9 +117,14 @@ PPO_DEFAULTS = {
     # 3e-4 and was deleted with run_pretrain.py (2026-08-17), so this is now
     # the only lr in the system.
     #
-    # Resuming a league trained at 3e-4 (checkpoints/4_deck_subleague_test)
-    # now picks this up and silently changes its optimizer mid-run. Pin
-    # "ppo": {"lr": 0.0003} in that league's config if it is ever continued.
+    # Resuming a league whose live.pt already carries optimizer state:
+    # load_deck_checkpoint's optimizer restore (checkpoint.
+    # load_optimizer_if_present -> optimizer.load_state_dict()) overwrites
+    # this freshly-constructed Adam's lr with whatever the checkpoint saved,
+    # so an existing league (e.g. checkpoints/4_deck_subleague_test, trained
+    # at 3e-4) silently KEEPS its old lr on resume -- this 2e-4 default has
+    # no effect on it until that checkpoint's "optimizer" key is gone (a
+    # migrated/legacy live.pt, or a fresh Adam).
     "lr": 2e-4,
     # Minibatch ramp, in EPISODES per minibatch -- NOT transitions.
     #
@@ -454,6 +459,18 @@ def _run_session(n_iterations, games_per_iteration, snapshot_every, executor, n_
         net.to(device)
         optimizer = torch.optim.Adam([p for p in net.parameters() if p.requires_grad], lr=hp["lr"])
         ckpt_io.load_deck_checkpoint(live_path, net, optimizer)  # no-op if live_path doesn't exist yet; optimizer load is migration-guarded (a migrated live.pt dropping "optimizer" -> fresh Adam)
+        resumed_lr = optimizer.param_groups[0]["lr"]
+        if resumed_lr != hp["lr"]:
+            # A resumed checkpoint's own saved Adam state wins over hp["lr"]
+            # (optimizer.load_state_dict above restores param_groups verbatim,
+            # including lr) -- this is usually a no-op since a league resumes
+            # under the same config it started with, but a config-wide lr
+            # change (e.g. the 2e-4 adoption, 2026-08-15) can silently leave
+            # an already-checkpointed league behind. Print-only: the mismatch
+            # might be exactly what's wanted (e.g. a checkpoint intentionally
+            # diverged from its config), so this makes it visible instead of
+            # silently overriding it either way.
+            print(f"  [{name}] resumed optimizer lr={resumed_lr} differs from config lr={hp['lr']} (checkpoint's lr wins)")
         live_nets[name] = net
         optimizers[name] = optimizer
 
@@ -481,6 +498,10 @@ def _run_session(n_iterations, games_per_iteration, snapshot_every, executor, n_
         mopt = torch.optim.Adam([p for p in mnet.parameters() if p.requires_grad], lr=hp["mulligan_lr"])
         mull_path = f"{league_dir}/{name}/mulligan.pt"
         ckpt_io.load_deck_checkpoint(mull_path, mnet, mopt)  # same migration-guarded optimizer load as the live-net path above
+        resumed_mull_lr = mopt.param_groups[0]["lr"]
+        if resumed_mull_lr != hp["mulligan_lr"]:
+            # Same resumed-optimizer-lr-wins note as the live-net path above.
+            print(f"  [{name}] resumed mulligan optimizer lr={resumed_mull_lr} differs from config lr={hp['mulligan_lr']} (checkpoint's lr wins)")
         mulligan_nets[name] = mnet
         mulligan_optimizers[name] = mopt
 

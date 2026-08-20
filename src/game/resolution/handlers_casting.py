@@ -172,8 +172,8 @@ def execute_choose_cast_mode_option(state, mode_index):
 
 
 def begin_choose_cast_x(state, base_cost, max_x, on_complete):
-    """An X-cost spell's own X value (601.2f: determined before the total
-    cost is paid) -- shared "X=0".."X=10" drl_env buttons, capped per-card/
+    """An X-cost spell's own X value (601.2b: determined before 601.2f's
+    total-cost step) -- shared "X=0".."X=10" drl_env buttons, capped per-card/
     mode by max_x, instead of a per-(mode,X) fixed-table row. base_cost is
     this mode's own cost before X's generic is added; each shared button
     computes base_cost+n itself to check affordability -- the exact

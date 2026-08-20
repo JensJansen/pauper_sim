@@ -90,7 +90,7 @@ def begin_assign_combat_damage(state, attacker, blockers, power, has_trample, le
     can no longer legally put on any blocker -- every blocker in the split
     already at its own cap -- is a forced, automatic outcome, never an
     agent choice: it spills to the defending player if the attacker has
-    trample (702.19e/510.1c), or piles onto the last blocker otherwise (see
+    trample (702.19b/510.1c), or piles onto the last blocker otherwise (see
     _autoresolve_if_no_choices_left's own docstring for that non-trample
     case). The finished split is stashed on attacker.flags[
     'combat_damage_split'] = ({blocker: amount}, opponent_amount) for
@@ -116,7 +116,7 @@ def _autoresolve_if_no_choices_left(state):
     lethal_by_blocker cap, nothing about where the rest of this attacker's
     power goes is a real decision anymore -- so it's applied directly
     instead of asking the agent to spend the remaining points one at a
-    time. Trample: the remainder spills to the defending player (702.19e).
+    time. Trample: the remainder spills to the defending player (702.19b).
 
     RULES EXCEPTION (owner-approved 2026-08-20), non-trample case: real
     Magic still requires that leftover be assigned to a blocking creature

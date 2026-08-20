@@ -81,7 +81,7 @@ from ..effects.casting import (
 )
 from ..effects.stack import push_ability_to_stack, push_to_stack
 from ..effects.shared import (
-    affinity_reduction, discard_from_hand_to_graveyard, find_and_remove_by_name, find_to_hand, fire_sacrifice_triggers,
+    affinity_reduction, discard_from_hand_to_graveyard, find_and_remove_by_name, find_to_hand,
  shuffle_library,
 )
 from ..effects.state_based import check_state_based_actions, sacrifice_to_graveyard
@@ -254,13 +254,7 @@ def activate_twisted_landscape_fetch(state, permanent):
     goes on the stack and resolves after a priority window -- same shape as
     Expedition Map, except the fetch lands on the battlefield tapped
     (force_tapped) rather than in hand."""
-    state.battlefield.remove(permanent)
-    state.move_card(permanent.card_def, state.graveyard)
-    state.log_event(
-        "zone_move", permanent=(permanent.card_def.name, permanent.slot), from_zone="battlefield",
-        to_zone="graveyard", reason="sacrifice",
-    )
-    fire_sacrifice_triggers(state, state.active_idx, permanent.card_def)  # Gixian Infiltrator
+    sacrifice_to_graveyard(state, permanent)  # queues the dies-trigger (Gixian Infiltrator); Twisted Landscape has no ltb_trigger of its own
 
     def _effect(st):
         def _on_fetch(st, land_name):
@@ -296,13 +290,7 @@ def activate_expedition_map(state, permanent):
     Caller has already paid the {1} cost. Faithful timing: the {T} and the
     sacrifice are COSTS (paid now); the search is the effect, so it goes on
     the stack and resolves (opening the search) after a priority window."""
-    state.battlefield.remove(permanent)
-    state.move_card(permanent.card_def, state.graveyard)
-    state.log_event(
-        "zone_move", permanent=(permanent.card_def.name, permanent.slot), from_zone="battlefield",
-        to_zone="graveyard", reason="sacrifice",
-    )
-    fire_sacrifice_triggers(state, state.active_idx, permanent.card_def)  # Gixian Infiltrator
+    sacrifice_to_graveyard(state, permanent)  # queues the dies-trigger (Gixian Infiltrator); Expedition Map has no ltb_trigger of its own
     push_ability_to_stack(state, permanent.card_def, lambda st: begin_search_fetch(st, lambda c: c.card_type == CardType.LAND, find_to_hand))
 
 
@@ -320,13 +308,7 @@ def activate_candy_trail_sac(state, permanent):
     {T} and the sacrifice are COSTS (paid now); gaining 3 and drawing are
     the effect, so they go on the stack and resolve after a priority
     window."""
-    state.battlefield.remove(permanent)
-    state.move_card(permanent.card_def, state.graveyard)
-    state.log_event(
-        "zone_move", permanent=(permanent.card_def.name, permanent.slot), from_zone="battlefield",
-        to_zone="graveyard", reason="sacrifice",
-    )
-    fire_sacrifice_triggers(state, state.active_idx, permanent.card_def)  # Gixian Infiltrator
+    sacrifice_to_graveyard(state, permanent)  # queues the dies-trigger (Gixian Infiltrator); Candy Trail has no ltb_trigger of its own
 
     def _effect(state):
         gain_life(state, 3)
