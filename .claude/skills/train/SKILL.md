@@ -161,12 +161,31 @@ For each batch:
      case; a config's own `snapshot_every_games` takes precedence when one applies.
      **Compute ramp**: `W = 1` (sequential CPU) for the shakeout and until one league
      batch giving each deck ≥ ~15 games has run clean; after that use `W = 6` (parallel
-     collection) — the throughput sweet spot. **NEVER use the GPU** — do NOT pass
-     `--gpu-threshold` (leave it unset so every update stays on CPU). Owner directive:
-     treat GPU as axiomatically slower at this model size — the per-update net +
-     optimizer CPU↔GPU round-trip costs more than the tiny matmuls save. Not to be used
-     until the owner's own benchmark says otherwise. Keep small batches sequential-CPU —
-     easier to diagnose.
+     collection) — the throughput sweet spot. **Pass `--device cuda`** for any real
+     league batch. Measured 2026-08-19 on an RTX 5060 Ti, two arms from identical
+     checkpoints with the same seed, run sequentially through the real
+     `run_league.py` (768 games each): CPU 829.8s vs GPU 330.5s — **2.51x
+     end-to-end**, from `ppo_update` alone running 3.37x faster (708.5s -> 210.0s).
+     Collection is unchanged (121.1s vs 120.2s) because it is CPU-bound in both
+     arms: rollout inference is batch-of-1 per decision, spread across the worker
+     processes, and never touches the training device.
+
+     Do NOT try to move collection onto the GPU — measured 2026-08-19, batch-of-1
+     inference at realistic token counts is 1.8-2.6x SLOWER there (CPU
+     1.1-1.6ms vs GPU a flat ~2.9ms, which is launch overhead: the model is far
+     too small to amortise it). That is single-process; six collect workers
+     sharing one GPU, each with its own CUDA context, would be worse again. The
+     rule this leaves is simple — BATCHED work (ppo_update, the mulligan update)
+     belongs on the GPU, per-decision work stays on CPU.
+
+     This REPLACES the earlier "never use the GPU" directive, which reasoned that
+     the per-update net + optimizer CPU<->GPU round-trip would cost more than the
+     tiny matmuls save. The round-trip is real, but the update is ~85% of
+     wall-clock and wins anyway. That directive set its own release condition — a
+     benchmark saying otherwise — and this is it.
+
+     Keep small batches sequential-CPU (`W = 1`, no `--device`) — easier to
+     diagnose, and a shakeout is too short for the update to dominate.
 2. **Launch harness-tracked, logged to a file**, so completion/errors auto-notify:
    run with `run_in_background: true`, as
    `python -u <cmd> > ../logs/<phase>_<batch>.log 2>&1; grep -q "session .* done"
