@@ -413,14 +413,22 @@ decks but the card *index* mapping:
   softmax**, so a masked-categorical sample over the true legal set is
   correct.
 - **Pregame mulligan model (per-deck, `rl/mulligan.py`)** — a separate small
-  head reading its own deck's encoder embeddings, owning every pregame
-  keep/mulligan/bottom decision. It holds that encoder by plain reference, not
-  as a registered child, so its REINFORCE optimizer never steps the encoder
-  PPO owns (one near-bandit sample per game should not be steering a 117k-param
-  perception encoder that ~100 in-game decisions per game are also steering). A `SeatAgent` (`rl/agent.py`) routes pregame decisions to it and
-  everything else to the `DeckNetwork`. It trains by its own REINFORCE with a
-  direct whole-game reward, decoupled from the main PPO update — a mulligan is a
-  near-bandit: one pregame choice, the game's outcome as its number.
+  head owning every pregame keep/mulligan/bottom decision. It reads the SAME
+  structured, self-attended hand representation the main policy sees at every
+  in-game decision — its own deck's `SetTransformer` run over
+  `rl.features.build_token_set`'s full per-card token set (mana production,
+  card type, …), not a bare card-identity lookup (a 2026-08-20 fix: the
+  original mean-pooled-embedding version carried no card-type signal at all
+  and, confirmed by a log audit, kept 0-land hands half the time). It holds
+  that encoder by plain reference, not as a registered child, and wraps its
+  own forward pass in `torch.no_grad()`, so its REINFORCE optimizer never
+  steps the encoder PPO owns (one near-bandit sample per game should not be
+  steering a 117k-param perception encoder that ~100 in-game decisions per
+  game are also steering). A `SeatAgent` (`rl/agent.py`) routes pregame
+  decisions to it and everything else to the `DeckNetwork`. It trains by its
+  own REINFORCE with a direct whole-game reward, decoupled from the main PPO
+  update — a mulligan is a near-bandit: one pregame choice, the game's outcome
+  as its number.
 
 Training is **PPO self-play** (`rl/train.py`'s rollout game loop, `rl/ppo.py`'s
 update math). Mirror matches pool both seats into one buffer/update;
@@ -801,8 +809,11 @@ wired only through `--matchup` mode.)
   they remain raw diagnostics for logging/viz (`mana_burnt_this_turn_single_pip`,
   a filtered subset of the latter, does feed reward — see dense mana-burn
   shaping below). The **mulligan model** trains
-  on its own reward (`rl/mulligan.py`): win payout minus a convex
-  (quadratic) per-mulligan penalty, on transitions accumulated across
+  on its own reward (`rl/mulligan.py`): WIN_REWARD if the seat won, 0
+  otherwise — no per-mulligan-count penalty (removed 2026-08-21; see
+  `rl/mulligan.py`'s own docstring for why leaving it in, even at 0, would
+  have mismatched what a stratified/MulliganZeroLands-twin bootstrap run
+  had actually been trained under) — on transitions accumulated across
   several league iterations per REINFORCE update (not one iteration's worth
   each time) since 2026-08-06 — see `rl.league_runner._run_session`'s
   `MULLIGAN_UPDATE_EVERY`.

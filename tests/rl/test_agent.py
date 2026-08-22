@@ -64,6 +64,43 @@ def test_always_keep_refuses_mulligan_bottom():
 
 
 @pytest.mark.slow
+def test_random_mulligan_routes_mulligan_decision_and_records_nothing():
+    # RandomMulligan is a simple (non-network) decider too -- same routing/
+    # non-recording contract as AlwaysKeep, just via the "not a MulliganNet"
+    # dispatch check rather than an AlwaysKeep-specific isinstance.
+    from rl.agent import RandomMulligan
+    _decklist, vocab, state = _mulligan_decision_state()
+    seat = state.active_idx
+    rm_agent = SeatAgent(main=None, mulligan=RandomMulligan(random.Random(0)), deck_ctx=(vocab, []))
+    dr = rm_agent.decide(state, seat, horizon=120, device="cpu")
+    assert callable(dr.executor) and dr.ppo_entry is None and dr.mull_entry is None and not dr.is_pass
+
+
+@pytest.mark.slow
+def test_mulligan_zero_lands_mulligans_only_a_0land_hand():
+    # MulliganZeroLands: mulligans a 0-land hand, keeps everything else --
+    # same routing/non-recording contract as AlwaysKeep/RandomMulligan.
+    from rl.agent import MulliganZeroLands
+    _decklist, vocab, state = _mulligan_decision_state()
+    seat = state.active_idx
+    mzl_agent = SeatAgent(main=None, mulligan=MulliganZeroLands(random.Random(0)), deck_ctx=(vocab, []))
+    dr = mzl_agent.decide(state, seat, horizon=120, device="cpu")
+    assert callable(dr.executor) and dr.ppo_entry is None and dr.mull_entry is None and not dr.is_pass
+
+    # Whatever the dealt hand happens to be, the DECISION taken must match
+    # the land-count rule -- run the executor and read it off mulligans_taken
+    # (only execute_mulligan_take increments it; keep never does), rather
+    # than trying to introspect the returned lambda.
+    has_land = any(c.card_type.name == "LAND" for c in state.hand)
+    mulligans_before = state.mulligans_taken
+    dr.executor()
+    if has_land:
+        assert state.mulligans_taken == mulligans_before, "a hand with a land must be kept"
+    else:
+        assert state.mulligans_taken == mulligans_before + 1, "a 0-land hand must be mulliganed"
+
+
+@pytest.mark.slow
 def test_mulligan_net_branch_routes_and_records():
     # MulliganNet branch: routes to the net and records a 'decision' transition.
     _decklist, vocab, state = _mulligan_decision_state()

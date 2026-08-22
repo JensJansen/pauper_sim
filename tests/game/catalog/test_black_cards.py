@@ -230,17 +230,34 @@ def test_blood_fountain_returns_up_to_two_targets_with_partial_fizzle():
     creature cards from your graveyard to hand -- both targets locked at
     ACTIVATION (before the ability goes on the stack), and 608.2c partial
     fizzle: if one target leaves the graveyard in response, the other
-    still comes back."""
-    state = GameState(on_the_play=True)
+    still comes back.
+
+    Also regression-covers the webapp-visualizer bug where this {T} cost
+    was paid (permanent.tapped set) but never logged -- missed by the
+    earlier Wellwisher-class fix because the permanent sacrifices itself on
+    the very next line, so there was never a rendered frame showing the gap
+    (masked, not fixed). Now routed through tap_for_cost (game.effects.
+    shared), same as every other non-mana {T}-cost site; the tap event
+    fires BEFORE the sacrifice's own zone_move, tapping first then leaving
+    the battlefield, same order the real cost pays in."""
+    state = GameState(on_the_play=True, event_log=[])
     fountain = Permanent(CardDef(
         "Blood Fountain", CardType.ARTIFACT, {"B": 1}, EffectId.BLOOD_FOUNTAIN, sac_ability_cost={"generic": 3, "B": 1},
     ))
+    fountain.slot = 1
     bear = state.new_instance(CardDef("Bear", CardType.CREATURE, {"G": 1}, EffectId.FILLER, power=1, toughness=1))
     wolf = state.new_instance(CardDef("Wolf", CardType.CREATURE, {"G": 1}, EffectId.FILLER, power=2, toughness=2))
     state.battlefield = [fountain]
     state.graveyard = [bear, wolf]
     blood_fountain_return(state, fountain)
     assert state.battlefield == []  # sacrificed -- a cost, paid immediately on activation
+    tap_idx = next(i for i, e in enumerate(state.event_log) if e["kind"] == "tap_or_untap")
+    sac_idx = next(i for i, e in enumerate(state.event_log) if e["kind"] == "zone_move" and e.get("from_zone") == "battlefield")
+    assert tap_idx < sac_idx  # tapping first, THEN sacrificing
+    tap_event = state.event_log[tap_idx]
+    assert tap_event["permanent"] == ["Blood Fountain", 1]
+    assert tap_event["now_tapped"] is True
+    assert tap_event["owner_idx"] == state.active_idx
     assert state.pending_resolution["kind"] == "choose_graveyard_card"
     resolution.execute_choose_graveyard_card_option(state, bear)
     resolution.execute_choose_graveyard_card_option(state, wolf)

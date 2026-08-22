@@ -27,22 +27,34 @@ import pytest
 
 import game as _game
 from game.state import GameState, PlayerState
-from rl.arch import SetTransformer
-from rl.features import CardVocab
-from rl.mulligan import HAND, MULLIGAN_COST, MulliganNet, decide, mulligan_reward, update
+from rl.arch import SetTransformer, pad_token_batch
+from rl.features import CardVocab, build_token_set
+from rl.mulligan import HAND, MulliganNet, decide, mulligan_reward, update
 
 
 @pytest.mark.slow
 def test_mulligan_reward_shape():
-    # reward shape: big win, CONVEX per-mulligan cost, negative on mull-heavy loss
-    assert abs(mulligan_reward(True, 0) - 1.0) < 1e-9
-    assert abs(mulligan_reward(True, 3) - (1.0 - MULLIGAN_COST * 9)) < 1e-9   # quadratic penalty
-    assert mulligan_reward(False, 3) < 0                                      # loss-after-mulligans is negative
-    assert abs(mulligan_reward(False, 0)) < 1e-9                              # kept-and-lost is neutral
-    assert mulligan_reward(True, 7) >= 0                                      # a win survives even at the cap
-    # convexity: the Nth mulligan must hurt strictly MORE than the (N-1)th
-    marg = [mulligan_reward(False, m) - mulligan_reward(False, m + 1) for m in range(7)]
-    assert all(marg[i] < marg[i + 1] for i in range(len(marg) - 1)), marg
+    # reward shape (2026-08-21: no per-mulligan-count penalty -- see rl.mulligan's
+    # own docstring for why it was removed rather than left zeroed): win pays
+    # WIN_REWARD regardless of how many mulligans it took to get there, a loss
+    # is always exactly 0 -- mulliganing is discouraged only by its own effect
+    # on win probability, never by a flat count-based cost.
+    assert abs(mulligan_reward(True) - 1.0) < 1e-9
+    assert abs(mulligan_reward(False)) < 1e-9
+
+
+def _hand_tokens(decklist, vocab, names, rng, k=7):
+    """A real (state, tokens) pair for a random k-card hand -- build_token_set's
+    real output, not a hand-rolled stand-in, since that's what decide()/update()
+    actually record and replay post-2026-08-20 (see rl.mulligan's module
+    docstring: the fix was giving the net this SAME structured representation
+    instead of a bare mean-pooled identity embedding)."""
+    p0 = PlayerState(on_the_play=True)
+    p1 = PlayerState(on_the_play=False)
+    p0.hand = [_game.CARD_DEFS[rng.choice(names)] for _ in range(k)]
+    state = GameState(on_the_play=True, players=[p0, p1], event_log=None)
+    state.active_idx = 0
+    return build_token_set(state, 0, vocab)
 
 
 @pytest.mark.slow
@@ -53,8 +65,6 @@ def test_mulligan_net_shapes_and_reinforce_learning():
     decklist = _game.parse_decklist_file("../data/mono_blue_terror.txt")
     vocab = CardVocab([decklist])
     shared = SetTransformer(vocab.size, d_model=16, n_heads=2, n_layers=2, dim_feedforward=32)
-    for p in shared.parameters():
-        p.requires_grad = False
     # Re-seed HERE, immediately before the net whose init the assertions below
     # actually depend on. Seeding only at the top couples this test to how many
     # random draws SetTransformer happens to consume, which is a function of
@@ -68,18 +78,27 @@ def test_mulligan_net_shapes_and_reinforce_learning():
     names = sorted({n for n, *_ in decklist})
     rng = random.Random(0)
 
-    def rand_hand(k=7):
-        return [vocab.index(rng.choice(names)) for _ in range(k)]
-
     # heads produce the right shapes and respect the bottom mask
-    hi = torch.tensor([rand_hand()], dtype=torch.long)
+    tokens = _hand_tokens(decklist, vocab, names, rng)
+    vi, feat, kpm, _identities = pad_token_batch([tokens])
+    side = feat[:, :, -1]
+    mine_summary, token_reps = net.encode(vi, feat, kpm, side)
     sc = torch.tensor([[0.0, 1.0]], dtype=torch.float32)
-    logits, value = net.decision(hi, sc)
+    logits, value = net.decision(mine_summary, sc)
     assert logits.shape == (1, 2) and value.shape == (1,)
-    ci = torch.tensor([[vocab.index(names[0]), vocab.index(names[1]), 0]], dtype=torch.long)
+    cand_reps = token_reps[:, [0, 1, 0], :]  # row 2 is a dummy -- masked below, same as a padded vocab index would be
     cm = torch.tensor([[True, True, False]], dtype=torch.bool)
-    scores, _ = net.bottom(hi, sc, ci, cm)
+    scores, _ = net.bottom(mine_summary, sc, cand_reps, cm)
     assert scores.shape == (1, 3) and scores[0, 2].item() < -1e7  # padded candidate masked out
+
+    # encoder boundary: MulliganNet.encode wraps the shared encoder forward in
+    # no_grad specifically so this net's own REINFORCE optimizer can never
+    # steer it (see the class docstring) -- backward above must therefore
+    # leave every one of the encoder's own params ungrated (nothing built a
+    # grad_fn through them at all, not just "grad happens to be zero").
+    (logits.sum() + value.sum() + scores.sum()).backward()
+    assert all(p.grad is None for p in shared.parameters()), (
+        "a mulligan forward pass must never populate the shared encoder's .grad")
 
     # REINFORCE direction: ONE update step, not a convergence threshold after
     # hundreds (the old version of this test ran 300 iterations x 32-sample
@@ -92,7 +111,7 @@ def test_mulligan_net_shapes_and_reinforce_learning():
     # can't interfere with each other's gradient step. MulliganNet has no
     # dropout/stochastic layers (Linear+Tanh only), so decision() is a pure
     # deterministic function of the weights -- no sampling needed to read it.
-    probe_hand, probe_scalars = rand_hand(), [0.0, 1.0]
+    probe_tokens, probe_scalars = _hand_tokens(decklist, vocab, names, rng), [0.0, 1.0]
 
     def _fresh_net():
         torch.manual_seed(0)  # same init every time -- see the re-seed comment above
@@ -100,7 +119,9 @@ def test_mulligan_net_shapes_and_reinforce_learning():
 
     def _mull_prob(n):
         with torch.inference_mode():
-            lg, _ = n.decision(torch.tensor([probe_hand]), torch.tensor([probe_scalars]))
+            vi, feat, kpm, _identities = pad_token_batch([probe_tokens])
+            mine_summary, _token_reps = n.encode(vi, feat, kpm, feat[:, :, -1])
+            lg, _ = n.decision(mine_summary, torch.tensor([probe_scalars]))
             return torch.softmax(lg, -1)[0, 1].item()
 
     # Reward favors action=1 (mulligan) -> P(mulligan) on the same probe hand
@@ -108,7 +129,7 @@ def test_mulligan_net_shapes_and_reinforce_learning():
     net_up = _fresh_net()
     opt_up = torch.optim.Adam([p for p in net_up.parameters() if p.requires_grad], lr=1e-2)
     before_up = _mull_prob(net_up)
-    update(net_up, opt_up, [["decision", probe_hand, probe_scalars, True, 1, mulligan_reward(True, mulligans_taken=1)]])
+    update(net_up, opt_up, [["decision", probe_tokens, probe_scalars, True, 1, mulligan_reward(True)]])
     after_up = _mull_prob(net_up)
     assert after_up > before_up, (
         f"one REINFORCE step with a positive-advantage reward for action=1 must raise "
@@ -119,11 +140,74 @@ def test_mulligan_net_shapes_and_reinforce_learning():
     net_down = _fresh_net()
     opt_down = torch.optim.Adam([p for p in net_down.parameters() if p.requires_grad], lr=1e-2)
     before_down = _mull_prob(net_down)
-    update(net_down, opt_down, [["decision", probe_hand, probe_scalars, True, 0, mulligan_reward(True, mulligans_taken=0)]])
+    update(net_down, opt_down, [["decision", probe_tokens, probe_scalars, True, 0, mulligan_reward(True)]])
     after_down = _mull_prob(net_down)
     assert after_down < before_down, (
         f"one REINFORCE step with a positive-advantage reward for action=0 must lower "
         f"P(mulligan): {before_down:.4f} -> {after_down:.4f}")
+
+
+@pytest.mark.slow
+def test_mulligan_net_bottom_branch_reinforce_direction():
+    """update()'s rewritten 'bottom' transition branch (torch.gather over
+    token_reps using recorded cand_pos indices -- replacing the old plain
+    vocab-index gather) had zero test coverage: every other REINFORCE check
+    in this file only ever feeds update() 'decision'-kind transitions.
+    Exercises it end to end with a REAL recorded transition (decide()'s own
+    output, not a hand-rolled stand-in) and checks the same
+    direction-not-convergence property test_mulligan_net_shapes_and_
+    reinforce_learning checks for the 'decision' branch: one REINFORCE step
+    with a positive-advantage reward for a candidate must raise that
+    candidate's own probability."""
+    torch.manual_seed(0)
+    random.seed(0)
+
+    decklist = _game.parse_decklist_file("../data/mono_blue_terror.txt")
+    vocab = CardVocab([decklist])
+    shared = SetTransformer(vocab.size, d_model=16, n_heads=2, n_layers=2, dim_feedforward=32)
+    torch.manual_seed(0)
+    net = MulliganNet(shared, hidden=32)
+
+    names = sorted({n for n, *_ in decklist})
+    p0, p1 = PlayerState(on_the_play=True), PlayerState(on_the_play=False)
+    p0.hand = [_game.CARD_DEFS[n] for n in names[:3]]  # 3 unique names -- a real bottom choice
+    state = GameState(on_the_play=True, players=[p0, p1], event_log=None)
+    state.active_idx = 0
+    state.pending_resolution = {"kind": "mulligan_bottom", "remaining": 1}
+
+    sink = []
+    decide(net, vocab, state, seat=0, record=sink.append, greedy=True)
+    assert len(sink) == 1 and sink[0][0] == "bottom"
+    _, tokens, scalars, cand_pos, _chosen, _reward = sink[0]
+    assert len(cand_pos) == 3  # one row per distinct hand name
+
+    def _fresh_net():
+        torch.manual_seed(0)  # same init every time -- see the re-seed comment above
+        return MulliganNet(shared, hidden=32)
+
+    def _bottom_probs(n):
+        with torch.inference_mode():
+            vi, feat, kpm, _identities = pad_token_batch([tokens])
+            mine_summary, token_reps = n.encode(vi, feat, kpm, feat[:, :, -1])
+            sc = torch.tensor([scalars], dtype=torch.float32)
+            cand_reps = token_reps[:, cand_pos, :]
+            cm = torch.ones((1, len(cand_pos)), dtype=torch.bool)
+            scores, _ = n.bottom(mine_summary, sc, cand_reps, cm)
+            return torch.softmax(scores, -1)[0]
+
+    # Reward a fixed target candidate (index 0 into cand_pos, not whatever
+    # decide() happened to greedily choose) -- P(target) on the same probe
+    # hand must go UP after one step feeding this exact 'bottom' transition
+    # (recorded token set + cand_pos) through update().
+    target = 0
+    net_up = _fresh_net()
+    opt_up = torch.optim.Adam([p for p in net_up.parameters() if p.requires_grad], lr=1e-2)
+    before = _bottom_probs(net_up)[target].item()
+    update(net_up, opt_up, [["bottom", tokens, scalars, cand_pos, target, 1.0]])
+    after = _bottom_probs(net_up)[target].item()
+    assert after > before, (
+        f"one REINFORCE step on update()'s 'bottom' branch with a positive-advantage "
+        f"reward for candidate {target} must raise its probability: {before:.4f} -> {after:.4f}")
 
 
 def _net_and_vocab(decklist_path="../data/mono_blue_terror.txt"):

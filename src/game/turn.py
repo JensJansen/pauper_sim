@@ -7,6 +7,7 @@ any priority) and Cleanup (priority only if something triggers there)."""
 import enum
 
 from . import registry
+from .effects.shared import set_tapped
 from .effects.combat import (
     attackers_needing_damage_assignment, blocker_lethal_capacities, combat_damage_step, creature_block_eligible,
     declare_attackers_step, enforce_menace, menace_block_incomplete,
@@ -260,15 +261,26 @@ MINIMAL_PHASES = (Phase.UNTAP, Phase.DRAW, Phase.MAIN1, Phase.END)
 
 
 def untap_step(state):
-    untapped = [(p.card_def.name, p.slot) for p in state.battlefield if p.tapped]
+    # `untapped` only records a permanent once we know its FINAL tapped state
+    # for this step (i.e. after the skip_next_untap branch below has already
+    # had its say) -- appending up front, before that branch can re-tap a
+    # permanent, is what used to let this event claim a permanent untapped
+    # when it actually stayed tapped.
+    untapped = []
     for permanent in state.battlefield:
+        was_tapped = permanent.tapped
         permanent.tapped = False
         permanent.summoning_sick = False
         permanent.flags.pop("used_this_turn", None)  # Barrels of Blasting Jelly
         # "doesn't untap during its controller's next untap step" (Sleep of
         # the Dead): skip this permanent's untap ONCE, consuming the flag.
+        # Logged individually (set_tapped) instead of folded into `untapped`
+        # below -- it never actually became untapped this step, so it has no
+        # business in a list of things that did.
         if permanent.flags.pop("skip_next_untap", False):
-            permanent.tapped = True
+            set_tapped(state, permanent, True, reason="skip_next_untap")
+        elif was_tapped:
+            untapped.append((permanent.card_def.name, permanent.slot))
     # This step only handles untapping -- mana pools empty via
     # _empty_mana_pools at every phase boundary (including into this step),
     # not here.
@@ -839,7 +851,7 @@ def game_coroutine(state, horizon=None, combat_enabled=False):
 
 def run_multiplayer_game(decklists, rng, starting_player_idx, choose_action,
                           horizon=None, combat_enabled=False, event_log=None, on_mana_burn=None,
-                          on_single_pip_burn=None):
+                          on_single_pip_burn=None, stratify=None):
     """N-player entry point. Full
     sequential turns -- one player's whole turn runs to completion (the
     same run_turn/choose_action(state) contract run_turn itself uses; a
@@ -870,8 +882,11 @@ def run_multiplayer_game(decklists, rng, starting_player_idx, choose_action,
     state.on_mana_burn (see GameState's own docstring on it) rather than
     threaded through game_coroutine/_run_turn_gen -- only _empty_mana_pools
     ever reads it. on_single_pip_burn: same threading, onto state.
-    on_single_pip_burn (see its own docstring)."""
-    state = new_multiplayer_game_state(decklists, starting_player_idx, rng, event_log=event_log)
+    on_single_pip_burn (see its own docstring). stratify: passed straight
+    through to new_multiplayer_game_state -- see its own docstring; None
+    (default) leaves opening-hand dealing exactly as before this param
+    existed."""
+    state = new_multiplayer_game_state(decklists, starting_player_idx, rng, event_log=event_log, stratify=stratify)
     state.on_mana_burn = on_mana_burn
     state.on_single_pip_burn = on_single_pip_burn
     # Drive the game as a coroutine (game_coroutine) -- choose_action(state)

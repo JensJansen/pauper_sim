@@ -383,8 +383,18 @@ def test_abandon_attachments():
 
 
 def test_sleep_of_the_dead_tap_and_skip_next_untap():
-    """Sleep of the Dead main cast: tap target + it skips its next untap."""
-    state = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
+    """Sleep of the Dead main cast: tap target + it skips its next untap.
+    Also regression-covers two webapp-visualizer bugs found alongside
+    Wellwisher's: (1) the tap itself was never logged at all (a spell EFFECT
+    tapping a target, as opposed to an activation cost) -- now routed
+    through set_tapped (game.effects.shared), which also stamps an explicit
+    owner_idx so the replay viewer resolves the OPPONENT's permanent here,
+    not the caster's, even though the caster (player 0) is state.active_idx
+    at cast time; (2) untap_step's "untapped" summary event used to be built
+    BEFORE the skip_next_untap re-tap could run, so it could still list a
+    permanent that actually stayed tapped -- and the re-tap itself used to
+    log nothing at all."""
+    state = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)], event_log=[])
     victim = Permanent(CardDef("Victim", CardType.CREATURE, None, EffectId.FILLER, power=1, toughness=1))
     victim.slot = 1
     state.players[1].battlefield = [victim]
@@ -395,10 +405,25 @@ def test_sleep_of_the_dead_tap_and_skip_next_untap():
     execute_choose_any_target_creature(state, 1, "Victim", 1)
     resolve_top_of_stack(state)
     assert victim.tapped and victim.flags.get("skip_next_untap")
+    tap_events = [e for e in state.event_log if e["kind"] == "tap_or_untap"]
+    assert len(tap_events) == 1
+    assert tap_events[0]["permanent"] == ["Victim", 1]
+    assert tap_events[0]["now_tapped"] is True
+    assert tap_events[0]["owner_idx"] == 1  # the victim's controller, NOT the caster (0)
+
     state.active_idx = 1
     state.turn_number = 2
+    state.event_log = []
     untap_step(state)  # its controller's untap -- stays tapped, skip consumed
     assert victim.tapped and not victim.flags.get("skip_next_untap")
+    untap_step_events = [e for e in state.event_log if e["kind"] == "untap_step"]
+    assert not untap_step_events or ["Victim", 1] not in untap_step_events[0]["untapped"]
+    re_tap_events = [e for e in state.event_log if e["kind"] == "tap_or_untap"]
+    assert len(re_tap_events) == 1
+    assert re_tap_events[0]["permanent"] == ["Victim", 1]
+    assert re_tap_events[0]["now_tapped"] is True
+    assert re_tap_events[0]["owner_idx"] == 1
+    assert re_tap_events[0]["reason"] == "skip_next_untap"
 
 
 def test_sleep_of_the_dead_escape():
@@ -478,8 +503,13 @@ def test_sewer_cam_untap_direction_discounts_mana_dork_tag():
     (tapping it for {G} first costs nothing, since it's about to be untapped
     again regardless), so its tagged pip is discounted
     (mana.discount_departing_source) -- mirrors Quirion Ranger's own version
-    of this (test_quirion_ranger_untapping_a_mana_dork_discounts_its_tag)."""
-    state = GameState(on_the_play=True)
+    of this (test_quirion_ranger_untapping_a_mana_dork_discounts_its_tag).
+
+    Also regression-covers the same missing-owner_idx bug as Quirion
+    Ranger's toggle now routes through set_tapped too, logging
+    "tap_or_untap" with an explicit owner rather than the previous
+    owner-less call."""
+    state = GameState(on_the_play=True, event_log=[])
     cam = Permanent(registry.CARD_DEFS["Sewer-veillance Cam"])
     elves = Permanent(registry.CARD_DEFS["Llanowar Elves"])
     elves.slot = 1
@@ -492,6 +522,11 @@ def test_sewer_cam_untap_direction_discounts_mana_dork_tag():
     execute_choose_any_target_creature(state, 0, "Llanowar Elves", 1)
     resolve_top_of_stack(state)
     assert not elves.tapped  # toggled tapped -> untapped
+    untap_events = [e for e in state.event_log if e["kind"] == "tap_or_untap" and e["reason"] == "sewer_cam"]
+    assert len(untap_events) == 1
+    assert untap_events[0]["permanent"] == ["Llanowar Elves", 1]
+    assert untap_events[0]["now_tapped"] is False
+    assert untap_events[0]["owner_idx"] == state.active_idx
     assert state.mana_pool_single_pip == {}  # the tag is excused
     assert state.mana_pool == {"G": 1}  # the floated mana itself is untouched
 

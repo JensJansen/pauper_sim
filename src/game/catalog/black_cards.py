@@ -18,7 +18,7 @@ from ..cards import CardDef, CardType, EffectId, card_colors, card_subtypes, is_
 from ..effects.casting import (
     _log_target_fizzle, cast_permanent_from_hand, cast_targeting_creature, enters_battlefield, has_creature_target,
 )
-from ..effects.shared import affinity_reduction, discard_from_hand_to_graveyard
+from ..effects.shared import affinity_reduction, discard_from_hand_to_graveyard, tap_for_cost
 from ..effects.stack import push_to_stack
 from ..effects.state_based import destroy_permanent, sacrifice_to_graveyard
 from ..effects.tokens import BLOOD_TOKEN_CARD_DEF, CLUE_TOKEN_CARD_DEF, MAP_TOKEN_CARD_DEF, create_token
@@ -495,7 +495,7 @@ def blood_fountain_return(state, permanent):
     object identity, and the return fizzles per-target at resolution:
     returning every still-present target, doing nothing only if ALL chosen
     targets have already left the graveyard by then (608.2c)."""
-    permanent.tapped = True  # cost ({T})
+    tap_for_cost(state, permanent)  # cost ({T})
     sacrifice_to_graveyard(state, permanent)  # cost (Sacrifice)
 
     def _on_targets(state, chosen):

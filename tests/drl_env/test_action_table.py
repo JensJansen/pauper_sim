@@ -583,7 +583,7 @@ def test_saruli_caretaker_two_stage_mana_subdecision():
     bogle_2 = Permanent(game.CARD_DEFS["Slippery Bogle"])
     bogle_2.slot = 2
     bogle_2.tapped = True  # already tapped -- would be excluded downstream, not relevant to this row's own aggregate legality
-    state = GameState(on_the_play=True)
+    state = GameState(on_the_play=True, event_log=[])
     # Speculative floating is the active player's own main phase only
     # (drl_env._actions_mana._mana_timing_legal); a bare GameState has no
     # phase at all, which would fail that gate before reaching what this
@@ -620,6 +620,16 @@ def test_saruli_caretaker_two_stage_mana_subdecision():
     assert saruli.tapped and bogle_1.tapped and bogle_2.tapped  # bogle_2 was already tapped, untouched otherwise
     assert state.mana_pool == {"G": 1}
     assert not tap_legal(state)  # Saruli itself now tapped -- no untapped source left, no longer offered at all
+    # bogle_1 is the mana-subdecision TARGET (not the activator's own Saruli,
+    # already exercised elsewhere) -- the exact owner-disambiguation case
+    # this diff's tap_for_cost/set_tapped choke point exists for. Only one
+    # tap_or_untap event: bogle_1's own tap (Saruli's tap is logged
+    # separately, as a "mana_tap" event, by activate_mana_source).
+    tap_events = [e for e in state.event_log if e["kind"] == "tap_or_untap"]
+    assert len(tap_events) == 1
+    assert tap_events[0]["permanent"] == ["Slippery Bogle", 1]
+    assert tap_events[0]["now_tapped"] is True
+    assert tap_events[0]["owner_idx"] == state.active_idx
 
 
 def test_mana_filter_two_step_color_choice():

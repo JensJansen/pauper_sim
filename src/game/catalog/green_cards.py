@@ -16,7 +16,7 @@ from ..effects.casting import (
 from ..effects.shared import (
     any_creature_on_either_battlefield, any_land_on_either_battlefield, discard_from_hand_to_graveyard,
     find_and_remove_by_name, find_to_hand,
- shuffle_library,
+ shuffle_library, set_tapped, tap_for_cost,
 )
 from ..effects.stack import push_ability_to_stack, push_to_stack
 from ..effects.state_based import check_state_based_actions
@@ -128,14 +128,14 @@ def _count_elves(state):
 def wellwisher_activate(state, permanent):
     """{T}: You gain 1 life for each Elf on the battlefield (counted at
     resolution)."""
-    permanent.tapped = True
+    tap_for_cost(state, permanent)
     push_ability_to_stack(state, permanent.card_def, lambda st: gain_life(st, _count_elves(st)))
 
 
 def timberwatch_elf_activate(state, permanent):
     """{T}: Target creature gets +X/+X until end of turn, X = # Elves on the
     battlefield (counted at resolution). Target locked at activation."""
-    permanent.tapped = True
+    tap_for_cost(state, permanent)
     idx = state.active_idx
 
     def _on_target(state, descriptor):
@@ -392,13 +392,12 @@ def quirion_ranger_untap_resolve(state, permanent):
                     return
                 target = captured[1]
                 was_tapped = target.tapped
-                target.tapped = False
                 if was_tapped:
                     # Untapping it back for free -- tapping it for mana first would
                     # have cost nothing, so excuse any of its own colors still
                     # tagged as floating (mana.discount_departing_source).
                     discount_departing_source(state, target, controller_idx(state, target))
-                state.log_event("untap", permanent=(target.card_def.name, target.slot), reason="quirion_ranger")
+                set_tapped(state, target, False, reason="quirion_ranger")
 
             push_to_stack(state, permanent.card_def, _resolve, reserves_hand_card=False, is_spell=False,  # activated ability -- not a spell
                           targets=() if captured is None else (captured,))

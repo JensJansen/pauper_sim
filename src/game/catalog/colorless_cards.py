@@ -82,7 +82,7 @@ from ..effects.casting import (
 from ..effects.stack import push_ability_to_stack, push_to_stack
 from ..effects.shared import (
     affinity_reduction, discard_from_hand_to_graveyard, find_and_remove_by_name, find_to_hand,
- shuffle_library,
+ shuffle_library, tap_for_cost,
 )
 from ..effects.state_based import check_state_based_actions, sacrifice_to_graveyard
 from ..effects.stats import can_be_targeted, permanent_power
@@ -280,8 +280,7 @@ def activate_tocasia_dig_site_surveil(state, permanent):
     """{3}, T: Surveil 1 (shares the tap cost with its plain {T}: Add {C}).
     Faithful timing: the tap is a COST (paid now); the surveil is the
     effect, so it goes on the stack and resolves after a priority window."""
-    permanent.tapped = True
-    state.log_event("tap", permanent=(permanent.card_def.name, permanent.slot), reason="activate")
+    tap_for_cost(state, permanent)
     push_ability_to_stack(state, permanent.card_def, lambda st: surveil(st, 1))
 
 
@@ -298,8 +297,7 @@ def activate_bonders_ornament_draw(state, permanent):
     """{4}, T: draw a card (shares the tap cost with its plain mana ability).
     Faithful timing: the tap is a COST (paid now); the draw is the effect,
     so it goes on the stack and resolves after a priority window."""
-    permanent.tapped = True
-    state.log_event("tap", permanent=(permanent.card_def.name, permanent.slot), reason="activate")
+    tap_for_cost(state, permanent)
     push_ability_to_stack(state, permanent.card_def, lambda st: st.draw(1))
 
 
@@ -368,8 +366,7 @@ def activate_relic_of_progenitus_exile(state, permanent):
     on the stack. When it resolves, the TARGETED player -- not the activator
     -- chooses which of their own graveyard cards to exile: active_idx is
     flipped to them for that forced choice and restored afterward."""
-    permanent.tapped = True  # {T} -- a COST, paid now on activation
-    state.log_event("tap", permanent=(permanent.card_def.name, permanent.slot), reason="activate")
+    tap_for_cost(state, permanent)  # {T} -- a COST, paid now on activation
 
     def _on_player_chosen(state, idx):
         def _effect(state):
@@ -633,11 +630,7 @@ def _pinnacle_kill_ship_station_resolve(state, permanent):
             return
         name, slot = choice
         tapped_creature = next(p for p in state.battlefield if p.card_def.name == name and p.slot == slot)
-        tapped_creature.tapped = True  # tap another creature -- a COST, paid now
-        state.log_event(
-            "tap", permanent=(name, slot), reason="pinnacle_kill_ship_station",
-            source=(permanent.card_def.name, permanent.slot),
-        )
+        tap_for_cost(state, tapped_creature, reason="pinnacle_kill_ship_station")  # tap another creature -- a COST, paid now
         # Charge counters gained = the tapped creature's power. Snapshotted
         # here at cost-payment time: nothing in this pool changes a
         # creature's power at instant speed, so this equals its power at

@@ -512,14 +512,71 @@ class AlwaysKeep:
         return (lambda state=state: game.execute_mulligan_keep(state))
 
 
+class RandomMulligan:
+    """Baseline pregame decider: uniform-random keep/mulligan (respecting the
+    London cap) and uniform-random bottom-card choice. Trains nothing -- a
+    "no signal at all, just noise" floor to evaluate a trained MulliganNet
+    against, alongside AlwaysKeep's "no signal, but not actively harmful
+    either" floor (2026-08-20, comparing the rebuilt mulligan net against
+    both). Unlike AlwaysKeep, mulligan_bottom IS reachable here (a random
+    choice can genuinely take a mulligan), so both pending kinds are handled.
+    Takes an rng so repeated runs are reproducible under a seeded caller,
+    same as every other stochastic decision in the rollout loop."""
+
+    def __init__(self, rng):
+        self.rng = rng
+
+    def decide(self, state):
+        pend = state.pending_resolution
+        if pend["kind"] == "mulligan_decision":
+            mull_legal = state.mulligans_taken < game.HAND_SIZE_LIMIT
+            if mull_legal and self.rng.random() < 0.5:
+                return (lambda state=state: game.execute_mulligan_take(state))
+            return (lambda state=state: game.execute_mulligan_keep(state))
+        name = self.rng.choice(game.bottom_options(state))
+        return (lambda state=state, name=name: game.execute_bottom_option(state, name))
+
+
+class MulliganZeroLands:
+    """Baseline pregame decider: mulligan a 0-land hand, keep anything else.
+    Checked fresh at EVERY decision (not just the opening hand), so a
+    post-mulligan redraw that's still 0 lands mulligans again too, same
+    London cap as every other decider. Trains nothing -- an opponent-side
+    floor meant to remove the ONE hand-quality mistake that is never in
+    question (see CLAUDE.md: "0-land hands are objectively incorrect in
+    every scenario"), so a game the opponent loses reflects OUR mulligan
+    net's decision quality rather than the opponent also having tanked its
+    own game on a hand nobody would keep. Bottom-card choice (reachable
+    here, unlike AlwaysKeep -- a 0-land mulligan can land on a nonzero-land
+    hand with mulligans_taken>0, opening a bottom) is uniform-random, same
+    as RandomMulligan's -- this decider only claims the one unambiguous
+    case, not a full hand-evaluation heuristic. Takes an rng for the bottom
+    pick, same convention as RandomMulligan."""
+
+    def __init__(self, rng):
+        self.rng = rng
+
+    def decide(self, state):
+        pend = state.pending_resolution
+        if pend["kind"] == "mulligan_decision":
+            mull_legal = state.mulligans_taken < game.HAND_SIZE_LIMIT
+            no_lands = all(c.card_type.name != "LAND" for c in state.hand)
+            if mull_legal and no_lands:
+                return (lambda state=state: game.execute_mulligan_take(state))
+            return (lambda state=state: game.execute_mulligan_keep(state))
+        name = self.rng.choice(game.bottom_options(state))
+        return (lambda state=state, name=name: game.execute_bottom_option(state, name))
+
+
 class SeatAgent:
     """One seat's decision-maker: main policy (DeckNetwork) + pregame decider
-    (MulliganNet or AlwaysKeep) + deck_ctx (vocab, fixed_table) + this seat's
-    live recurrent state for the game currently being played."""
+    (a MulliganNet, or a simple non-network decider like AlwaysKeep/
+    RandomMulligan) + deck_ctx (vocab, fixed_table) + this seat's live
+    recurrent state for the game currently being played."""
 
     def __init__(self, main, mulligan, deck_ctx):
         self.main = main            # DeckNetwork (None only in decide()'s pregame-only unit tests)
-        self.mulligan = mulligan    # MulliganNet or AlwaysKeep
+        self.mulligan = mulligan    # MulliganNet, or a simple decider (AlwaysKeep/RandomMulligan)
         self.deck_ctx = deck_ctx
         self.vocab = deck_ctx[0]
         self.hidden = {}            # seat -> that seat's GRU state this game; see reset()
@@ -543,7 +600,12 @@ class SeatAgent:
     def decide(self, state, seat, horizon, device, greedy=False):
         pend = state.pending_resolution
         if pend is not None and pend["kind"] in PREGAME_KINDS:
-            if isinstance(self.mulligan, AlwaysKeep):
+            # Anything that ISN'T a real MulliganNet is a simple decider
+            # (AlwaysKeep, RandomMulligan, ...) satisfying only the narrower
+            # decide(state) contract -- checked this way round (rather than
+            # isinstance(self.mulligan, AlwaysKeep)) so a new simple decider
+            # never needs a matching edit here too.
+            if not isinstance(self.mulligan, mulligan_mod.MulliganNet):
                 return DecisionResult(self.mulligan.decide(state), None, None, is_pass=False)
             # MulliganNet: capture its (reward-slot-None) transition via a local
             # sink so attribution stays the rollout's job, not the agent's. The

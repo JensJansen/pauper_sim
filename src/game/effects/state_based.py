@@ -301,6 +301,12 @@ def cleanup_step(state):
     point in cleanup.
 
     This is the only ceiling on hand size in an adversarial 2-player game."""
+    # `damaged` is a snapshot taken BEFORE the clearing loop below, same shape
+    # turn.untap_step's own "untapped" list used to be built in -- safe today
+    # only because nothing in that loop re-damages a permanent (no "undo"
+    # branch like untap_step's skip_next_untap). If a future effect ever
+    # needs to re-mark damage inside this same loop, log it there and stop
+    # trusting this pre-built list, the same fix untap_step needed.
     damaged = [
         (p.card_def.name, p.slot) for player in state.players for p in player.battlefield if p.damage_marked > 0
     ]

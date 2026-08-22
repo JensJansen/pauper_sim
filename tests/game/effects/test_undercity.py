@@ -40,6 +40,7 @@ def test_take_initiative_and_secret_entrance():
     # (a 1-way "not in dungeon" entry) and searches a basic land to hand.
     state = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
     state.active_idx = state.turn_player_idx = 0
+    state.event_log = []  # capture zone_move below
     basic = CardDef("Forest", CardType.LAND, None, EffectId.FILLER, basic=True, subtypes=("Forest",))
     state.players[0].library = [basic, CardDef("X", CardType.SORCERY, {}, EffectId.FILLER)]
     take_initiative(state, 0)
@@ -51,6 +52,16 @@ def test_take_initiative_and_secret_entrance():
     assert state.pending_resolution["kind"] == "search_fetch"
     resolution.execute_search_fetch_option(state, "Forest")
     assert basic in state.players[0].hand
+    # Secret Entrance's fetch routes through the shared find_to_hand tail
+    # (game.effects.shared) like every other "search to hand" effect, so the
+    # library->hand move is logged the same way -- regression check for a bug
+    # where a hand-rolled fetch fizzled silently past the event log.
+    zone_moves = [e for e in state.event_log if e["kind"] == "zone_move"]
+    assert zone_moves == [{
+        "kind": "zone_move", "turn": state.turn_number, "phase": state.phase,
+        "active_idx": state.active_idx, "turn_player_idx": state.turn_player_idx,
+        "card": "Forest", "from_zone": "library", "to_zone": "hand", "reason": "search",
+    }]
 
 
 def test_combat_damage_take_initiative_then_ventures_to_secret_entrance():

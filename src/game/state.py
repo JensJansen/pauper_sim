@@ -892,25 +892,53 @@ class GameState:
         })
 
 
-def build_shuffled_library(decklist, rng):
+def build_shuffled_library(decklist, rng, force_land_count=None):
     """Expand a decklist's quantities into CardDef refs and shuffle. Only
     which decklist's quantities to expand is parameterized -- CARD_DEFS
-    stays the single shared name->CardDef lookup (game.registry)."""
+    stays the single shared name->CardDef lookup (game.registry).
+
+    force_land_count=None (default): plain uniform shuffle, unchanged.
+    force_land_count=N: a TRAINING-ONLY knob (see rl.train.collect_rollout's
+    stratify_0land_pct) that lands exactly N lands in the top 7 -- still a
+    real, legal 60-card library built from this exact decklist, just drawn
+    from the slice of shuffles where the opening hand has N lands instead
+    of the deck's natural (usually ~8% for N=0) rate. Every card past
+    position 7 is independently shuffled, so a later draw or mulligan
+    redraw is unaffected."""
     library = []
     for name, qty, *_rest in decklist:
         library.extend([registry.CARD_DEFS[name]] * qty)
-    rng.shuffle(library)
-    return library
+    if force_land_count is None:
+        rng.shuffle(library)
+        return library
+    lands = [c for c in library if c.card_type.name == "LAND"]
+    nonlands = [c for c in library if c.card_type.name != "LAND"]
+    assert 0 <= force_land_count <= 7, f"force_land_count must be 0-7, got {force_land_count}"
+    assert len(lands) >= force_land_count and len(nonlands) >= 7 - force_land_count, \
+        "decklist doesn't have enough lands/nonlands to force this opening land count"
+    rng.shuffle(lands)
+    rng.shuffle(nonlands)
+    hand = lands[:force_land_count] + nonlands[:7 - force_land_count]
+    rest = lands[force_land_count:] + nonlands[7 - force_land_count:]
+    rng.shuffle(hand)
+    rng.shuffle(rest)
+    return hand + rest
 
 
-def new_multiplayer_game_state(decklists, starting_player_idx, rng, event_log=None):
+def new_multiplayer_game_state(decklists, starting_player_idx, rng, event_log=None, stratify=None):
     """N-player entry point -- decklists are one entry per player and may
     differ (nothing here requires a mirror match; CARD_DEFS is already
     deck-agnostic). Only starting_player_idx is "on the play" (skips their
     own first draw -- see turn.draw_step) and takes the first turn; every
     other player starts with on_the_play=False. Every player draws their
     own opening 7, same as a single-player opening hand, regardless of who
-    goes first."""
+    goes first.
+
+    stratify=None (default): every seat gets a plain uniform shuffle,
+    identical to before this param existed. stratify=(seat_idx, land_count):
+    TRAINING-ONLY -- see build_shuffled_library's force_land_count -- forces
+    just that one seat's opening hand to land_count lands; every other
+    seat is unaffected."""
     players = [
         PlayerState(on_the_play=(i == starting_player_idx))
         for i in range(len(decklists))
@@ -920,7 +948,8 @@ def new_multiplayer_game_state(decklists, starting_player_idx, rng, event_log=No
     )
     state.turn_player_idx = starting_player_idx
     for idx, decklist in enumerate(decklists):
-        state.players[idx].library = build_shuffled_library(decklist, rng)
+        force = stratify[1] if stratify is not None and stratify[0] == idx else None
+        state.players[idx].library = build_shuffled_library(decklist, rng, force_land_count=force)
         state.active_idx = idx   # attribute each opening draw to its own drawer
         state.draw(7)            # routed through GameState.draw so the opening hand is logged like any other draw
     state.active_idx = starting_player_idx

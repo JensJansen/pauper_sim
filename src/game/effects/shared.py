@@ -7,6 +7,43 @@ manipulation."""
 from ..cards import CardType, is_artifact
 
 
+def set_tapped(state, permanent, tapped, reason=None):
+    """THE choke point for any non-mana, non-turn-structure change to a
+    permanent's tapped state (an activation cost, or a spell/ability effect
+    tapping/untapping a target) -- mirrors mana.py's activate_mana_source,
+    which does the same tapped-flip + log_event pairing for mana abilities
+    via its own "mana_tap" event.
+
+    Derives owner_idx from the permanent's own battlefield membership
+    (stats.controller_idx) instead of trusting the caller to know/pass it:
+    two players' same-named permanents can legitimately share the same
+    (name, slot) key (slots are assigned independently per player -- see
+    casting.py's used_slots), so replay_engine's event-driven board
+    reconstruction needs an explicit owner to disambiguate them -- without
+    it, a tap/untap event can silently flip the WRONG player's permanent in
+    any mirror match. Logs "tap_or_untap" (now_tapped=tapped) -- the
+    general, direction-agnostic event kind Sewer-veillance Cam already
+    established for exactly this "an effect changed a target's tapped
+    state" shape."""
+    from .stats import controller_idx
+    permanent.tapped = tapped
+    state.log_event(
+        "tap_or_untap",
+        permanent=(permanent.card_def.name, permanent.slot),
+        owner_idx=controller_idx(state, permanent),
+        now_tapped=tapped,
+        reason=reason,
+    )
+
+
+def tap_for_cost(state, permanent, reason="activate"):
+    """Pay a non-mana {T} cost (Wellwisher, Tocasia's Dig Site, Bonder's
+    Ornament, Saruli's "tap another creature" additional cost, Blood
+    Fountain, ...) -- thin wrapper over set_tapped for the cost-payment
+    call sites, always the actor's own permanent."""
+    set_tapped(state, permanent, True, reason=reason)
+
+
 def fire_sacrifice_triggers(state, sacrificer_idx, sacrificed_card_def):
     """Queue every "whenever you sacrifice [another permanent / another
     Eldrazi]" trigger (Gixian Infiltrator, Writhing Chrysalis) on the

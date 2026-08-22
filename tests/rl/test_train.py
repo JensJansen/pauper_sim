@@ -692,3 +692,80 @@ def test_the_guard_does_not_fire_on_ordinary_games():
     buffers, _mull, played = collect_rollout(pairing, 2, HORIZON, _random.Random(0), device=DEVICE)
     assert played == 2
     assert len(buffers["m"]) > 0
+
+
+class _HandRecordingAgent(_ScriptedAgent):
+    """_ScriptedAgent, but stashes the hand it's first asked to judge at
+    the mulligan_decision pending resolution -- used to read back the
+    actual opening hand collect_rollout's stratify wiring dealt this seat,
+    before any cards get played (by game end the hand has changed)."""
+
+    def __init__(self, fixed_table):
+        super().__init__(fixed_table)
+        self.recorded_hand = None
+
+    def decide(self, state, seat, horizon, device, greedy=False):
+        pend = state.pending_resolution
+        if self.recorded_hand is None and pend is not None and pend["kind"] == "mulligan_decision":
+            self.recorded_hand = list(state.hand)
+        return super().decide(state, seat, horizon, device, greedy=greedy)
+
+
+def test_collect_rollout_stratify_forces_the_recorded_seats_opening_hand():
+    """collect_rollout's own probability-roll/seat-gate wiring for
+    stratify_0land_pct/stratify_7land_pct (src/rl/train.py, added alongside
+    game.state.build_shuffled_library's force_land_count) had no direct
+    test -- only the lower-level game.state.new_multiplayer_game_state(
+    stratify=...) plumbing it calls was covered (tests/game/test_turn.py::
+    test_stratify_forces_opening_land_count). Deterministic (pct=1.0, i.e.
+    always) so this isn't a statistical flake, and only ONE seat is
+    recorded (record_as=["m", None]) so the "exactly one recorded seat"
+    gate actually fires and picks that seat."""
+    decklist = [("Mountain", 33), ("Lightning Bolt", 27)]
+    token_defs = (game.BLOOD_TOKEN_CARD_DEF, game.ROBOT_TOKEN_CARD_DEF)
+    fixed_table = build_fixed_action_table(decklist, token_card_defs=token_defs)
+    reward_fn = action_count_win_reward_200_floor02
+
+    def _dealt_land_count(stratify_0land_pct, stratify_7land_pct):
+        recorder = _HandRecordingAgent(fixed_table)
+        other = _ScriptedAgent(fixed_table)
+        pairing = _constant_pairing([recorder, other], [decklist, decklist],
+                                     [reward_fn, reward_fn], ["m", None])
+        # horizon=1 (not the module HORIZON): only the opening hand matters
+        # here, dealt before any turn begins. A tiny horizon keeps the game
+        # short enough that _ScriptedAgent -- which only handles mulligans,
+        # land plays, and one mana tap -- never has to face a hand-size
+        # cleanup discard it can't script a response to.
+        collect_rollout(pairing, 1, horizon=1, rng=_random.Random(0), device=DEVICE,
+                         stratify_0land_pct=stratify_0land_pct, stratify_7land_pct=stratify_7land_pct)
+        assert recorder.recorded_hand is not None, "the recorded seat's own mulligan decision must have been reached"
+        return sum(1 for c in recorder.recorded_hand if c.card_type.name == "LAND")
+
+    assert _dealt_land_count(1.0, 0.0) == 0, "stratify_0land_pct=1.0 must always deal a 0-land opening hand"
+    assert _dealt_land_count(0.0, 1.0) == 7, "stratify_7land_pct=1.0 must always deal a 7-land opening hand"
+
+
+def test_collect_rollout_stratify_defaults_are_a_true_no_op():
+    """stratify_0land_pct=0.0, stratify_7land_pct=0.0 (the defaults) must
+    draw from the RNG identically to omitting the params entirely -- the
+    docstring's own promise ("no extra rng draw happens at all when both
+    are 0.0"). Checked by running the SAME seed twice (params omitted vs.
+    explicitly 0.0) and asserting the dealt opening hand for the recorded
+    seat comes out byte-identical -- a stray rng draw in the gate would
+    shift every later shuffle and this would diverge."""
+    decklist = [("Mountain", 33), ("Lightning Bolt", 27)]
+    token_defs = (game.BLOOD_TOKEN_CARD_DEF, game.ROBOT_TOKEN_CARD_DEF)
+    fixed_table = build_fixed_action_table(decklist, token_card_defs=token_defs)
+    reward_fn = action_count_win_reward_200_floor02
+
+    def _run(**stratify_kwargs):
+        recorder = _HandRecordingAgent(fixed_table)
+        other = _ScriptedAgent(fixed_table)
+        pairing = _constant_pairing([recorder, other], [decklist, decklist],
+                                     [reward_fn, reward_fn], ["m", None])
+        collect_rollout(pairing, 1, horizon=1, rng=_random.Random(0), device=DEVICE, **stratify_kwargs)
+        return [c.name for c in recorder.recorded_hand]
+
+    omitted = _run()
+    explicit_zero = _run(stratify_0land_pct=0.0, stratify_7land_pct=0.0)
+    assert omitted == explicit_zero, "explicit 0.0/0.0 must deal byte-identical hands to omitting the params"

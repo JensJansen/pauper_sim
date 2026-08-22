@@ -7,6 +7,7 @@ cast-or-graveyard decision. Re-exported via game.resolution so
 `from ..resolution import X` in the catalogs keeps resolving."""
 
 from .. import registry
+from ..effects.shared import tap_for_cost
 from ._core import begin_resolution, complete_resolution
 
 
@@ -263,8 +264,11 @@ def execute_mana_subdecision_target(state, target):
     def on_choose_color(state, color):
         # Tap-target-then-activate-source order matches exactly what the
         # pre-generalization implementation did, preserving identical
-        # observable behavior.
-        target.tapped = True
+        # observable behavior. tap_for_cost logs a "tap_or_untap" event for
+        # the target (source's own tap is logged by activate_mana_source's
+        # "mana_tap" event below) -- without it the target's tap was never
+        # recorded anywhere, the same webapp-visualizer gap as Wellwisher.
+        tap_for_cost(state, target)
         activate_mana_source(state, source, color)
 
     begin_mana_color_choice(state, can_produce, on_choose_color)

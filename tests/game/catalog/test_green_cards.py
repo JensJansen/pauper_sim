@@ -707,13 +707,25 @@ def test_priest_of_titania_counts_elves_both_battlefields():
 
 
 def test_wellwisher_gain_life_per_elf():
-    """Wellwisher: {T} gain 1 life per Elf."""
-    state = GameState(on_the_play=True)
+    """Wellwisher: {T} gain 1 life per Elf. Also regression-covers the
+    webapp-visualizer bug where the {T} cost was paid (permanent.tapped set)
+    but never logged, so the replay board never showed Wellwisher as
+    tapped -- tap_for_cost (game.effects.shared) routes through set_tapped,
+    which logs a "tap_or_untap" event (with an explicit owner_idx, so the
+    replay viewer can't flip the wrong player's same-named permanent in a
+    mirror match) alongside the flag, same as every other non-mana
+    {T}-cost site."""
+    state = GameState(on_the_play=True, event_log=[])
     well = Permanent(registry.CARD_DEFS["Wellwisher"])
     well.slot = 1
     state.battlefield = [well, Permanent(registry.CARD_DEFS["Llanowar Elves"])]  # 2 Elves
     wellwisher_activate(state, well)
     assert well.tapped
+    tap_events = [e for e in state.event_log if e["kind"] == "tap_or_untap"]
+    assert len(tap_events) == 1
+    assert tap_events[0]["permanent"] == ["Wellwisher", 1]  # tuple -> list (state.log_event's own sanitizer)
+    assert tap_events[0]["now_tapped"] is True
+    assert tap_events[0]["owner_idx"] == state.active_idx
     resolve_top_of_stack(state)
     assert state.life_total == 22  # 20 + 2
 
@@ -753,8 +765,16 @@ def test_quirion_ranger_untap_lets_player_choose_which_forest():
     """"Return a Forest you control to hand: Untap target creature." WHICH
     Forest pays the cost is a real player choice (602.5g), not an
     arbitrary auto-pick -- two Forests stop being fungible the instant one
-    of them is worth keeping (e.g. it's enchanted by Utopia Sprawl)."""
-    state = GameState(on_the_play=True)
+    of them is worth keeping (e.g. it's enchanted by Utopia Sprawl).
+
+    Also regression-covers the webapp-visualizer bug where this untap
+    (a spell-effect tap/untap of an arbitrary target, not an activation
+    cost) used to log a bare "untap" event with no owner -- ambiguous
+    against replay_engine's dual-battlefield scan whenever the opponent has
+    a same-named/same-slot permanent. Now routed through set_tapped
+    (game.effects.shared), which logs "tap_or_untap" with an explicit
+    owner_idx."""
+    state = GameState(on_the_play=True, event_log=[])
     ranger = Permanent(registry.CARD_DEFS["Quirion Ranger"])
     ranger.slot = 1
     keep = Permanent(CardDef("Forest", CardType.LAND, None, EffectId.FOREST, basic=True, subtypes=("Forest",)))
@@ -774,6 +794,12 @@ def test_quirion_ranger_untap_lets_player_choose_which_forest():
     execute_choose_any_target_creature(state, 0, "Beater", 1)
     resolve_top_of_stack(state)
     assert not target.tapped
+    untap_events = [e for e in state.event_log if e["kind"] == "tap_or_untap"]
+    assert len(untap_events) == 1
+    assert untap_events[0]["permanent"] == ["Beater", 1]
+    assert untap_events[0]["now_tapped"] is False
+    assert untap_events[0]["owner_idx"] == state.active_idx
+    assert untap_events[0]["reason"] == "quirion_ranger"
 
 
 def test_quirion_ranger_untapping_a_mana_dork_discounts_its_tag():

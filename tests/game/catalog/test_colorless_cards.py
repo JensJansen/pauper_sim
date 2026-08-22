@@ -159,10 +159,22 @@ def test_relic_of_progenitus_exile_targeting_yourself():
 
     Faithful timing + cross-player choice: the {T} is a COST (paid now);
     the target player is chosen as the ability is put on the stack
-    (targets lock at activation); only the EFFECT waits on the stack."""
+    (targets lock at activation); only the EFFECT waits on the stack.
+
+    Also regression-covers the webapp-visualizer bug where this {T} cost
+    was paid (permanent.tapped set) but never logged -- routed through
+    tap_for_cost (game.effects.shared), same as every other non-mana
+    {T}-cost site, which logs a "tap_or_untap" event with an explicit
+    owner_idx."""
     state, relic = _relic_of_progenitus_state()
+    state.event_log = []
     activate_relic_of_progenitus_exile(state, relic)
     assert relic.tapped  # {T} -- a cost, paid immediately on activation
+    tap_events = [e for e in state.event_log if e["kind"] == "tap_or_untap"]
+    assert len(tap_events) == 1
+    assert tap_events[0]["permanent"] == ["Relic of Progenitus", 1]
+    assert tap_events[0]["now_tapped"] is True
+    assert tap_events[0]["owner_idx"] == state.active_idx
     assert state.pending_resolution["kind"] == "choose_target_player"  # target chosen at activation
     resolution.execute_choose_target_player_option(state, 0)  # explicitly target yourself
     # The effect (the targeted player exiles a graveyard card) is now on the
@@ -512,8 +524,14 @@ def test_pinnacle_kill_ship_station_charges_and_animates_at_threshold():
 
     Faithful timing: tapping another creature is a COST, paid now on
     activation; putting the charge counters (and the animate check) is the
-    effect, so it goes on the stack and resolves after a priority window."""
-    state = GameState(on_the_play=True)
+    effect, so it goes on the stack and resolves after a priority window.
+
+    Also regression-covers the webapp-visualizer bug where this {T} cost
+    was paid (permanent.tapped set) but never logged with an owner --
+    routed through tap_for_cost (game.effects.shared), which logs a
+    "tap_or_untap" event with an explicit owner_idx, same as every other
+    non-mana {T}-cost site."""
+    state = GameState(on_the_play=True, event_log=[])
     kill_ship = Permanent(CardDef("Pinnacle Kill-Ship", CardType.ARTIFACT, {"generic": 7}, EffectId.PINNACLE_KILL_SHIP))
     weak = Permanent(CardDef("Weak Tapper", CardType.CREATURE, None, EffectId.FILLER, power=3, toughness=3))
     strong = Permanent(CardDef("Strong Tapper", CardType.CREATURE, None, EffectId.FILLER, power=5, toughness=5))
@@ -527,6 +545,11 @@ def test_pinnacle_kill_ship_station_charges_and_animates_at_threshold():
     assert resolution.choose_permanent_options(state) == [("Strong Tapper", 1), ("Weak Tapper", 1)]  # Kill-Ship itself never offered -- "another creature"
     resolution.execute_choose_permanent_option(state, "Strong Tapper", 1)
     assert strong.tapped is True  # tapped -- a cost, paid immediately on activation
+    tap_events = [e for e in state.event_log if e["kind"] == "tap_or_untap"]
+    assert len(tap_events) == 1
+    assert tap_events[0]["permanent"] == ["Strong Tapper", 1]
+    assert tap_events[0]["now_tapped"] is True
+    assert tap_events[0]["owner_idx"] == state.active_idx
     # Placing the charge counters is the EFFECT -- on the stack now (faithful
     # timing), applied only on resolution.
     assert len(state.stack) == 1 and kill_ship.counters.get("charge", 0) == 0
@@ -845,13 +868,24 @@ def test_tocasia_dig_site_taps_for_colorless():
 def test_tocasia_dig_site_surveil_ability():
     """Tocasia's Dig Site's own second ability: "{3}, T: Surveil 1."
     Faithful timing: the {T} is a COST, paid now; the surveil is the
-    effect, on the stack, resolving after a priority window."""
-    state = GameState(on_the_play=True)
+    effect, on the stack, resolving after a priority window.
+
+    Also regression-covers the webapp-visualizer bug where this {T} cost
+    was paid (permanent.tapped set) but never logged -- routed through
+    tap_for_cost (game.effects.shared), which logs a "tap_or_untap" event
+    with an explicit owner_idx, same as every other non-mana {T}-cost
+    site."""
+    state = GameState(on_the_play=True, event_log=[])
     dig_site = Permanent(registry.CARD_DEFS["Tocasia's Dig Site"])
     state.battlefield = [dig_site]
     state.library = [CardDef("Top Card", CardType.LAND, None, EffectId.FOREST, basic=True)]
     activate_tocasia_dig_site_surveil(state, dig_site)
     assert dig_site.tapped  # {T} -- a cost, paid now
+    tap_events = [e for e in state.event_log if e["kind"] == "tap_or_untap"]
+    assert len(tap_events) == 1
+    assert tap_events[0]["permanent"] == ["Tocasia's Dig Site", 1]
+    assert tap_events[0]["now_tapped"] is True
+    assert tap_events[0]["owner_idx"] == state.active_idx
     assert len(state.stack) == 1  # the surveil is the effect, on the stack
     resolve_top_of_stack(state)
     assert state.pending_resolution["kind"] == "surveil"
@@ -927,13 +961,24 @@ def test_bonders_ornament_draw_ability():
     with its own plain flexible mana ability (already tested elsewhere,
     not duplicated here). Faithful timing: the {T} is a COST, paid now;
     the draw is the effect, on the stack, resolving after a priority
-    window."""
-    state = GameState(on_the_play=True)
+    window.
+
+    Also regression-covers the webapp-visualizer bug where this {T} cost
+    was paid (permanent.tapped set) but never logged -- routed through
+    tap_for_cost (game.effects.shared), which logs a "tap_or_untap" event
+    with an explicit owner_idx, same as every other non-mana {T}-cost
+    site."""
+    state = GameState(on_the_play=True, event_log=[])
     ornament = Permanent(registry.CARD_DEFS["Bonder's Ornament"])
     state.battlefield = [ornament]
     state.library = [CardDef("Drawn", CardType.LAND, None, EffectId.FOREST, basic=True)]
     activate_bonders_ornament_draw(state, ornament)
     assert ornament.tapped  # {T} -- a cost, paid immediately
+    tap_events = [e for e in state.event_log if e["kind"] == "tap_or_untap"]
+    assert len(tap_events) == 1
+    assert tap_events[0]["permanent"] == ["Bonder's Ornament", 1]
+    assert tap_events[0]["now_tapped"] is True
+    assert tap_events[0]["owner_idx"] == state.active_idx
     assert len(state.stack) == 1 and state.hand == []
     resolve_top_of_stack(state)
     assert [c.name for c in state.hand] == ["Drawn"]

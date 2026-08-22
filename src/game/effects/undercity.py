@@ -28,7 +28,7 @@ respectively) in this module.
 Real Undercity dungeon (Scryfall), branching room graph in _DUNGEON below."""
 
 from . import casting
-from .shared import shuffle_library
+from .shared import find_to_hand, shuffle_library
 from .stats import can_be_targeted
 from .tokens import SKELETON_TOKEN_CARD_DEF, TREASURE_TOKEN_CARD_DEF, create_token
 from .win_check import lose_life
@@ -157,17 +157,13 @@ def execute_choose_room_option(state, name):
 
 def _room_secret_entrance(state, player_idx):
     """Search your library for a basic land card, reveal it, put it into your
-    hand, then shuffle."""
-    def _fetch(state, name):
-        if name is None:  # no basic land in library -- fizzles, still shuffles nothing to do
-            return
-        card = next(c for c in state.library if c.name == name)
-        state.library.remove(card)
-        state.hand.append(card)
-        shuffle_library(state)
-
+    hand, then shuffle -- find_to_hand (game.effects.shared) is the shared
+    tail every other "search library for X, put it into hand, shuffle"
+    effect already routes through; it also logs the zone_move (library ->
+    hand) so replays/the visualizer can track the fetched card, and already
+    handles the no-match case (name=None: still shuffles, finds nothing)."""
     resolution.begin_search_fetch(
-        state, lambda c: c.card_type == CardType.LAND and c.extra.get("basic"), _fetch,
+        state, lambda c: c.card_type == CardType.LAND and c.extra.get("basic"), find_to_hand,
     )
 
 

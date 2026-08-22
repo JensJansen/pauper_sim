@@ -35,6 +35,30 @@ def test_two_player_construction():
     assert state.players[0].life_total == 20 and state.players[1].life_total == 20
 
 
+def test_stratify_forces_opening_land_count():
+    # stratify=(seat, land_count): only that seat's opening hand is forced;
+    # the other seat still gets a plain, unforced shuffle (Mountain-only
+    # deck, so its hand is trivially 7 lands either way -- the real check
+    # is seat 0's hand, dealt from a mixed deck).
+    decklist = [("Mountain", 33), ("Lightning Bolt", 27)]
+    state = new_multiplayer_game_state(
+        decklists=[decklist, decklist],
+        starting_player_idx=0,
+        rng=random.Random(0),
+        stratify=(0, 0),
+    )
+    assert all(c.name != "Mountain" for c in state.players[0].hand)
+    assert len(state.players[0].hand) == 7
+
+    state = new_multiplayer_game_state(
+        decklists=[decklist, decklist],
+        starting_player_idx=0,
+        rng=random.Random(0),
+        stratify=(1, 3),
+    )
+    assert sum(1 for c in state.players[1].hand if c.name == "Mountain") == 3
+
+
 def test_turn_alternation_and_on_the_play():
     def _pass_except_discard(state):
         # Always Pass -- pure alternation, no card actions -- EXCEPT

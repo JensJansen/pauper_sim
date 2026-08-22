@@ -238,7 +238,7 @@ def _constant_pairing(agents, decklists, reward_fns, record_as):
 
 
 def collect_rollout(pairing, n_games, horizon, rng, device="cpu", record=True, greedy=False, game_logs=None,
-                     on_game_end=None):
+                     on_game_end=None, stratify_0land_pct=0.0, stratify_7land_pct=0.0):
     """The ONE game loop. Plays n_games real self-play games
     (game.run_multiplayer_game); a per-game `pairing(rng)` supplies that game's
     layout, and the SeatAgents it returns own the mulligan-vs-policy dispatch
@@ -262,6 +262,34 @@ def collect_rollout(pairing, n_games, horizon, rng, device="cpu", record=True, g
     function stays pairing-agnostic, no knowledge of leagues/pools): the
     league-specific use (rl.league.LeaguePool PFSP stat updates, see
     collect_rollout_league) is wired in by the CALLER, not here.
+
+    stratify_0land_pct=0.0, stratify_7land_pct=0.0 (both default): every
+    game dealt with a plain uniform shuffle, byte-identical to before these
+    params existed -- no extra rng draw happens at all when both are 0.0,
+    so every existing caller (league training, eval, twin/self-mirror
+    mulligan scripts) is unaffected. Either >0.0 is a TRAINING-ONLY knob:
+    with that per-game probability, force the single recorded seat's (the
+    one `pairing` routes to a non-None bucket) opening hand to 0 lands or 7
+    lands respectively -- see game.state.build_shuffled_library's
+    force_land_count. Mutually exclusive per game (one rng.random() draw
+    picks at most one of the two; stratify_0land_pct's slice comes first),
+    so pass e.g. 0.15/0.15 for a combined 30% of games stratified, not
+    0.2/0.2 expecting 40%.
+
+    Exists because BOTH tails are naturally rare and asymmetrically so: a
+    typical ~14-land/60-card deck deals 0 lands in 7 cards ~14% of the time
+    but all-land (7 of 7) on the order of 0.001% -- across an 8000-game run
+    that's under one natural occurrence. A REINFORCE update batch drawn
+    straight from natural play essentially never contains a flooded-hand
+    example at all, so nothing but stratify_7land_pct can ever teach the
+    net that hand quality is NOT monotonic in land count (2026-08-21: an
+    8000-game run stratified on 0-land alone converged to P(mulligan) that
+    fell in a clean 0-land > 1-land > 3-land > 7-land order -- 0-land
+    correctly high, but 7-land driven to ~0, the same "always keep" mistake
+    it made everywhere else, purely by extrapolation from a land-count
+    feature it had only ever seen pushed one direction). If more than one
+    seat (or zero) is recorded, that game is left unstratified rather than
+    guessing which seat to bias.
 
     Returns (buffers_by_deck, mull_by_deck, games_played): dicts keyed by the
     deck-name buckets from record_as. A mirror routes BOTH seats to one bucket
@@ -437,11 +465,21 @@ def collect_rollout(pairing, n_games, horizon, rng, device="cpu", record=True, g
 
             starting_idx = rng.randint(0, 1)
             event_log = [] if game_logs is not None else None
+            stratify = None
+            if stratify_0land_pct > 0.0 or stratify_7land_pct > 0.0:
+                recorded_seats = [s for s in (0, 1) if record_as[s] is not None]
+                if len(recorded_seats) == 1:
+                    roll = rng.random()
+                    if roll < stratify_0land_pct:
+                        stratify = (recorded_seats[0], 0)
+                    elif roll < stratify_0land_pct + stratify_7land_pct:
+                        stratify = (recorded_seats[0], 7)
             state = game.run_multiplayer_game(
                 decklists=decklists, rng=rng, starting_player_idx=starting_idx,
                 choose_action=choose_action, horizon=horizon, combat_enabled=True, event_log=event_log,
                 on_mana_burn=on_mana_burn if wants_mana_mistake else None,
                 on_single_pip_burn=on_single_pip_burn if wants_single_pip_hook else None,
+                stratify=stratify,
             )
             # The engine's own win-check (game/effects/win_check.py) sets
             # state.winner/state.turn_won as plain attributes with no log_event
@@ -493,7 +531,7 @@ def collect_rollout(pairing, n_games, horizon, rng, device="cpu", record=True, g
                     if len(game_buffers[seat]):  # append this seat's whole (contiguous) trajectory to its bucket
                         buffers_by_deck.setdefault(bucket, RolloutBuffer()).extend(game_buffers[seat])
                     if mull_game[seat]:  # attribute the game's outcome to this seat's mulligan picks (bandit)
-                        r = mulligan_mod.mulligan_reward(state.winner == seat, state.players[seat].mulligans_taken)
+                        r = mulligan_mod.mulligan_reward(state.winner == seat)
                         for entry in mull_game[seat]:
                             entry[5] = r
                         mull_by_deck.setdefault(bucket, []).extend(mull_game[seat])

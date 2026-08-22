@@ -17,6 +17,7 @@ from ..effects.casting import (
 )
 from ..effects.shared import (
     affinity_reduction, discard_from_hand_to_graveyard, find_to_hand, graveyard_instant_sorcery_count, mill,
+    set_tapped,
 )
 from ..effects.stack import counter_spell, push_ability_to_stack, push_to_stack
 from ..effects.state_based import departing_card_def, sacrifice_to_graveyard
@@ -140,8 +141,12 @@ def cast_abandon_attachments(state, card_def):
 
 def _sleep_tap_skip(state, permanent):
     """Tap the target creature; it doesn't untap during its controller's
-    next untap step (untap_step consumes the skip_next_untap flag)."""
-    permanent.tapped = True
+    next untap step (untap_step consumes the skip_next_untap flag). Routes
+    the tap through set_tapped (not a bare permanent.tapped = True) so the
+    replay log always records it -- the target may be the OPPONENT's
+    creature, not the caster's own, so set_tapped's owner_idx derivation
+    (not just state.active_idx) matters here."""
+    set_tapped(state, permanent, True, reason="sleep_of_the_dead")
     permanent.flags["skip_next_untap"] = True
 
 
@@ -253,10 +258,9 @@ def sewer_cam_tap_or_untap(state, source_card_def):
                 return
             perm = captured[1]
             was_tapped = perm.tapped
-            perm.tapped = not perm.tapped
             if was_tapped:
                 discount_departing_source(st, perm, controller_idx(st, perm))
-            st.log_event("tap_or_untap", permanent=(perm.card_def.name, perm.slot), now_tapped=perm.tapped)
+            set_tapped(st, perm, not was_tapped, reason="sewer_cam")
 
         push_to_stack(state, source_card_def, _resolve, reserves_hand_card=False, is_spell=False,
                       targets=() if captured is None else (captured,))
