@@ -1,41 +1,23 @@
-"""GPU-vs-CPU A/B for rl.training.ppo.ppo_update, measured INSIDE a real league session.
+"""GPU-vs-CPU A/B for rl.training.ppo.ppo_update, measured inside a real league session.
 
-Why this shape rather than the obvious "run a session twice, time both":
-GPU and CPU float arithmetic differ slightly, so the two arms' weights diverge
-after the very first update -> different actions -> different game LENGTHS ->
-different amounts of work. By iteration 125 you would be comparing wall-clock
-across two different workloads and calling the difference a speedup. That test
-gets less trustworthy the longer it runs, which is the opposite of what a
-benchmark should do.
+Monkeypatches ppo_update so every call runs both arms from identical starting
+weights on the identical buffer: a GPU arm on a throwaway deepcopy of the net
+(timed, then discarded), and a CPU arm on the real net (timed, and applied).
+Only the CPU result changes the net, so training proceeds normally and every
+subsequent buffer stays on-distribution. Buffers come from the real training
+loop, not a synthetic generator.
 
-So instead: monkeypatch ppo_update inside a REAL session and, on every call,
-run BOTH arms from the IDENTICAL starting weights on the IDENTICAL buffer --
-    1. GPU arm on a throwaway deepcopy of the net (timed, then discarded)
-    2. CPU arm on the real net (timed, and it is the one that counts)
-Only the CPU result is applied, so training proceeds exactly as it normally
-would and every subsequent buffer stays on-distribution. Each pair is a
-controlled, zero-divergence comparison of the same work on two devices.
+CUDA is synchronized around each timed region (CUDA calls are async). CUDA
+context init and kernel autotune are paid in an explicit warmup before the
+session so they land outside every measurement.
 
-The buffers are the real thing -- real board states, real token lists, real
-sizes, real batch_size ramp values -- because they come from the real loop,
-not from a synthetic generator.
+Each pair asserts the two arms agree on epochs_run and land within tolerance
+on the returned losses; disagreements are recorded, not swallowed.
 
-TIMING CORRECTNESS. CUDA is asynchronous: without torch.cuda.synchronize()
-around the timed region you measure kernel LAUNCHES, not kernel work, and the
-GPU looks absurdly fast. Both syncs are mandatory, not defensive. CUDA context
-init and autotune are paid in an explicit warmup before the session so they
-land outside every measurement.
-
-EQUIVALENCE CHECK. Each pair asserts the two arms agree on epochs_run and land
-within tolerance on the returned losses. Without it a GPU arm that silently
-early-stopped on target_kl after 1 epoch instead of 4 would look like a 4x
-speedup. Disagreements are recorded, not swallowed.
-
-WHAT THIS DELIBERATELY DOES NOT MEASURE: the per-iteration state_dict
-broadcast to the collection workers (rl.training.rollout_parallel line ~184). That cost
-exists only in the GPU arm -- GPU-resident nets need a device->host copy 500x
-per session -- and is measured separately by --broadcast-only, then ADDED to
-the GPU projection. Omitting it would flatter GPU dishonestly.
+Does not measure the per-iteration state_dict broadcast to collection workers
+(rl.training.rollout_parallel) -- GPU-resident nets pay a device->host copy of
+every parameter each session. That cost is measured separately via
+--broadcast-only and added to the GPU projection.
 
 Usage:
   python analysis/eval/bench_gpu_vs_cpu.py --iterations 30
@@ -48,7 +30,7 @@ import json
 import argparse
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))  # src/, two levels up now that this script sits in analysis/eval/
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))  # src/
 
 import torch
 
@@ -70,18 +52,10 @@ _GPU_CACHE = {}  # id(cpu_net) -> (gpu_net, gpu_optimizer)
 def _timed_gpu(net, optimizer, buf, kwargs):
     """One GPU update on a shadow copy -- never touches the real net.
 
-    The shadow net/optimizer are built ONCE per deck and reused. Building a
-    fresh deepcopy + Adam on every call (the first version of this) leaked
-    host memory until the REAL arm could not allocate its own minibatch pad
-    -- a 5,744-transition buffer needs a 304 MiB (5744, 92, 151) array, and
-    it OOMed mid-session. Reuse keeps the harness at 4 shadow nets total.
-
-    Reloading both state dicts before each timed run is what preserves the
-    property the whole benchmark rests on: both arms start from byte-identical
-    weights and optimizer moments, so they do the same work. Adam's
-    load_state_dict casts state tensors onto the param's device, so the
-    moments follow the params to the GPU -- a fresh-Adam GPU arm would skip
-    bias-correction work the CPU arm is doing and time a strictly smaller job.
+    The shadow net/optimizer are built once per deck and reused. Both state
+    dicts are reloaded from the CPU net/optimizer before each timed run, so
+    both arms start from identical weights and optimizer moments and do the
+    same work.
     """
     ent = _GPU_CACHE.get(id(net))
     if ent is None:
@@ -105,17 +79,9 @@ def _patched(net, optimizer, buf, device, **kwargs):
     gpu_t, gpu_out, gpu_err = None, None, None
     if torch.cuda.is_available():
         if not _WARMED:
-            # Context init + autotune + (on a GPU arch whose cubins this wheel
-            # does not ship, e.g. Blackwell sm_120 on an older cu wheel) PTX
-            # JIT are all paid OUTSIDE any measurement. Timed and printed
-            # because a multi-minute warmup is itself a finding.
+            # Pays context init, PTX JIT, and kernel autotune outside any measurement.
             t_w = time.perf_counter()
             try:
-                # ONE warmup update, not two. Two was a mistake: on this
-                # hardware a GPU update is far slower than a CPU one, so each
-                # extra warmup call costs minutes of pure overhead. One is
-                # enough to pay context init (measured 0.2s) and autotune of
-                # the kernels this net actually uses.
                 _timed_gpu(net, optimizer, buf, kwargs)
                 print(f"    [bench] cuda warmup {time.perf_counter() - t_w:.1f}s", flush=True)
             except Exception as exc:  # noqa: BLE001 -- recorded, not hidden
@@ -128,8 +94,7 @@ def _patched(net, optimizer, buf, device, **kwargs):
             except Exception as exc:  # noqa: BLE001
                 gpu_err = f"{type(exc).__name__}: {exc}"
 
-    # CPU arm: the REAL update. This is the one that mutates the net, so the
-    # session advances exactly as an unbenchmarked run would.
+    # CPU arm: the real update; mutates the net so the session advances normally.
     t0 = time.perf_counter()
     cpu_out = _real_ppo_update(net, optimizer, buf, device, **kwargs)
     cpu_t = time.perf_counter() - t0
@@ -138,22 +103,14 @@ def _patched(net, optimizer, buf, device, **kwargs):
            "cpu_s": cpu_t, "gpu_s": gpu_t, "gpu_error": gpu_err,
            "cpu_epochs": cpu_out[5], "gpu_epochs": gpu_out[5] if gpu_out else None}
     if gpu_out is not None:
-        # Same work? policy/value loss and epochs_run must agree. A GPU arm
-        # that early-stopped after 1 epoch would otherwise read as a 4x win.
+        # Both arms must agree on epochs_run and loss within tolerance to be comparable.
         rec["equivalent"] = (cpu_out[5] == gpu_out[5]
                              and abs(cpu_out[0] - gpu_out[0]) < 5e-2
                              and abs(cpu_out[1] - gpu_out[1]) < 5e-2)
         rec["cpu_policy_loss"], rec["gpu_policy_loss"] = cpu_out[0], gpu_out[0]
-    RECORDS.append(rec)
-    # Printed per call, not just dumped at the end: a slow arm has to be
-    # visible WHILE the run is happening, otherwise a pathological GPU time is
-    # indistinguishable from a hang for the whole length of the session.
+    RECORDS.append(rec)  # printed per call so a slow/hung GPU arm is visible live
     diag = ""
     if rec.get("equivalent") is False:
-        # Print WHY, not just that it failed: an epochs_run mismatch means the
-        # two arms ran different amounts of work (target_kl early-stopped on
-        # one side) and the timing pair must be discarded, whereas a pure loss
-        # drift at equal epochs is ordinary float non-determinism.
         diag = (f" [epochs {cpu_out[5]}vs{gpu_out[5]} "
                 f"ploss {cpu_out[0]:+.4f}vs{gpu_out[0]:+.4f} "
                 f"vloss {cpu_out[1]:.4f}vs{gpu_out[1]:.4f}]")
@@ -165,10 +122,10 @@ def _patched(net, optimizer, buf, device, **kwargs):
 
 
 def bench_broadcast(reps=200):
-    """The cost that exists ONLY under GPU: extracting CPU state_dicts for the
-    collection workers. rl.training.rollout_parallel rebuilds these on EVERY collect
-    call -- n_iterations * len(train_decks) times per session -- so a
-    GPU-resident net pays a device->host copy of every parameter each time."""
+    """Cost, GPU-only, of extracting CPU state_dicts for the collection
+    workers -- rl.training.rollout_parallel rebuilds these on every collect
+    call, so a GPU-resident net pays a device->host copy of every parameter
+    each time."""
     from rl.roster import build_pool
     from rl import checkpoint as ckpt_io
     decklists, vocab, deck_ctxs, fixed_tables = build_pool()
@@ -187,8 +144,7 @@ def bench_broadcast(reps=200):
         return {n: net.state_dict() for n, net in cpu_nets.items()}
 
     def _gpu_broadcast():
-        # What a GPU-resident league would have to do: pull every tensor back
-        # to host so it can be pickled to the worker processes.
+        # Device->host copy of every tensor, needed to pickle to worker processes.
         return {n: {k: v.cpu() for k, v in net.state_dict().items()}
                 for n, net in gpu_nets.items()}
 

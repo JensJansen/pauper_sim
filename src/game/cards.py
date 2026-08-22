@@ -1,13 +1,9 @@
-"""Card data model shared by every deck: EffectId, CardType, CardDef.
+"""Card data model: EffectId, CardType, CardDef, plus the pure CardDef
+predicates every catalog reads (is_artifact, card_colors, card_subtypes).
 
-A CardDef is the definition shared by every physical copy of a named card;
-quantity is handled separately, at deck-construction time, by parsing a
-plain decklist file (see game.decklist) against the shared catalog each
-logic module contributes to game.registry.CARD_DEFS.
-
-Also the home of the pure CardDef predicates every catalog reads (is_artifact,
-card_colors, card_subtypes) -- they take only a card_def, so they live next to
-the class they inspect rather than in effects.shared (state manipulation).
+A CardDef is the definition shared by every physical copy of a named
+card; quantity is handled separately by game.decklist against the
+shared catalog in game.registry.CARD_DEFS.
 """
 
 from enum import Enum, auto
@@ -30,11 +26,10 @@ class EffectId(Enum):
     GENEROUS_ENT = auto()
     FILLER = auto()
 
-    # --- monster_tron "filler" creatures, each with its own real cost/
-    # stats/ETB (not EffectId.FILLER's inert single canonical entry) ---
+    # --- monster_tron "filler" creatures (own cost/stats/ETB) ---
     ROOFTOP_PERCHER = auto()
     BOULDERBRANCH_GOLEM = auto()
-    BOULDERBRANCH_GOLEM_PROTOTYPE = auto()  # Prototype {3}{G} 3/3 mode -- own ETB gain amount (3, = its power)
+    BOULDERBRANCH_GOLEM_PROTOTYPE = auto()  # Prototype {3}{G} 3/3 mode
     MAELSTROM_COLOSSUS = auto()
     PINNACLE_KILL_SHIP = auto()
     BRAMBLE_WURM = auto()
@@ -47,8 +42,8 @@ class EffectId(Enum):
     OVERGROWN_BATTLEMENT = auto()
     WALL_OF_ROOTS = auto()
     LOTLETH_GIANT = auto()
-    ROOST_SEEK = auto()  # Sagu Wildling's Omen sorcery half -- see decklist comment
-    SAGU_WILDLING = auto()  # Sagu Wildling's own creature half, cast from exile via ROOST_SEEK's "adventure" spec
+    ROOST_SEEK = auto()  # Sagu Wildling's Omen (sorcery) half
+    SAGU_WILDLING = auto()  # Sagu Wildling's creature half, cast via ROOST_SEEK's adventure spec
     GATECREEPER_VINE = auto()
     NYXBORN_HYDRA = auto()
     QUIRION_RANGER = auto()
@@ -59,19 +54,14 @@ class EffectId(Enum):
     LAND_GRANT = auto()
     DREAD_RETURN = auto()
 
-    # --- shared tokens (created by mono_red_madness/rakdos_madness engine
-    # effects) -- not decklist cards, never in CARD_DEFS/any decklist
-    # quantity; see game.effects.tokens.create_token.
+    # --- shared tokens (created by engine effects, not decklist cards) ---
     BLOOD_TOKEN = auto()
     ROBOT_TOKEN = auto()
     WARRIOR_TOKEN = auto()  # Cartouche of Solidarity
     ELDRAZI_SPAWN_TOKEN = auto()  # Malevolent Rumble
     FOOD_TOKEN = auto()  # Generous Ent
 
-    # --- shared between rakdos_madness and mono_red_madness (both decklists
-    # play these) -- registry entries live in game.catalog.red_cards
-    # (Mountain/Sneaky Snacker/Voldaren Epicure/etc. are red or
-    # multicolor identity, not deck-scoped) ---
+    # --- shared between rakdos_madness and mono_red_madness (game.catalog.red_cards) ---
     MOUNTAIN = auto()
     SNEAKY_SNACKER = auto()
     VOLDAREN_EPICURE = auto()
@@ -112,12 +102,8 @@ class EffectId(Enum):
     UTOPIA_SPRAWL = auto()
     ABUNDANT_GROWTH = auto()
 
-    # --- new decks (dmir_terror / elves / grixis_affinity / jund_wildfire /
-    # mono_blue_terror / mono_red_rally): lands (G1). Artifact lands carry
-    # extra["artifact"]=True (both LAND and ARTIFACT -- matters for affinity/
-    # metalcraft/artifact-sac); the four "Bridge" lands also carry
-    # extra["indestructible"]=True. Filed by mana-output color, per each
-    # catalog's own no-cost-land convention. ---
+    # --- lands (G1): artifact lands carry extra["artifact"]=True; the four
+    # "Bridge" lands also carry extra["indestructible"]=True. ---
     ISLAND = auto()
     SEAT_OF_THE_SYNOD = auto()  # artifact land, {T}: U
     GREAT_FURNACE = auto()  # artifact land, {T}: R
@@ -247,31 +233,21 @@ _COLOR_PIPS = ("W", "U", "B", "R", "G")
 
 
 def is_artifact(card_def):
-    """Whether a card is an artifact -- a plain artifact (card_type ARTIFACT),
-    an artifact land (card_type LAND + extra["artifact"]), or an artifact
-    creature (card_type CREATURE + extra["artifact"], e.g. Myr Enforcer). The
-    single predicate every "artifacts you control" reader uses: Goblin Tomb
-    Raider's static boost, affinity, metalcraft, Krark-Clan/Makeshift's
-    artifact-sacrifice."""
+    """True if `card_def` is an artifact: card_type ARTIFACT, or LAND/CREATURE
+    with extra["artifact"] set (artifact lands, artifact creatures like Myr
+    Enforcer)."""
     return card_def.card_type == CardType.ARTIFACT or card_def.extra.get("artifact", False)
 
 
 def card_colors(card_def):
-    """The card's colors, from the colored pips in its mana cost. A Devoid
-    card (extra["devoid"], e.g. Writhing Chrysalis) is colorless regardless
-    of its cost's colored pips; a land / cost-less card (cast_cost None) is
-    colorless too. Used by "nonblack"/etc. targeting restrictions (Snuff
-    Out)."""
+    """The card's colors, from the colored pips in its mana cost. Colorless
+    if extra["devoid"] is set or cast_cost is None."""
     if card_def.extra.get("devoid") or card_def.cast_cost is None:
         return set()
     return {c for c in card_def.cast_cost if c in _COLOR_PIPS}
 
 
 def card_subtypes(card_def):
-    """A card's subtypes (extra["subtypes"], e.g. ("Island","Swamp") or
-    ("Elf",)), () if none declared. Only cards that need one for a rules
-    check carry it -- basic Island/Forest (for Islandcycling / Gingerbread
-    Cabin's Forest count), the U/B dual lands (Island subtype), the Elves
-    (tribal counts). Not a full Scryfall subtype line; just the ones the
-    engine actually reads."""
+    """Card's subtypes (extra["subtypes"]), () if none declared. Not a full
+    Scryfall subtype line -- only what the engine actually reads."""
     return card_def.extra.get("subtypes", ())

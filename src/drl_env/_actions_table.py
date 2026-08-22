@@ -1,32 +1,23 @@
-"""build_action_table (assembles the flat fixed action table from a decklist
-+ game.EFFECT_REGISTRY) and legal_action_mask (+ its sweep-scoped coverage
-check) -- the two entry points every other _actions_* category module feeds
-into. Kept together, in their own file, since the table-builder touches
-every category and the mask sweep resets every category's own sweep-scoped
-cache; splitting either further apart from its own dependencies would just
-turn this file's import block into the split.
+"""build_action_table (assembles the flat fixed action table from a
+decklist + game.EFFECT_REGISTRY) and legal_action_mask (+ its sweep-scoped
+coverage check) -- the two entry points every other _actions_* category
+module feeds into. Kept together since the table-builder touches every
+category and the mask sweep resets every category's own sweep-scoped
+cache.
 
-Categories, in table order (see drl_env._actions_cast/_actions_cast_altzone/
+Categories, in table order (see _actions_cast/_actions_cast_altzone/
 _combat/_resolution/_mana for the category boundaries themselves):
   A. Play land: <name>            -- one per distinct land name
-  A2. Tap <name> [for <color>]    -- mana abilities: one no-color
-     row per fixed/Tron/count source, one row per producible color for a
-     flexible/granted source. Legal in ANY priority window, even
-     mid-resolution of anything else (605.1a/605.3b -- no pending-resolution
-     gate at all), resolves immediately (never the stack) -- masked by
-     game.mana_ability_options. "Tap <name>" (Saruli Caretaker): same
-     gate-free category, but its extra cost (tap ANOTHER creature -- a cost
-     choice, 602.5g, not a target) opens a mana_subdecision (a SEPARATE
-     state field from pending_resolution, so this can still open mid-
-     resolution of anything else without clobbering it) instead of
-     resolving in one shot -- see state.mana_subdecision's own docstring
-     and _mana_extra_choose_legal's own docstring for why.
-     "Filter <name>, paying <input_color>" (Conduit Pylons/Barrels): pays
-     the {1} activation cost immediately as a flat fixed-table row, then
-     opens the shared choose_color mana_subdecision stage (see "Tap
-     <name>"/Saruli's own note above and _filter_mana_execute's own
-     docstring) to pick the output color via the "Produce <color>"
-     buttons -- no nested pay_cost either, same reasoning.
+  A2. Tap <name> [for <color>]    -- mana abilities: one no-color row per
+     fixed/Tron/count source, one row per producible color for a
+     flexible/granted source. Legal in any priority window, even
+     mid-resolution of anything else (605.1a/605.3b), resolves
+     immediately, never the stack. "Tap <name>" (Saruli Caretaker): same
+     gate-free category, but its extra cost (tap another creature, a cost
+     choice, 602.5g) opens a mana_subdecision instead of resolving in one
+     shot. "Filter <name>, paying <input_color>" (Conduit Pylons/Barrels):
+     pays the {1} immediately, then opens the same choose_color
+     mana_subdecision stage for the output color.
   B. Cast <name>                  -- one per card with a registry "cast" entry
   C. Activate <name> (<ability>)  -- one per registered activated ability
   D. Forestcycle <name>           -- one per registry "forestcycle" entry
@@ -34,39 +25,28 @@ _combat/_resolution/_mana for the category boundaries themselves):
   F. Choose: <name>               -- shared across every pending-resolution
      kind that picks a plain card name (search_fetch, ancient_stirrings,
      discard, and scry/surveil's ordering phase), dispatched by
-     pending_resolution["kind"]. Paying a cost never appears here -- once a
+     pending_resolution["kind"]. Paying a cost never appears here: once a
      cost is announced, the only legal actions are the A2 mana abilities
-     (601.2f, producing the mana) and "Spend <color> from pool" (below,
-     spending it).
-     NOT sacrifice (see category K) -- a battlefield permanent is never
+     and "Spend <color> from pool" below.
+     Not sacrifice (see category K) -- a battlefield permanent is never
      just a name, unlike a hand/library/graveyard card.
   H. Keep / Dispose (scry/surveil)
   I. Decline (Ancient Stirrings)
   K. Choose target: <name> (slot k) -- exact-(name, slot)-addressed, the
      "choose_permanent" resolution's own actions (Aura enchant-targets,
-     Crop Rotation's sacrifice cost, land bounce, and now every generic
-     sacrifice cost -- begin_sacrifice/Highway Robbery's own sacrifice
-     trigger, both chained through this same primitive) -- NOT category F:
-     two same-named permanents stop being interchangeable the instant an
-     Aura attaches to only one of them (or one has a counter, is tapped,
-     ...), and cast_aura's cast-time-target/resolve-time-fizzle contract
-     (same as knowing exactly which physical permanent was sacrificed)
-     depends on knowing exactly which physical permanent was chosen.
+     Crop Rotation's sacrifice cost, land bounce, and every generic
+     sacrifice cost). Not category F: two same-named permanents stop
+     being interchangeable once one is enchanted/tapped/has a counter,
+     and cast_aura's fizzle-on-invalid-target contract depends on knowing
+     exactly which physical permanent was chosen.
 
-spy_combo deck additions: B also covers Winding Way's modal cast (2
-actions, one per mode), Land Grant's free alt-cost, Dread Return's
-Flashback (cast from the graveyard), and Nyxborn Hydra's own
-"x_cast_modes" (one action per (mode, X) pair -- its normal creature cast
-and Bestow, each its own cost distinct from card_def.cast_cost, see
-_x_cast_legal/_x_cast_execute/_x_precast_choice_execute in drl_env.
-_actions_cast); C also covers non-mana activated abilities (Quirion
-Ranger, Pinnacle Kill-Ship's own Station); F/H also cover select_to_hand's
-own Keep/Bottom pair and its ordering phase (Lead the Stampede) and an
-optional search's Decline (Gatecreeper Vine) alongside Ancient Stirrings';
-K also covers Pinnacle Kill-Ship's own opponent-facing ETB target
-(choose_opponent_permanent, same category as blocking's own cross-player
-targeting -- correctly a no-op in every current 1-player Tron config,
-since the underlying resolution auto-completes with no legal target)."""
+Per-deck additions: B also covers modal casts, free alt-costs, Flashback,
+and x_cast_modes (one action per (mode, X) pair, each its own cost
+distinct from card_def.cast_cost); C also covers non-mana activated
+abilities; F/H also cover select_to_hand's Keep/Bottom pair, its ordering
+phase, and an optional search's Decline; K also covers opponent-facing ETB
+targets (choose_opponent_permanent, same category as blocking's
+cross-player targeting)."""
 
 import numpy as np
 
@@ -207,77 +187,50 @@ from ._actions_resolution import (
 
 def build_action_table(decklist, registry, token_card_defs=(),
                         opponent_decklist=None, opponent_token_card_defs=(), extra_choosable_names=()):
-    """opponent_decklist/opponent_token_card_defs: the OTHER side's own
-    decklist/tokens -- None/() for every 1-player deck (there's no real
-    opponent battlefield to reference at all), matching combat_enabled=False
-    decks never seeing "Attack: X" become legal. The token/pointer pipeline
-    passes None here (cross-player targeting moved to the pointer head, not
-    a fixed opponent action table) -- kept for a fixed "Choose opponent's:
-    X" table if one is ever wanted again.
+    """opponent_decklist/opponent_token_card_defs: the other side's own
+    decklist/tokens -- None/() for every 1-player deck, since there's no
+    real opponent battlefield to reference. The token/pointer pipeline
+    passes None (cross-player targeting moved to the pointer head); kept
+    for a fixed "Choose opponent's: X" table if one is ever wanted again.
 
-    token_card_defs: every token CardDef this deck's own cards can
-    create at runtime (Blood, Robot, Warrior, Eldrazi Spawn --
-   ), e.g. (game.BLOOD_TOKEN_CARD_DEF,).
-    Tokens are never decklist entries (no quantity, not in game.CARD_DEFS),
-    so they can't flow through distinct_names/game.CARD_DEFS[name] the way
-    every other action here does -- casting/land-drop/Flashback/etc. stay
-    decklist-only, a token is never cast or played as a land.
-
-    Two independent things read this list, for two different reasons: the
-    activated-abilities loop below (a token's own ability, e.g. Blood's
-    sac-for-a-card or Eldrazi Spawn's sac-for-{C}, needs an action to
-    exist at all), and the choosable_names set that both the "Choose: X"
-    and "Choose target: X (slot k)" name lists build from (a token can be
-    a perfectly legal choose_permanent/sacrifice/discard choice -- e.g. any
-    creature-enchanting Aura can enchant a token creature -- despite never
-    appearing in the decklist; list a token here even if it has no
-    activated ability of its own, like Warrior, so it stays a legal choice
-    once it's on the battlefield). Defaults to () so every existing call
-    site (Tron, spy_combo -- neither creates tokens) is unaffected.
+    token_card_defs: every token CardDef this deck's cards can create at
+    runtime (Blood, Robot, Warrior, Eldrazi Spawn, ...). Tokens are never
+    decklist entries, so they can't flow through distinct_names/
+    game.CARD_DEFS[name] the way every other action here does. Feeds both
+    the activated-abilities loop below (a token's own ability needs an
+    action to exist) and the choosable_names set (a token can be a legal
+    choose_permanent/sacrifice/discard choice despite never appearing in
+    the decklist).
 
     No `pending_kinds` parameter: whether a resolution kind can ever cross
-    players is a fixed fact about the ENGINE (which cards target an
-    opponent, which don't), not something a caller should have to compute
-    and thread through -- see own_pending_kinds just below and the
-    "UNIVERSAL DECISION ROWS" block further down for the two-way split this
-    function makes on its own."""
+    players is a fixed engine fact, not something a caller computes --
+    see own_pending_kinds below and the "UNIVERSAL DECISION ROWS" block."""
     distinct_names = sorted({name for name, *_rest in decklist})
-    # THIS decklist's own derived kinds. Used below for every kind confirmed
-    # to be self-only (impulse, discard_or_sacrifice, may_transform,
-    # may_cast, madness_decision, ancient_stirrings, malevolent_rumble,
-    # select_to_hand, choose_mana_color -- each has exactly one call site in
-    # the whole codebase, and it's always the deciding player's own card),
+    # This decklist's own derived kinds. Used below for kinds confirmed self-only
+    # (impulse, discard_or_sacrifice, may_transform, may_cast, madness_decision,
+    # ancient_stirrings, malevolent_rumble, select_to_hand, choose_mana_color),
     # so those rows don't inflate a deck's table for a card it doesn't run.
-    # The confirmed-cross-player kinds (pay_unless, tuck_position, may_copy,
-    # choose_any_target, choose_room, choose_target_player, scry/
-    # search_fetch's Decline, discard/graveyard-decline) don't consult this
-    # at all -- they're unconditional in the "UNIVERSAL DECISION ROWS" block
-    # further down, since an OPPONENT's card can pose those questions too.
+    # Confirmed-cross-player kinds (pay_unless, tuck_position, may_copy,
+    # choose_any_target, choose_room, choose_target_player, scry/search_fetch's
+    # Decline, discard/graveyard-decline) don't consult this at all -- they're
+    # unconditional in the "UNIVERSAL DECISION ROWS" block further down.
     own_pending_kinds = game.derive_pending_kinds(decklist)
     land_names = sorted({
         name for name in distinct_names if game.CARD_DEFS[name].card_type == game.CardType.LAND
     })
-    # Hoisted here (rather than just before their own first use, below) so the
-    # extra-cost mana-ability loop can also use them: card_type_by_name/
-    # qty_by_name index THIS side's own battlefield permanents (an opponent's
-    # card is never a legal choose_permanent/attack/mana-extra-cost target of
-    # mine); choosable_names is every name (real or token) this side could
-    # ever have on its own battlefield.
+    # Hoisted here so the extra-cost mana-ability loop can also use them:
+    # card_type_by_name/qty_by_name index this side's own battlefield
+    # permanents; choosable_names is every name (real or token) this side
+    # could ever have on its own battlefield.
     card_type_by_name = {name: game.CARD_DEFS[name].card_type for name in distinct_names}
     card_type_by_name.update({cd.name: cd.card_type for cd in token_card_defs})
     qty_by_name = {name: qty for name, qty, *_rest in decklist}
     # DFC back faces (Delver of Secrets -> Insectile Aberration): a transformed
-    # permanent's card_def swaps to its back face (game.resolution.execute_may_
-    # transform), so any BY-NAME resolution (order_triggers, sacrifice, discard,
-    # search_fetch, ...) can end up needing to reference that back-face name --
-    # omitting it here is the exact same softlock class as the token case just
-    # above (a legal, on-battlefield object with no "Choose: X" row able to name
-    # it), just for DFCs instead of tokens. Confirmed the hard way: a real
-    # pretrain run hit "all-False action mask for pending kind 'order_triggers'"
-    # the first time a transformed Delver's upkeep trigger needed ordering
-    # against another simultaneous trigger. Discovered the same way
-    # rl.model.features.CardVocab already discovers back faces: scan each front
-    # face's own registry "transform" spec.
+    # permanent's card_def swaps to its back face, so any by-name resolution
+    # (order_triggers, sacrifice, discard, search_fetch, ...) can need to
+    # reference that back-face name too. Discovered the same way
+    # rl.model.features.CardVocab discovers back faces: scan each front face's
+    # own registry "transform" spec.
     back_face_defs = [
         spec["card_def"] for name in distinct_names
         for spec in [registry.get(game.CARD_DEFS[name].effect_id, {}).get("transform")]
@@ -291,33 +244,20 @@ def build_action_table(decklist, registry, token_card_defs=(),
     for name in land_names:
         actions.append((f"Play land: {name}", _land_drop_legal(name), _land_drop_execute(name)))
 
-    # Mana abilities: "Tap X [for <color>]" produces mana into the
-    # pool in ANY priority window, even mid-resolution of anything else
-    # (605.1a/605.3b -- a mana ability never uses the stack and doesn't
-    # require priority; see _mana_ability_legal's own docstring for why no
-    # pending-resolution gate is needed at all). Row count is DERIVED per
-    # source rather than a blanket "no-color + all 6 pool colors" for every
-    # name: the registry's own "mana" spec kind already says, statically,
-    # which colors that source's NATIVE ability could ever offer --
-    # game.mana_ability_options only ever emits (name, None) for a fixed/
-    # fixed_multi/tron/count/count_all source and (name, color) for color in
-    # its own spec[1] for a flexible one -- so a row neither of those can
-    # ever produce is a permanently-dead output neuron. "Tap X for C" is
-    # never one of the rows generated below: colorless is only ever produced
-    # via the no-color row (a fixed/tron/count source's own single output),
-    # never a color CHOICE, for any source or grant this engine has.
+    # Mana abilities: "Tap X [for <color>]" produces mana into the pool in
+    # any priority window, even mid-resolution of anything else (605.1a/
+    # 605.3b, no pending-resolution gate). Row count is derived per source:
+    # the registry's "mana" spec kind statically says which colors that
+    # source's native ability could ever offer, so a row neither can
+    # produce is never generated. "Tap X for C" never appears: colorless is
+    # only ever produced via the no-color row, never a color choice.
     #
-    # LANDS are the one case a per-source static lookup alone would miss:
-    # Abundant Growth's cast_aura targets "any land, either side"
-    # (choose_any_target) and grants a color via game.mana._granted_mana_
-    # colors ON TOP OF the land's own native ability -- a runtime fact no
-    # single card's "mana" spec captures. Any land in ANY league deck can
-    # end up enchanted (this deck's own, or an opponent's, since Abundant
-    # Growth can target either side), so every land-type source keeps a row
-    # for every color the FULL registry ever declares grantable
-    # ("grants_mana_colors", e.g. Abundant Growth's own entry), unioned with
-    # its own native colors -- this is the one kind-of-decision in this
-    # function that DOES need to look past just this decklist's own cards.
+    # Lands are the one case a per-source static lookup alone would miss:
+    # Abundant Growth's cast_aura targets any land, either side, and grants
+    # a color on top of the land's own native ability -- a runtime fact no
+    # single card's "mana" spec captures. So every land-type source keeps a
+    # row for every color the full registry ever declares grantable
+    # ("grants_mana_colors"), unioned with its own native colors.
     grantable_mana_colors = set().union(*(spec.get("grants_mana_colors", set()) for spec in registry.values()))
     mana_source_effect_id = {}
     for name in distinct_names:
@@ -346,22 +286,15 @@ def build_action_table(decklist, registry, token_card_defs=(),
                     _mana_ability_execute(name, color),
                 ))
 
-    # Saruli Caretaker-shaped mana abilities: an extra cost that taps ANOTHER
-    # untapped creature (mana_extra_choose) -- a COST CHOICE (602.5g), not a
-    # target. ONE gate-free "Tap <name>" row per source name (same shape as
-    # an ordinary mana ability, mana_source_names above); its execute opens
-    # a mana_subdecision (game.begin_mana_subdecision) -- choose which
-    # creature to tap (pointer-routed, rl.decision.action_bridge, no fixed-table row
-    # needed), THEN choose a color (the shared "Produce <color>" buttons
-    # below) -- matching real sequencing (602.5g cost paid before the
-    # ability's own color-choice effect resolves) while staying gate-free
-    # (605.1a/605.3b): mana_subdecision is a field SEPARATE from
-    # pending_resolution specifically so this can still open mid-resolution
-    # of anything else without clobbering it -- see state.mana_subdecision's
-    # own docstring. needs_mana_subdecision_color_buttons is shared with the
-    # mana-filter block below -- either mechanic reaches the SAME
-    # choose_color stage (game.begin_mana_color_choice), so a deck needs the
-    # buttons if EITHER is present, even with only one of the two.
+    # Saruli Caretaker-shaped mana abilities: an extra cost that taps another
+    # untapped creature (mana_extra_choose) -- a cost choice (602.5g), not a
+    # target. One gate-free "Tap <name>" row per source name; its execute
+    # opens a mana_subdecision to choose which creature to tap (pointer-
+    # routed), then a color (the shared "Produce <color>" buttons below),
+    # matching real sequencing (cost paid before the color-choice effect
+    # resolves). needs_mana_subdecision_color_buttons is shared with the
+    # mana-filter block below, since both mechanics reach the same
+    # choose_color stage.
     needs_mana_subdecision_color_buttons = False
     extra_tap_source_names = sorted(
         {name for name in distinct_names if "mana_extra_choose" in registry.get(game.CARD_DEFS[name].effect_id, {})}
@@ -373,16 +306,11 @@ def build_action_table(decklist, registry, token_card_defs=(),
 
     # Mana filters (Conduit Pylons / Barrels of Blasting Jelly): "{1}: add one
     # mana of any color" -- the {1} half is a flat fixed-table row per
-    # (source, input_color): which floating pip pays it, paid immediately.
-    # input_color ranges over every pool color (any floating pip, incl.
-    # colorless, can pay a generic {1}). The output half (which color comes
-    # out) is a SEPARATE, later choice via the shared choose_color
-    # mana_subdecision stage above -- reusing Saruli's own "Produce <color>"
-    # buttons rather than a second per-row dimension (output_color x
-    # input_color used to be a real cross product here; see
-    # _filter_mana_execute). Never a nested pay_cost for the {1} itself:
-    # folding it into one would open a second pending resolution
-    # mid-activation, at risk of clobbering whatever's already open.
+    # (source, input_color), paid immediately. input_color ranges over every
+    # pool color. The output half is a separate, later choice via the shared
+    # choose_color mana_subdecision stage above, reusing the "Produce <color>"
+    # buttons. Never a nested pay_cost for the {1} itself, which would risk
+    # clobbering whatever pending_resolution is already open.
     filter_source_names = sorted({n for n in distinct_names if "filter_mana" in registry.get(game.CARD_DEFS[n].effect_id, {})})
     for name in filter_source_names:
         for input_color in game.POOL_COLORS:
@@ -395,10 +323,9 @@ def build_action_table(decklist, registry, token_card_defs=(),
         needs_mana_subdecision_color_buttons = True
 
     # Tracked so the generic choose_cast_mode/choose_cast_x/choose_delve_amount
-    # buttons below only get added to a deck's table that actually has a card
-    # using that shape -- these are MY OWN casting decisions (never posed by
-    # an opponent's card, unlike the pay_unless/tuck_position-style universal
-    # rows further down), so a deck with none of these cards never needs them.
+    # buttons below are only added to a deck's table that actually has a card
+    # using that shape -- these are the deck's own casting decisions, never
+    # posed by an opponent's card.
     needs_cast_mode_buttons = False
     needs_cast_x_buttons = False
     needs_delve_buttons = False
@@ -408,36 +335,29 @@ def build_action_table(decklist, registry, token_card_defs=(),
         cast_spec = card_spec.get("cast")
         if cast_spec is not None:
             # "precast_choice": True (Auras' real targets, Crop Rotation's
-            # sacrifice-as-a-cost) -- resolve must run immediately once paid
-            # and manage its own push_to_stack, instead of the generic
-            # auto-push _cast_execute does (see _precast_choice_execute's
-            # own docstring for exactly why).
+            # sacrifice-as-a-cost) -- resolve runs immediately once paid and
+            # manages its own push_to_stack, instead of _cast_execute's
+            # generic auto-push.
             cast_execute_fn = _precast_choice_execute if cast_spec.get("precast_choice") else _cast_execute
             actions.append((
                 f"Cast {name}",
                 _cast_legal(name, cast_spec.get("extra_legal"), _cast_speed(game.CARD_DEFS[name], cast_spec)),
                 cast_execute_fn(name, cast_spec["resolve"]),
             ))
-        # Winding Way/Utopia Sprawl/Goblin Bushwhacker: a modal cast -- ONE
-        # "Cast <name>" row (not one per mode); which mode is a generic
-        # choose_cast_mode sub-decision (601.2b: chosen before the cost is
-        # calculated), shared "Mode 1".."Mode 5" buttons reused by every
-        # modal card instead of a per-card, per-mode fixed row.
+        # A modal cast: one "Cast <name>" row (not one per mode); which mode is
+        # a generic choose_cast_mode sub-decision (601.2b: chosen before cost
+        # is calculated), shared "Mode 1".."Mode 5" buttons.
         cast_modes = card_spec.get("cast_modes")
         if cast_modes is not None:
             mode_items = list(cast_modes.items())
             speed = _cast_speed(game.CARD_DEFS[name], mode_items[0][1])
             actions.append((f"Cast {name}", _modal_legal(name, mode_items, speed), _modal_execute(name, mode_items)))
             needs_cast_mode_buttons = True
-        # Nyxborn Hydra: X-cost modes (its own normal creature cast AND
-        # Bestow, each with a different base cost) -- ONE "Cast <name>" row;
-        # mode chosen first (601.2b), X chosen second (601.2f), both generic
-        # sub-decisions (shared "Mode 1".."Mode 5" then "X=0".."X=10"
-        # buttons) instead of one fixed row per (mode, X) pair. Each mode's
-        # own "resolve" is still a function OF x returning the (state,
-        # card_def) resolve itself (green_cards.cast_nyxborn_hydra_creature/
-        # cast_nyxborn_hydra_bestow) -- called once X is actually chosen
-        # (_x_modal_execute), not baked in at table-build time anymore.
+        # X-cost modes (e.g. a normal creature cast and Bestow, each with a
+        # different base cost): one "Cast <name>" row; mode chosen first
+        # (601.2b), X chosen second (601.2f), both generic sub-decisions
+        # (shared "Mode n" then "X=n" buttons). Each mode's "resolve" is a
+        # function of x, called once X is actually chosen (_x_modal_execute).
         x_cast_modes = card_spec.get("x_cast_modes")
         if x_cast_modes is not None:
             mode_items = list(x_cast_modes.items())
@@ -445,10 +365,10 @@ def build_action_table(decklist, registry, token_card_defs=(),
             actions.append((f"Cast {name}", _x_modal_legal(name, mode_items, speed), _x_modal_execute(name, mode_items)))
             needs_cast_mode_buttons = True
             needs_cast_x_buttons = True
-        # Gurmag Angler: Delve -- ONE "Cast <name>" row; the delve amount is
-        # a generic choose_delve_amount sub-decision (702.66: chosen before
-        # the exile sub-cost opens and the reduced cost is calculated),
-        # shared "Delve 0".."Delve 6" buttons instead of one fixed row per N.
+        # Delve: one "Cast <name>" row; the delve amount is a generic
+        # choose_delve_amount sub-decision (702.66: chosen before the exile
+        # sub-cost opens and the reduced cost is calculated), shared
+        # "Delve n" buttons.
         delve = card_spec.get("delve")
         if delve is not None:
             delve_speed = _cast_speed(game.CARD_DEFS[name], delve)
@@ -458,7 +378,7 @@ def build_action_table(decklist, registry, token_card_defs=(),
                 _delve_execute(name, delve["max"], delve["resolve"]),
             ))
             needs_delve_buttons = True
-        # Land Grant: a second, free cast path alongside the normal one.
+        # A second, free cast path alongside the normal one (e.g. Land Grant).
         alt_cast = card_spec.get("alt_cast")
         if alt_cast is not None:
             actions.append((
@@ -466,56 +386,45 @@ def build_action_table(decklist, registry, token_card_defs=(),
                 _alt_cast_legal(name, alt_cast["extra_legal"], _cast_speed(game.CARD_DEFS[name], alt_cast)),
                 _alt_cast_execute(name, alt_cast["resolve"]),
             ))
-        # Dread Return: Flashback casts from the graveyard, not hand. Escape
-        # (Sleep of the Dead) is the same graveyard-cast machinery with a mana
-        # cost + its own additional cost handled inside the resolve -- shares
-        # _flashback_legal/_execute, only the action label differs.
+        # Flashback casts from the graveyard, not hand. Escape is the same
+        # graveyard-cast machinery with a mana cost plus its own additional
+        # cost handled inside resolve -- shares _flashback_legal/_execute,
+        # only the action label differs.
         for gy_cast_key, gy_cast_label in (("flashback", "Flashback"), ("escape", "Escape")):
             gy_cast = card_spec.get(gy_cast_key)
             if gy_cast is not None:
-                gc_cost = gy_cast.get("cost")  # mana cost dict, if the cost includes mana (Deep Analysis, Sleep of the Dead)
+                gc_cost = gy_cast.get("cost")  # mana cost dict, if the cost includes mana
                 actions.append((
                     f"{gy_cast_label} {name}",
                     _flashback_legal(name, gy_cast["legal"], _cast_speed(game.CARD_DEFS[name], gy_cast), gc_cost),
                     _flashback_execute(name, gy_cast["resolve"], gc_cost),
                 ))
-        # Highway Robbery: Plot -- pay its plot cost to exile it now,
-        # cast it for free from exile on any later turn. The cast-from-
-        # exile half reuses this same card's normal "cast" resolve (the
-        # real spell effect is identical either way, only how the cost
-        # was paid differs) -- so a "plot" entry only makes sense
+        # Plot: pay its plot cost to exile it now, cast it for free from
+        # exile on any later turn. The cast-from-exile half reuses this
+        # card's normal "cast" resolve, so a "plot" entry only makes sense
         # alongside a "cast" entry, never alone.
         plot = card_spec.get("plot")
         if plot is not None:
-            plot_speed = _cast_speed(game.CARD_DEFS[name], plot)  # same speed governs both actions below -- Plot's own reminder text ("any time you could cast this card") is one timing rule, not two
+            plot_speed = _cast_speed(game.CARD_DEFS[name], plot)  # same speed governs both actions below
             actions.append((
                 f"Plot {name}",
                 _plot_legal(name, plot["cost"], plot_speed),
                 _plot_execute(name, plot["cost"], plot["resolve"]),
             ))
-            # cast_from_exile_resolve: optional override for cards whose
-            # normal "cast" resolve does state.hand.remove(card_def) (the
-            # universal convention for every cast resolve in this codebase)
-            # -- wrong once the card already left exile, never hand, by
-            # the time this runs (Highway Robbery's own real-world case;
-            # every existing Plot self-check's resolve happens to be a
-            # no-op, which is why this distinction never mattered before).
-            # Falls back to cast_spec["resolve"] unchanged for any card
-            # whose resolve doesn't care either way.
+            # cast_from_exile_resolve: optional override for a normal "cast"
+            # resolve that does state.hand.remove(card_def) -- wrong once the
+            # card already left exile, never hand. Falls back to
+            # cast_spec["resolve"] for a card whose resolve doesn't care.
             actions.append((
                 f"Cast {name} (plotted)",
                 _cast_from_exile_legal(name, cast_spec.get("extra_legal"), plot_speed),
                 _cast_from_exile_execute(name, plot.get("cast_from_exile_resolve", cast_spec["resolve"])),
             ))
-        # Sagu Wildling: Omen -- cast_roost_seek (this same "name"'s own
-        # "cast" resolve above) shuffles the card into the LIBRARY instead
-        # of graveyarding OR exiling it (real Adventure's own exile
-        # doesn't apply to Omen -- see _omen_cast_legal's own docstring).
-        # This second action is just an ordinary-looking second cast
-        # option for the same hand card, its own real cost, offered
-        # whenever a same-named card is back in hand (redrawn after being
-        # shuffled in) -- never shares a resolve with the sorcery mode,
-        # the creature side is a wholly different spell.
+        # Omen: the sorcery side's resolve shuffles the card into the library
+        # instead of graveyarding or exiling it (see _omen_cast_legal). This
+        # is a second cast option for the same hand card, its own cost,
+        # offered whenever a same-named card is back in hand -- the creature
+        # side is a wholly different spell, never sharing a resolve.
         omen = card_spec.get("omen")
         if omen is not None:
             omen_speed = _cast_speed(omen["card_def"], omen)
@@ -524,14 +433,10 @@ def build_action_table(decklist, registry, token_card_defs=(),
                 _omen_cast_legal(name, omen["cost"], omen_speed),
                 _omen_cast_execute(omen["card_def"], omen["cost"], omen["resolve"]),
             ))
-        # Boulderbranch Golem: Prototype -- a second cast option for the same
-        # hand card, its own cheaper cost, producing a DIFFERENT CardDef (the
-        # smaller 3/3 with its own ETB). Structurally identical to Omen ("cast
-        # this hand card for an alternate cost as a different creature"), so it
-        # reuses the same _omen_cast_legal/_omen_cast_execute helpers -- only
-        # the resolve differs (no library shuffle; the prototype creature just
-        # enters). Real reminder text: "You may cast this spell with different
-        # mana cost, color, and size. It keeps its abilities and types."
+        # Prototype: a second cast option for the same hand card, its own
+        # cheaper cost, producing a different CardDef. Structurally identical
+        # to Omen, so it reuses the same _omen_cast_legal/_omen_cast_execute
+        # helpers -- only the resolve differs (no library shuffle).
         prototype = card_spec.get("prototype")
         if prototype is not None:
             proto_speed = _cast_speed(prototype["card_def"], prototype)
@@ -546,13 +451,9 @@ def build_action_table(decklist, registry, token_card_defs=(),
     for name, effect_id in activatable:
         abilities = registry.get(effect_id, {}).get("activated_abilities", {})
         for ability_name, spec in abilities.items():
-            # Real Magic's own default for activated (non-mana) abilities is
-            # the opposite of a spell's: any time, unless the card says
-            # "activate only as a sorcery" -- an explicit "speed" key in the
-            # ability's own spec is that opt-in override; every existing
-            # ability (Blood, Candy Trail, Expedition Map, Bonders'
-            # Ornament, Quirion Ranger, Barrels) has none, so all keep
-            # working in every phase, unrestricted by speed.
+            # Default for activated (non-mana) abilities is any time, unless
+            # the card says "activate only as a sorcery" -- an explicit
+            # "speed" key in the ability's spec is that opt-in override.
             speed = spec.get("speed", game.turn.Speed.INSTANT)
             if "cost_key" in spec:
                 actions.append((
@@ -561,7 +462,7 @@ def build_action_table(decklist, registry, token_card_defs=(),
                     _activate_execute(name, spec["cost_key"], spec["resolve"]),
                 ))
             else:
-                # Non-mana cost (Quirion Ranger: return a Forest to hand).
+                # Non-mana cost (e.g. Quirion Ranger: return a Forest to hand).
                 actions.append((
                     f"Activate {name} ({ability_name})",
                     _activate_no_cost_legal(name, spec["legal"], speed),
@@ -569,11 +470,10 @@ def build_action_table(decklist, registry, token_card_defs=(),
                 ))
 
     # "Discard this card from hand: <do something>" cycling-family actions.
-    # Both keys share the identical hand-zone/cost-key/resolve plumbing
-    # (_forestcycle_legal/_execute) -- they differ only in the action label:
-    #   "forestcycle" -- basic-land-to-hand search (Generous Ent, Ash Barrens)
-    #   "cycle"       -- plain Cycling (discard, draw) and typed cycling like
-    #                    Islandcycling (Lorien Revealed) / Twisted Landscape
+    # Both keys share identical hand-zone/cost-key/resolve plumbing
+    # (_forestcycle_legal/_execute), differing only in the action label:
+    #   "forestcycle" -- basic-land-to-hand search
+    #   "cycle"       -- plain Cycling and typed cycling (e.g. Islandcycling)
     for name in distinct_names:
         for spec_key, label in (("forestcycle", "Forestcycle"), ("cycle", "Cycle")):
             cyc_spec = registry.get(game.CARD_DEFS[name].effect_id, {}).get(spec_key)
@@ -584,25 +484,17 @@ def build_action_table(decklist, registry, token_card_defs=(),
                     _forestcycle_execute(name, cyc_spec["cost_key"], cyc_spec["resolve"]),
                 ))
 
-    # Impulse: "you may play the exiled cards" (Reckless Impulse / Experimental
-    # Synthesizer / Clockwork Percussionist). Only emitted for a deck that can
-    # actually impulse (its impulse-source card declares pending_kinds
+    # Impulse: "you may play the exiled cards". Only emitted for a deck that
+    # can actually impulse (its source card declares pending_kinds
     # {"impulse"}), so decks without one never carry these mostly-illegal
     # actions. One action per deck card name: a land play, or a cast per the
-    # card's own cast/cast_modes spec (paying its NORMAL cost -- impulse, unlike
-    # Plot, is not free; x_cast_modes cards, none in the impulse decks, aren't
-    # offered from impulse).
+    # card's own cast/cast_modes spec, paying its normal cost (impulse,
+    # unlike Plot, is not free).
     #
-    # Gated on THIS decklist's own derived kinds -- unlike pay_unless/
-    # tuck_position (genuinely posed by an OPPONENT's card, unconditional in
-    # the "UNIVERSAL DECISION ROWS" block further down), impulse is never
-    # cross-player: state.impulse is always the ACTIVE player's own zone
-    # (game/state.py's _active_player_property) and every impulse source
-    # only ever exiles from its own controller's library (shared.
-    # impulse_exile's own docstring). A deck without an impulse card of its
-    # own never has "impulse" in own_pending_kinds, so it never carries a
-    # "Play from exile: X" row per own land/castable card for nothing --
-    # permanently illegal, since no card of theirs ever opens the zone.
+    # Gated on this decklist's own derived kinds, unlike pay_unless/
+    # tuck_position: impulse is never cross-player, since state.impulse is
+    # always the active player's own zone and every impulse source only ever
+    # exiles from its own controller's library.
     if "impulse" in own_pending_kinds:
         for name in distinct_names:
             card_def = game.CARD_DEFS[name]
@@ -627,9 +519,9 @@ def build_action_table(decklist, registry, token_card_defs=(),
                     _play_impulse_cast_execute(name, mode_cost, mode_spec["resolve"], mode_spec.get("precast_choice", False)),
                 ))
 
-    # Bramble Wurm: an activated ability usable from the graveyard, not
-    # the battlefield (unlike every "activated_abilities" entry above) or
-    # hand (unlike Forestcycle) -- its own "graveyard_ability" registry key.
+    # An activated ability usable from the graveyard, not the battlefield
+    # (unlike "activated_abilities" above) or hand (unlike Forestcycle) --
+    # the "graveyard_ability" registry key.
     for name in distinct_names:
         gy_spec = registry.get(game.CARD_DEFS[name].effect_id, {}).get("graveyard_ability")
         if gy_spec is not None:
@@ -642,53 +534,33 @@ def build_action_table(decklist, registry, token_card_defs=(),
     actions.append(("Pass", _pass_legal, _pass_execute))
 
     # "Choose: X" needs to cover every name a sacrifice/discard/search_fetch/
-    # etc. resolution could ever offer -- not just decklist names. (NOT
-    # choose_permanent -- that's the "Choose target: X (slot k)" block
-    # below, exact-(name, slot) addressed.) A token (e.g. boggles' Eldrazi
-    # Spawn) is a perfectly legal sacrifice/discard choice despite never
-    # appearing in CARD_DEFS/the decklist; omitting token names here left
-    # exactly that case legal-to-create but impossible-to-choose once a
-    # token was the only eligible option, softlocking the game.
-    # extra_choosable_names: card names that can be a "Choose: X" option despite
-    # not being in THIS deck (nor its tokens) -- e.g. an opponent's graveyard
-    # cards. The league (rl.roster) passes none: choose_graveyard_card is a
-    # POINTER target (rl.decision.action_bridge), so an opponent's graveyard is reached
-    # by pointing at its token, not a whole-league "Choose: X" row per card
-    # name. Kept as a general knob, used by
-    # scripts/migrate_pointer_graveyard.py to reconstruct the pre-pointer
-    # table; defaults to none. choosable_names
-    # itself (not just extra_choosable_names) also drives "Choose target: X
-    # (slot k))" and "Attack: X (slot k)" below -- both strictly THIS side's
-    # own battlefield permanents.
+    # etc. resolution could ever offer, not just decklist names (not
+    # choose_permanent -- that's the "Choose target: X (slot k)" block below,
+    # exact-(name, slot) addressed). A token is a perfectly legal sacrifice/
+    # discard choice despite never appearing in CARD_DEFS/the decklist.
+    # extra_choosable_names: card names that can be a "Choose: X" option
+    # despite not being in this deck (nor its tokens), e.g. an opponent's
+    # graveyard cards. The league passes none: choose_graveyard_card is a
+    # pointer target (rl.decision.action_bridge). Kept as a general knob for
+    # scripts/migrate_pointer_graveyard.py; defaults to none. choosable_names
+    # itself also drives "Choose target: X (slot k)" and "Attack: X (slot k)"
+    # below, both strictly this side's own battlefield permanents.
     choose_by_name = sorted(set(choosable_names) | set(extra_choosable_names))
     for name in choose_by_name:
         actions.append((f"Choose: {name}", _choose_name_legal(name), _choose_name_execute(name)))
 
-    # "Attack: X (slot k)" -- one per (creature name, slot) pair
-    #, legal only during
-    # Phase.DECLARE_ATTACKERS (see _attack_legal). k runs 1..that card's
-    # own decklist quantity for a real card -- the pooled slot scheme
-    # means this is a hard, correct bound even through repeated bounce/
-    # blink, since only that many physical copies can ever be
-    # simultaneously alive. A token has no decklist quantity to read, so
-    # k instead runs 1..TOKEN_LIMIT -- a shared pool across every token
-    # name combined, so any single name could in principle claim all of
-    # it, and each name's own registered range has to cover that worst
-    # case independently. A deck whose own phase sequence never includes
-    # DECLARE_ATTACKERS (combat_enabled=False) simply never sees any of
-    # these become legal -- same "phase not in this deck's own sequence"
-    # degrade every other phase-gated action already relies on.
+    # "Attack: X (slot k)" -- one per (creature name, slot) pair, legal only
+    # during Phase.DECLARE_ATTACKERS. k runs 1..decklist quantity for a real
+    # card, since only that many physical copies can ever be simultaneously
+    # alive. A token has no decklist quantity, so k runs 1..TOKEN_LIMIT, a
+    # shared pool across every token name.
 
     # "Choose target: X (slot k)" -- the "choose_permanent" resolution's own
     # exact-(name, slot) addressed actions (Aura enchant-targets, Crop
-    # Rotation's sacrifice cost, land bounce), same shape/reasoning as
-    # "Choose opponent's: X (slot k)" below just scoped to THIS side's own
+    # Rotation's sacrifice cost, land bounce), scoped to this side's own
     # battlefield. Registered for every choosable name, not just creatures
-    # (unlike "Attack:"/"Assign Blocker:" below) -- Utopia Sprawl/Abundant
-    # Growth target lands, not creatures -- and legal() gates precisely at
-    # runtime against whichever predicate the actual pending choose_permanent
-    # resolution holds, same "pre-register broadly, mask precisely" pattern
-    # "Choose: X as color" below already uses.
+    # (e.g. Utopia Sprawl targets lands), with legal() gating precisely at
+    # runtime against the actual pending choose_permanent resolution.
     for name in choosable_names:
         max_slot = qty_by_name.get(name, game.TOKEN_LIMIT)
         for slot in range(1, max_slot + 1):
@@ -740,30 +612,20 @@ def build_action_table(decklist, registry, token_card_defs=(),
                 _assign_blocker_execute(name, slot),
             ))
     actions.append(("Done blocking", _done_blocking_legal, _done_blocking_execute))
-    # Trample-to-player is no longer an agent choice (game.resolution.
-    # handlers_combat._autoresolve_if_no_choices_left applies it
-    # automatically instead) -- this row's legal() is now permanently
-    # False. Kept registered anyway, purely so the fixed table's length --
-    # and every trained DeckNetwork's action-output shape -- stays stable;
-    # see _assign_damage_to_opponent_legal's own docstring.
+    # Trample-to-player is no longer an agent choice -- automatic now (see
+    # _assign_damage_to_opponent_legal). Kept registered, permanently
+    # illegal, so the fixed table's length stays stable.
     actions.append((
         "Assign combat damage to opponent", _assign_damage_to_opponent_legal, _assign_damage_to_opponent_execute,
     ))
 
-    # "Choose opponent's: X (slot k)" -- the general cross-player
-    # targeting primitive, one per (opponent name, slot), built from the
-    # OPPONENT's own decklist/tokens instead of this side's own. Registered
-    # for every opponent choosable name, not just creatures -- same
-    # "pre-register broadly, mask precisely" pattern as "Choose target: X"
-    # above: blocking's predicate only ever matches attackers (creatures),
-    # but Masked Vandal's ETB (green_cards.py) targets an opponent artifact
-    # or enchantment, so a creature-only filter here left that a legal
-    # target with no matching action row -- an all-False mask crash the
-    # instant an opponent controlled a targetable artifact/enchantment.
-    # Same quantity-or-TOKEN_LIMIT bound as the attack registration above,
-    # just applied to the other side's card pool. None/() (the default for
-    # every 1-player deck) registers nothing at all -- there's no real
-    # opponent battlefield to ever reference in that mode.
+    # "Choose opponent's: X (slot k)" -- the general cross-player targeting
+    # primitive, one per (opponent name, slot), built from the opponent's
+    # own decklist/tokens. Registered for every opponent choosable name, not
+    # just creatures (e.g. Masked Vandal's ETB targets an opponent artifact
+    # or enchantment). Same quantity-or-TOKEN_LIMIT bound as the attack
+    # registration above, applied to the other side's card pool. None/()
+    # (the default for every 1-player deck) registers nothing at all.
     if opponent_decklist is not None:
         opponent_distinct_names = sorted({name for name, *_rest in opponent_decklist})
         opponent_qty_by_name = {name: qty for name, qty, *_rest in opponent_decklist}
@@ -780,10 +642,8 @@ def build_action_table(decklist, registry, token_card_defs=(),
                 ))
 
     # No "Choose: X as color" rows: a flexible or granted source's color is
-    # chosen at TAP time (the "Tap X for <color>" mana-ability rows above float
-    # directly into the pool), whether that tap happens speculatively in a main
-    # phase or inside a payment. Spending what is floating is the separate row
-    # set below.
+    # chosen at tap time (the "Tap X for <color>" rows above float directly
+    # into the pool). Spending what is floating is the separate row set below.
     for color in game.POOL_COLORS:
         actions.append((
             f"Spend {color} from pool",
@@ -792,51 +652,32 @@ def build_action_table(decklist, registry, token_card_defs=(),
         ))
 
     # ---- UNIVERSAL DECISION ROWS (deliberately NOT gated on any pending kind) ----
-    # Every fixed row below answers a QUESTION the engine can pose, and each is a
-    # small constant set of buttons (never a per-card-name loop). They are added
-    # to EVERY deck's table unconditionally, because a decision is not always
-    # answered by the player whose deck produced it -- an opponent's card can pose
-    # a question that YOU must answer:
-    #   pay_unless          Spell Pierce/Ward/Nihil Spellbomb/Chain Lightning --
-    #                       the PAYER is the spell's controller, i.e. the opponent.
-    #   tuck_position       Deem Inferior -- the tucked permanent's OWNER chooses.
-    #   may_copy            Chain Lightning -- the affected player may copy.
-    #   choose_any_target   a Chain Lightning COPIER may choose a new target.
-    #   choose_target_player/scry/search_fetch  Undercity's own Trap/Lost Well/
-    #                       Secret Entrance rooms -- initiative can be STOLEN
-    #                       (combat damage), so a deck with none of these kinds
-    #                       among its own cards can still be the one venturing
-    #                       and facing them; search_fetch's Decline is ALSO
-    #                       independently reachable via Cleansing Wildfire (the
-    #                       DESTROYED land's controller searches their own
-    #                       library, not the caster).
-    #   discard-decline, choose_graveyard_card-decline  same shape (Refurbished
-    #                       Familiar / Relic of Progenitus target the opponent).
-    # `derive_pending_kinds` reads a deck's OWN cards, so gating these on it left
-    # the answering seat with no row for the question and an all-False action mask
-    # -- a hard crash (real: monster_tron/mono_blue_terror league play; an
-    # empirical cross-deck audit reproduced pay_unless and tuck_position and
-    # flagged choose_graveyard_card/discard/surveil as latent). Rather than
-    # maintain a hand-audited list of "which kinds may cross" -- which silently
-    # rots the next time a card hands a choice to the opponent -- every constant
-    # decision-button set whose kind COULD ever cross players is always present
-    # and runtime-gated illegal, exactly the "present-but-permanently-illegal"
-    # footing "Decline (graveyard)" and "Decline (search)" already documented
-    # for themselves.
+    # Every fixed row below answers a question the engine can pose, each a
+    # small constant set of buttons, never a per-card-name loop. Added to
+    # every deck's table unconditionally, because an opponent's card can pose
+    # a question that you must answer:
+    #   pay_unless          the payer is the spell's controller, i.e. the opponent.
+    #   tuck_position       the tucked permanent's owner chooses.
+    #   may_copy            the affected player may copy.
+    #   choose_any_target   a copier may choose a new target.
+    #   choose_target_player/scry/search_fetch  initiative can be stolen via
+    #                       combat damage, so a deck can face these without
+    #                       running any card of that kind itself.
+    #   discard-decline, choose_graveyard_card-decline  same shape (some
+    #                       cards target the opponent).
+    # `derive_pending_kinds` reads a deck's own cards, so gating these on it
+    # left the answering seat with no row for the question and an all-False
+    # action mask. Rather than maintain a hand-audited list of "which kinds
+    # may cross" (which silently rots the next time a card hands a choice to
+    # the opponent), every decision-button set whose kind could ever cross
+    # players is always present and runtime-gated illegal instead.
     #
-    # Gated below on own_pending_kinds instead (confirmed, not assumed, self-
-    # only -- each has exactly one call site and it's always the deciding
-    # player's own card): may_transform (Delver of Secrets' own upkeep --
-    # mono_blue_terror only), may_cast (Cascade -- monster_tron only),
-    # choose_mana_color (Chromatic Star -- grixis_affinity only),
-    # ancient_stirrings/malevolent_rumble/select_to_hand (each one specific
-    # card's own search/rummage), madness_decision (madness always triggers
-    # off YOUR OWN discarded card, whoever forced the discard), and
-    # discard_or_sacrifice (Highway Robbery's sacrifice trigger is the
-    # CASTER's own optional cost, never posed to an opponent -- also true of
-    # `impulse` just above, for the identical reason). Making any of these
-    # universal would have repeated the exact bloat impulse's own history
-    # already illustrates: real rows for a card the deck never runs.
+    # Gated below on own_pending_kinds instead (confirmed self-only: each has
+    # exactly one call site, always the deciding player's own card):
+    # may_transform, may_cast, choose_mana_color, ancient_stirrings/
+    # malevolent_rumble/select_to_hand, madness_decision (always triggers off
+    # your own discarded card), and discard_or_sacrifice (the caster's own
+    # optional cost, never posed to an opponent, same as `impulse` above).
     actions.append(("Keep (scry/surveil)", _keep_dispose_legal, _keep_execute))
     actions.append(("Dispose (scry/surveil)", _keep_dispose_legal, _dispose_execute))
     # Self-only (Ancient Stirrings/Malevolent Rumble are each one specific
@@ -963,20 +804,17 @@ def build_action_table(decklist, registry, token_card_defs=(),
     # of its own can still be the one venturing.
     for room in game.ROOM_NAMES:
         actions.append((f"Enter room: {room}", _choose_room_legal(room), _choose_room_execute(room)))
-    # Chromatic Star's "add one mana of any color": self-only (the activating
-    # player's own choice, single call site) -- see this block's own header
-    # comment. Gated, unlike the room set above.
+    # "Add one mana of any color": self-only (single call site). Gated,
+    # unlike the room set above.
     if "choose_mana_color" in own_pending_kinds:
         for color in game.COLORS:
             actions.append((f"Add mana: {color}", _choose_mana_color_legal(color), _choose_mana_color_execute(color)))
 
     # choose_cast_mode/choose_cast_x/choose_delve_amount: shared, per-deck-
-    # conditional button sets for the generic mode/X/delve-amount sub-
-    # decisions the cast_modes/x_cast_modes/delve loops above open -- unlike
-    # the universal rows just above, these are never posed by an OPPONENT's
-    # card (they only ever fire mid this deck's own casting), so they're
-    # gated on this deck actually having a card of that shape, same
-    # reasoning as the deck-gated impulse/discard_or_sacrifice rows.
+    # conditional button sets for the mode/X/delve-amount sub-decisions the
+    # cast_modes/x_cast_modes/delve loops above open. Never posed by an
+    # opponent's card, so gated on this deck actually having a card of that
+    # shape.
     if needs_cast_mode_buttons:
         for i in range(_CAST_MODE_BUTTON_MAX):
             actions.append((f"Mode {i + 1}", _choose_cast_mode_legal(i), _choose_cast_mode_execute(i)))
@@ -988,10 +826,8 @@ def build_action_table(decklist, registry, token_card_defs=(),
             actions.append((f"Delve {n}", _choose_delve_amount_legal(n), _choose_delve_amount_execute(n)))
 
     # Shared "Produce <color>" buttons for the choose_color stage of a
-    # mana_subdecision -- reused by BOTH Saruli-shaped mana_extra_choose
-    # sources and filter_mana sources (whichever one is present sets
-    # needs_mana_subdecision_color_buttons above); never posed by an
-    # opponent's card, only ever opened by this deck's own source.
+    # mana_subdecision -- reused by both mana_extra_choose and filter_mana
+    # sources; never posed by an opponent's card.
     if needs_mana_subdecision_color_buttons:
         for color in game.COLORS:
             actions.append((
@@ -1002,30 +838,16 @@ def build_action_table(decklist, registry, token_card_defs=(),
 
 
 def _validate_choose_name_coverage(state, actions):
-    """The durable, always-on half of the by-name/cross-player guardrail
-    (see _CHOOSE_NAME_PENDING_KINDS's own docstring for the invariant this
-    enforces). Runs on every legal_action_mask sweep, but is a cheap no-op
-    unless the current pending is actually one of that constant's kinds --
-    which is already a small minority of decisions.
+    """Enforces the invariant from _CHOOSE_NAME_PENDING_KINDS. Runs on every
+    legal_action_mask sweep, a cheap no-op unless the current pending is
+    actually one of that constant's kinds.
 
-    Cross-checks _choose_name_options' own OUTPUT against what this deck's
-    table can actually represent (every "Choose: X" row already built into
-    `actions`, read directly off it -- no separate choosable_names threading
-    needed). If a candidate has no matching row, that candidate is
-    UNREACHABLE: not merely "illegal right now" (any legal_fn can say that),
-    but a card the agent has NO WAY to ever select for this decision, which
-    means either every candidate is unreachable (an eventual all-False
-    crash, the failure mode that surfaced this bug) or only SOME are (a
-    silent, still-live correctness bug -- the agent quietly loses the
-    ability to choose a specific legal option, with no crash at all to flag
-    it). Raising immediately, the first time ANY game -- a self-check,
-    random self-play, or real training -- exercises the violation, is what
-    makes this a property of the code instead of a fact someone has to
-    remember: no comment to read, no separate audit script to run and act
-    on. Confirmed reachable in real cross-deck league play: choose_
-    stack_target asked mono_blue_terror to name a spell dmir_terror cast,
-    which mono_blue_terror's own table (built only from its own decklist)
-    had no row for."""
+    Cross-checks _choose_name_options' output against every "Choose: X" row
+    already built into `actions`. A candidate with no matching row is
+    unreachable -- not just illegal right now, but a card the agent has no
+    way to ever select for this decision, either crashing all-False or
+    silently losing the ability to choose a legal option. Raises
+    immediately so this is a property of the code, not a fact to remember."""
     pending = state.pending_resolution
     if pending is None or pending["kind"] not in _CHOOSE_NAME_PENDING_KINDS:
         return
@@ -1046,23 +868,17 @@ def _validate_choose_name_coverage(state, actions):
         )
 
 
-_mana_subdecision_rows_cache = {}  # id(actions) -> (actions, [(idx, mana_subdecision_gate), ...] for entries stamped with one)
-_MANA_SUBDECISION_ROWS_CACHE_CAP = 32  # ponytail: FIFO-evicted, not reset per sweep like its siblings (this cache must survive across sweeps -- see below) -- bounds memory when a caller (e.g. a persistent multiprocessing worker) rebuilds fresh `actions` tables across many calls instead of reusing one per deck for the session
+_mana_subdecision_rows_cache = {}  # id(actions) -> (actions, [(idx, mana_subdecision_gate), ...])
+_MANA_SUBDECISION_ROWS_CACHE_CAP = 32  # ponytail: FIFO-evicted; bounds memory across many rebuilt `actions` tables
 
 
 def _mana_subdecision_rows(actions):
     """The (idx, _mana_subdecision_gate) pairs for entries carrying that
-    stamp, cached once per distinct `actions` table (see legal_action_mask's
-    own docstring for the id()-cache lifecycle reasoning -- identical to
-    the removed _action_gates' -- this is the ONE gate still worth caching:
-    _mana_subdecision_color_legal is unsafe to call unconditionally (see
-    its own body -- it dereferences state.mana_subdecision["can_produce"]
-    with no None-guard, so calling it with no subdecision open raises
-    TypeError, not a graceful False), so legal_action_mask MUST know which
-    few indices those are without calling them first to find out. Empty for
-    most decks -- populated only by a Saruli-Caretaker-shaped
-    mana_extra_choose card or a filter_mana card (Conduit Pylons/Barrels of
-    Blasting Jelly)."""
+    stamp, cached once per distinct `actions` table. The one gate worth
+    caching: _mana_subdecision_color_legal is unsafe to call unconditionally
+    (it dereferences state.mana_subdecision["can_produce"] with no
+    None-guard), so legal_action_mask must know which indices those are
+    without calling them first. Empty for most decks."""
     cached = _mana_subdecision_rows_cache.get(id(actions))
     if cached is not None and cached[0] is actions:
         return cached[1]
@@ -1075,73 +891,40 @@ def _mana_subdecision_rows(actions):
 
 
 def legal_action_mask(state, actions):
-    """Stateless -- takes the action table explicitly, so any caller (the
-    token pipeline's own _seat_step, a direct game-loop driver, ...)
-    can use it. `actions` is any table built by build_action_table -- every
-    deck's own table, none privileged as a default (a caller with its own
-    decklist always has its own table to pass).
+    """Stateless -- takes the action table explicitly, so any caller can use
+    it. `actions` is any table built by build_action_table.
 
-    Calls every closure directly -- no pending_resolution-based category
-    gating. A gating layer (skip a closure via a cheap pre-check on
-    state.pending_resolution["kind"], mirroring each closure's own first-
-    line check -- see every `._pending_gate =` stamp still sitting on the
-    closures below) was tried, INCLUDING a per-table cache of the gate
-    lookups (avoiding a fresh getattr every sweep), and measured SLOWER
-    than calling everything unconditionally -- consistently, ~15-25%,
-    across every pending kind that occurs in real play (controlled, order-
-    randomized timing over 4000 real captured decisions, comparing on the
-    SAME states in interleaved repeats to rule out cache-warmup bias).
-    Most `_X_legal` closures are already cheap enough (one or two
-    attribute/dict checks) that the overhead of DECIDING whether to call
-    them costs as much or more than just calling them. The `._pending_gate`
-    stamps are left in place as documentation of each closure's real
-    legality precondition (and in case a more selective future approach --
-    gating only the handful of genuinely expensive closures instead of all
-    ~300 -- turns out to be worth it); this sweep no longer reads them.
+    Calls every closure directly, with no pending_resolution-based category
+    gating: a gating pre-check on state.pending_resolution["kind"] (even
+    cached) measured ~15-25% slower than calling everything unconditionally,
+    since most `_X_legal` closures are already cheap enough that deciding
+    whether to call them costs as much as calling them. The `._pending_gate`
+    stamps are left on the closures as documentation only; this sweep
+    doesn't read them.
 
-    state.mana_subdecision is NOT the same kind of optional speed layer,
-    and is NOT dropped: it's the ONLY thing that makes every OTHER action
-    illegal while a gate-free mana ability's own multi-step choice (Saruli
-    Caretaker: tap another creature, then choose a color) is open -- no
-    individual `_X_legal` closure checks state.mana_subdecision itself
-    except `_mana_subdecision_color_legal` (gated to its own "choose_color"
-    stage, and unsafe to call at all when no subdecision is open -- see
-    _mana_subdecision_rows' own docstring). Skipping this check would
-    silently make every other action look legal mid-subdecision (or crash
-    on the "Produce <color>" rows specifically); see
-    test_saruli_caretaker_two_stage_mana_subdecision for the regression
-    coverage. Three cases, cheapest first:
-      1. This deck's table has no mana_subdecision-gated row at all (most
-         decks) -- every closure is safe to call unconditionally, so this
-         degenerates to exactly the same zero-overhead sweep as case 1
-         above, no per-entry check of any kind.
+    state.mana_subdecision IS still checked: it's the only thing that makes
+    every other action illegal while a gate-free mana ability's own
+    multi-step choice is open. No individual `_X_legal` closure checks it
+    itself except `_mana_subdecision_color_legal`, which is unsafe to call
+    at all when no subdecision is open. Three cases, cheapest first:
+      1. This deck's table has no mana_subdecision-gated row (most decks) --
+         every closure is safe to call unconditionally.
       2. The table has such a row, but none is open right now -- everything
-         else is still safe to call directly; only the (few, known-by-index)
+         else still safe to call directly; only the (few, known-by-index)
          subdecision rows are forced False without being called.
       3. A subdecision is genuinely open -- exclusive priority, suppress
          everything except the matching-stage subdecision closures, mirroring
-         how activating a mana ability is atomic from everyone else's view
-         in real Magic. See state.mana_subdecision's own docstring for why
-         this can't just be another pending_resolution kind (a single slot,
-         not a stack -- a second pending would clobber whatever's already
-         open).
+         how activating a mana ability is atomic in real Magic. Can't just be
+         another pending_resolution kind since that's a single slot, not a
+         stack, and a second pending would clobber whatever's already open.
 
-    Resets _actions_combat._battlefield_lookup_cache and _actions_mana's own
-    _mana_ability_options_cache/_mana_source_cache/_filter_source_cache, and
-    game.mana's own _enchanting_cache (game.reset_mana_cache), before AND
-    after the sweep itself (not just before): guarantees none of these
-    caches can ever leak past this call's own scope into a later execute_fn
-    call or an unrelated sweep against a different/mutated state, even
-    though nothing in the current single-threaded, synchronous call pattern
-    would actually trigger that -- belt-and-suspenders for a module-level
-    global, not load-bearing. mana.py's own cache is reset from here, not
-    self-invalidating there, for the same reason the others aren't: see
-    game.mana._enchanting's own docstring.
+    Resets _actions_combat._battlefield_lookup_cache, _actions_mana's own
+    sweep-scoped caches, and game.mana's cache before and after the sweep,
+    so none can leak past this call's scope into a later execute_fn call or
+    an unrelated sweep.
 
-    Mask is built as a plain list and converted to a numpy array ONCE at
-    the end -- indexed numpy writes in a tight Python loop carry real
-    per-call overhead, the same lesson rl.model.arch.pad_token_batch's own
-    docstring already applies to token tensors."""
+    Mask is built as a plain list and converted to a numpy array once at
+    the end, since indexed numpy writes in a tight loop carry real overhead."""
     _actions_combat._battlefield_lookup_cache = None
     _actions_mana._mana_ability_options_cache = None
     _actions_mana._mana_source_cache = None

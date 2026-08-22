@@ -1,25 +1,16 @@
-"""Multi-deck Magic-subset simulator -- package entry point.
+"""Package entry point for the Magic-subset simulator.
 
 Split by domain: cards, state, resolution, mana, effects, turn loop,
-per-color card catalogs, and the registry that unions every color. A
-deck is just a decklist file (data/*.txt, parsed by game.decklist)
-resolved against the shared card catalog (game.CARD_DEFS) each color
-catalog contributes to -- adding or reweighting a deck built entirely
-from already-implemented cards never needs a code change, and neither
-does reusing a card across multiple decks.
+per-color card catalogs, and the registry that unions every color.
+A deck is a decklist file (data/*.txt) resolved against the shared
+card catalog (game.CARD_DEFS).
 
 Every submodule is re-exported here flat (game.CARD_DEFS, game.GameState,
-game.play_land_from_hand, ...) so every existing `import game; game.X`
-caller (drl_env, rl.rewards, and the rl.* training pipeline)
-keeps working unchanged.
+game.play_land_from_hand, ...) for `import game; game.X` callers.
 
-Import order matters: `from . import registry` first is what actually
-triggers loading every catalog module (and, transitively, most of the
-game.effects package / mana / resolution / state / cards) -- see
-game/registry.py's own module docstring for why several of those modules
-only reference `registry.EFFECT_REGISTRY` lazily instead of importing the
-name directly, which is what makes this order-independent rather than a
-real problem.
+Import order matters: `from . import registry` first triggers loading
+every catalog module and, transitively, most of game.effects/mana/
+resolution/state/cards.
 """
 
 from . import registry

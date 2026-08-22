@@ -3,15 +3,12 @@ plain permanent, casting an Aura (choose-target-then-resolve), and one ETB
 (land bounce) generic enough to live here. tokens.py builds on
 enters_battlefield too.
 
-Depends on stack.py (push_to_stack) and win_check.py (the game-end check every
-board change can trigger). Does NOT depend on triggers.py -- that dependency
-points the other way (promote_triggers_to_stack needs enters_battlefield), so
-triggers.py sits above this module.
+Depends on stack.py (push_to_stack) and win_check.py. Does not depend on
+triggers.py -- that dependency points the other way.
 
 References registry.EFFECT_REGISTRY only inside function bodies (registry.py
-imports the catalogs, which import this module, so a top-level `from .registry
-import EFFECT_REGISTRY` would bind a not-yet-built name) -- see
-game/registry.py's docstring."""
+imports the catalogs, which import this module, so a top-level import would
+bind a not-yet-built name) -- see game/registry.py's docstring."""
 
 from .. import registry
 from ..cards import CardType
@@ -25,10 +22,9 @@ from .. import resolution
 
 def has_creature_target(state, eligible=lambda p: True):
     """Is there any legal creature target for a "destroy/target creature"
-    spell -- on EITHER battlefield, matching `eligible`, and targetable by
-    the active player (hexproof/shroud)? A spell with a single creature
-    target can't be cast without one (real Magic), so this backs the cast's
-    own extra_legal."""
+    spell -- on either battlefield, matching `eligible`, and targetable by
+    the active player (hexproof/shroud)? Backs the cast's own extra_legal
+    (a mandatory-target spell can't be cast without a legal target)."""
     idx = state.active_idx
     return any(
         p.card_type == CardType.CREATURE and eligible(p) and can_be_targeted(state, p, idx)
@@ -38,32 +34,25 @@ def has_creature_target(state, eligible=lambda p: True):
 
 def cast_targeting_creature(state, card_def, on_resolve, eligible=lambda p: True):
     """Shared body for every single-target "target creature" spell: pick a
-    creature on EITHER battlefield matching `eligible` (hexproof/shroud-
-    aware), locked at cast (used with precast_choice); on resolution the
-    spell goes to its owner's graveyard and, if the target is still a legal
-    creature (608.2b), `on_resolve(state, target_permanent)` runs -- else the
-    spell fizzles doing nothing. Callers supply on_resolve: destroy
-    (Cast Down/Terminate/Snuff Out, via state_based.destroy_permanent), put
-    counters (Unexpected Fangs), or grant until-EOT keywords + Investigate
-    (Toxin Analysis). `eligible` narrows the legal targets (Snuff Out's
-    nonblack); the default is any creature.
+    creature on either battlefield matching `eligible` (hexproof/shroud-
+    aware), locked at cast; on resolution the spell goes to its owner's
+    graveyard and, if the target is still legal (608.2b),
+    `on_resolve(state, target_permanent)` runs -- else it fizzles. Callers
+    supply on_resolve: destroy (Cast Down/Terminate/Snuff Out), put
+    counters (Unexpected Fangs), or grant keywords (Toxin Analysis).
 
-    captured can be None even for this MANDATORY pick: begin_choose_any_target
-    auto-completes with None the instant it's called if zero legal creatures
-    exist right then (its own documented contract) -- reachable when this
-    spell's OWN cost payment (a mana ability, paid AFTER targeting under this
-    engine's cost-then-target order) kills the caster's last/only legal
-    target. target_still_legal(None) returns True by design (correct for the
-    OPTIONAL-pick callers that check captured is None themselves first), so it
-    must be checked explicitly here too, or resolution falls through into
-    `captured[1]`."""
+    captured can be None even for this mandatory pick: this spell's own
+    cost payment (paid after targeting under this engine's cost-then-target
+    order) can kill the caster's last legal target between pick and
+    payment. target_still_legal(None) returns True by design (for optional-
+    pick callers), so it must be checked explicitly here too."""
     idx = state.active_idx
 
     def _on_target(state, descriptor):
         captured = capture_any_target(state, descriptor)
 
         def _resolve(state, card_def):
-            discard_from_hand_to_graveyard(state, card_def)  # the spell itself -> its owner's graveyard
+            discard_from_hand_to_graveyard(state, card_def)
             if captured is None or not target_still_legal(state, captured):
                 where = (captured[1].card_def.name, captured[1].slot) if captured is not None else None
                 _log_target_fizzle(state, card_def, where)
@@ -88,25 +77,18 @@ def play_land_from_hand(state, card_def):
 
 def cast_permanent_from_hand(state, card_def):
     """Artifacts/creatures with no additional cost beyond mana and no target
-    choices. Run as the spell's resolve off the stack, so the card already left
-    hand at cast (push_to_stack) and enters the battlefield from the stack -- the
-    `if in hand` guard makes the removal a no-op then (and still lets a
-    self-check call this directly to drop a permanent onto the battlefield)."""
+    choices. Run as the spell's resolve off the stack -- the card already
+    left hand at cast, so the `if in hand` guard is a no-op there (and
+    still lets a self-check call this directly)."""
     if card_def in state.hand:
         state.hand.remove(card_def)
     return enters_battlefield(state, card_def, from_zone="hand")
 
 
 def _log_target_fizzle(state, card_def, chosen_name_slot):
-    """Console-visible record of a targeted spell failing to resolve (see
-    cast_aura's own docstring for the rule this enforces) -- otherwise this
-    branch is silent and looks, from the outside, identical to "cast a
-    spell that legitimately does nothing." where=None when there was never a
-    captured target at all -- begin_choose_any_target's own empty-candidate-pool
-    auto-complete (reachable for an Aura: a cast's own cost payment, paid after
-    targeting under this engine's cost-then-target order, can kill the
-    caster's last legal target before _resolve ever runs) or an analogous
-    begin_choose_permanent/search_fetch safety net."""
+    """Console-visible record of a targeted spell failing to resolve --
+    otherwise this looks identical to "cast a spell that legitimately does
+    nothing." where=None when there was never a captured target at all."""
     where = f"{chosen_name_slot[0]!r} (slot {chosen_name_slot[1]})" if chosen_name_slot is not None else "no legal target at cast time"
     print(f"[target fizzle] turn {state.turn_number}: {card_def.name} failed to resolve -- target was {where}, not on the battlefield anymore.")
     state.log_event("target_fizzle", card=card_def.name, target=chosen_name_slot)
@@ -124,13 +106,10 @@ def capture_any_target(state, target):
     """Cast/activation time: lock a resolution.begin_choose_any_target
     descriptor onto a concrete, identity-stable target to carry on the
     stack. A ("player", idx) is already stable; a ("creature", side, name,
-    slot) is resolved to the EXACT Permanent object it names right now, so
+    slot) is resolved to the exact Permanent object it names right now, so
     resolution-time legality (target_still_legal) is an object-identity
-    check, never a fungible-by-name re-lookup that could latch onto a
-    different same-named creature. Real Magic: a spell's/ability's targets
-    are chosen and locked as it is put on the stack, never re-chosen at
-    resolution. None (no target was chosen, e.g. an "up to one" declined)
-    passes straight through."""
+    check, never a by-name re-lookup that could latch onto a different
+    same-named creature. None (no target chosen) passes straight through."""
     if target is None or target[0] == "player":
         return target
     _, side, name, slot = target
@@ -140,34 +119,22 @@ def capture_any_target(state, target):
 
 
 def _maybe_trigger_ward(state, permanent):
-    """Ward (Tolarian Terror): "Whenever this becomes the target of a spell or
-    ability an OPPONENT controls, counter it unless that player pays [cost]."
-    capture_any_target is the moment a creature becomes a target, so this fires
-    here -- but only when the chooser (state.active_idx, the caster/activator)
-    is an opponent of the permanent's controller (a controller targeting their
-    own Warded creature never triggers Ward). Queues a "ward" trigger (resolved
-    by game.effects.triggers), carrying the payer (that opponent) and the ward
-    cost; it lands on the stack above the triggering spell (which the caller
-    pushes right after this returns) and makes the payer pay-or-be-countered.
-    Lazy registry read, same convention as the rest of this module."""
+    """Ward (Tolarian Terror): "Whenever this becomes the target of a spell
+    or ability an opponent controls, counter it unless that player pays
+    [cost]." Fires only when the chooser is an opponent of the permanent's
+    controller. Queues a "ward" trigger carrying the payer and cost; it
+    lands above the triggering spell and makes the payer pay-or-be-
+    countered."""
     ward = registry.EFFECT_REGISTRY.get(permanent.card_def.effect_id, {}).get("ward")
     if ward is None:
         return
     caster_idx = state.active_idx
     controller = next((idx for idx, p in enumerate(state.players) if permanent in p.battlefield), None)
     if controller is None or caster_idx == controller:
-        return  # only an OPPONENT's targeting triggers Ward
-    # Ward is the WARDED creature's own triggered ability -- it belongs to
-    # `controller` (whoever placement-orders it alongside their own other
-    # simultaneous triggers, game.effects.triggers.promote_triggers_to_stack),
-    # never to caster_idx (the opponent who triggered it, and who is
-    # state.active_idx right now, mid-cast). Writing through the
-    # state.trigger_queue active-player PROXY would append into caster_idx's
-    # own queue instead of the controller's -- wrong, since the ACTIVE
-    # (casting) player would then be handed an order_triggers choice naming a
-    # card from the WARDED player's own deck. This producer needs the same
-    # explicit owner_idx threading game.effects.state_based._queue_leave_triggers
-    # uses for LTB triggers.
+        return  # only an opponent's targeting triggers Ward
+    # Written into the controller's own queue directly (not the active-
+    # player proxy), since Ward belongs to the Warded creature's controller,
+    # not the caster who is state.active_idx right now.
     state.players[controller].trigger_queue.append(
         {"type": "ward", "card_def": permanent.card_def, "payer_idx": caster_idx, "cost": ward}
     )
@@ -175,15 +142,11 @@ def _maybe_trigger_ward(state, permanent):
 
 
 def target_still_legal(state, captured):
-    """Resolution time: is a captured any-target still a legal target (real
-    Magic 608.2b -- a spell/ability whose targets are ALL illegal on
-    resolution is removed from the stack and does nothing)? A player is
-    always legal (no effect in this pool removes a player from the game). A
-    creature is legal only while that exact captured Permanent is still on
-    SOME battlefield -- gone (died, sacrificed, bounced, exiled) means the
-    target is illegal and its spell/ability fizzles. None (no target) is
-    treated as "nothing to fizzle" -- the caller decided 0 targets was legal
-    (an "up to one" declined), so it simply resolves with no target."""
+    """Resolution time: is a captured any-target still legal (608.2b -- a
+    spell/ability whose targets are all illegal on resolution does
+    nothing)? A player is always legal. A creature is legal only while that
+    exact captured Permanent is still on some battlefield. None (no
+    target) is treated as "nothing to fizzle"."""
     if captured is None or captured[0] == "player":
         return True
     perm = captured[1]
@@ -192,65 +155,32 @@ def target_still_legal(state, captured):
 
 def cast_aura(state, card_def, target_predicate, on_attached=None, no_target_fallback=None):
     """Cast an Aura from hand: pick a legal target via
-    resolution.begin_choose_any_target -- real "Enchant creature/land"
-    targets ANY matching permanent on EITHER battlefield (not just your own),
-    hexproof/shroud aware (can_be_targeted), addressed by the EXACT (side,
-    name, slot) permanent chosen -- not just a name, since two same-named
-    permanents stop being interchangeable the instant an Aura attaches to
-    only one of them.
-    (target_predicate is the Aura's own "enchant WHAT" filter -- creature for
-    the pumps, land/Forest for Utopia Sprawl/Abundant Growth.)
+    resolution.begin_choose_any_target, addressed by the exact (side,
+    name, slot) permanent, not just a name. target_predicate is the Aura's
+    "enchant WHAT" filter (creature, or land for Utopia Sprawl).
 
-    Real MTG targeting rule, enforced here: the target is chosen once,
-    right when the spell is cast -- in this engine, the instant its cost
-    finishes paying (drl_env._targeted_cast_execute calls this function
-    directly as pay_cost's on_complete, instead of the generic
-    _cast_execute's auto-push-to-stack, precisely so target selection runs
-    BEFORE the card ever sits on the stack) -- and re-checked by EXACT
-    OBJECT IDENTITY only once the spell actually resolves off the stack.
-    If that exact Permanent is gone by then (died, was sacrificed, bounced
-    -- doesn't matter how), OR there was never a legal target to begin with
-    (begin_choose_any_target's own auto-complete-with-None on an empty
-    candidate pool -- reachable when THIS SAME cast's own cost payment, paid
-    after targeting under this engine's cost-then-target order, kills the
-    caster's last legal target), the spell fails outright: no effect -- see
-    _resolve's own fizzle branch below, logged via _log_target_fizzle so
-    this doesn't silently look like "cast a spell that did nothing."
+    The target is chosen once, at cast, and re-checked by object identity
+    when the spell resolves. If gone by then, or never legal to begin
+    with, the spell fails outright, logged via _log_target_fizzle.
 
-    on_attached(state, aura_permanent), if given, runs once actually
-    attached -- for an Aura with its own ETB effect (Abundant Growth's
-    draw, Cartouche of Solidarity's token, Utopia Sprawl's chosen color).
-    Routed through here rather than the registry's own etb_trigger (which
-    only ever receives state, not the permanent) since every one of these
-    needs to record something onto the Aura's own Permanent, not just act
-    on shared state.
+    on_attached(state, aura_permanent), if given, runs once attached -- for
+    an Aura with its own ETB effect (Abundant Growth's draw).
 
-    no_target_fallback(state, card_def), if given, REPLACES the default
-    "no legal target -> graveyard" fizzle above. The one user is Bestow
-    (Nyxborn Hydra, green_cards.cast_nyxborn_hydra_bestow): real Magic
-    702.103e -- a spell cast for its bestow cost that ends up with no legal
-    target for the Aura still enters the battlefield, AS A CREATURE, instead
-    of going to the graveyard. Every other Aura leaves this None (the
-    default), keeping the plain graveyard-fizzle.
+    no_target_fallback(state, card_def), if given, replaces the default
+    "no legal target -> graveyard" fizzle. The one user is Bestow (Nyxborn
+    Hydra, 702.103e): a bestow spell with no legal target still enters the
+    battlefield as a creature.
 
-    Real-rules note: an Aura returns to the graveyard (and, for Rancor,
-    from there back to hand) when whatever it enchants leaves the
-    battlefield ("orphaning") -- modeled for the one reachable case in this
-    card pool, combat death (state_based._destroy_creature). Every OTHER
-    battlefield-removal call site in this codebase (sacrifice, bounce, exile
-    -- see their own call sites) still doesn't orphan an enchanted
-    permanent's Auras, since no card in this pool can currently
-    sacrifice/bounce/exile a creature something else has enchanted. Thread
-    the same orphaning logic through a removal site if a future card ever
-    makes that reachable."""
+    An Aura returns to the graveyard (or, for Rancor, to hand) when
+    whatever it enchants leaves the battlefield ("orphaning") -- modeled
+    only for combat death (state_based._destroy_creature); other removal
+    paths don't currently orphan an enchanted permanent's Auras."""
     def _on_target_chosen(state, target_descriptor):
-        captured = capture_any_target(state, target_descriptor)  # ("permanent-as-'creature'", perm) or None
+        captured = capture_any_target(state, target_descriptor)
 
         def _resolve(state, card_def):
-            # Resolving off the stack: this aura left hand at cast
-            # (push_to_stack) and must not re-enter it -- the `if in hand` guard
-            # makes the removal a no-op here. The target was locked at cast
-            # (captured), well before this runs.
+            # Resolving off the stack: already left hand at cast, must not
+            # re-enter it. Target was locked at cast (captured).
             if card_def in state.hand:
                 state.hand.remove(card_def)
             if captured is None or not target_still_legal(state, captured):
@@ -284,45 +214,33 @@ def cast_aura(state, card_def, target_predicate, on_attached=None, no_target_fal
 
 def enters_battlefield(state, card_def, force_tapped=False, from_zone=None):
     """Move a CardDef onto the battlefield as a new Permanent, applying its
-    enters-tapped default and QUEUING its ETB triggered ability (via
-    game.registry.EFFECT_REGISTRY) onto state.trigger_queue for the priority
-    round to put on the stack -- not running it inline (see the ETB block
-    below for why), then run _check_end_of_game as a co-located end-of-game
-    check after the board mutation (see win_check.py). Caller has already
-    removed card_def from its previous zone (hand/library).
+    enters-tapped default and queuing its ETB triggered ability onto
+    state.trigger_queue for the priority round to put on the stack (not run
+    inline -- see the ETB block below), then runs _check_end_of_game.
+    Caller has already removed card_def from its previous zone.
 
-    force_tapped=True overrides the registry's own enters_tapped default
-    to always-tapped -- a one-off per-trigger condition, not a property of
-    the card itself (Sneaky Snacker enters battlefield normally untapped
-    when cast, but tapped specifically when its own "third card drawn"
-    trigger returns it from the graveyard). Every existing caller omits it,
-    unaffected."""
-    # Accept a CardInstance/Permanent (a graveyard-return or flicker path passing
-    # the leaving object) or a raw CardDef: the permanent is always minted FRESH
-    # from the underlying CardDef (a NEW object, MTG 400.7), never wrapping an
-    # instance, so a stale target on the old object can't survive re-entry.
+    force_tapped=True overrides the registry's enters_tapped default to
+    always-tapped -- a one-off per-trigger condition, not a card property
+    (Sneaky Snacker enters untapped when cast, but tapped when its own
+    "third card drawn" trigger returns it from the graveyard)."""
+    # Accept a CardInstance/Permanent or a raw CardDef: the permanent is
+    # always minted fresh from the underlying CardDef (a new object, 400.7).
     if isinstance(card_def, CardInstance):
         card_def = card_def.card_def
     spec = registry.EFFECT_REGISTRY.get(card_def.effect_id, {})
-    # enters_tapped may be a plain bool OR a callable(state) -> bool, for a
-    # land whose tapped-ness depends on the board (Gingerbread Cabin: tapped
-    # unless you control 3+ other Forests). Evaluated BEFORE this permanent
-    # is added to the battlefield below, so "other" counts exclude it.
+    # enters_tapped may be a plain bool or a callable(state) -> bool, for a
+    # land whose tapped-ness depends on the board (Gingerbread Cabin).
+    # Evaluated before this permanent joins the battlefield below.
     raw_tapped = spec.get("enters_tapped", False)
     tapped = force_tapped or (raw_tapped(state) if callable(raw_tapped) else raw_tapped)
-    permanent = state.new_permanent(card_def, tapped=tapped)  # fresh Permanent + per-game iid (new object, MTG 400.7)
+    permanent = state.new_permanent(card_def, tapped=tapped)
     # Record how it entered so an ETB conditioned on entering untapped
     # (Gingerbread Cabin's Food) reads the entry state, not whatever the
-    # permanent's tapped-ness has since become (it could be tapped for mana
-    # in the priority window before the queued ETB resolves).
+    # permanent's tapped-ness has since become.
     permanent.flags["entered_tapped"] = tapped
-    # Pooled slot assignment: the lowest number not
-    # already in use among this player's currently-live permanents of the
-    # same name. Never a running/monotonic count -- a name's slot numbers
-    # simply free up once whatever was using them leaves the battlefield,
-    # which is what keeps this bounded (by how many can be simultaneously
-    # alive, i.e. decklist quantity) even through repeated bounce/blink,
-    # rather than growing with how many turns have been played.
+    # Pooled slot assignment: lowest number not already in use among this
+    # player's currently-live permanents of the same name, so slots free up
+    # as copies leave rather than growing with turns played.
     used_slots = {p.slot for p in state.battlefield if p.card_def.name == card_def.name}
     slot = 1
     while slot in used_slots:
@@ -334,28 +252,17 @@ def enters_battlefield(state, card_def, force_tapped=False, from_zone=None):
         to_zone="battlefield", tapped=tapped, card_type=permanent.card_type.name,
         power=card_def.extra.get("power"), toughness=card_def.extra.get("toughness"),
     )
-    # Seeded to the same printed power/toughness just logged above, so
-    # state_based._log_stat_changes's first pass over this permanent doesn't
-    # immediately re-log an unchanged value as a redundant stats_changed step
-    # (0 for a non-creature too -- harmless, never read, same convention as
-    # damage_marked's own default). If a conditional static-self boost is
-    # ALREADY true the instant this permanent enters (e.g. Goblin Tomb Raider
-    # entering while an artifact is already out), the seed still mismatches
-    # the true computed value, so that first SBA pass correctly fires anyway.
+    # Seeded to the printed power/toughness just logged above, so
+    # state_based._log_stat_changes's first pass doesn't immediately re-log
+    # an unchanged value. If a static-self boost is already true the
+    # instant this permanent enters, the seed still mismatches the true
+    # computed value, so that first SBA pass correctly fires anyway.
     permanent.flags["_logged_pt"] = (card_def.extra.get("power"), card_def.extra.get("toughness"))
 
-    # The permanent has now physically entered (above) -- but its ETB
-    # triggered ability, faithfully (real Magic 603.3), does NOT resolve
-    # inline here: it goes on the stack the next time a player would receive
-    # priority, with a response window before it resolves. So this only
-    # QUEUES the trigger (state.trigger_queue); game.turn's own priority
-    # round promotes it onto the stack once the enclosing action is done
-    # (game.effects.triggers._trigger_resolve's own "etb" branch runs the
-    # registry hook then). The etb_trigger callable receives (state,
-    # permanent) -- the permanent that just entered, so an ETB that needs
-    # its own source can reach it (Mesmeric Fiend links its exiled card to
-    # this exact permanent for the leaves-the-battlefield return); the great
-    # majority of ETBs ignore the second arg.
+    # ETB (603.3) doesn't resolve inline: it's queued for the next priority
+    # round to put on the stack (triggers.py's "etb" branch runs the hook
+    # then). The etb_trigger callable receives (state, permanent) so an ETB
+    # that needs its own source can reach it (Mesmeric Fiend).
     if spec.get("etb_trigger") is not None:
         state.trigger_queue.append({"type": "etb", "card_def": card_def, "permanent": permanent})
 
@@ -365,23 +272,15 @@ def enters_battlefield(state, card_def, force_tapped=False, from_zone=None):
 
 
 def bounce_land_etb(state):
-    """ETB: return a land you control to hand (Rakdos Carnarium).
-    resolution.begin_choose_permanent
-    already covers "pick one of my own permanents matching a predicate, by
-    exact (name, slot)" exactly -- no new resolution kind needed. Not a
-    real MTG "target" (no "target" in this ability's own text -- it's an
-    instruction executed entirely as this ETB fires, same as a plain "you
-    may" instruction), so no cast-time/resolve-time gap exists here at all
-    -- this whole function runs synchronously, unlike cast_aura's own
-    deferred-to-the-stack targeting. enters_battlefield appends the
-    permanent before running its ETB trigger, so the land that just
-    entered is itself already a legal choice here, matching the real-rules
-    guarantee "always at least one target" for free. Generic enough to
-    share if a second land-bounce card ever needs it -- not
-    Rakdos-Carnarium-specific despite currently having one caller."""
+    """ETB: return a land you control to hand (Rakdos Carnarium). Not a
+    real MTG "target" (no "target" in the ability's own text), so this runs
+    synchronously rather than deferred to the stack like cast_aura's
+    targeting. enters_battlefield appends the permanent before running its
+    ETB trigger, so the land that just entered is itself already a legal
+    choice, guaranteeing "always at least one target" for free."""
     def _on_chosen(state, choice):
         if choice is None:
-            return  # begin_choose_permanent's own empty-battlefield safety net -- never reachable in practice, since this card is itself a legal land choice the moment it's on the battlefield
+            return  # never reachable: this card is itself a legal choice
         name, slot = choice
         permanent = next(
             p for p in state.battlefield

@@ -19,19 +19,11 @@ HORIZON = 20
 
 @pytest.mark.slow
 def test_collect_rollout_league_parallel_smoke():
-    # Regression coverage for collect_rollout_league_parallel's own
-    # all_trunk_hidden plumbing: rl.league.league_runner computes it ONCE per session
-    # and threads it through every call instead of this function re-deriving it
-    # from live_nets itself (see its own docstring). A ThreadPoolExecutor
-    # stands in for the real ProcessPoolExecutor -- same submit()/
-    # future.result() interface, no process-spawn/pickling overhead -- but
-    # _league_rollout_worker's own build_pool() call still runs for real (this
-    # directory's conftest.py chdir's to src/ for exactly that reason).
-    #
-    # Each net's ENCODER has no separate plumbing to regress: it is a
-    # registered child, so it crosses the boundary inside the net's own
-    # state_dict. There used to be a shared_state_dict/shared_hparams pair
-    # here carrying the one frozen shared stack across separately.
+    # ThreadPoolExecutor stands in for the real ProcessPoolExecutor (same
+    # submit()/future.result() interface, no spawn/pickling overhead), but
+    # _league_rollout_worker's own build_pool() call still runs for real
+    # (conftest.py chdir's to src/ for that reason). The encoder crosses the
+    # boundary inside the net's own state_dict, as a registered child.
     _decklists, vocab, _deck_ctxs, fixed_tables = build_pool()
     net = DeckNetwork(SetTransformer(vocab.size), film_condition_dim=SetTransformer(vocab.size).d_model,
                        non_targeting_n_actions=len(fixed_tables["mono_red_madness"]), trunk_hidden=(24, 24))
@@ -55,8 +47,8 @@ def test_collect_rollout_league_parallel_smoke():
         "trunk widths (encoder included, from the net's own state_dict) must together produce a real rollout"
     )
     assert all(np.isfinite(v) for v in buffers_by_deck["mono_red_madness"].value)
-    # 0 entries iff that single game hit a horizon timeout (no winner) -- excluded
-    # entirely rather than recorded as a loss, see collect_rollout_league's own docstring.
+    # 0 entries iff that single game hit a horizon timeout (no winner) --
+    # excluded rather than recorded as a loss.
     assert len(outcomes) <= 1 and all(o[2] in (True, False) for o in outcomes), (
         "the worker's own outcome (opponent, snapshot_id, won), when present, must cross the process boundary "
         "intact -- this is what feeds PFSP's record_outcome back in the MAIN process, not the worker's own read-only pool"

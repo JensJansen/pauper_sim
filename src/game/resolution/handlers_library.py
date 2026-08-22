@@ -1,9 +1,7 @@
 """Library/graveyard/hand manipulation: search/fetch, graveyard-card choices
 (single and up-to-N), explore, exile-N-from-graveyard (Delve), tuck-to-
 library, scry/surveil, put-N-on-top, ponder, discard (including Madness
-routing), the combined discard-or-sacrifice cost, and sacrifice. Re-exported
-via game.resolution so `from ..resolution import X` in the catalogs keeps
-resolving."""
+routing), the combined discard-or-sacrifice cost, and sacrifice."""
 
 from .. import registry
 from ..cards import CardType
@@ -14,21 +12,12 @@ from .handlers_targeting import begin_choose_permanent
 
 def begin_search_fetch(state, predicate, on_complete, optional=False):
     """The model picks ONE library card by name, among distinct names
-    currently matching `predicate`, to fetch -- one action per matching
-    name (search_fetch_options), not a full reveal (search effects look at
-    the whole library, already-known information by elimination, not a
-    scry-style reveal of previously-hidden cards). on_complete(state,
-    chosen_name) runs once decided. If nothing in the library matches
-    right now (legality only guarantees the *cost* was payable, not that a
-    target still exists -- e.g. every land could already be drawn),
-    fizzles immediately with chosen_name=None instead of leaving a
-    resolution with zero legal options.
+    matching `predicate`, to fetch -- one action per matching name, not a
+    full reveal. on_complete(state, chosen_name); fizzles immediately with
+    None if nothing in the library matches right now.
 
-    optional=True (Gatecreeper Vine's "may search"; Expedition Map/Crop
-    Rotation's mandatory fetches leave this False, unchanged) offers a
-    dedicated decline via the environment's own action, not folded into
-    search_fetch_options' name list -- same treatment Ancient Stirrings'
-    decline already gets."""
+    optional=True (Gatecreeper Vine's "may search") offers a dedicated
+    decline action rather than folding it into search_fetch_options."""
     begin_resolution(state, "search_fetch", on_complete, predicate=predicate, optional=optional)
     if not search_fetch_options(state):
         complete_resolution(state, None)
@@ -49,38 +38,19 @@ def execute_search_fetch_decline(state):
 
 def begin_choose_graveyard_card(state, predicate, on_complete, graveyard=None, optional=False):
     """Pick ONE card from a graveyard, among those matching predicate --
-    used by Dread Return's reanimation target (game.catalog.black_cards) and
-    by Relic of Progenitus' own repeatable exile ability alike; living here
-    rather than in a deck-specific catalog file is what lets both share the
-    identical primitive.
+    used by Dread Return's reanimation target and Relic of Progenitus'
+    repeatable exile ability alike. The pick is BY OBJECT IDENTITY:
+    on_complete receives the exact chosen object (a CardInstance for a real
+    graveyard; a CardDef for the deferred Mesmeric-Fiend hand-reveal path).
 
-    The pick is BY OBJECT IDENTITY: on_complete receives the exact chosen
-    object (a CardInstance for a real graveyard -- so two same-named copies are
-    distinct and individually reachable; a CardDef for the DEFERRED
-    Mesmeric-Fiend hand-reveal path, where interned same-named copies are still
-    indistinguishable until hand instances land). Same empty-options safety net
-    as begin_search_fetch/begin_choose_permanent.
+    graveyard=None defaults to state.graveyard (active-idx proxied). Pass an
+    explicit graveyard list to target a different player's (Relic of
+    Progenitus): when the rules say the TARGET player chooses, the caller
+    flips active_idx to that player first and restores it after.
 
-    graveyard=None defaults to state.graveyard (the active player's own,
-    via the active-idx proxy) -- Dread Return's reanimation target is
-    always its own controller's graveyard, never anyone else's. Pass an
-    explicit graveyard list to target a DIFFERENT player's graveyard
-    instead -- Relic of Progenitus' own ability can target either player.
-    The card is picked by whoever is the current active player: when the
-    RULES say the TARGET player chooses (Relic targeting the opponent), the
-    caller flips active_idx to that player first and restores it after (see
-    activate_relic_of_progenitus_exile), so the correct player -- and, in
-    training, their own net -- makes the choice. (Where the CASTER is the one
-    who chooses, e.g. Mesmeric Fiend picking from a revealed hand, no flip is
-    needed.)
-
-    optional=True is a "you may exile a card from your graveyard" choice
-    (Masked Vandal's ETB): the model may decline outright even when legal
-    cards exist (execute_choose_graveyard_card_decline -> None), the same
-    dedicated-decline treatment begin_search_fetch's own optional already
-    gets. optional=False (Dread Return, Relic -- unchanged) is mandatory
-    when any card matches; either way the empty-options safety net still
-    completes with None when nothing matches at all."""
+    optional=True (Masked Vandal's ETB) lets the model decline outright
+    even when legal cards exist; optional=False (Dread Return, Relic) is
+    mandatory when any card matches."""
     if graveyard is None:
         graveyard = state.graveyard
     begin_resolution(state, "choose_graveyard_card", on_complete, predicate=predicate, graveyard=graveyard, optional=optional)
@@ -89,42 +59,35 @@ def begin_choose_graveyard_card(state, predicate, on_complete, graveyard=None, o
 
 
 def choose_graveyard_card_options(state):
-    """The matching graveyard cards themselves (objects), NOT names -- so two
-    same-named copies are DISTINCT choices (a real graveyard holds CardInstances;
-    the deferred Mesmeric-Fiend hand-reveal path holds CardDefs). No dedup, no
-    sort: rl.decision.action_bridge masks/executes by object identity (the token carries
-    the same object), not by name."""
+    """The matching graveyard cards themselves (objects), not names -- so two
+    same-named copies are distinct choices. No dedup, no sort:
+    rl.decision.action_bridge masks/executes by object identity."""
     pending = state.pending_resolution
     return [c for c in pending["graveyard"] if pending["predicate"](c)]
 
 
 def execute_choose_graveyard_card_option(state, card):
-    """`card` is the exact chosen object (a CardInstance from a graveyard, or a
-    CardDef from the deferred hand-reveal path) -- the on_complete consumer acts
-    on that exact object, so a specific copy among same-named duplicates is
-    reachable."""
+    """`card` is the exact chosen object; the on_complete consumer acts on
+    that exact object, so a specific copy among duplicates is reachable."""
     complete_resolution(state, card)
 
 
 def execute_choose_graveyard_card_decline(state):
     """Decline an OPTIONAL choose_graveyard_card (Masked Vandal's "you may
     exile a creature card from your graveyard") -- resolve with None, exiling
-    nothing. Only ever offered by the environment while the pending was begun
-    optional=True, same convention as execute_search_fetch_decline."""
+    nothing."""
     complete_resolution(state, None)
 
 
 def begin_choose_up_to_graveyard(state, predicate, max_targets, on_complete, graveyard=None):
     """Choose UP TO max_targets DISTINCT cards from a graveyard (default the
-    active player's; pass a combined list for "from graveyardS"), one at a time.
-    Each pick excludes those already chosen BY OBJECT IDENTITY -- so two
-    same-named copies are both reachable -- and is optional: declining ends the
-    selection early (the "up to" slack), as does running out of eligible cards.
-    Runs on_complete(state, chosen_instances) with the 0..max_targets chosen
-    instances (a LIST). The N-ary multi-target primitive behind "exile up to N
-    target cards from graveyard(s)" (Rooftop Percher); pairs with a resolution
-    that acts on still-legal captured instances and fully fizzles only if all
-    are gone (608.2c). See project_targeted_triggered_abilities."""
+    active player's; pass a combined list for "from graveyardS"), one at a
+    time. Each pick excludes those already chosen BY OBJECT IDENTITY, and is
+    optional: declining ends selection early, as does running out of
+    eligible cards. Runs on_complete(state, chosen_instances), a LIST of
+    0..max_targets. The N-ary primitive behind "exile up to N target cards
+    from graveyard(s)" (Rooftop Percher); fully fizzles only if all
+    captured instances are gone by resolution (608.2c)."""
     gy = state.graveyard if graveyard is None else graveyard
     chosen = []
 
@@ -150,9 +113,8 @@ def begin_choose_up_to_graveyard(state, predicate, max_targets, on_complete, gra
 def explore(state, creature):
     """A creature explores (Map token, Fanatical Offering): reveal the top
     card of the exploring player's library -- a land goes to hand; a nonland
-    puts a +1/+1 counter on the creature, then "you may put that card into
-    your graveyard" (keep on top or bin), which is exactly surveil 1 on that
-    same still-on-top card. Empty library: nothing to reveal, no-op."""
+    puts a +1/+1 counter on the creature, then surveil 1 on that same
+    still-on-top card. Empty library: nothing to reveal, no-op."""
     if not state.library:
         return
     top = state.library[0]
@@ -169,22 +131,16 @@ def explore(state, creature):
 def begin_exile_n_from_graveyard(state, n, on_complete, predicate=None, mid_cast=False):
     """Exile n cards from the active player's own graveyard as a COST, the
     model choosing which one at a time (chained begin_choose_graveyard_card).
-    predicate (default any) narrows eligible cards. Used by Delve (exile N to
-    pay {N} of a spell's generic cost, Gurmag Angler) and reusable by any
-    other "exile N from your graveyard" cost. Runs on_complete(state) once n
-    are exiled (or eligible cards run out).
+    predicate (default any) narrows eligible cards. Used by Delve (Gurmag
+    Angler) and reusable by any "exile N from your graveyard" cost. Runs
+    on_complete(state) once n are exiled (or eligible cards run out).
 
-    mid_cast marks each step's pending as part of an in-flight cast, which makes
-    mana abilities illegal for its duration (drl_env._actions_mana.
-    _mana_timing_legal, CR 601.2f). Delve needs it and passes True: its exile
-    happens BETWEEN announcing the spell and the payment opening, so a tap taken
-    here can narrow a color choice the not-yet-open payment depends on. That is
-    not hypothetical -- it stranded a real game (dmir_terror: both Contaminated
-    Aquifers and both Ice Tunnels tapped for {U} during the exile, leaving the
-    delve-reduced {B} unpayable). The flag is a per-CALL fact, not a property of
-    the pending KIND: choose_graveyard_card is equally used at resolution time
-    (Masked Vandal's ETB, Relic of Progenitus), where mana abilities are
-    perfectly legal, so the KIND alone cannot say -- see game.mana.mid_cast."""
+    mid_cast marks each step's pending as part of an in-flight cast, making
+    mana abilities illegal for its duration (CR 601.2f) -- Delve's exile
+    happens between announcing the spell and the payment opening, so a tap
+    taken here could narrow a color choice the payment depends on. Per-call,
+    not per-KIND: choose_graveyard_card is also used at resolution time
+    (Masked Vandal, Relic), where mana abilities are legal."""
     pred = predicate or (lambda c: True)
 
     def _step(remaining):
@@ -206,7 +162,7 @@ def begin_exile_n_from_graveyard(state, n, on_complete, predicate=None, mid_cast
 
 def begin_tuck_to_library(state, card_def, owner_idx, on_complete=None):
     """Deem Inferior: a permanent's OWNER (active_idx flipped to them) puts
-    its card into their library second-from-the-top or on the bottom -- their
+    its card into their library second-from-the-top or on the bottom, their
     choice, backed by two drl_env actions ("Tuck: 2nd from top" / "Tuck:
     bottom"). The permanent must already be removed from the battlefield by
     the caller."""
@@ -236,24 +192,15 @@ def execute_tuck_position(state, position):
 
 def begin_scry_surveil(state, kind, n, on_complete):
     """Reveal the top n library cards; the model decides keep-on-top or
-    dispose for each one in turn (scry_surveil_options/
-    execute_scry_surveil_option below), then -- if 2+ were kept -- the
-    order to put them back in. Kept cards return to the library top in
-    that model-chosen order; disposed cards go to the library bottom in
-    random order (kind="scry") or the graveyard (kind="surveil") -- their
-    order is never a model decision, since nothing here ever reads it
-    again."""
+    dispose for each in turn, then -- if 2+ were kept -- the order to put
+    them back in. Kept cards return to the library top in that order;
+    disposed cards go to the library bottom in random order (kind="scry")
+    or the graveyard (kind="surveil")."""
     revealed = state.library[:n]
     del state.library[:n]
     begin_resolution(state, kind, on_complete, remaining=revealed, kept=[], disposed=[], ordered=None)
-    # Empty-reveal safety net: an empty (or shorter-than-n) library reveals
-    # nothing, so there is no keep/dispose decision to make and no ordering
-    # -- the resolution would otherwise sit forever with remaining=[],
-    # kept=[], ordered=None, which scry_surveil_options returns [] for and
-    # _keep_dispose_legal refuses (remaining is falsy), i.e. ZERO legal
-    # actions -> softlock. Same immediate-complete safety net begin_choose_
-    # permanent/begin_search_fetch already apply for their own empty-options
-    # case.
+    # Empty-reveal safety net: nothing to decide, so finish immediately
+    # instead of leaving a zero-legal-actions resolution open.
     if not revealed:
         _finish_scry_surveil(state)
 
@@ -336,27 +283,15 @@ def put_on_top_options(state):
     pending = state.pending_resolution
     if pending["remaining"] <= 0:
         return []
-    # Excludes a copy already reserved on the stack (a spell cast in response,
-    # paid for and awaiting resolution): real Magic -- a card on the stack is
-    # NOT in your hand, so Brainstorm's "put two cards from your hand on top"
-    # can't pick it. The engine defers the on-stack card's own hand-removal to
-    # its resolution (game.effects.stack.push_to_stack), leaving it physically
-    # in the hand list, so this must subtract reservations exactly like
-    # discard_options does -- without it, Brainstorm could move a still-on-the-
-    # stack spell onto the library, and that spell's later resolve would fail
-    # to find its card in hand.
+    # Excludes a copy already reserved on the stack: a card on the stack is
+    # NOT in your hand (real Magic), even though the engine defers its
+    # hand-removal until it resolves -- same exclusion discard_options uses.
     return _available_hand_names(state)
 
 
 def _finish_put_on_top(state):
     pending = state.pending_resolution
     state.library[0:0] = pending["placed"]  # placed[0] on top
-    # No record is kept of what went on top. It used to be (PlayerState.
-    # known_top), because the placement's whole value materializes 1-2 draws
-    # later and a Markov observation could not carry it that far. The recurrent
-    # policy is now expected to remember it from what it SAW: these cards leave
-    # the tokenized hand one at a time as they are placed, so the sequence is
-    # in the observation stream even though no single frame holds it.
     state.log_event("put_on_top", cards=[c.name for c in pending["placed"]])
     complete_resolution(state)
 
@@ -371,13 +306,12 @@ def execute_put_on_top_option(state, name):
 
 
 def begin_ponder(state, on_complete):
-    """Ponder's "look at the top three cards, then put them back in any order.
-    You may shuffle." The model either orders the revealed cards back on top
-    one at a time (execute_ponder_option, via the generic "Choose: X"
-    dispatch; FIRST placed ends on top) OR shuffles the whole library
-    (execute_ponder_shuffle -- a dedicated "Shuffle (Ponder)" action, legal
-    only before any card has been placed, drl_env._ponder_shuffle_legal).
-    on_complete (Ponder's own "Draw a card") runs either way."""
+    """Ponder's "look at the top three cards, then put them back in any
+    order. You may shuffle." The model either orders the revealed cards
+    back on top one at a time (execute_ponder_option; FIRST placed ends on
+    top) OR shuffles the whole library (execute_ponder_shuffle, legal only
+    before any card has been placed). on_complete (Ponder's "Draw a card")
+    runs either way."""
     revealed = state.library[:3]
     del state.library[:3]
     begin_resolution(state, "ponder", on_complete, remaining=revealed, ordered=[])
@@ -411,33 +345,18 @@ def execute_ponder_shuffle(state):
 
 
 def begin_discard(state, n, optional, on_complete):
-    """Discard n cards from hand, one at a time -- the model picks which,
-    by name, same by-name fungibility every other resolution here uses.
-    optional=True additionally allows declining outright, discarding
-    nothing at all (Melded Moxite/Highway Robbery's "you may discard a
-    card"); optional=False is mandatory, discarding as many as n allows,
-    down to whatever's actually in hand if it runs out first (Faithless
-    Looting's draw-2-discard-2 -- though by the time its own discard step
-    runs, its own draw-2 already guarantees 2 cards are available, so this
-    only ever matters as a defensive fallback, never a real case in either
-    new deck; Grab the Prize's discard-as-an-additional-cost, paid via
-    this same resolution before the spell's own effect runs, gated
-    separately by its own extra_legal check requiring 1+ discardable
-    card).
+    """Discard n cards from hand, one at a time -- the model picks which, by
+    name. optional=True additionally allows declining outright, discarding
+    nothing (Highway Robbery's "you may discard a card"); optional=False is
+    mandatory, discarding as many as n allows, down to whatever's actually
+    in hand if it runs out first.
 
-    Deliberately does NOT decide what happens to a discarded card beyond
-    moving it out of hand:
-    Madness reroutes qualifying cards to exile (plus a queued cast-or-
-    graveyard decision, drained only once the enclosing action's entire
-    effect is done, never mid-discard) instead of the plain graveyard trip
-    this module implements alone today. on_complete(state, discarded_cards)
-    once n discards are made, the model declines, or hand runs out of
-    cards to offer -- discarded_cards is the list[CardDef] actually
-    discarded this resolution, in discard order (empty if declined or
-    hand was empty from the start). Callers that only care whether
-    anything was discarded can just check bool(discarded_cards) (Highway
-    Robbery/Melded Moxite's own "if you do, draw two cards"); Grab the
-    Prize needs to inspect which specific card it was."""
+    Does not decide what happens to a discarded card beyond moving it out
+    of hand: Madness reroutes qualifying cards to exile instead of the
+    plain graveyard trip this module implements alone. on_complete(state,
+    discarded_cards) fires once n discards are made, the model declines, or
+    hand runs out -- discarded_cards is the list[CardDef] actually
+    discarded, in order (empty if declined or hand was empty)."""
     begin_resolution(state, "discard", on_complete, remaining=n, optional=optional, discarded_cards=[])
     if not discard_options(state):
         complete_resolution(state, [])
@@ -446,15 +365,8 @@ def begin_discard(state, n, optional, on_complete):
 def _available_hand_names(state):
     """Distinct names in hand still available to discard/pay as a cost --
     excluding any copy already reserved on state.stack (paid for, awaiting
-    resolution; see game.effects.stack.push_to_stack). That card's own
-    resolve function hasn't removed it from hand yet (deferred until it
-    actually resolves), so it's still physically present here, but
-    offering it as a discard option (from an instant-speed activated
-    ability like Blood's sac-for-a-card, which -- unlike a cast -- is
-    never blocked by a non-empty stack) would let it be discarded twice
-    over: once here, once more when its own stack entry finally tries to
-    remove it. Same exclusion drl_env._hand_count_available applies, just
-    for hand-count-based discard legality instead of cast legality. Shared by
+    resolution; its own hand-removal is deferred until it resolves, so it's
+    still physically in hand but must not be offered twice). Shared by
     discard_options and discard_or_sacrifice_discard_options below."""
     stacked_counts = {}
     for entry in state.stack:
@@ -477,23 +389,18 @@ def discard_options(state):
 
 def execute_discard_decline(state):
     """Only ever offered by the environment while
-    state.pending_resolution['optional'] is True -- not itself enforced
-    here, same convention as execute_search_fetch_decline."""
+    state.pending_resolution['optional'] is True."""
     complete_resolution(state, state.pending_resolution["discarded_cards"])
 
 
 def _discard_one(state, card):
     """Move `card` out of hand into the graveyard, EXCEPT a Madness card,
-    which goes to exile with a queued cast-or-graveyard decision instead
-    -- a real-rules replacement effect that applies to ANY discard,
-    regardless of why the card was discarded (a Madness card discarded to
-    pay Highway Robbery's own optional cost triggers exactly the same way
-    as one discarded by Faithless Looting). Queued rather than offered
-    immediately: the model only sees the cast-or-graveyard decision once
-    the enclosing action's entire effect is fully resolved (the Madness
-    cast-or-graveyard cross-cutting rule). Shared by
-    execute_discard_option's own per-card loop and execute_discard_or_
-    sacrifice_option's single optional discard."""
+    which goes to exile with a queued cast-or-graveyard decision instead --
+    a real-rules replacement effect that applies to ANY discard, regardless
+    of why the card was discarded. Queued rather than offered immediately:
+    the model only sees the decision once the enclosing action's entire
+    effect is fully resolved. Shared by execute_discard_option's per-card
+    loop and execute_discard_or_sacrifice_option's single optional discard."""
     state.hand.remove(card)
     madness_spec = registry.EFFECT_REGISTRY.get(card.effect_id, {}).get("madness")
     if madness_spec is not None:
@@ -517,24 +424,14 @@ def execute_discard_option(state, name):
 
 def begin_discard_or_sacrifice(state, sac_predicate, on_complete):
     """"You may discard a card or sacrifice a [land]. If you do, ..."
-    (Highway Robbery) -- ONE optional decision offering two different
-    cost shapes at once, unlike begin_discard's own single-cost-type
-    optionality. Kept as a single exactly-one-of-these-or-neither choice,
-    not two independent optional costs -- real text is "a card OR a
-    [land]," never both. on_complete(state, paid) -- paid is True iff
-    either a discard or a sacrifice actually happened, False if declined
-    or nothing was payable to begin with; callers that only care whether
-    anything was paid (Highway Robbery's own "if you do, draw two cards")
-    just branch on that bool, same shape begin_discard's own
-    bool(discarded_cards) contract already has.
+    (Highway Robbery) -- ONE optional decision offering two different cost
+    shapes at once (real text is "a card OR a [land]," never both).
+    on_complete(state, paid) -- True iff either a discard or a sacrifice
+    happened, False if declined or nothing was payable.
 
-    The SACRIFICE half is a real per-instance player choice, same fix as
-    begin_sacrifice's own: picking "sacrifice" (execute_discard_or_
-    sacrifice_trigger_sacrifice) opens a nested choose_permanent
-    sub-decision for WHICH exact permanent pays it, instead of an
-    arbitrary first-same-name match -- a Utopia-Sprawl/Abundant-Growth-
-    enchanted land is not interchangeable with a bare one of the same
-    name."""
+    The SACRIFICE half is a real per-instance player choice: picking
+    "sacrifice" opens a nested choose_permanent sub-decision for WHICH
+    exact permanent pays it, not an arbitrary first-same-name match."""
     begin_resolution(state, "discard_or_sacrifice", on_complete, sac_predicate=sac_predicate)
     if not discard_or_sacrifice_discard_options(state) and not discard_or_sacrifice_can_sacrifice(state):
         complete_resolution(state, False)
@@ -546,8 +443,7 @@ def discard_or_sacrifice_discard_options(state):
 
 def discard_or_sacrifice_can_sacrifice(state):
     """Whether the SACRIFICE half has any eligible permanent right now --
-    gates both the trigger action's own legal() (drl_env._discard_or_
-    sacrifice_trigger_sacrifice_legal) and this function's own begin-time
+    gates both drl_env's own legal() check and this function's begin-time
     check above."""
     pending = state.pending_resolution
     return any(pending["sac_predicate"](p) for p in state.battlefield)
@@ -561,18 +457,12 @@ def execute_discard_or_sacrifice_discard(state, name):
 
 def execute_discard_or_sacrifice_trigger_sacrifice(state):
     """Opens the exact (name, slot) choose_permanent sub-decision for WHICH
-    permanent pays this optional cost -- same real per-instance choice
-    begin_sacrifice's own predicate-driven picks get (see its own
-    docstring), never an arbitrary first-match. Captures the outer
-    on_complete/sac_predicate before opening the nested resolution --
-    begin_choose_permanent's own begin_resolution call replaces
-    state.pending_resolution wholesale, same "capture first" contract
-    declare_blocker_assignment's own nested chain already documents.
-    Actually sacrificing the chosen permanent goes through state_based.
-    sacrifice_to_graveyard, the one canonical "leave the battlefield by
-    sacrifice" path (token-ceases / DFC-front-face / dies-trigger handling
-    shared with Lembas, Chromatic Star, ...) instead of a second, inlined
-    copy of that logic."""
+    permanent pays this optional cost, never an arbitrary first-match.
+    Captures the outer on_complete/sac_predicate before opening the nested
+    resolution, since begin_choose_permanent replaces state.pending_
+    resolution wholesale. Sacrificing the chosen permanent goes through
+    state_based.sacrifice_to_graveyard, the one canonical "leave the
+    battlefield by sacrifice" path."""
     from ..effects.state_based import sacrifice_to_graveyard
     outer_on_complete = state.pending_resolution["on_complete"]
     sac_predicate = state.pending_resolution["sac_predicate"]
@@ -593,31 +483,16 @@ def execute_discard_or_sacrifice_decline(state):
 def begin_sacrifice(state, predicate, n, on_complete):
     """Choose and sacrifice n of your own battlefield permanents matching
     predicate, one at a time. Real Magic (602.5a/602.5g): naming WHICH
-    permanent pays a "sacrifice a [type]" cost is the PLAYER'S OWN choice
-    among every eligible one -- two same-named permanents stop being
-    interchangeable the instant one differs from the other (an attached
-    Aura, a counter, ...), so this delegates to begin_choose_permanent (the
-    SAME exact-(name, slot) primitive Aura targets/Crop Rotation's own
-    sacrifice cost already use) once per permanent, chained via nested
-    on_complete -- same repeated-resolution shape declare_blocker_
-    assignment/begin_choose_delve_amount's own callers already use
-    elsewhere. Actually sacrificing each chosen permanent goes through
-    state_based.sacrifice_to_graveyard, the one canonical "leave the
-    battlefield by sacrifice" path (token-ceases / DFC-front-face /
-    dies-trigger handling all shared with Lembas, Chromatic Star, Nihil
-    Spellbomb, ...) instead of a second, inlined copy of that logic.
+    permanent pays a "sacrifice a [type]" cost is the player's own choice
+    among every eligible one, so this delegates to begin_choose_permanent
+    once per permanent, chained via nested on_complete. Sacrificing each
+    chosen permanent goes through state_based.sacrifice_to_graveyard.
+    Covers both creature-sacrifice costs (Dread Return's Flashback) and
+    land-sacrifice costs (Fireblast's alt-cost, Crop Rotation).
 
-    A predicate-based primitive covering both creature-sacrifice costs
-    (Dread Return's own Flashback: `begin_sacrifice(state, lambda p:
-    p.card_type == CardType.CREATURE, 3, on_complete)`) and land-sacrifice
-    costs (Fireblast's alt-cost, Lava Dart's Flashback, Crop Rotation's own
-    sacrifice).
-
-    Caller's own legality check guarantees n eligible permanents exist
-    before this is ever offered (same "guaranteed payable, not a maybe"
-    contract every alternate cost path here already follows) --
-    on_complete(state, True) once n are sacrificed (False only via the
-    defensive n<=0 fallback, matching every other pending kind here)."""
+    Caller's legality check guarantees n eligible permanents exist before
+    this is offered -- on_complete(state, True) once n are sacrificed
+    (False only via the defensive n<=0 fallback)."""
     if n <= 0:
         on_complete(state, False)
         return

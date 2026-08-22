@@ -1,11 +1,8 @@
-"""Combat-damage detail: deathtouch through combat, the attacking player's own
-free damage split, Aura-modified lethal calculation, and the first-strike
-sub-step in the direction test_combat.py does not already cover.
-
-The broad combat cases (attack eligibility, trample spill, lifelink, menace,
-goad, The Initiative, gang-block splits) live in test_combat.py; this file is
-the Phase 3 gap fill from the 2026-08-19 combat review.
-"""
+"""Combat-damage detail: deathtouch through combat, the attacker's free
+damage split, Aura-modified lethal calculation, and the first-strike
+sub-step in the direction test_combat.py does not already cover. The broad
+combat cases (attack eligibility, trample spill, lifelink, menace, goad, The
+Initiative, gang-block splits) live in test_combat.py."""
 from game import registry
 from game.cards import CardDef, CardType, EffectId
 from game.effects.combat import blocker_lethal_capacities, combat_damage_step, declare_attacker, declare_attackers_step
@@ -24,11 +21,8 @@ def _with_filler_keywords(keywords):
 
 
 def test_deathtouch_attacker_kills_a_larger_blocker_through_combat_damage_step():
-    # End-to-end deathtouch through combat: _attacker_deal_damage stamps
-    # flags["deathtouched"] on whatever it damages, and the SBA check then
-    # treats that marked damage as lethal regardless of toughness. The SBA half
-    # is covered by test_state_based's own deathtouch test; this is the combat
-    # half that feeds it.
+    # _attacker_deal_damage stamps flags["deathtouched"] on whatever it
+    # damages; check_state_based_actions then treats that as lethal regardless of toughness
     original = _with_filler_keywords({"deathtouch"})
     try:
         state = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
@@ -52,19 +46,11 @@ def test_deathtouch_attacker_kills_a_larger_blocker_through_combat_damage_step()
 
 
 def test_deathtouch_trample_default_split_assigns_one_per_blocker():
-    # 702.2b + 510.1a: when ASSIGNING combat damage, any nonzero damage from a
-    # deathtouch source counts as lethal, so a 5-power deathtouch trampler
-    # blocked by one 4-toughness creature assigns 1 and tramples 4.
-    #
-    # _default_damage_assignment used to compute lethal as (toughness -
-    # damage_marked) with no deathtouch case, assigning 4 and spilling only 1.
-    # That was a LEGAL assignment -- over-assigning to a blocker is allowed --
-    # so it was not an illegal-state bug. It was the wrong DEFAULT: a
-    # single-blocked attacker never gets an assign_combat_damage decision
-    # (attackers_needing_damage_assignment fires only for 2+ blockers), so the
-    # auto split is the entire decision and should be the attacker-optimal
-    # legal one. Minimum-lethal is dominant -- over-assigning to a blocker
-    # never helps the attacker -- so automating it needs no new action.
+    # 702.2b + 510.1a: when assigning combat damage, any nonzero damage from
+    # a deathtouch source counts as lethal, so a 5-power deathtouch trampler
+    # blocked by one 4-toughness creature assigns 1 and tramples 4. A
+    # single-blocked attacker gets no assign_combat_damage decision, so the
+    # auto split must already be this minimum-lethal, attacker-optimal one.
     original = _with_filler_keywords({"deathtouch", "trample"})
     try:
         state = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
@@ -86,16 +72,10 @@ def test_deathtouch_trample_default_split_assigns_one_per_blocker():
 
 
 def test_multi_blocker_split_caps_each_blocker_at_lethal_and_spares_the_rest_only_if_power_runs_out():
-    # A 2+-blocked attacker's controller assigns its damage one point at a
-    # time (begin_assign_combat_damage/execute_assign_combat_damage_option),
-    # but never past a blocker's own lethal cap (blocker_lethal_capacities)
-    # -- no overkill. Once a blocker is capped it drops out of assign_
-    # combat_damage_options entirely. The only real discretion left is which
-    # blocker(s) get lethal first when total power can't cover every
-    # blocker's cap -- real Magic's own damage-assignment-order rule
-    # (510.1c) -- so this is the one case a blocker can still end up
-    # non-lethally damaged: power ran out, not because the controller chose
-    # to leave a capped-eligible blocker alone.
+    # the controller assigns damage one point at a time, never past a
+    # blocker's lethal cap (blocker_lethal_capacities); a capped blocker
+    # drops out of assign_combat_damage_options. A blocker ends up
+    # non-lethally damaged only when power runs out (510.1c), never by choice.
     state = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
     attacker = Permanent(CardDef("Chooser", CardType.CREATURE, None, EffectId.FILLER, power=4, toughness=6))
     attacker.summoning_sick = False
@@ -130,12 +110,10 @@ def test_multi_blocker_split_caps_each_blocker_at_lethal_and_spares_the_rest_onl
 
 
 def test_multi_blocker_trample_spills_to_player_automatically_once_every_blocker_is_capped():
-    # 702.19e/510.1c: once every blocker in a multi-blocked trampler's split
-    # is at its own lethal cap, whatever combat damage remains is a FORCED
-    # outcome, never an agent choice -- there is no "assign to player"
-    # action anymore (drl_env._assign_damage_to_opponent_legal is now
-    # permanently False). The spillover happens as a direct side effect of
-    # the point that caps the LAST still-open blocker.
+    # 702.19e/510.1c: once every blocker in a trampler's split is at its
+    # lethal cap, the remaining damage spills to the player as a forced
+    # side effect of the point that caps the last open blocker -- never an
+    # explicit "assign to player" action.
     original = _with_filler_keywords({"trample"})
     try:
         state = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
@@ -212,16 +190,10 @@ def test_multi_blocker_non_trample_excess_piles_onto_last_blocker_when_all_are_c
 
 
 def test_trample_blocker_departing_after_split_recorded_spills_its_share_to_player():
-    # This engine records the free-assignment split during DECLARE_BLOCKERS
-    # but doesn't DEAL it until COMBAT_DAMAGE, a phase later, with a full
-    # priority round in between -- real Magic's own 510.1/510.2 are one
-    # atomic turn-based action with no such gap, so a blocker the split
-    # already earmarked damage for can die to an instant in that window
-    # before combat_damage_step ever runs. Before the fix, that blocker's
-    # earmarked share simply vanished (the attacker dealt less total damage
-    # than its own power, with no rules basis for the loss); with trample,
-    # it must instead flow through to the player (702.19b: damage that can
-    # no longer reach a blocker becomes exactly that).
+    # the free-assignment split is recorded during DECLARE_BLOCKERS but not
+    # dealt until COMBAT_DAMAGE, a phase later; a blocker earmarked damage
+    # can die to an instant in between. With trample, its earmarked share
+    # must flow through to the player instead (702.19b), not vanish.
     original = _with_filler_keywords({"trample"})
     try:
         state = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
@@ -248,27 +220,21 @@ def test_trample_blocker_departing_after_split_recorded_spills_its_share_to_play
         assert state.pending_resolution is None
         assert trampler.flags["combat_damage_split"] == ({b1: 2, b2: 2}, 2), "6 power = 2+2 lethal, 2 excess tramples"
 
-        # The priority round between DECLARE_BLOCKERS and COMBAT_DAMAGE: an
-        # instant kills b1 before damage is dealt.
+        # an instant kills b1 before damage is dealt
         destroy_permanent(state, b1)
         assert b1 not in state.players[1].battlefield
 
         combat_damage_step(state)
         assert b2.damage_marked == 2, "the surviving blocker still takes its own recorded share"
-        assert state.players[1].life_total == 16, (
-            "20 - (2 original trample + 2 orphaned from b1's departure) = 16 -- "
-            "b2's own 2 lands on b2, not the player; the other 4 of the attacker's 6 power must reach the opponent"
-        )
+        assert state.players[1].life_total == 16, "20 - (2 original trample + 2 orphaned from b1)"
     finally:
         registry.EFFECT_REGISTRY[EffectId.FILLER] = original
 
 
 def test_non_trample_blocker_departing_after_split_recorded_does_not_spill():
-    # Same departing-blocker-after-the-split scenario as the trample test
-    # above, but without trample: 509.1h -- the attacker stays "blocked," so
-    # nothing spills to the defending player regardless. The orphaned share
-    # is correctly just never dealt (same as if that blocker had never been
-    # part of the split at all), not routed anywhere.
+    # same departing-blocker scenario as the trample test above, but without
+    # trample: 509.1h keeps the attacker "blocked," so the orphaned share is
+    # just never dealt, not routed anywhere
     state = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
     attacker = Permanent(CardDef("Chooser3", CardType.CREATURE, None, EffectId.FILLER, power=4, toughness=4))
     attacker.summoning_sick = False
@@ -300,9 +266,8 @@ def test_non_trample_blocker_departing_after_split_recorded_does_not_spill():
 
 
 def test_lethal_calculation_uses_aura_modified_toughness():
-    # The default lethal-in-order split must read EFFECTIVE toughness, not the
-    # printed value: an Armadillo Cloak (+2/+2) on the blocker raises the bar,
-    # so a trampler spills less over.
+    # the default lethal-in-order split must read effective toughness, not
+    # printed: an Armadillo Cloak (+2/+2) raises the bar, so less tramples over
     original = _with_filler_keywords({"trample"})
     try:
         state = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
@@ -319,12 +284,11 @@ def test_lethal_calculation_uses_aura_modified_toughness():
         state.blocked_by[trampler] = [blocker]
         combat_damage_step(state)
 
-        # Blocker is effectively 3/4 under the Cloak: 4 lethal, 2 tramples over.
+        # blocker is effectively 3/4 under the Cloak: 4 lethal, 2 tramples over
         assert blocker.damage_marked == 4, "lethal must use Aura-modified toughness, not the printed 2"
-        # The Cloak also grants its own lifelink, and it is on the DEFENDER's
-        # creature, so the defender gains the 3 their boosted blocker dealt:
-        # 20 - 2 trample + 3 lifelink. Asserted together deliberately -- the
-        # +2/+2 and the lifelink come from one Aura and must both apply.
+        # the Cloak also grants lifelink on the defender's creature, so the
+        # defender gains the 3 their boosted blocker dealt -- +2/+2 and
+        # lifelink both come from the one Aura
         assert trampler.damage_marked == 3, "the Cloak's +2/+0 applies to the damage dealt back"
         assert state.players[1].life_total == 21, "20 - 2 trample excess + 3 Cloak lifelink"
     finally:
@@ -332,10 +296,9 @@ def test_lethal_calculation_uses_aura_modified_toughness():
 
 
 def test_first_strike_blocker_kills_attacker_before_it_deals_damage():
-    # The untested direction of the first-strike sub-step. test_combat.py
-    # covers a first-striking ATTACKER; this is a first-striking BLOCKER that
-    # kills the attacker outright, so the SBA check between sub-steps removes
-    # it before it ever deals its own regular combat damage.
+    # test_combat.py covers a first-striking attacker; this is a
+    # first-striking blocker that kills the attacker outright, so the SBA
+    # check between sub-steps removes it before its regular damage step
     original = _with_filler_keywords({"first_strike"})
     try:
         state = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])

@@ -1,6 +1,4 @@
-"""Tests for game.catalog.multicolor_cards. See the module under test for
-the card-implementation rationale (real-rules citations, etc.) each test
-below guards."""
+"""Tests for game.catalog.multicolor_cards."""
 
 import pytest
 
@@ -22,9 +20,7 @@ def _two():
 
 
 def test_terminate_destroys_any_creature():
-    """{B}{R}: Destroy target creature. It can't be regenerated -- a no-op,
-    since no card in this engine ever grants regeneration. Destroys a black
-    creature -- any creature qualifies, including black."""
+    """Any creature qualifies, including black."""
     state = _two()
     victim = Permanent(CardDef("Black Creature", CardType.CREATURE, {"B": 1}, EffectId.FILLER, power=2, toughness=2))
     victim.slot = 1
@@ -37,16 +33,7 @@ def test_terminate_destroys_any_creature():
 
 
 def test_agony_warp_split_targets_survives_and_dies():
-    """{U}{B}: "Target creature gets -3/-0 until end of turn. Target
-    creature gets -0/-3 until end of turn." Two independent targets, both
-    locked at cast (precast_choice) -- they MAY be the same creature (then
-    -3/-3), so a single legal creature is enough to cast. On resolution each
-    half applies only if its own target is still a legal creature (608.2c --
-    a spell does as much as it can).
-
-    Two DIFFERENT targets: 5/5 -> 2/5 (survives) and 1/3 -> 1/0 (dies) -- a
-    -0/-3 that drops a creature to 0 toughness kills it via the
-    state-based-action check."""
+    """Two different targets: 5/5 -> 2/5 (survives) and 1/3 -> 1/0 (dies)."""
     state = _two()
     big = Permanent(CardDef("Big", CardType.CREATURE, None, EffectId.FILLER, power=5, toughness=5))
     big.slot = 1
@@ -63,8 +50,7 @@ def test_agony_warp_split_targets_survives_and_dies():
 
 
 def test_agony_warp_same_creature_stacks_to_minus_three_three():
-    """Both Agony Warp targets landing on the SAME creature (only one on
-    board): -3/-3. 4/4 -> 1/1, survives."""
+    """Both targets on the same creature: -3/-3. 4/4 -> 1/1, survives."""
     state = _two()
     lone = Permanent(CardDef("Lone", CardType.CREATURE, None, EffectId.FILLER, power=4, toughness=4))
     lone.slot = 1
@@ -79,13 +65,9 @@ def test_agony_warp_same_creature_stacks_to_minus_three_three():
 
 
 def test_writhing_chrysalis_devoid_eldrazi_spawn_and_sacrifice_counter():
-    """G8: Writhing Chrysalis -- {2}{R}{G} Devoid: "When you cast this
-    spell, create two 0/1 Eldrazi Spawn" -- made as it's cast (before it
-    resolves), then the 2/3 enters on resolution as colorless (Devoid).
-    Reach + "whenever you sacrifice another Eldrazi, +1/+1" (its
-    on_sacrifice), exercised here via the Eldrazi Spawn token's own sac
-    ability. A real triggered ability -- queued, then placed on the stack at
-    the next priority window, not applied immediately."""
+    """Cast creates two Eldrazi Spawn immediately; the 2/3 enters as
+    colorless (Devoid) on resolution. Sacrificing another Eldrazi triggers
+    +1/+1, queued and placed on the stack, not applied immediately."""
     state = GameState(on_the_play=True)
     state.hand = [registry.CARD_DEFS["Writhing Chrysalis"]]
     cast_writhing_chrysalis(state, registry.CARD_DEFS["Writhing Chrysalis"])
@@ -95,20 +77,14 @@ def test_writhing_chrysalis_devoid_eldrazi_spawn_and_sacrifice_counter():
     assert card_colors(wr.card_def) == set()  # Devoid -> colorless
     spawn = next(p for p in state.battlefield if p.card_def.name == "Eldrazi Spawn")
     registry.EFFECT_REGISTRY[EffectId.ELDRAZI_SPAWN_TOKEN]["activated_abilities"]["sac"]["resolve"](state, spawn)
-    # Sacrificing purely for the +1/+1 trigger still floats {C} as a forced
-    # side effect, but it must never count as avoidable burn -- untagged.
-    assert state.mana_pool_single_pip == {}
+    assert state.mana_pool_single_pip == {}  # the forced {C} float must not count as avoidable burn
     promote_triggers_to_stack(state)
     resolve_top_of_stack(state)
-    assert wr.counters.get("+1/+1") == 1  # "whenever you sacrifice another Eldrazi"
+    assert wr.counters.get("+1/+1") == 1
 
 
 def test_jagged_barrens_etb_deals_damage_to_target_opponent():
-    """Jagged Barrens: real "target opponent" (restricted, NOT "any target"
-    like the red burn spells) -- captured at ETB promotion (etb_targets:
-    True); the only ever-legal candidate in this 2-player engine, so no
-    interactive choice is needed, but the effect is still properly deferred
-    onto the stack rather than applied inline at promotion."""
+    """Target captured at ETB promotion; effect waits on the stack."""
     state = _two()
     state.active_idx = 0
     state.players[1].life_total = 20
@@ -116,14 +92,13 @@ def test_jagged_barrens_etb_deals_damage_to_target_opponent():
     enters_battlefield(state, barrens, from_zone="hand")
     assert [e["type"] for e in state.trigger_queue] == ["etb"]
     promote_triggers_to_stack(state)
-    assert len(state.stack) == 1  # target captured at promotion, effect now waits on the stack
+    assert len(state.stack) == 1
     resolve_top_of_stack(state)
     assert state.players[1].life_total == 19
 
 
 def test_jagged_barrens_etb_solo_no_opponent_is_noop():
-    """No opponent (1-player) -> nothing to target, so the ETB does
-    nothing -- matches Mesmeric Fiend's own 1-player guard."""
+    """No opponent -> the ETB does nothing."""
     solo = GameState(on_the_play=True)
     barrens = CardDef("Jagged Barrens", CardType.LAND, None, EffectId.JAGGED_BARRENS)
     enters_battlefield(solo, barrens, from_zone="hand")
@@ -132,8 +107,7 @@ def test_jagged_barrens_etb_solo_no_opponent_is_noop():
 
 
 def test_sneaky_snacker_has_flying():
-    """Real Sneaky Snacker (MH3) is a 2/1 flier -- only blockable by flying
-    or reach, not a vanilla ground creature like Gurmag Angler."""
+    """Only blockable by flying or reach, not a vanilla ground creature."""
     state = _two()
     snacker = Permanent(registry.CARD_DEFS["Sneaky Snacker"])
     ground = Permanent(CardDef("Ground Blocker", CardType.CREATURE, None, EffectId.FILLER, power=5, toughness=5))
@@ -151,11 +125,7 @@ def test_sneaky_snacker_has_flying():
     ("Ice Tunnel", ("U", "B"), False),
 ])
 def test_flexible_dual_land_taps_for_two_colors(card_name, colors, enters_tapped):
-    """Flexible duals: real {T}: Add <color> or <color> -- one tap producing
-    either color (mirrors how a flexible source like Saruli Caretaker/
-    Bonder's Ornament is exercised via mana.activate_mana_source's
-    color_choice). Wooded Ridgeline additionally has real "enters tapped"
-    text -- checked here too instead of a separate test."""
+    """A flexible dual's single tap can produce either color."""
     state = _two()
     card = registry.CARD_DEFS[card_name]
     for color in colors:
@@ -165,17 +135,14 @@ def test_flexible_dual_land_taps_for_two_colors(card_name, colors, enters_tapped
         state.mana_pool_single_pip = {}
         mana.activate_mana_source(state, land, color)
         assert state.mana_pool == {color: 1} and land.tapped
-        assert state.mana_pool_single_pip == {color: 1}  # a 1-symbol event -- tagged single-pip
+        assert state.mana_pool_single_pip == {color: 1}
     if enters_tapped:
         entered = enters_battlefield(state, card, from_zone=None)
         assert entered.tapped
 
 
 def test_rakdos_carnarium_taps_for_b_and_r_simultaneously():
-    """Rakdos Carnarium: real {T}: Add {B}{R} -- fixed_multi, one tap
-    floats BOTH symbols at once, not a choice of one -- driven through the
-    REAL "Rakdos Carnarium" registry entry (only exercised via a
-    "Carnarium-ish" FILLER double elsewhere, see test_mana.py)."""
+    """One tap floats both {B} and {R} at once, not a choice of one."""
     state = _two()
     carnarium = Permanent(registry.CARD_DEFS["Rakdos Carnarium"])
     state.battlefield = [carnarium]
@@ -185,12 +152,8 @@ def test_rakdos_carnarium_taps_for_b_and_r_simultaneously():
 
 
 def test_rakdos_carnarium_etb_bounce_is_queued_through_real_card():
-    """Rakdos Carnarium's ETB land-bounce (bounce_land_etb), driven through
-    the REAL "Rakdos Carnarium" registry entry (EffectId.RAKDOS_CARNARIUM)
-    instead of the FILLER double used in test_land_bounce_etb_is_queued_
-    not_inline (tests/game/effects/test_casting.py). Queued, not inline:
-    the choose_permanent decision only opens once promoted to the stack and
-    resolved."""
+    """ETB land-bounce is queued, not inline: the choose_permanent decision
+    only opens once promoted to the stack and resolved."""
     state = GameState(on_the_play=True)
     carnarium_def = registry.CARD_DEFS["Rakdos Carnarium"]
     state.hand = [carnarium_def]
@@ -215,22 +178,15 @@ def test_rakdos_carnarium_etb_bounce_is_queued_through_real_card():
 
 
 def test_drossforge_bridge_counts_for_affinity_and_metalcraft():
-    """Drossforge Bridge is BOTH a land and an artifact (extra["artifact"])
-    -- counts toward "artifacts you control" for affinity (Myr Enforcer,
-    tested via this same affinity_reduction/is_artifact predicate in
-    test_colorless_cards.py) and metalcraft (Galvanic Blast, tested via
-    Great Furnace in test_red_cards.py)."""
+    """A land that's also an artifact counts toward "artifacts you control"."""
     assert is_artifact(registry.CARD_DEFS["Drossforge Bridge"])
     state = GameState(on_the_play=True)
     state.battlefield = [Permanent(registry.CARD_DEFS["Drossforge Bridge"]) for _ in range(3)]
-    assert affinity_reduction(state) == 3  # 3 artifact lands -> metalcraft threshold met / {3} affinity reduction
+    assert affinity_reduction(state) == 3
 
 
 def test_contaminated_aquifer_is_legal_islandcycling_target():
-    """Contaminated Aquifer's Island subtype (subtypes=("Island", "Swamp"))
-    makes it a legal Islandcycling search target -- mirrors test_lorien_
-    revealed_islandcycling_searches_island_subtype's own Ice Tunnel case in
-    test_blue_cards.py; same pattern, sibling U/B dual."""
+    """Its Island subtype makes it a legal Islandcycling search target."""
     state = GameState(on_the_play=True)
     lorien = registry.CARD_DEFS["Lórien Revealed"]
     state.hand = [lorien]
@@ -240,21 +196,15 @@ def test_contaminated_aquifer_is_legal_islandcycling_target():
     ]
     islandcycle_lorien_revealed(state, lorien)
     assert state.pending_resolution["kind"] == "search_fetch"
-    assert resolution.search_fetch_options(state) == ["Contaminated Aquifer"]  # Mountain excluded (no Island subtype)
+    assert resolution.search_fetch_options(state) == ["Contaminated Aquifer"]  # Mountain excluded
     resolution.execute_search_fetch_option(state, "Contaminated Aquifer")
     assert any(c.name == "Contaminated Aquifer" for c in state.hand)
 
 
 def test_sneaky_snacker_real_draw_trigger_orders_and_returns():
-    """Sneaky Snacker's real on_draw_count {count: 3} + pending_kinds:
-    order_triggers, driven through the REAL "Sneaky Snacker" registry entry
-    (EffectId.SNEAKY_SNACKER) instead of the "Fake Snacker" FILLER double
-    used by test_draw_counter_and_automatic_return (tests/game/effects/
-    test_triggers.py). Two physical copies in the graveyard both cross the
-    "third card drawn this turn" trigger on the same draw -- a real
-    placement-order choice -- then each independently returns to the
-    battlefield tapped. Its flying keyword is already tested above -- not
-    repeated here."""
+    """Two graveyard copies both cross the "third card drawn this turn"
+    trigger on the same draw, need a placement-order choice, then each
+    independently returns to the battlefield tapped."""
     state = GameState(on_the_play=True)
     snacker = registry.CARD_DEFS["Sneaky Snacker"]
     state.library = [CardDef(f"Filler {i}", CardType.SORCERY, {}, None) for i in range(5)]
@@ -267,7 +217,7 @@ def test_sneaky_snacker_real_draw_trigger_orders_and_returns():
     assert state.pending_resolution["kind"] == "order_triggers"
     assert resolution.order_triggers_options(state) == ["Sneaky Snacker"]
     resolution.execute_order_triggers_option(state, "Sneaky Snacker")
-    assert state.pending_resolution["kind"] == "order_triggers"  # one more still to place
+    assert state.pending_resolution["kind"] == "order_triggers"  # one more to place
     resolution.execute_order_triggers_option(state, "Sneaky Snacker")
     assert state.pending_resolution is None
     assert len(state.stack) == 2
@@ -275,15 +225,11 @@ def test_sneaky_snacker_real_draw_trigger_orders_and_returns():
         resolve_top_of_stack(state)
     returned = [p for p in state.battlefield if p.card_def.name == "Sneaky Snacker"]
     assert len(returned) == 2
-    assert all(p.tapped for p in returned)  # force_tapped=True on this automatic return
+    assert all(p.tapped for p in returned)
 
 
 def test_slippery_bogle_real_cast_pays_g_mana():
-    """Slippery Bogle {G}: cast through the real registry "cast" spec,
-    paying {G} via game.mana.begin_pay_cost/execute_pool_spend and
-    push_to_stack -- every other test in this suite constructs the
-    Permanent directly or drops it straight onto zones, bypassing the real
-    cast/cost-payment path entirely."""
+    """Casts through the real registry "cast" spec, paying {G} via the mana pipeline."""
     state = _two()
     bogle_def = registry.CARD_DEFS["Slippery Bogle"]
     state.hand = [bogle_def]
@@ -292,18 +238,14 @@ def test_slippery_bogle_real_cast_pays_g_mana():
     mana.begin_pay_cost(state, bogle_def.cast_cost, on_complete=lambda s: push_to_stack(s, bogle_def, resolve_fn))
     assert state.pending_resolution["kind"] == "pay_cost"
     mana.execute_pool_spend(state, "G")
-    assert bogle_def not in state.hand  # left hand once cost is fully paid (push_to_stack)
+    assert bogle_def not in state.hand  # left hand once cost is fully paid
     resolve_top_of_stack(state)
     bogle = next(p for p in state.battlefield if p.card_def.name == "Slippery Bogle")
     assert bogle.card_def.effect_id == EffectId.SLIPPERY_BOGLE
 
 
 def test_slippery_bogle_hexproof_blocks_opponent_targeting():
-    """Slippery Bogle: hexproof (real stats.can_be_targeted restriction),
-    tied to its own EffectId.SLIPPERY_BOGLE -- every existing hexproof test
-    (e.g. test_can_be_targeted_hexproof_and_shroud) uses a FILLER "Hexed"
-    double, never this card's own registry entry, despite Slippery Bogle
-    being used extensively as a combat fixture elsewhere in the suite."""
+    """Hexproof: its own controller may target it, an opponent may not."""
     state = _two()
     bogle = Permanent(registry.CARD_DEFS["Slippery Bogle"])
     state.players[0].battlefield = [bogle]
@@ -312,24 +254,16 @@ def test_slippery_bogle_hexproof_blocks_opponent_targeting():
 
 
 def test_armadillo_cloak_real_cast_attaches_to_chosen_creature():
-    """Armadillo Cloak {1}{G}{W}: the real cast/target/pay-mana flow --
-    cast_aura's own resolve, extra_legal (any_creature_on_either_
-    battlefield), precast_choice (real MTG: the target is locked in as
-    part of casting, before the stack), pending_kinds: choose_any_target --
-    driven to completion (resolve_top_of_stack), ending attached to the
-    chosen creature. Every combat test in this file instead constructs the
-    Aura permanent directly and presets flags["enchanting"], bypassing
-    casting entirely; the combat effects themselves (trample/lifelink/
-    pt_bonus) are already thoroughly tested there and not repeated here."""
+    """The real cast/target/pay-mana flow ends attached to the chosen creature."""
     state = _two()
     cloak = registry.CARD_DEFS["Armadillo Cloak"]
     target = Permanent(CardDef("Target Creature", CardType.CREATURE, None, EffectId.FILLER, power=2, toughness=2))
     target.slot = 1
     state.players[1].battlefield = [target]
     state.players[0].hand = [cloak]
-    state.mana_pool = {"C": 1, "G": 1, "W": 1}  # floating pool is real colors only -- "C" pays the generic pip
+    state.mana_pool = {"C": 1, "G": 1, "W": 1}  # "C" pays the generic pip
     cast_spec = registry.EFFECT_REGISTRY[EffectId.ARMADILLO_CLOAK]["cast"]
-    assert cast_spec["extra_legal"](state)  # any_creature_on_either_battlefield
+    assert cast_spec["extra_legal"](state)
     mana.begin_pay_cost(state, cloak.cast_cost, on_complete=lambda s: cast_spec["resolve"](s, cloak))
     guard = 0
     while state.pending_resolution is not None and state.pending_resolution["kind"] == "pay_cost":
@@ -344,11 +278,7 @@ def test_armadillo_cloak_real_cast_attaches_to_chosen_creature():
 
 
 def test_writhing_chrysalis_reach_blocks_flier():
-    """Writhing Chrysalis: Reach lets it block a real flier (Kitchen Imp) --
-    mirrors test_can_block_evasion_and_reach's pattern in tests/game/
-    effects/test_combat.py, exercised here through this card's own
-    EffectId (every other aspect of this card is already thoroughly tested
-    in this file, and not repeated here)."""
+    """Reach lets it block a flier."""
     state = _two()
     chrysalis = Permanent(registry.CARD_DEFS["Writhing Chrysalis"])
     flier = Permanent(registry.CARD_DEFS["Kitchen Imp"])

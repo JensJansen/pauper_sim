@@ -1,11 +1,9 @@
-"""Tests for rl.roster.build_pool: shared vocab/deck-ctx construction from the
-league roster.
+"""Tests for rl.roster.build_pool: shared vocab/deck-ctx construction from
+the league roster.
 
-Relies on this directory's conftest.py chdir'ing to src/ for the duration
-of each test -- build_pool()'s defaults (DECK_MANIFEST, VOCAB_PATH) and
-rl.roster._load_roster's own per-deck path construction are all written
-relative to src/.
-"""
+Relies on this directory's conftest.py chdir'ing to src/, since
+build_pool()'s defaults and _load_roster's path construction are relative
+to it."""
 import json
 import os
 import tempfile
@@ -18,8 +16,7 @@ from rl.roster import VOCAB_PATH, build_pool
 @pytest.mark.slow
 def test_build_pool_basic():
     decklists, vocab, deck_ctxs, fixed_tables = build_pool()
-    # Roster-agnostic (reads whatever data/league_decks.json currently lists)
-    # -- must include at least the two madness decks that are always present.
+    # Roster-agnostic -- must include the two madness decks that are always present.
     assert {"mono_red_madness", "rakdos_madness"} <= set(decklists), "the two madness decks must always be in the roster"
     assert all(ctx[0] is vocab for ctx in deck_ctxs.values()), "every deck must share the SAME vocab instance"
     assert all(len(t) > 0 for t in fixed_tables.values()), "every deck must build a non-empty fixed action table"
@@ -29,9 +26,8 @@ def test_build_pool_basic():
 def test_build_pool_single_deck_roster_preserves_vocab_indices():
     decklists, vocab, deck_ctxs, fixed_tables = build_pool()
 
-    # Roster is data-driven: a manifest naming just ONE deck must still work
-    # standalone, and must NOT reassign that deck's existing (persisted)
-    # vocab indices.
+    # A manifest naming just one deck must still work standalone, and must
+    # not reassign that deck's existing (persisted) vocab indices.
     tmp_manifest = os.path.join(tempfile.mkdtemp(), "one_deck.json")
     with open(tmp_manifest, "w") as f:
         json.dump({"mono_red_madness": "mono_red_madness.txt"}, f)

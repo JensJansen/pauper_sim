@@ -37,9 +37,7 @@ def test_two_player_construction():
 
 def test_stratify_forces_opening_land_count():
     # stratify=(seat, land_count): only that seat's opening hand is forced;
-    # the other seat still gets a plain, unforced shuffle (Mountain-only
-    # deck, so its hand is trivially 7 lands either way -- the real check
-    # is seat 0's hand, dealt from a mixed deck).
+    # the other seat gets a plain, unforced shuffle.
     decklist = [("Mountain", 33), ("Lightning Bolt", 27)]
     state = new_multiplayer_game_state(
         decklists=[decklist, decklist],
@@ -61,17 +59,11 @@ def test_stratify_forces_opening_land_count():
 
 def test_turn_alternation_and_on_the_play():
     def _pass_except_discard(state):
-        # Always Pass -- pure alternation, no card actions -- EXCEPT
-        # cleanup_step's own hand-size discard is mandatory in real Magic
-        # (the real mask-driven path, drl_env._pass_legal, already refuses
-        # Pass while a resolution is pending; this hand-written policy has
-        # to honor that too now that _run_turn_gen's Phase.END loop
-        # actually drives the resolution to completion instead of
-        # silently abandoning it on a stray Pass).
+        # Always Pass -- pure alternation -- except cleanup_step's own
+        # hand-size discard is mandatory, and Pass is illegal while a
+        # resolution is pending.
         if state.pending_resolution is not None:
-            # run_multiplayer_game runs the pregame mulligan phase
-            # (game.turn._run_mulligan_gen) before turn 1 -- always keep
-            # (0 mulligans taken).
+            # Pregame mulligan phase runs before turn 1 -- always keep.
             if state.pending_resolution["kind"] == "mulligan_decision":
                 return lambda: resolution.execute_mulligan_keep(state)
             name = resolution.discard_options(state)[0]
@@ -88,10 +80,8 @@ def test_turn_alternation_and_on_the_play():
     assert state.turn_number == 6
     assert state.active_idx == 1  # player 1 played turn 6 last -- lazy-flip means this must still say so, not have advanced past it
     assert state.players[0].turns_taken == 3 and state.players[1].turns_taken == 3  # turns 1/3/5 vs 2/4/6
-    # Player 0 (on the play) skipped their very first draw; player 1 never
-    # does -- both then draw once per turn after that, and cleanup_step
-    # discards back down to HAND_SIZE_LIMIT (7) every time a draw pushes
-    # past it, so both settle back at exactly 7.
+    # Player 0 (on the play) skips their first draw; cleanup_step discards
+    # back down to HAND_SIZE_LIMIT (7), so both settle at exactly 7.
     assert len(state.players[0].hand) == 7
     assert len(state.players[1].hand) == 7
     assert state.turn_won is None and state.winner is None  # horizon reached, no win condition ever fired
@@ -113,11 +103,8 @@ def test_life_total_loss_direct_damage():
 
 
 def test_deck_out_is_instant_loss_for_drawing_player():
-    # deck-out is an instant loss for the drawing player, in 2p.
-    # on_the_play=False for the drawing player specifically so draw_step's
-    # skip-first-draw rule never applies here -- keeps this check about
-    # deck-out alone, not entangled with the on_the_play interaction
-    # already covered by the turn-alternation check above.
+    # on_the_play=False for the drawing player so draw_step's
+    # skip-first-draw rule doesn't interfere -- isolates the deck-out check.
     state = GameState(
         on_the_play=False,
         players=[PlayerState(on_the_play=False), PlayerState(on_the_play=True)],
@@ -132,22 +119,14 @@ def test_deck_out_is_instant_loss_for_drawing_player():
 
 
 def test_real_two_player_game_through_actual_cards():
-    # A real 2-player game, played through actual cards. Player 0: Mountain
-    # + Lightning Bolt (real red_cards.py cards) racing to burn player 1's
-    # life_total to 0. Player 1: Mountain only, never acts (always passes)
-    # -- a pure punching bag, proving damage actually lands on a REAL
-    # opponent PlayerState through the normal cast/mana-payment path
-    # (game.mana.begin_pay_cost + push_to_stack), not a direct
-    # deal_damage_to_opponent call like the unit check above.
+    # A real 2-player game through actual cards. Player 0: Mountain +
+    # Lightning Bolt racing to burn player 1 to 0 via the normal
+    # cast/mana-payment/stack path. Player 1: Mountain only, never acts.
     bolt_def = registry.CARD_DEFS["Lightning Bolt"]
 
-    # This priority/stack game test uses Lightning Bolt purely as a burn
-    # vehicle to prove damage lands on a REAL opponent through the normal
-    # cast/mana-payment/stack path. Its production "cast" resolve is now a
-    # precast target choice ("any target", game.catalog.red_cards -- tested
-    # there), which would open a choose_any_target pending this toy policy
-    # doesn't model. Use a local direct-to-opponent resolve so this stays a
-    # turn/priority/stack test, decoupled from targeting.
+    # Bolt's production "cast" resolve opens a choose_any_target pending
+    # this toy policy doesn't model, so use a local direct-to-opponent
+    # resolve to keep this a turn/priority/stack test, decoupled from targeting.
     def bolt_resolve(s, cd):
         if cd in s.hand:
             s.hand.remove(cd)
@@ -155,41 +134,28 @@ def test_real_two_player_game_through_actual_cards():
         deal_damage_to_opponent(s, 3)
 
     def _bolts_available(state):
-        # Lightning Bolt is instant-speed (CardType.INSTANT), so it stays
-        # legal to "cast" again even with a copy already pushed, paid-for-
-        # but-unresolved on the stack -- a copy already there is still
-        # physically in state.hand (its resolve only removes it once it
-        # actually resolves; see game.effects.stack.push_to_stack) but isn't
-        # really available. Same accounting drl_env._hand_count_available
-        # does for exactly this reason.
+        # A copy already pushed, paid-for but unresolved on the stack is
+        # still physically in state.hand until it actually resolves, so it
+        # isn't really available.
         hand_count = sum(1 for c in state.hand if c.name == "Lightning Bolt")
         stacked_count = sum(1 for entry in state.stack if entry["card_def"].name == "Lightning Bolt")
         return hand_count - stacked_count
 
     def _burn_policy(state):
         if state.pending_resolution is not None and state.pending_resolution["kind"] == "mulligan_decision":
-            # run_multiplayer_game runs the pregame mulligan phase for BOTH
-            # players first -- always keep (0 mulligans taken).
-            return lambda: resolution.execute_mulligan_keep(state)
+            return lambda: resolution.execute_mulligan_keep(state)  # both players always keep
         if state.pending_resolution is not None and state.pending_resolution["kind"] == "discard":
-            # cleanup_step's own hand-size discard
-            # can happen to EITHER player at the end of THEIR OWN
-            # turn -- unlike every other resolution below (which only
-            # ever belongs to player 0, the only one who ever casts/taps
-            # anything), so this has to be checked before the "player 1
-            # never acts" rule, not folded inside it. An arbitrary card is
-            # fine, this policy has no preference among its own
-            # Mountains/Bolts either way.
+            # cleanup_step's discard can happen to EITHER player at the end
+            # of their own turn, so this is checked before "player 1 never
+            # acts" below.
             name = resolution.discard_options(state)[0]
             return lambda: resolution.execute_discard_option(state, name)
         if state.active_idx != 0:
             return None  # player 1 never acts otherwise
         if state.pending_resolution is not None:
-            # Only ever a pay_cost here now (paying Lightning Bolt's {R}) --
-            # discard (above) is handled regardless of whose turn it is.
-            # Cast-then-pay (601.2f/g): the spell is announced first, so THIS is
-            # the window where mana gets produced -- tap a source when the pool
-            # can't cover the remainder yet, then spend what's floating.
+            # Only ever a pay_cost here (paying Lightning Bolt's {R}).
+            # Cast-then-pay: tap a source when the pool can't cover the
+            # remainder, then spend what's floating.
             options = mana.pool_spend_options(state)
             if options:
                 return lambda: mana.execute_pool_spend(state, options[0])
@@ -198,8 +164,6 @@ def test_real_two_player_game_through_actual_cards():
         if state.lands_played_this_turn == 0 and any(c.name == "Mountain" for c in state.hand):
             return lambda: play_land_from_hand(state, registry.CARD_DEFS["Mountain"])
         if _bolts_available(state) > 0:
-            # plan_payment now counts untapped sources as well as the pool, so
-            # no pre-float step is needed -- announce, then pay above.
             if mana.plan_payment(state, bolt_def.cast_cost) is not None:
                 def _cast_bolt():
                     mana.begin_pay_cost(state, bolt_def.cast_cost, on_complete=lambda s: push_to_stack(s, bolt_def, bolt_resolve))
@@ -220,13 +184,9 @@ def test_real_two_player_game_through_actual_cards():
 
 def test_declare_blockers_gen_flips_active_idx_to_defender_and_restores():
     # _declare_blockers_gen: the defender's own consult, active_idx flip.
-    # test_handlers_combat.py already covers begin_declare_blockers/
-    # declare_blocker_assignment directly; this one is specifically about
-    # the flip-drive-restore shape unique to this generator, driven via
-    # the generator's own yield protocol -- the same nested-on_complete
-    # re-open of begin_declare_blockers that drl_env._assign_blocker_execute
-    # uses after each assignment, just routed through this generator's
-    # yield protocol like every other decision point in this file.
+    # test_handlers_combat.py covers begin_declare_blockers/
+    # declare_blocker_assignment directly; this one is about the
+    # flip-drive-restore shape unique to this generator.
     bear = Permanent(CardDef("Bear", CardType.CREATURE, None, None))
     grizzly = Permanent(CardDef("Grizzly Bears", CardType.CREATURE, None, None))
     state = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
@@ -264,9 +224,8 @@ def test_declare_blockers_gen_flips_active_idx_to_defender_and_restores():
 
 
 def test_declare_blockers_gen_noop_with_fewer_than_two_players():
-    # No-op guard: fewer than 2 players -- never starts a resolution at
-    # all, let alone leaves one stuck open (no next(gen) call ever
-    # reaches a yield -- StopIteration on the very first one).
+    # No-op guard: fewer than 2 players -- never starts a resolution
+    # (StopIteration on the very first next()).
     state_1p = GameState(on_the_play=True)  # len(state.players) == 1
     gen_1p = _declare_blockers_gen(state_1p)
     try:
@@ -278,23 +237,13 @@ def test_declare_blockers_gen_noop_with_fewer_than_two_players():
 
 def test_declare_blockers_gen_abandons_stuck_menace_instead_of_deadlocking():
     # A menace attacker with exactly ONE committed blocker makes "Done"
-    # illegal (menace_block_incomplete), by design -- 509.1c is 0 or 2+,
-    # never 1. If the defender has no OTHER creature left to add as a
-    # second blocker, "Assign Blocker" is also illegal for everyone
-    # (creature_block_eligible excludes an already-committed blocker) -- a
-    # genuine zero-legal-action deadlock: this is the ONLY case
-    # _declare_blockers_gen still proactively abandons on its own. No
-    # iteration cap exists anywhere in this loop (removed 2026-08-19,
-    # game/turn.py) -- an unproductive-but-technically-legal action (some
-    # OTHER action always resubmittable) is no longer force-ended and will
-    # loop forever if a policy keeps re-issuing it; only this specific
-    # zero-legal-action case gets caught. This test proves the generator
-    # detects that exact dead end proactively and abandons immediately
-    # instead of hanging -- the OUTCOME (a lone menace block gets dropped)
-    # is enforce_menace's job at combat damage, a separate call site
-    # already covered by test_menace_block_incomplete_and_enforce_menace in
-    # tests/game/effects/test_combat.py; this test only proves the
-    # generator itself doesn't hang on the way there.
+    # illegal (509.1c is 0 or 2+, never 1). If the defender has no OTHER
+    # creature to add as a second blocker, "Assign Blocker" is also
+    # illegal -- a genuine zero-legal-action deadlock, the only case
+    # _declare_blockers_gen proactively abandons. This proves the
+    # generator detects it and abandons instead of hanging; the OUTCOME
+    # (dropping the lone menace block) is enforce_menace's job, covered by
+    # test_menace_block_incomplete_and_enforce_menace in test_combat.py.
     _fb = registry.EFFECT_REGISTRY[EffectId.FILLER]
     registry.EFFECT_REGISTRY[EffectId.FILLER] = {"keywords": {"menace"}}
     try:
@@ -309,10 +258,8 @@ def test_declare_blockers_gen_abandons_stuck_menace_instead_of_deadlocking():
         def _defender_policy(state):
             pending = state.pending_resolution
             if pending["kind"] == "declare_blockers":
-                # Only ever reached once (assign grizzly) -- the SECOND time
-                # this generator would ask for a declare_blockers decision, the
-                # proactive stuck-check must fire first and abandon without
-                # yielding again, so this branch is never called twice.
+                # Only ever reached once -- the second time, the proactive
+                # stuck-check fires first and abandons before yielding again.
                 outer_on_complete = pending["on_complete"]
                 return lambda: resolution.declare_blocker_assignment(
                     state, grizzly, on_complete=lambda s: resolution.begin_declare_blockers(s, outer_on_complete),
@@ -330,10 +277,8 @@ def test_declare_blockers_gen_abandons_stuck_menace_instead_of_deadlocking():
 
         assert state.pending_resolution is None  # abandoned, not left stuck open
         assert state.active_idx == 0  # flipped back to the attacker via the generator's own finally
-        # The lone illegal block is still recorded here -- dropping it is
-        # enforce_menace's job at combat damage (a later, separate call site),
-        # not this generator's -- so the precondition this test exists to
-        # cover is confirmed still genuinely present at this point.
+        # The lone illegal block is still recorded -- dropping it is
+        # enforce_menace's job at combat damage, not this generator's.
         assert state.players[0].blocked_by == {bear: [grizzly]}
     finally:
         registry.EFFECT_REGISTRY[EffectId.FILLER] = _fb
@@ -342,19 +287,11 @@ def test_declare_blockers_gen_abandons_stuck_menace_instead_of_deadlocking():
 def test_priority_round_has_no_iteration_cap():
     """The bug this closes (2026-08-19): a since-removed
     PRIORITY_ROUND_ACTION_CAP=20 could silently end a priority round --
-    letting the phase/step advance -- with real spells still on the stack,
-    once enough granular decisions (mana taps, targeting, a Ward payment,
-    ...) consumed the whole budget in one round. Confirmed live: turn 19 of
-    a dmir_terror mirror (logs/4_deck_subleague_test_double_round_robin_
-    20016games.json, game index 8) -- a warded Snuff Out's cast alone ate
-    the cap, so Spell Pierce's response got carried into the NEXT step
-    instead of resolving in this one, and the mana emptied at that
-    (illegitimate) step boundary along the way denied Snuff Out's
-    controller the floating mana they'd otherwise have had to pay Spell
-    Pierce's tax. No cap exists anywhere in this loop now (game/turn.py) --
-    this drives a priority round through more real stack activity than the
-    old cap ever allowed (25 casts, well past 20) and confirms it only
-    ever ends with an empty stack, never truncates mid-resolution."""
+    letting the phase/step advance -- with real spells still on the stack.
+    No cap exists in this loop now: this drives a priority round through
+    more real stack activity than the old cap ever allowed (25 casts) and
+    confirms it only ever ends with an empty stack, never truncates
+    mid-resolution."""
     state = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
     state.turn_player_idx = 0
     state.active_idx = 0
@@ -372,10 +309,9 @@ def test_priority_round_has_no_iteration_cap():
             push_to_stack(state, card_def, _resolve)
         return _do
 
-    # P0 casts ITEMS filler spells in a row (retaining priority each time,
-    # rule 2 -- no pass needed between them), then both players pass in
-    # pairs to let every stack item resolve (2 passes each), then a final
-    # pair to end the round on the now-empty stack.
+    # P0 casts ITEMS filler spells in a row (retaining priority, rule 2),
+    # then both players pass in pairs to resolve each stack item, then a
+    # final pair to end the round on the now-empty stack.
     plan = [_push(f"filler{i}") for i in range(ITEMS)] + [None] * (ITEMS * 2 + 2)
 
     gen = _run_priority_round_gen(state)
@@ -396,15 +332,12 @@ def test_priority_round_has_no_iteration_cap():
 
 
 def test_speed_legal_turn_owner_vs_priority_holder():
-    # Turn-owner / priority-holder split:
-    # speed_legal's Speed.SORCERY (and Speed.YOUR_TURN) branches
-    # must refuse the non-turn player even when state.phase/state.stack
-    # alone would otherwise say "legal" -- state.phase is a single shared
-    # field describing the TURN's phase, not whichever player is currently
-    # being asked, so this can't be caught by the phase/stack checks
-    # alone. Simulates a priority consult (active_idx flipped away from
-    # turn_player_idx) the same way _declare_blockers_gen's own flip does,
-    # without needing the full priority round built yet.
+    # speed_legal's Speed.SORCERY (and Speed.YOUR_TURN) branches must
+    # refuse the non-turn player even when state.phase/state.stack alone
+    # would say "legal" -- state.phase describes the TURN's phase, not
+    # whichever player is being asked. Simulates a priority consult
+    # (active_idx flipped away from turn_player_idx) without the full
+    # priority round.
     state = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
     state.phase = Phase.MAIN1
     state.turn_player_idx = 0
@@ -421,23 +354,14 @@ def test_speed_legal_turn_owner_vs_priority_holder():
 
 def test_rule_500_4_mana_pool_clears_at_every_phase_boundary():
     # Rule 500.4: unused mana empties at every step/phase boundary for BOTH
-    # players (not just whoever floated it), with NO exceptions. Combat's three
-    # sub-phases used to share one mana window (an authorized simplification);
-    # it was removed 2026-08-17 with cast-then-pay, since speculative floating
-    # is now the active player's own main phase only and payment-time mana is
-    # produced and spent inside a single payment -- nothing can deliberately
-    # float INTO combat any more, so the exception had nothing left to protect.
+    # players, with no exceptions.
     #
-    # The policy below calls activate_mana_source DIRECTLY rather than going
-    # through the action mask, so it still floats in DECLARE_ATTACKERS to prove
-    # the ENGINE clears it there; the mask's own refusal to offer that float is
-    # a separate rule, covered by
-    # test_speculative_mana_ability_is_main_phase_only. Two pre-placed, already-
-    # untapped Mountains (no land drop / draw needed: player 0 is
-    # on_the_play so its first-turn draw is skipped, and an empty hand never
-    # triggers cleanup_step's discard) let this float mana at two different
-    # phases and check it against every phase boundary in between, for BOTH
-    # players -- not just whoever floated it.
+    # The policy below calls activate_mana_source DIRECTLY, bypassing the
+    # action mask, so it still floats in DECLARE_ATTACKERS to prove the
+    # ENGINE clears it there (the mask's own refusal to offer that float is
+    # covered separately by test_speculative_mana_ability_is_main_phase_only).
+    # Two pre-placed, already-untapped Mountains let this float mana at two
+    # different phases and check it against every boundary in between.
     mana_pool_log = []  # one (phase, player0_pool, player1_pool) entry per NEW phase seen
     floated_at = set()
 
@@ -469,37 +393,24 @@ def test_rule_500_4_mana_pool_clears_at_every_phase_boundary():
     by_phase = {phase: (p0, p1) for phase, p0, p1 in mana_pool_log}
     assert by_phase[Phase.MAIN1] == ({}, {})  # nothing floated yet
     assert by_phase[Phase.DECLARE_ATTACKERS] == ({}, {})  # MAIN1's float (both players') cleared crossing into combat
-    assert by_phase[Phase.DECLARE_BLOCKERS][0] == {}  # DECLARE_ATTACKERS' float is gone too -- 500.4 applies BETWEEN combat steps now
-    assert by_phase[Phase.COMBAT_DAMAGE][0] == {}  # and across DECLARE_BLOCKERS -> COMBAT_DAMAGE
+    assert by_phase[Phase.DECLARE_BLOCKERS][0] == {}  # DECLARE_ATTACKERS' float is gone too -- 500.4 applies between combat steps
+    assert by_phase[Phase.COMBAT_DAMAGE][0] == {}
     assert by_phase[Phase.MAIN2] == ({}, {})
-    assert floated_at == {"main1", "declare_attackers"}  # both floats actually happened, not skipped
-    # mana_burnt_total tallies pips lost, not clear-events: player 0 lost the
-    # MAIN1 "R":1 AND the DECLARE_ATTACKERS "R":1 (two separate clears) -> 2;
-    # player 1 lost only its MAIN1 "W":1 -> 1. Diagnostic-only (logging/viz) --
-    # no reward function reads mana_burnt_total; see PlayerState.mana_mistake_burn
-    # for the reward-facing, conditional signal.
+    assert floated_at == {"main1", "declare_attackers"}  # both floats actually happened
+    # player 0 lost MAIN1 R + DECLARE_ATTACKERS R (two clears) -> 2; player 1 lost only its MAIN1 W -> 1.
     assert state.players[0].mana_burnt_total == 2
     assert state.players[1].mana_burnt_total == 1
-    # mana_burnt_total_single_pip: player 0's two floats both went through
-    # the real activate_mana_source/float_mana tagging flow (plain Mountain
-    # taps -- single-pip by construction) -- fully tagged, so it equals
-    # mana_burnt_total here. Player 1's "W":1 was injected directly onto
-    # mana_pool for the test, bypassing float_mana entirely, so it was never
-    # tagged into mana_pool_single_pip -- 0, unlike the raw total's 1.
+    # player 0's taps were tagged via real float_mana; player 1's W was injected directly, so never tagged.
     assert state.players[0].mana_burnt_total_single_pip == 2
     assert state.players[1].mana_burnt_total_single_pip == 0
 
 
 def test_mana_mistake_burn_three_way_exemption():
-    # _empty_mana_pools's dense reward-facing tally (PlayerState.
-    # mana_mistake_burn, meant for a reward_fn tagged consumes_mana_mistake=
-    # True -- none currently is): only counts a burn once
+    # PlayerState.mana_mistake_burn only counts a burn once
     # cost_paid_this_phase, triggers_fired_this_phase, AND the
     # on_mana_burn hook (if any) have all failed to justify it. Called
-    # directly (not driven through a real turn) since this is pure
-    # conditional bookkeeping over already-set flags -- see
-    # test_rule_500_4_mana_pool_clears_at_phase_boundaries_except_combat
-    # above for the phase-boundary-timing side of the same function.
+    # directly since this is pure conditional bookkeeping over already-set
+    # flags.
     from game.turn import _empty_mana_pools
 
     def fresh_state(on_mana_burn=None):
@@ -507,9 +418,8 @@ def test_mana_mistake_burn_three_way_exemption():
         state.on_mana_burn = on_mana_burn
         return state
 
-    # 1) Paid for something this phase -> exempt, even if the hook (were it
-    # consulted) would say nothing else was legal. Hook deliberately raises
-    # if called, so this also proves the hook is skipped entirely here.
+    # 1) Paid for something this phase -> exempt. Hook deliberately raises
+    # if called, proving it's skipped entirely.
     state = fresh_state(on_mana_burn=lambda s, idx: (_ for _ in ()).throw(AssertionError("hook should not run")))
     state.players[0].mana_pool = {"R": 2}
     state.players[0].cost_paid_this_phase = True
@@ -541,17 +451,14 @@ def test_mana_mistake_burn_three_way_exemption():
     _empty_mana_pools(state)
     assert state.players[0].mana_mistake_burn == 2
 
-    # 5) No hook at all (plain rules-engine/test use, e.g. every other test in
-    # this file) -> never tallies a mistake, regardless of anything else.
+    # 5) No hook at all -> never tallies a mistake.
     state = fresh_state(on_mana_burn=None)
     state.players[0].mana_pool = {"G": 3}
     _empty_mana_pools(state)
     assert state.players[0].mana_mistake_burn == 0
 
-    # The hook receives the RIGHT player_idx even when it's the non-active
-    # player's pool being cleared, and state.mana_pool (the active-player
-    # proxy) still resolves correctly if the hook flips active_idx itself
-    # (the real rl.training.train hook does this via drl_env._for_player).
+    # The hook receives the right player_idx even when it's the non-active
+    # player's pool being cleared.
     seen = []
     def hook(s, idx):
         seen.append((idx, dict(s.players[idx].mana_pool)))
@@ -565,12 +472,9 @@ def test_mana_mistake_burn_three_way_exemption():
 
 
 def test_mana_burnt_this_turn_unconditional():
-    # PlayerState.mana_burnt_this_turn (rl.rewards.with_dense_mana_burn_penalty's
-    # input, 2026-08) is DELIBERATELY unconditional, unlike mana_mistake_burn
-    # -- it tallies every burnt pip even when cost_paid_this_phase or
-    # triggers_fired_this_phase would exempt mana_mistake_burn. Same
-    # direct-call style as test_mana_mistake_burn_three_way_exemption above
-    # (pure bookkeeping over already-set flags, no real turn needed).
+    # PlayerState.mana_burnt_this_turn is DELIBERATELY unconditional, unlike
+    # mana_mistake_burn -- it tallies every burnt pip even when
+    # cost_paid_this_phase would exempt mana_mistake_burn.
     from game.turn import _empty_mana_pools
 
     state = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
@@ -581,21 +485,16 @@ def test_mana_burnt_this_turn_unconditional():
     assert state.players[0].mana_burnt_this_turn == 2  # NOT exempted -- unconditional like mana_burnt_total
 
     # Accumulates across multiple phase-boundary clears within the same
-    # (simulated) turn -- _run_turn_gen resets it only at turn start, not
-    # per-phase, so several small burns in one turn compound.
+    # turn -- reset only at turn start, not per-phase.
     state.players[0].mana_pool = {"U": 1}
     _empty_mana_pools(state)
     assert state.players[0].mana_burnt_this_turn == 3
 
 
 def test_mana_burnt_this_turn_single_pip_per_pip_attribution():
-    # rl.rewards.with_dense_mana_burn_penalty's actual input (2026-08,
-    # replacing the earlier whole-phase unmetered_mana_tapped_this_phase
-    # exclusion -- see PlayerState.mana_pool_single_pip's own docstring for
-    # the dynamic len(produced)==1 tag rule and game.mana.spend_one_pip's
-    # untagged-first spend-order convention): sums whatever remains TAGGED
-    # in mana_pool_single_pip at the moment of the burn, per pip, not a
-    # whole-phase exclusion.
+    # rl.rewards.with_dense_mana_burn_penalty's actual input: sums whatever
+    # remains TAGGED in mana_pool_single_pip at the moment of the burn, per
+    # pip, not a whole-phase exclusion.
     from game.turn import _empty_mana_pools
 
     # (a) A single-pip source (Mountain): tagged, and burning it counts.
@@ -610,9 +509,8 @@ def test_mana_burnt_this_turn_single_pip_per_pip_attribution():
     assert state.players[0].mana_burnt_this_turn_single_pip == 1
     assert state.players[0].mana_pool_single_pip == {}  # cleared alongside mana_pool
 
-    # (b) Priest of Titania's burst, WITH another Elf out (a genuine
-    # multi-symbol event): never tagged, so burning it never counts,
-    # regardless of size.
+    # (b) Priest of Titania's burst, with another Elf out: a multi-symbol
+    # event, never tagged, so burning it never counts.
     state = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
     state.active_idx = 0
     priest = Permanent(registry.CARD_DEFS["Priest of Titania"])
@@ -638,10 +536,9 @@ def test_mana_burnt_this_turn_single_pip_per_pip_attribution():
     _empty_mana_pools(state)
     assert state.players[0].mana_burnt_this_turn_single_pip == 1
 
-    # (c) MIXED phase, the case the old whole-phase mechanism got wrong:
-    # Priest's multi-symbol burst AND a Mountain both tapped and burnt the
-    # same phase -- only the Mountain's 1 tagged pip is counted, not 0
-    # (the old exclusion) and not both pips either.
+    # (c) MIXED phase: Priest's multi-symbol burst AND a Mountain both
+    # tapped and burnt the same phase -- only the Mountain's 1 tagged pip
+    # is counted.
     state = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
     state.active_idx = 0
     priest = Permanent(registry.CARD_DEFS["Priest of Titania"])
@@ -654,11 +551,10 @@ def test_mana_burnt_this_turn_single_pip_per_pip_attribution():
     assert state.players[0].mana_burnt_this_turn == 3
     assert state.players[0].mana_burnt_this_turn_single_pip == 1  # only the Mountain's pip
 
-    # (d) Spend-order scenario: Priest's burst (untagged, 3 G from itself +
-    # 2 other Elves) plus 2 avoidable single-pip taps (tagged) float
-    # together; spending exactly what Priest's burst alone would have
-    # covered consumes the untagged pips first, so the 2 avoidable tagged
-    # pips are what's left floating and correctly blamed.
+    # (d) Spend-order: Priest's burst (untagged) plus 2 avoidable
+    # single-pip taps (tagged) float together; spending what the burst
+    # alone covers consumes untagged pips first, leaving the 2 tagged
+    # pips correctly blamed.
     state = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
     state.active_idx = 0
     mana.float_mana(state, ["G", "G", "G"])  # simulates Priest's 3-symbol burst -- untagged
@@ -676,24 +572,17 @@ def test_mana_burnt_this_turn_single_pip_per_pip_attribution():
 
 
 def test_mana_burn_state_resets_at_turn_boundary():
-    # _run_turn_gen resets all three per-turn mana-burn tracking fields
-    # (mana_burnt_this_turn, mana_burnt_this_turn_single_pip, and
-    # mana_burn_penalty_credited) for BOTH players at the start of every new
-    # turn. run_turn (not run_multiplayer_game) drives exactly ONE turn on an
-    # already-built state directly -- no pregame mulligan phase to drive, no
-    # second player's own turn to script -- so a plain "always pass"
-    # choose_action is safe for the whole turn (a fresh opening hand has
-    # nothing forcing a real decision: no lands played yet, nothing drawn
-    # beyond the norm, no cleanup discard). The accumulation side of these
-    # counters is covered elsewhere; this test is specifically about the
-    # RESET, for all three fields, for both players.
+    # _run_turn_gen resets all three per-turn mana-burn tracking fields for
+    # BOTH players at the start of every new turn. run_turn drives exactly
+    # ONE turn directly (no pregame phase), so a plain "always pass"
+    # choose_action is safe for the whole turn. This test is specifically
+    # about the RESET, not accumulation (covered elsewhere).
     state = new_multiplayer_game_state(
         decklists=[[("Mountain", 20)], [("Mountain", 20)]],
         starting_player_idx=0, rng=random.Random(0),
     )
-    # Fabricated leftover values (however they'd really accumulate is the
-    # accumulation tests' job) -- the only question here is whether
-    # _run_turn_gen's own turn-start block zeroes them for BOTH players.
+    # Fabricated leftover values -- the only question here is whether
+    # _run_turn_gen's turn-start block zeroes them for BOTH players.
     state.players[0].mana_burnt_this_turn = 5
     state.players[0].mana_burnt_this_turn_single_pip = 5
     state.players[0].mana_burn_penalty_credited = 0.3
@@ -724,17 +613,10 @@ def test_mana_burn_state_resets_at_turn_boundary():
 
 
 def test_mana_floated_in_real_end_step_swept_same_turn():
-    # Fix (2026-08-10): Phase.END now runs a REAL end-step priority round
-    # (rule 513) BEFORE cleanup, instead of cleanup_step firing immediately
-    # on phase entry with no priority window at all. Before this fix, mana
-    # floated here would persist unswept until the FOLLOWING turn's own
-    # UNTAP entry -- by which point that turn's own
-    # mana_burnt_this_turn_single_pip counter had already reset (see
-    # test_mana_burn_state_resets_at_turn_boundary above),
-    # silently dropping the burn from the dense reward signal entirely
-    # (this engine has no interrupt window, so the player who just
-    # finished their turn never gets another decision before that reset
-    # fires). Proves the float is now swept and counted for the SAME turn.
+    # Phase.END runs a REAL end-step priority round (rule 513) before
+    # cleanup, so mana floated there is swept by the SAME turn's
+    # _empty_mana_pools rather than persisting unswept into the next turn's
+    # reset. Proves the float is counted for the SAME turn.
     state = new_multiplayer_game_state(
         decklists=[[("Mountain", 20)], [("Mountain", 20)]],
         starting_player_idx=0, rng=random.Random(0),
@@ -778,9 +660,8 @@ def test_speculative_mana_ability_is_main_phase_only():
     state.battlefield = [mountain]
     legal = _mana_ability_legal("Mountain", None)
 
-    # Ground truth (game.mana_ability_options) says the source is available in
-    # every case below -- only the drl_env-facing timing gate differs, which is
-    # what makes this a restriction on the ACTION SPACE, not on the engine.
+    # Ground truth (mana_ability_options) says the source is available in
+    # every case below -- only the drl_env-facing timing gate differs.
     for phase in (Phase.MAIN1, Phase.MAIN2):
         state.phase = phase
         assert legal(state), f"speculative float must be legal in {phase}"
@@ -806,17 +687,13 @@ def test_speculative_mana_ability_is_main_phase_only():
 
 
 def test_madness_decision_from_forced_cleanup_discard_still_resolves():
-    # A card discarded via cleanup's own forced hand-size discard queues a
-    # Madness cast-or-graveyard decision exactly like any other discard
-    # (game.resolution.handlers_library._discard_one, "regardless of why
-    # the card was discarded"). state.in_cleanup blocks every OTHER action
-    # (mana abilities included) for the whole cleanup window, but the
-    # existing trigger_queue-driven extra priority round (rule 514.3a) is
-    # deliberately KEPT specifically so this decision still gets a chance
-    # to resolve -- see _run_turn_gen's own Phase.END handling. Declines
-    # the cast (no black mana available) -- this test is about the decision
-    # reaching a real pending_resolution at all, not about completing a
-    # cast (see test_kitchen_imp_madness_cast_from_discard for that).
+    # A card discarded via cleanup's forced hand-size discard queues a
+    # Madness cast-or-graveyard decision like any other discard.
+    # state.in_cleanup blocks every OTHER action, but the trigger_queue's
+    # extra priority round (514.3a) is kept so this decision still
+    # resolves. Declines the cast -- this test is about the decision
+    # reaching a real pending_resolution, not completing a cast (see
+    # test_kitchen_imp_madness_cast_from_discard for that).
     state = new_multiplayer_game_state(
         decklists=[[("Mountain", 20)], [("Mountain", 20)]],
         starting_player_idx=0, rng=random.Random(0),
@@ -842,12 +719,10 @@ def test_madness_decision_from_forced_cleanup_discard_still_resolves():
 
 
 def test_on_mana_burn_hook_wired_through_run_multiplayer_game():
-    # Integration check that run_multiplayer_game's on_mana_burn kwarg really
-    # reaches _empty_mana_pools -- test_mana_mistake_burn_three_way_exemption
-    # above only exercises the conditional logic directly, not this wiring.
-    # Mono-Mountain deck, no spells at all: play a land, tap it once in
-    # MAIN1, then always Pass -- nothing is ever paid for or triggered, so
-    # the float is a live candidate mistake the moment it clears.
+    # Integration check that run_multiplayer_game's on_mana_burn kwarg
+    # really reaches _empty_mana_pools. Mono-Mountain deck, no spells: play
+    # a land, tap it once in MAIN1, then always Pass -- the float is a live
+    # candidate mistake the moment it clears.
     tapped_once = []
     calls = []
 
@@ -880,15 +755,10 @@ def test_on_mana_burn_hook_wired_through_run_multiplayer_game():
 
 
 def test_cast_then_pay_end_to_end_with_an_empty_pool():
-    # The headline sequence, through the REAL action table rather than direct
-    # engine calls: with NOTHING floating and two untapped Mountains, casting
-    # Lightning Bolt is already legal (601.2e says the cost is known before any
-    # mana is produced), the payment window is where the Mountain gets tapped
-    # (601.2f), and the pool spend finishes it (601.2g).
-    #
-    # Under float-first this exact position was ILLEGAL -- the agent had to
-    # guess and float first, before knowing what it was paying for. That guess
-    # is the misplay this whole change removes.
+    # The headline sequence, through the REAL action table: with NOTHING
+    # floating and two untapped Mountains, casting Lightning Bolt is
+    # already legal (601.2e), the payment window is where the Mountain
+    # gets tapped (601.2f), and the pool spend finishes it (601.2g).
     from drl_env import build_action_table, legal_action_mask
 
     actions = build_action_table([("Mountain", 4), ("Lightning Bolt", 2)], registry.EFFECT_REGISTRY)
@@ -908,8 +778,7 @@ def test_cast_then_pay_end_to_end_with_an_empty_pool():
     assert state.pending_resolution["remaining"] == {"R": 1}
     assert state.pending_resolution["announced"] == {"R": 1}, "announced is stashed for the strand bug report"
 
-    # 601.2f: the mana ability is legal DURING the payment -- that is the window
-    # the mana is produced in now.
+    # 601.2f: the mana ability is legal DURING the payment.
     assert legal_action_mask(state, actions)[tap_idx]
     actions[tap_idx][2](state)
     assert state.mana_pool == {"R": 1}
@@ -918,25 +787,22 @@ def test_cast_then_pay_end_to_end_with_an_empty_pool():
     assert not state.stack, "nothing reaches the stack until the cost is paid"
     mana.execute_pool_spend(state, "R")
     assert state.mana_pool == {}
-    # The payment is over; Bolt's own "any target" choice follows it (this
-    # engine settles that after the cost rather than at 601.2c -- a separate
-    # ordering question this test deliberately does not assert on). What matters
-    # here is that pay_cost is done and it was driven entirely by tapping.
+    # The payment is over; Bolt's own "any target" choice follows it. What
+    # matters here is that pay_cost is done, driven entirely by tapping.
     assert state.pending_resolution is not None
     assert state.pending_resolution["kind"] != "pay_cost", "the payment completed"
 
 
 def test_opponent_never_acts_inside_the_cast_window():
-    # CR 601.2 is atomic: no player receives priority between announcing a spell
-    # and it becoming cast, so the opponent cannot respond until it is ON THE
-    # STACK (601.2i, then 117.3c). Cast-then-pay makes that window much longer
-    # -- it now contains every tap -- so the invariant is pinned explicitly
-    # rather than left implicit.
+    # CR 601.2 is atomic: no player receives priority between announcing a
+    # spell and it becoming cast, so the opponent cannot respond until it
+    # is ON THE STACK (601.2i, 117.3c). Cast-then-pay makes that window
+    # much longer (it now contains every tap), so the invariant is pinned
+    # explicitly.
     #
-    # Two mechanisms hold it, and this asserts both: a player who takes an
-    # ACTION keeps priority (_priority_round only flips active_idx on a Pass),
-    # and Pass is illegal while a resolution is pending
-    # (drl_env._pass_legal._pending_gate).
+    # Two mechanisms hold it: a player who takes an ACTION keeps priority
+    # (only a Pass flips active_idx), and Pass is illegal while a
+    # resolution is pending.
     from drl_env import build_action_table, legal_action_mask
 
     actions = build_action_table([("Mountain", 4), ("Lightning Bolt", 2)], registry.EFFECT_REGISTRY)
@@ -965,9 +831,8 @@ def test_opponent_never_acts_inside_the_cast_window():
     mana.execute_pool_spend(state, "R")
     assert state.active_idx == caster
 
-    # Bolt's own target choice follows the payment, and Pass stays illegal
-    # through it too -- the cast is still in flight, so the opponent still
-    # cannot act. Priority reopens only once nothing is pending at all.
+    # Bolt's target choice follows the payment, and Pass stays illegal
+    # through it too -- the cast is still in flight.
     assert state.pending_resolution is not None
     assert not legal_action_mask(state, actions)[pass_idx]
     assert state.active_idx == caster, "priority never left the caster for the whole cast"

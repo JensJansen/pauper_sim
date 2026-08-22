@@ -31,9 +31,8 @@ def _fixture():
     net = DeckNetwork(shared, film_condition_dim=16, non_targeting_n_actions=n_fixed_actions, trunk_hidden=(32, 32))
 
     scalar_features = torch.zeros(1, SCALAR_FEATURE_DIM)
-    # Only my own two battlefield permanents (Guttersnipe, Voldaren Epicure)
-    # are legal "Attack:" pointer targets in this synthetic example -- the
-    # opponent's Kitchen Imp and any padded slots must be masked out.
+    # Only my own two battlefield permanents are legal pointer targets here;
+    # the opponent's Kitchen Imp and padded slots are masked out.
     pointer_mask = torch.zeros_like(mask)
     for t, ident in enumerate(identities[0]):
         pointer_mask[0, t] = ident is not None and ident in seat0.battlefield
@@ -55,8 +54,8 @@ def test_deck_network_pointer_masking():
     net, mine_summary, theirs_summary, scalar_features, token_reps, pointer_mask, n_fixed_actions, _vocab_idx = _fixture()
     logits, _value, _hidden = net(mine_summary, theirs_summary, scalar_features, token_reps, pointer_mask)
 
-    # The two legal pointer positions must be finite/selectable; the
-    # opponent's Kitchen Imp position must be masked to -inf (never sampled).
+    # The two legal pointer positions must be finite; the opponent's
+    # Kitchen Imp position must be masked to -inf.
     pointer_logits = logits[0, n_fixed_actions:]
     legal_positions = pointer_mask[0].nonzero(as_tuple=True)[0]
     illegal_positions = (~pointer_mask[0]).nonzero(as_tuple=True)[0]
@@ -69,10 +68,8 @@ def test_deck_network_masked_categorical_only_samples_legal_actions():
     net, mine_summary, theirs_summary, scalar_features, token_reps, pointer_mask, n_fixed_actions, _vocab_idx = _fixture()
     logits, _value, _hidden = net(mine_summary, theirs_summary, scalar_features, token_reps, pointer_mask)
 
-    # A full masked-categorical sample over the COMBINED action set must
-    # only ever land on a legal position (either a legal fixed action or a
-    # legal pointer target) -- exercising the actual masking contract this
-    # network exists to support, not just checking shapes.
+    # A masked-categorical sample over the combined action set must only
+    # ever land on a legal fixed action or legal pointer target.
     fixed_mask = torch.zeros(1, n_fixed_actions, dtype=torch.bool)
     fixed_mask[0, 0] = True  # pretend exactly one fixed action ("Pass") is legal too
     full_mask = torch.cat([fixed_mask, pointer_mask], dim=-1)
@@ -85,13 +82,10 @@ def test_deck_network_masked_categorical_only_samples_legal_actions():
 
 @pytest.mark.slow
 def test_the_league_gives_every_deck_its_own_encoder():
-    """The invariant rl.model.deck's module docstring names.
-
-    Handing the SAME SetTransformer instance to two DeckNetworks would put it
-    in two Adam instances tracking separate momentum for the identical tensors,
-    each stepping on the other -- which is precisely the coupling per-deck
-    encoders exist to remove, and it would be silent. build_deck_net is the one
-    construction site, so pinning it there covers every caller."""
+    """Pins rl.model.deck's one-encoder-per-DeckNetwork invariant. Sharing a
+    SetTransformer instance across two DeckNetworks would put it in two Adam
+    instances tracking separate momentum for the same tensors. build_deck_net
+    is the one construction site."""
     from rl.league.league_runner import build_deck_net
 
     a, b = build_deck_net(12, 4), build_deck_net(12, 4)
@@ -99,9 +93,7 @@ def test_the_league_gives_every_deck_its_own_encoder():
     assert not any(pa is pb for pa in a.parameters() for pb in b.parameters()), \
         "no parameter tensor may be reachable from both decks' nets"
 
-    # And they must start from independent random init, not a shared seed --
-    # otherwise "distinct objects" would still mean two decks that move
-    # identically for as long as they see identical batches.
+    # Independent random init, not a shared seed.
     assert not torch.equal(a.encoder.embedding.weight, b.encoder.embedding.weight)
 
     # A step on one deck leaves the other's perception untouched.
@@ -129,18 +121,12 @@ def _recurrent_fixture(n_rows, seed=0):
 
 @pytest.mark.slow
 def test_sequence_batch_is_episode_major_not_step_major():
-    """The one silent failure mode of the recurrent update.
-
-    ppo_update hands DeckNetwork.forward a FLAT [B*T, ...] batch plus seq=(B, T),
-    and forward does `.reshape(B, T, -1)` before the GRU. That reshape is only
-    correct if the flat batch is laid out episode-major -- all T steps of
-    episode 0, then all of episode 1. Get it backwards and nothing errors: the
-    GRU simply trains on interleaved fragments of different games, which is
-    wrong in a way no shape check or loss curve would reveal.
-
-    Pinned by equivalence: running the flat batch as sequences must match
-    replaying each episode one step at a time, threading the hidden state --
-    which is the definition of what the update is supposed to be doing."""
+    """ppo_update hands DeckNetwork.forward a flat [B*T, ...] batch plus
+    seq=(B, T), and forward does `.reshape(B, T, -1)` before the GRU -- only
+    correct if the flat batch is episode-major (all T steps of episode 0,
+    then episode 1, ...). Pinned by equivalence: running the flat batch as
+    sequences must match replaying each episode step by step, threading the
+    hidden state."""
     n_seq, n_steps = 2, 3
     net, mine, theirs, scalar, reps, pmask = _recurrent_fixture(n_seq * n_steps)
     net.eval()
@@ -167,16 +153,13 @@ def test_sequence_batch_is_episode_major_not_step_major():
 
 @pytest.mark.slow
 def test_the_recurrent_state_actually_changes_the_policy():
-    """A GRU that is wired in but never consulted would pass every shape test
-    in this file. The same observation must produce a DIFFERENT distribution
-    depending on what came before it -- that is the entire point of the
-    change, and without this check a forward that dropped `hidden` on the
-    floor would look healthy."""
+    """A GRU wired in but never consulted would pass every shape test in this
+    file. The same observation must produce a different distribution
+    depending on what came before it."""
     net, mine, theirs, scalar, reps, pmask = _recurrent_fixture(2, seed=3)
     net.eval()
     with torch.no_grad():
-        # The SAME observation (row 0), once from a fresh game and once after
-        # having already seen row 1.
+        # The same observation (row 0), once fresh and once after seeing row 1.
         fresh, _v, _h = net(mine[:1], theirs[:1], scalar[:1], reps[:1], pmask[:1])
         _first, _v2, carried = net(mine[1:], theirs[1:], scalar[1:], reps[1:], pmask[1:])
         after_history, _v3, _h3 = net(mine[:1], theirs[:1], scalar[:1], reps[:1], pmask[:1], hidden=carried)
@@ -188,15 +171,11 @@ def test_the_recurrent_state_actually_changes_the_policy():
 
 @pytest.mark.slow
 def test_ppo_update_handles_ragged_episodes_and_ignores_padding():
-    """Episodes have different lengths, so every minibatch is padded. Padding
-    is done by REPEATING the last real transition, which computes a real
-    forward -- so it must be masked out of every loss term or it silently
-    upweights whatever transition happened to end each episode.
-
-    Checked by construction rather than by inspection: a buffer of ragged
-    episodes must train (params move, losses finite) and must give the SAME
-    result as one whose episodes are all the same length once the extra
-    transitions carry no advantage."""
+    """Episodes have different lengths, so every minibatch is padded by
+    repeating the last real transition, which must be masked out of every
+    loss term or it silently upweights whatever transition ended each
+    episode. Checked by construction: a buffer of ragged episodes must train
+    (params move, losses finite)."""
     import numpy as np
     from rl.training.ppo import ppo_update
     from rl.training.train import RolloutBuffer
@@ -204,8 +183,7 @@ def test_ppo_update_handles_ragged_episodes_and_ignores_padding():
     net, *_rest = _recurrent_fixture(1, seed=7)
     n_fixed = net.non_targeting_head.out_features
     buf = RolloutBuffer()
-    # Three episodes of lengths 4, 1, 3 -- the middle one is a single-step
-    # episode, the degenerate case for a sequence batcher.
+    # Three episodes of lengths 4, 1, 3; the middle one is a single-step episode.
     for length in (4, 1, 3):
         for step in range(length):
             buf.add([], np.zeros(SCALAR_FEATURE_DIM, dtype=np.float32), np.ones(n_fixed, dtype=bool),
@@ -221,21 +199,17 @@ def test_ppo_update_handles_ragged_episodes_and_ignores_padding():
 
 @pytest.mark.slow
 def test_previous_action_reaches_the_policy_and_pointer_actions_collapse():
-    """The agent's own last action is fed in alongside the observation, which
-    is what makes Brainstorm's placement a lookup instead of an inference over
-    hand-token deltas (known_top, the persisted record that used to carry it,
-    was removed 2026-08-17).
-
-    Two properties. It must actually CHANGE the policy -- a forward that
-    ignored prev_action would pass every shape test. And every pointer action
-    must map to ONE symbol: a pointer index names a different token from state
-    to state, so embedding it per-index would be learning noise."""
+    """The agent's own last action is fed in alongside the observation. Two
+    properties: it must actually change the policy (a forward that ignored
+    prev_action would pass every shape test), and every pointer action must
+    map to one symbol (a pointer index names a different token each state,
+    so embedding it per-index would be learning noise)."""
     net, mine, theirs, scalar, reps, pmask = _recurrent_fixture(1, seed=11)
     net.eval()
     n_fixed = net.n_fixed
 
-    # Symbol mapping: fixed actions keep their index, every pointer action
-    # collapses to n_fixed, and "no previous action" is n_fixed + 1.
+    # Fixed actions keep their index, every pointer action collapses to
+    # n_fixed, and "no previous action" is n_fixed + 1.
     symbols = net.prev_action_symbols([0, n_fixed - 1, n_fixed, n_fixed + 50, None, -1])
     assert symbols.tolist() == [0, n_fixed - 1, n_fixed, n_fixed, n_fixed + 1, n_fixed + 1]
 

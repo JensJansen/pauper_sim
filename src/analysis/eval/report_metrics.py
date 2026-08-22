@@ -1,38 +1,18 @@
 """Summarizes checkpoints/<league>/metrics.jsonl -- the per-iteration "ppo" /
 "mulligan" / "vs_history" / "vs_gauntlet" / "vs_heuristic" records
-rl.league.league_runner's _run_session appends during every training run (see
-_append_metric). Plain-text, stdlib only (no plotting library in
-requirements.txt).
+rl.league.league_runner's _run_session appends during every training run.
+Plain-text, stdlib only.
 
-WHY THIS WAS REWRITTEN (2026-08-13). The previous version printed win-rate
-records ONE AT A TIME, with no pooling, no interval, and no trend test. Every
-human summary of its output therefore pooled by hand -- and pooling is exactly
-what hides a monotone decline. `dmir_terror` vs its own oldest archived
-snapshot ran 60/80/85/65/80/60/60/80/75/55/50/60/60/45 across sessions 24-37;
-pooled, that is a bland ~65%, and the regression it actually describes went
-unnoticed for thirteen sessions. It was independently confirmed only by a
-purpose-built round robin that cost 4,296s
-of compute to rediscover what was already sitting in this file.
+Leads with the per-record sequence (most recent last), then pools:
 
-So this version leads with the PER-RECORD SEQUENCE, and only then pools:
-
-  - the raw trend, most recent last, so a decline is visible before any
-    statistic is applied to it;
-  - four distinguishable verdicts, because "did it change" is the wrong
-    question: IMPROVING / FLAT / REGRESSING (a linear decline) / PAST PEAK
-    (the current window is below one this run already reached, whatever the
-    overall trend). PAST PEAK is the one that matters here -- every deck in
-    this league rose then fell, and a linear trend test reads that as FLAT.
-    A gate that only asked "did it change" would pass a deck that is actively
-    getting worse (see the same document's Step 1.5);
-  - FLAT annotated with the minimum effect the sample size could have
-    detected, so "no change" is never confused with "cannot tell";
-  - Wilson intervals, which stay inside [0, 1] near the saturated end where
-    vs_heuristic has been living at 20/20;
-  - vs_history labels kept STRICTLY SEPARATE. `archive_oldest` is permanently
-    snapshot_0 (a ~200-game policy) while `active_oldest` tracks a rolling
-    ~6,400-game-old self; averaging the two into one "vs its past self" number
-    is meaningless, and was done in this project's own reporting for weeks.
+  - four verdicts -- IMPROVING / FLAT / REGRESSING (linear decline) / PAST
+    PEAK (current window below one this run already reached, regardless of
+    overall trend);
+  - FLAT is annotated with the minimum effect the sample size could detect;
+  - Wilson intervals, which stay inside [0, 1] near saturation;
+  - vs_history labels kept strictly separate: `archive_oldest` is permanently
+    snapshot_0 (a ~200-game policy), `active_oldest` tracks a rolling
+    ~6,400-game-old self -- never pooled into one "vs its past self" number.
 
 Every field is read with .get so records written before a field existed still
 parse -- metrics.jsonl is append-only across many schema revisions.
@@ -61,10 +41,8 @@ def load(path):
 
 
 def wilson(wins, n, z=1.96):
-    """(point estimate, lo, hi) as fractions. Wilson rather than normal-
-    approximation because several of these instruments genuinely sit at or
-    near 100% (vs_heuristic has been 20/20 for 5+ sessions), where the normal
-    interval runs off the end of [0, 1] and reports nonsense."""
+    """(point estimate, lo, hi) as fractions. Wilson interval, not normal
+    approximation, since rates near 0/1 would otherwise run off [0, 1]."""
     if not n:
         return float("nan"), 0.0, 1.0
     p = wins / n
@@ -75,9 +53,8 @@ def wilson(wins, n, z=1.96):
 
 
 def two_proportion_z(w1, n1, w2, n2):
-    """z for (group 2 - group 1) under a pooled-proportion null. 0.0 when
-    either group is empty or the pooled rate is degenerate, so callers can
-    treat "no evidence" and "no data" the same way."""
+    """z for (group 2 - group 1) under a pooled-proportion null. Returns 0.0
+    when either group is empty or the pooled rate is degenerate."""
     if not n1 or not n2:
         return 0.0
     pooled = (w1 + w2) / (n1 + n2)
@@ -86,16 +63,11 @@ def two_proportion_z(w1, n1, w2, n2):
 
 
 def trend_z(rows):
-    """Cochran-Armitage trend test across ORDERED records: z for a linear
-    change in win rate with record index.
-
-    This, not an early-vs-late split, is the verdict statistic. Splitting an
-    ordered series into two halves and comparing them discards the ordering
-    and is badly underpowered against a monotone drift -- on the real
-    dmir_terror decline (14 records of 20 games, 85% down to 45%) the split
-    gives z=-1.63 and calls it FLAT, while the trend test sees the shape.
-    The split is still PRINTED, because "early X% -> late Y%" is the readable
-    summary; it just does not get to decide.
+    """Cochran-Armitage trend test across ordered records: z for a linear
+    change in win rate with record index. This is the verdict statistic, not
+    an early-vs-late split (which discards ordering and is underpowered
+    against a monotone drift); the split is still printed as a readable
+    summary but does not decide the verdict.
 
     Positive z = improving over time. 0.0 when there is no variation to
     regress against (one record, or an all-wins/all-losses series)."""
@@ -116,32 +88,22 @@ def trend_z(rows):
 def min_detectable_effect(n_per_group, power_z=0.84, alpha_z=1.96):
     """Smallest difference in proportions (around 50%) this many games per
     group could detect at ~80% power. Reported whenever the verdict is FLAT,
-    because "no change" and "cannot tell" are different claims and this
-    project has already conflated them once -- an acceptance criterion of
-    'win rate >= 47.4%' was set against an eval that could not resolve 2.4pp."""
+    since "no change" and "cannot tell" are different claims."""
     if not n_per_group:
         return 1.0
     return (alpha_z + power_z) * math.sqrt(2 * 0.25 / n_per_group)
 
 
 def peak_comparison(rows, group=5):
-    """(z of last window vs BEST window, index of that window's last record,
-    selection-corrected |z| threshold). Negative z = the current policy is worse than one this run
-    already had on disk.
+    """(z of last window vs best window, index of that window's last record,
+    selection-corrected |z| threshold). Negative z = the current policy is
+    worse than one this run already had on disk.
 
-    This is the verdict's primary test, and neither of the two obvious
-    alternatives can replace it:
-
-      - early-vs-late halves discards ordering and is underpowered;
-      - a LINEAR trend test cannot see rise-then-fall, which is the actual
-        shape here. Measured on real data: dmir_terror vs archive_oldest rose
-        35% -> 85% then fell to 45%, and trend_z reads +0.35, FLAT. The
-        round robin independently found
-        every deck peaking mid-run -- snapshot 116 / 58 / 289 / 232 -- so
-        rise-then-fall is the norm in this project, not an edge case.
-
-    The operational question is not "has it changed since the start" but "is
-    what I am about to keep training worse than something I already saved."
+    This is the verdict's primary test: a linear trend test cannot see
+    rise-then-fall, and an early-vs-late split discards ordering and is
+    underpowered. The question this answers is whether the policy about to
+    keep training is worse than something already saved, not whether it has
+    changed since the start.
     """
     pts = [r for r in rows if r.get("games")]
     if len(pts) < 2 * group:
@@ -151,11 +113,9 @@ def peak_comparison(rows, group=5):
     rates = [(pool(w), i + group - 1) for i, w in windows]
     (best_w, best_n), best_end = max(rates, key=lambda t: t[0][0] / t[0][1])
     (last_w, last_n), last_end = rates[-1]
-    # Selection correction, and it is not optional. The BEST of W noisy windows
-    # is high by construction -- the max of ~23 standard normals sits about
-    # 2 sigma up -- so testing "is the last window below the best" against a
-    # flat -2 would fire on pure noise routinely. Sidak the threshold by the
-    # number of windows actually searched.
+    # Sidak-correct the threshold by the number of windows searched: the best
+    # of W noisy windows is high by construction, so an uncorrected threshold
+    # fires on pure noise.
     crit = NormalDist().inv_cdf(1 - 0.05 / max(1, len(windows)))
     if best_end == last_end:
         return 0.0, best_end, crit  # the most recent window IS the best one
@@ -163,9 +123,7 @@ def peak_comparison(rows, group=5):
 
 
 def _verdict(rows, w_late, n_late):
-    """(label, trend z, peak z, peak index). REGRESSING is a distinct outcome
-    from FLAT on purpose: a check that only asks "has it changed" reads a deck
-    losing ground as a healthy, changing run and lets it keep training."""
+    """(label, trend z, peak z, peak index)."""
     z = trend_z(rows)
     peak_z, peak_at, crit = peak_comparison(rows)
     if n_late and w_late / n_late >= SATURATED_AT:
@@ -210,8 +168,6 @@ def _win_rate_lines(deck, tag, rows, window):
                      f"(peaked around session {peak_row.get('session', '?')}) -- "
                      f"a better policy than the live one is already on disk")
     if verdict == "FLAT":
-        # "No change" and "cannot tell" are different claims, and this project
-        # has already conflated them once. Say which one this is.
         mde = min_detectable_effect(min(ne, nl))
         lines.append(f"    (FLAT at this sample size resolves >= {100 * mde:.1f}pp; "
                      f"a smaller real change would read the same)")
@@ -220,7 +176,7 @@ def _win_rate_lines(deck, tag, rows, window):
 
 def _ppo_lines(deck, rows):
     rows = sorted(rows, key=lambda r: (r.get("session", 0), r.get("iteration", 0)))
-    half = max(1, len(rows) // 10)  # deciles: a 10% window is stable at 10k+ iterations
+    half = max(1, len(rows) // 10)  # deciles
     mean = lambda g, k: (sum(r[k] for r in g if k in r) / max(1, sum(1 for r in g if k in r)))
     first, last = rows[:half], rows[-half:]
 
@@ -229,13 +185,10 @@ def _ppo_lines(deck, rows):
                      ("approx_kl", ".4f"), ("clip_fraction", ".3f"), ("epochs_run", ".2f"),
                      ("explained_variance", ".3f"), ("adv_std", ".4f")):
         if not any(key in r for r in rows):
-            continue  # field predates this schema revision, or postdates these records
+            continue  # field absent from this schema revision
         a, b = mean(first, key), mean(last, key)
         note = ""
         if key == "approx_kl":
-            # The trust region is the whole point of target_kl; a run sitting
-            # above it is early-stopping on most updates, which shows up as
-            # epochs_run falling below n_epochs.
             target = last[-1].get("target_kl", 0.03)
             note = f"   vs target_kl={target}  {'EXCEEDS' if b > target else 'ok'}"
         lines.append(f"    {key:<20}{a:>10{fmt}} -> {b:>9{fmt}}{note}")
@@ -247,23 +200,16 @@ def _ppo_lines(deck, rows):
 
 
 def report(records, window=TREND_WINDOW):
-    """Returns the report as a list of printed lines (also prints them) --
-    returning them makes this testable without capturing stdout."""
+    """Returns the report as a list of printed lines (also prints them)."""
     by_deck = defaultdict(lambda: defaultdict(list))
     sessions = []
     for r in records:
         kind = r.get("kind", "?")
-        # session_start is league-level, not per-deck: it has no `deck`, so
-        # grouping it with the rest bucketed it under a "?" heading that then
-        # rendered empty (no `games`, no ppo/mulligan branch) -- silently
-        # hiding the reward_fn/roster it carries, which is the first thing to
-        # check when confirming two populations trained under the same rules.
+        # session_start is league-level, not per-deck: no `deck` field, kept separate.
         if kind == "session_start":
             sessions.append(r)
             continue
-        # vs_history's label is part of the series identity, never pooled away:
-        # archive_oldest is a fixed ~200-game reference, active_oldest a moving
-        # ~6,400-game one. They answer different questions.
+        # vs_history's label is part of the series identity, never pooled away.
         tag = f"{kind}:{r['label']}" if kind == "vs_history" and "label" in r else kind
         by_deck[r.get("deck", "?")][tag].append(r)
 

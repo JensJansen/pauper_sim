@@ -1,6 +1,4 @@
-"""Tests for game.catalog.white_cards. See the module under test for the
-card-implementation rationale (real-rules citations, etc.) each test below
-guards."""
+"""Tests for game.catalog.white_cards."""
 
 from game import mana, registry, resolution
 from game.cards import CardDef, CardType, EffectId
@@ -12,10 +10,7 @@ from game.state import GameState, Permanent, PlayerState
 
 
 def test_cartouche_of_solidarity_only_enchants_a_creature_you_control():
-    """Real text is "Enchant creature you control" -- unlike Rancor/
-    Ancestral Mask/Ethereal Armor/Armadillo Cloak's plain "Enchant
-    creature" (either side). An opponent's creature must NOT be a legal
-    target."""
+    """An opponent's creature must not be a legal target."""
     state = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
     mine = Permanent(CardDef("Mine", CardType.CREATURE, None, EffectId.FILLER, power=1, toughness=1))
     mine.slot = 1
@@ -31,9 +26,7 @@ def test_cartouche_of_solidarity_only_enchants_a_creature_you_control():
 
 
 def test_ethereal_armor_can_enchant_either_sides_creature():
-    """Real text is plain "Enchant creature" -- no "you control"
-    restriction, so an opponent's creature IS a legal (if unusual) target,
-    unlike Cartouche of Solidarity above."""
+    """An opponent's creature is a legal target."""
     state = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
     theirs = Permanent(CardDef("Theirs", CardType.CREATURE, None, EffectId.FILLER, power=1, toughness=1))
     theirs.slot = 1
@@ -48,31 +41,22 @@ def test_ethereal_armor_can_enchant_either_sides_creature():
 
 
 def test_cartouche_of_solidarity_extra_legal_gate_via_its_own_registry_entry():
-    """extra_legal (registry.EFFECT_REGISTRY[EffectId.CARTOUCHE_OF_SOLIDARITY]
-    ["cast"]["extra_legal"] itself, not just any_creature_on_battlefield called
-    standalone): "Enchant creature YOU CONTROL" means an opponent's creature
-    alone must NOT satisfy this mandatory-target gate (601.2c) -- only a
-    creature on the CASTER's own battlefield does."""
+    """extra_legal is satisfied only by a creature on the caster's own battlefield."""
     gate = registry.EFFECT_REGISTRY[EffectId.CARTOUCHE_OF_SOLIDARITY]["cast"]["extra_legal"]
     state = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
     theirs = Permanent(CardDef("Theirs", CardType.CREATURE, None, EffectId.FILLER, power=1, toughness=1))
     theirs.slot = 1
     state.players[1].battlefield = [theirs]
-    assert not gate(state)  # only an opponent's creature exists -- not "you control"
+    assert not gate(state)  # only an opponent's creature exists
 
     mine = Permanent(CardDef("Mine", CardType.CREATURE, None, EffectId.FILLER, power=1, toughness=1))
     mine.slot = 1
     state.players[0].battlefield = [mine]
-    assert gate(state)  # now a creature the caster controls exists -- legal
+    assert gate(state)
 
 
 def test_cartouche_of_solidarity_grants_exactly_plus_one_plus_one():
-    """pt_bonus/toughness_bonus numerically isolated: an enchanted creature's
-    permanent_power/permanent_toughness go up by EXACTLY +1/+1, no more no
-    less -- the one existing combat test (test_first_strike_kills_before_
-    blocker_deals_damage in tests/game/effects/test_combat.py) never needs
-    the bonus to reach its outcome, so it never actually distinguishes
-    "bonus applied" from "bonus not applied"."""
+    """An enchanted creature's power/toughness go up by exactly +1/+1."""
     state = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
     creature = Permanent(CardDef("Mine", CardType.CREATURE, None, EffectId.FILLER, power=2, toughness=2))
     creature.slot = 1
@@ -82,16 +66,12 @@ def test_cartouche_of_solidarity_grants_exactly_plus_one_plus_one():
     cartouche = Permanent(registry.CARD_DEFS["Cartouche of Solidarity"])
     cartouche.flags["enchanting"] = creature
     state.players[0].battlefield.append(cartouche)
-    assert permanent_power(state, creature) == 3  # exactly +1
-    assert permanent_toughness(state, creature) == 3  # exactly +1
+    assert permanent_power(state, creature) == 3
+    assert permanent_toughness(state, creature) == 3
 
 
 def test_cartouche_of_solidarity_cast_pays_w_through_the_mana_pipeline():
-    """{W} cast cost, actually charged through the real mana
-    pipeline (mana.activate_mana_source -> mana.begin_pay_cost ->
-    mana.execute_pool_spend) -- unlike every other test in this file, which
-    calls cast_cartouche_of_solidarity directly and never touches payment
-    at all."""
+    """{W} cast cost is charged through the real mana pipeline."""
     state = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
     plains = Permanent(registry.CARD_DEFS["Plains"])
     mine = Permanent(CardDef("Mine", CardType.CREATURE, None, EffectId.FILLER, power=1, toughness=1))
@@ -102,13 +82,11 @@ def test_cartouche_of_solidarity_cast_pays_w_through_the_mana_pipeline():
 
     mana.activate_mana_source(state, plains)
     assert state.mana_pool == {"W": 1}
-    assert state.mana_pool_single_pip == {"W": 1}  # a 1-symbol event -- tagged single-pip
+    assert state.mana_pool_single_pip == {"W": 1}
     mana.begin_pay_cost(state, card_def.cast_cost, on_complete=lambda s: cast_cartouche_of_solidarity(s, card_def))
     mana.execute_pool_spend(state, mana.pool_spend_options(state)[0])
-    assert state.mana_pool == {}  # the W pip was actually spent, not skipped
+    assert state.mana_pool == {}
 
-    # cost fully paid -> cast_cartouche_of_solidarity's own target choice is
-    # now open, proving the cast actually went through the pipeline
     assert (0, "Mine", 1) in resolution.choose_any_target_creature_options(state)
     resolution.execute_choose_any_target_creature(state, 0, "Mine", 1)
     resolve_top_of_stack(state)
@@ -117,12 +95,7 @@ def test_cartouche_of_solidarity_cast_pays_w_through_the_mana_pipeline():
 
 
 def test_cartouche_of_solidarity_etb_creates_a_vigilant_warrior_token():
-    """ETB (on_attached=cartouche_of_solidarity_attach, fired synchronously
-    as the Aura resolves and attaches -- see cast_aura's own docstring):
-    creates a 1/1 Warrior token with vigilance on the caster's battlefield.
-    Exercised here via a REAL resolved cast (targeting + resolve_top_of_
-    stack) -- cartouche_of_solidarity_attach/on_attached never appears
-    anywhere else in tests/."""
+    """ETB creates a 1/1 Warrior token with vigilance on the caster's battlefield."""
     state = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
     mine = Permanent(CardDef("Mine", CardType.CREATURE, None, EffectId.FILLER, power=1, toughness=1))
     mine.slot = 1
@@ -141,37 +114,26 @@ def test_cartouche_of_solidarity_etb_creates_a_vigilant_warrior_token():
 
 
 def test_ethereal_armor_pt_bonus_counts_itself_and_other_enchantments():
-    """pt_bonus/toughness_bonus (enchantment_count) is SELF-INCLUSIVE --
-    real text is "for each enchantment you control" (no "other"), unlike
-    Ancestral Mask's "each OTHER enchantment you control" in green_cards.py
-    (tested there). With zero other enchantments present, Ethereal Armor
-    alone still grants +1/+1 -- it counts itself; a second enchantment on
-    the same side bumps that to +2/+2."""
+    """pt_bonus/toughness_bonus counts Ethereal Armor itself, plus every
+    other enchantment you control."""
     state = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
     creature = Permanent(CardDef("Mine", CardType.CREATURE, None, EffectId.FILLER, power=1, toughness=1))
     creature.slot = 1
     armor = Permanent(registry.CARD_DEFS["Ethereal Armor"])
     armor.flags["enchanting"] = creature
     state.players[0].battlefield = [creature, armor]
-    assert permanent_power(state, creature) == 2  # 1 base + 1 (itself -- no other enchantments yet)
+    assert permanent_power(state, creature) == 2  # 1 base + 1 (itself)
     assert permanent_toughness(state, creature) == 2
 
     other_enchantment = Permanent(CardDef("Some Other Enchantment", CardType.ENCHANTMENT, None, EffectId.FILLER))
     state.players[0].battlefield.append(other_enchantment)
-    assert permanent_power(state, creature) == 3  # 1 base + 2 (itself + the other enchantment)
+    assert permanent_power(state, creature) == 3  # 1 base + 2 (itself + the other)
     assert permanent_toughness(state, creature) == 3
 
 
 def test_ethereal_armor_first_strike_kills_before_blocker_deals_damage():
-    """First strike (the real EffectId.ETHEREAL_ARMOR registry entry), mirroring
-    tests/game/effects/test_combat.py's own Cartouche-based
-    test_first_strike_kills_before_blocker_deals_damage -- but Ethereal Armor
-    is never exercised in any combat test in this repo, and these numbers
-    (unlike that Cartouche test) actually REQUIRE both the +1/+1 bonus and
-    first strike to reach the asserted outcome: without the bonus, 2 power
-    doesn't kill a 3-toughness blocker at all; without first strike, the
-    blocker's power-3 hit would kill the attacker's base 2 toughness right
-    back (mutual death, not a clean win)."""
+    """First strike lets the attacker kill the blocker before taking damage
+    back; requires both the +1/+1 bonus and first strike to reach a clean win."""
     _card_defs_backup = dict(registry.CARD_DEFS)
     try:
         state = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
@@ -190,9 +152,7 @@ def test_ethereal_armor_first_strike_kills_before_blocker_deals_damage():
         state.blocked_by[fs_attacker] = [lethal_blocker]
         combat_damage_step(state)
 
-        # Effective power 3 (2 base + Ethereal Armor's +1, counting itself)
-        # >= lethal_blocker's toughness 3 -- dies in the FIRST STRIKE
-        # sub-step, before it ever deals its own power-3 damage back.
+        # Effective power 3 >= blocker's toughness 3: dies in the first-strike sub-step.
         assert lethal_blocker not in state.players[1].battlefield
         assert fs_attacker in state.players[0].battlefield and fs_attacker.damage_marked == 0
     finally:

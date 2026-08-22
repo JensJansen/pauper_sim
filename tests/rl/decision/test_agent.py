@@ -14,10 +14,9 @@ from rl.decision.agent import (
     DECK_SIZE_CAP, OPPONENT_HAND_SIZE_CAP, AlwaysKeep, SeatAgent, _Decision,
     _log_decision_weights, _resolve_pointer_identity, _scalar_features,
 )
-# HeuristicAgent moved to its own module 2026-08-17. Its tests stayed in this
-# file rather than moving with it: they are built on _rally_ctx / _make_creature
-# / TOKEN_DEFS, fixtures shared with the SeatAgent tests here, and duplicating
-# those to achieve a tidier file split would be the more fragile arrangement.
+# HeuristicAgent lives in its own module; its tests stay here since they
+# share fixtures (_rally_ctx / _make_creature / TOKEN_DEFS) with the
+# SeatAgent tests below.
 from rl.decision.heuristic_agent import (
     HeuristicAgent, _attack_is_worthwhile, _blocker_worth_assigning,
     _card_name_from_cast_action, _cmc,
@@ -87,10 +86,8 @@ def test_mulligan_zero_lands_mulligans_only_a_0land_hand():
     dr = mzl_agent.decide(state, seat, horizon=120, device="cpu")
     assert callable(dr.executor) and dr.ppo_entry is None and dr.mull_entry is None and not dr.is_pass
 
-    # Whatever the dealt hand happens to be, the DECISION taken must match
-    # the land-count rule -- run the executor and read it off mulligans_taken
-    # (only execute_mulligan_take increments it; keep never does), rather
-    # than trying to introspect the returned lambda.
+    # Run the executor and read the decision off mulligans_taken (only
+    # execute_mulligan_take increments it) rather than introspecting the lambda.
     has_land = any(c.card_type.name == "LAND" for c in state.hand)
     mulligans_before = state.mulligans_taken
     dr.executor()
@@ -117,10 +114,9 @@ def test_mulligan_net_branch_routes_and_records():
 
 @pytest.mark.slow
 def test_main_fixed_table_has_no_pregame_action():
-    # Fixed-table invariant: the main net's fixed table has ZERO pregame actions,
-    # so in a pregame state its legal mask is all-False and the SeatAgent MUST
-    # intercept before ever reaching _seat_step. Guards against a future re-add
-    # of the actions.
+    # Fixed-table invariant: the main net's table has zero pregame actions,
+    # so its legal mask is all-False in a pregame state and SeatAgent must
+    # intercept before _seat_step.
     decklist, _vocab, state = _mulligan_decision_state()
     ftable = build_fixed_action_table(decklist)
     assert not any(drl_env.legal_action_mask(state, ftable)), (
@@ -133,8 +129,7 @@ def test_main_fixed_table_has_no_pregame_action():
 def test_scalar_features_library_hand_size_and_stack_targets():
     # _scalar_features: library size (mine/opponent), opponent hand size, and
     # stack-targets-me/opponent (the "player" target kind -- the one case
-    # with no token to carry a bit on; see rl.model.features._stack_target_map and
-    # its own build_token_set self-check for the three OBJECT target kinds).
+    # with no token to carry a bit on).
     sf_seat0 = PlayerState(on_the_play=True)
     sf_seat0.library = [game.CARD_DEFS["Mountain"]] * 40
     sf_seat0.hand = [game.CARD_DEFS["Lightning Bolt"]] * 3
@@ -148,11 +143,10 @@ def test_scalar_features_library_hand_size_and_stack_targets():
 
     sf0 = _scalar_features(sf_state, 0, horizon=40)
     sf1 = _scalar_features(sf_state, 1, horizon=40)
-    # Tail layout (see _scalar_features's own append order): [..., my_library,
-    # opp_library, opp_hand, stack_targets_me, stack_targets_opponent,
-    # on_the_play, opp_mulligans, opp_cleanup_discards]. The last three were
-    # appended 2026-08-13, which shifted every index here by 3 -- these are
-    # counted from the END on purpose, so a future append shifts them again.
+    # Tail layout: [..., my_library, opp_library, opp_hand, stack_targets_me,
+    # stack_targets_opponent, on_the_play, opp_mulligans,
+    # opp_cleanup_discards]. Counted from the end on purpose, so a future
+    # append shifts these indices too.
     my_lib_i, opp_lib_i, opp_hand_i, targets_me_i, targets_opp_i = -8, -7, -6, -5, -4
     assert sf0[my_lib_i] == 40 / DECK_SIZE_CAP and sf0[opp_lib_i] == 10 / DECK_SIZE_CAP
     assert sf1[my_lib_i] == 10 / DECK_SIZE_CAP and sf1[opp_lib_i] == 40 / DECK_SIZE_CAP, (
@@ -198,8 +192,7 @@ def test_log_decision_weights_sorts_top_candidates_and_respects_event_log_gate()
 @pytest.mark.slow
 def test_resolve_pointer_identity_finds_controller_by_membership_search():
     # No shortcut like "check which list a pending references" works in
-    # general (Rooftop Percher pools BOTH graveyards into one pending) -- the
-    # resolver must find the real owner by membership, for either side.
+    # general (Rooftop Percher pools both graveyards into one pending).
     p0, p1 = PlayerState(on_the_play=True), PlayerState(on_the_play=False)
     state = GameState(on_the_play=True, players=[p0, p1])
 
@@ -267,14 +260,11 @@ def _mono_red_rally_deck_ctx():
 
 @pytest.mark.slow
 def test_heuristic_agent_plays_real_mono_red_rally_mirror_games_without_crashing():
-    """The gauntlet's tier-1 opponent, scoped to mono_red_rally per the
-    owner's own choice. Real mirror games at a real horizon (not the
-    trimmed horizon=20 used elsewhere in this file) specifically to reach
-    combat and casting decisions repeatedly across many games -- the
-    HeuristicAgent's own scoring code (attack-safety, block-to-kill) is
-    exercised for real here, not just imported successfully. No crash across
-    5 real games is the bar; behavioral quality isn't asserted (the owner's
-    own rules are approximate by design)."""
+    """The gauntlet's tier-1 opponent, scoped to mono_red_rally. Real mirror
+    games at a real horizon (not the trimmed horizon=20 used elsewhere)
+    specifically to reach combat and casting decisions repeatedly,
+    exercising HeuristicAgent's scoring code for real. No crash across 5
+    games is the bar; behavioral quality isn't asserted."""
     from rl.rewards import flat_win_loss_reward
     from rl.training.train import _constant_pairing, collect_rollout
 
@@ -301,10 +291,8 @@ def test_heuristic_agent_plays_real_mono_red_rally_mirror_games_without_crashing
 @pytest.mark.slow
 def test_heuristic_agent_plays_real_mono_red_rally_vs_trained_policy_without_crashing():
     """Same crash-safety bar as the mirror test, but against a real (tiny,
-    untrained) SeatAgent -- exercises the two agent TYPES coexisting in one
-    game (mixed dispatch through collect_rollout's own pairing contract),
-    the actual gauntlet-mechanism use case (a trained policy vs. the
-    heuristic reference), not just heuristic-vs-heuristic."""
+    untrained) SeatAgent -- exercises the two agent types coexisting in one
+    game, the actual gauntlet-mechanism use case."""
     from rl.rewards import flat_win_loss_reward
     from rl.training.train import _constant_pairing, collect_rollout
 
@@ -391,7 +379,7 @@ def test_blocker_worth_assigning_checks_power_vs_attacker_toughness():
     assert _blocker_worth_assigning(state, strong_blocker) is True, "2 power meets the 2-toughness attacker's kill threshold"
 
 
-# --- three public scalars the policy could not see (2026-08-13) ---
+# --- public scalars: on_the_play, opponent mulligans, opponent discards ---
 
 
 @pytest.mark.slow
@@ -410,8 +398,8 @@ def test_scalar_features_length_matches_the_declared_dim():
 
 @pytest.mark.slow
 def test_on_the_play_is_seat_specific_and_actually_reaches_the_policy():
-    """It was a plain oversight: MulliganNet has always received on_the_play
-    while the main policy never did. Exactly one seat is on the play."""
+    """on_the_play must reach the main policy, seat-specific: exactly one
+    seat is on the play."""
     from rl.model.deck import SCALAR_FEATURE_DIM
     decklist = game.parse_decklist_file("../data/mono_red_madness.txt")
     state = game.new_multiplayer_game_state([decklist, decklist], 0, random.Random(0))
@@ -424,10 +412,8 @@ def test_on_the_play_is_seat_specific_and_actually_reaches_the_policy():
 
 @pytest.mark.slow
 def test_opponent_mulligans_and_cleanup_discards_are_read_from_the_OTHER_seat():
-    """Both are public information in real Magic (you watch an opponent
-    mulligan, and cleanup discards happen in the open), which is what makes
-    them compliant observations rather than hidden-information leaks. They must
-    read the opponent's counters, not the reader's own."""
+    """Both are public information in real Magic. Must read the opponent's
+    counters, not the reader's own."""
     from rl.model.deck import SCALAR_FEATURE_DIM
     decklist = game.parse_decklist_file("../data/mono_red_madness.txt")
     state = game.new_multiplayer_game_state([decklist, decklist], 0, random.Random(0))

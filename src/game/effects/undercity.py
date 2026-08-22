@@ -1,31 +1,19 @@
 """The Initiative + the Undercity dungeon (Avenging Hunter).
 
-A player can hold THE INITIATIVE (state.initiative_idx), a shared designation
-like the monarch. Taking it, and the start of each of your upkeeps, makes you
-"venture into Undercity": enter the first room if you're not in the dungeon,
-else advance to the next room, applying that room's effect. Combat damage to
-the initiative-holder queues a "you take the initiative" triggered ability
-for the attacker (game.effects.combat.combat_damage_step, CR 722.2's second
-triggered ability) -- initiative_idx only actually changes once that trigger
-resolves off the stack (game.effects.triggers' own "take_initiative" branch,
-which calls take_initiative below), same as Avenging Hunter's own ETB grant
-(its own etb_trigger calls take_initiative directly, already resolving from
-within its own stack entry).
+A player can hold THE INITIATIVE (state.initiative_idx), a shared
+designation like the monarch. Taking it, and the start of each upkeep,
+makes you "venture into Undercity": enter the first room if not already in
+the dungeon, else advance to the next. Combat damage to the initiative-
+holder queues a "take the initiative" trigger for the attacker
+(combat.combat_damage_step, CR 722.2); initiative_idx only flips once that
+trigger resolves.
 
-This module owns the pure logic: take_initiative, venture + the room effects,
-and the two "until your next turn" durations it introduces (Arena's Goad and
-Throne's hexproof, both stamped with the turn they began and expired at the
-owning player's next turn by expire_until_next_turn). The combat-facing
-pieces -- the menace block rule and goad's forced attack -- live in
-game.effects.combat (has_unfulfilled_goad / enforce_menace), which sits below
-this module. The take_initiative and venture triggered abilities are queued
-here and resolved by game.effects.triggers' own "take_initiative"/"venture"
-branches. Two pending-resolution kinds (begin_choose_room, begin_throne_
-reveal) live here rather than in game.resolution's shared handler pool --
-both are Undercity-only, each with exactly one caller (venture / _room_throne,
-respectively) in this module.
+This module owns the pure logic: take_initiative, venture + room effects,
+and the two "until your next turn" durations (Arena's Goad, Throne's
+hexproof), expired by expire_until_next_turn. Combat-facing pieces --
+menace blocking, goad's forced attack -- live in game.effects.combat.
 
-Real Undercity dungeon (Scryfall), branching room graph in _DUNGEON below."""
+Real Undercity dungeon (Scryfall); branching room graph in _DUNGEON below."""
 
 from . import casting
 from .shared import find_to_hand, shuffle_library
@@ -35,18 +23,16 @@ from .win_check import lose_life
 from .. import resolution
 from ..cards import CardDef, CardType
 
-# Label for the venture triggered ability's stack entry (a designation, not a
-# real card -- only used as the entry's card_def for logging/display). Exposed
-# publicly (INITIATIVE_MARKER_CARD) so the token pipeline can reserve a vocab
-# index + a choosable-name action for it (it appears on the stack as a venture
-# trigger, and in order_triggers when it coincides with another trigger).
+# Label for the venture triggered ability's stack entry (a designation, not
+# a real card). Exposed publicly so the token pipeline can reserve a vocab
+# index + choosable-name action for it.
 _INITIATIVE_CARD = CardDef("The Initiative", CardType.ENCHANTMENT, None, None)
 INITIATIVE_MARKER_CARD = _INITIATIVE_CARD
 
 ENTRANCE = "Secret Entrance"
 _TERMINAL = "Throne of the Dead Three"
 
-# room name -> the room(s) it leads to (a 1- or 2-way branch; () = terminal).
+# room name -> the room(s) it leads to (1- or 2-way branch; () = terminal).
 _DUNGEON = {
     "Secret Entrance": ("Forge", "Lost Well"),
     "Forge": ("Trap!", "Arena"),
@@ -60,52 +46,35 @@ _DUNGEON = {
 }
 
 # Every room name -- drl_env.build_action_table pre-registers one "Enter room:
-# X" action per name (only ever ≤2 legal at once, at a branch).
+# X" action per name (≤2 legal at once, at a branch).
 ROOM_NAMES = tuple(_DUNGEON)
 
 
 def take_initiative(state, player_idx):
-    """Set the initiative on `player_idx` and queue their venture. The Initiative
-    reads "Whenever you take the initiative ... venture into Undercity"; that
-    venture is a triggered ability, so it's queued (not run inline) and goes on
-    the stack with a priority window like any other trigger. Only ever called
-    with active_idx == player_idx already -- Avenging Hunter's own etb_trigger
-    (green_cards.py) calls this directly from within its OWN stack entry's
-    resolution (active_idx == that trigger's controller, the permanent's
-    controller); the combat-damage case instead queues a "take_initiative"
-    trigger of its own (queue_take_initiative below) and this only runs when
-    THAT resolves (game.effects.triggers' "take_initiative" branch), by which
-    point resolve_top_of_stack has already restored active_idx to that
-    trigger's own controller. Either way, queue_venture below always appends
-    into the right player's own trigger_queue. "You can take the initiative
-    even if you already have it": re-taking still queues a fresh venture,
-    which this does unconditionally."""
+    """Set the initiative on `player_idx` and queue their venture (the
+    Initiative's "whenever you take the initiative ... venture into
+    Undercity"). Only ever called with active_idx == player_idx already.
+    Re-taking still queues a fresh venture unconditionally."""
     state.initiative_idx = player_idx
     state.log_event("take_initiative", player_idx=player_idx)
     queue_venture(state, player_idx)
 
 
 def queue_take_initiative(state, player_idx):
-    """Queue The Initiative's own combat-damage-triggered ability -- CR 722.2's
-    second one, "whenever one or more creatures a player controls deal combat
-    damage to the player who has the initiative, the controller of those
-    creatures takes the initiative" -- for player_idx (game.effects.combat.
-    combat_damage_step, once it's determined player_idx's creatures actually
-    dealt combat damage to the current holder this step). A real triggered
-    ability like any other: it goes on the stack and only actually flips
-    state.initiative_idx once it resolves (game.effects.triggers._trigger_
-    resolve's "take_initiative" branch, which calls take_initiative() above),
-    not the instant the damage was dealt."""
+    """Queue the Initiative's combat-damage trigger (CR 722.2's second one)
+    for player_idx, once combat.combat_damage_step determines their
+    creatures dealt combat damage to the current holder this step. Only
+    actually flips state.initiative_idx once it resolves (triggers.py's
+    "take_initiative" branch, which calls take_initiative() above)."""
     state.players[player_idx].trigger_queue.append(
         {"type": "take_initiative", "card_def": _INITIATIVE_CARD, "player_idx": player_idx}
     )
 
 
 def queue_venture(state, player_idx):
-    """Queue one "venture into Undercity" triggered ability for player_idx (the
-    upkeep venture -- game.turn.upkeep_step -- and take_initiative both use
-    this). Resolved by game.effects.triggers._trigger_resolve's "venture"
-    branch, which calls venture()."""
+    """Queue one "venture into Undercity" trigger for player_idx (used by
+    both the upkeep venture and take_initiative). Resolved by triggers.py's
+    "venture" branch, which calls venture()."""
     state.players[player_idx].trigger_queue.append(
         {"type": "venture", "card_def": _INITIATIVE_CARD, "player_idx": player_idx}
     )
@@ -113,14 +82,11 @@ def queue_venture(state, player_idx):
 
 def venture(state, player_idx):
     """Resolve one venture: advance the player one room (enter at Secret
-    Entrance if not in the dungeon), letting them pick when the current room
-    branches. Called from the venture trigger's resolution, with active_idx
-    already == player_idx (the trigger's controller), so the room effects'
-    active-player-proxied zone reads/choices are all this player's."""
+    Entrance if not in the dungeon), letting them pick when the current
+    room branches. Called with active_idx already == player_idx."""
     cur = state.players[player_idx].dungeon_room
-    # cur is never a terminal room here: _enter_room clears dungeon_room to None
-    # on completing the terminal room, so a later venture re-enters at Secret
-    # Entrance (a fresh dungeon run) via the `cur is None` branch.
+    # _enter_room clears dungeon_room to None on completing the terminal
+    # room, so a later venture re-enters at Secret Entrance.
     nexts = (ENTRANCE,) if cur is None else _DUNGEON[cur]
     if len(nexts) == 1:
         _enter_room(state, player_idx, nexts[0])
@@ -129,19 +95,17 @@ def venture(state, player_idx):
 
 
 def _enter_room(state, player_idx, room):
-    # dungeon_room reflects the current position; completing the terminal room
-    # leaves the dungeon (None) so the next venture starts a new run.
+    # Completing the terminal room clears dungeon_room to None, so the next
+    # venture starts a new run.
     state.players[player_idx].dungeon_room = None if not _DUNGEON[room] else room
     state.log_event("undercity_enter_room", player_idx=player_idx, room=room)
     _ROOM_EFFECTS[room](state, player_idx)
 
 
 def begin_choose_room(state, options, on_complete):
-    """Undercity venture: the venturing player picks which of `options` (the
-    1 or 2 rooms the current room leads to) to enter next. on_complete(state,
-    room_name) fires with the chosen room. Undercity-only (venture above is
-    its one caller) -- lives here rather than in game.resolution's shared
-    handler pool."""
+    """The venturing player picks which of `options` (the 1 or 2 rooms the
+    current room leads to) to enter next. on_complete(state, room_name)
+    fires with the choice."""
     resolution.begin_resolution(state, "choose_room", on_complete, options=tuple(options))
 
 
@@ -156,12 +120,8 @@ def execute_choose_room_option(state, name):
 # --- room effects (active_idx == the venturer throughout) ---
 
 def _room_secret_entrance(state, player_idx):
-    """Search your library for a basic land card, reveal it, put it into your
-    hand, then shuffle -- find_to_hand (game.effects.shared) is the shared
-    tail every other "search library for X, put it into hand, shuffle"
-    effect already routes through; it also logs the zone_move (library ->
-    hand) so replays/the visualizer can track the fetched card, and already
-    handles the no-match case (name=None: still shuffles, finds nothing)."""
+    """Search your library for a basic land card, reveal it, put it into
+    your hand, then shuffle."""
     resolution.begin_search_fetch(
         state, lambda c: c.card_type == CardType.LAND and c.extra.get("basic"), find_to_hand,
     )
@@ -226,15 +186,11 @@ def _room_catacombs(state, player_idx):
 
 
 def begin_throne_reveal(state, n, on_complete):
-    """Undercity's Throne of the Dead Three: reveal the top `n` library cards;
-    the venturer picks one CREATURE card from among them
-    (throne_reveal_options). Every exit path (a pick, or the empty-reveal
-    auto-complete when no creature is revealed) returns the unchosen revealed
-    cards to the library and shuffles it -- done here so the library is always
-    left consistent; on_complete(state, chosen_card_def | None) then only has
-    to place the chosen creature (battlefield + counters + hexproof, in
-    _room_throne below). Undercity-only (_room_throne is its one caller) --
-    lives here rather than in game.resolution's shared handler pool."""
+    """Throne of the Dead Three: reveal the top `n` library cards; the
+    venturer picks one creature card from among them
+    (throne_reveal_options). Every exit path returns the unchosen revealed
+    cards to the library and shuffles it, so on_complete(state,
+    chosen_card_def | None) only has to place the chosen creature."""
     revealed = state.library[:n]
     del state.library[:n]
     resolution.begin_resolution(state, "throne_reveal", on_complete, revealed=revealed)
@@ -260,10 +216,10 @@ def _finish_throne(state, chosen):
 
 
 def _room_throne(state, player_idx):
-    """Reveal the top ten cards; put a creature card from among them onto the
-    battlefield with three +1/+1 counters and hexproof until your next turn;
-    then shuffle. begin_throne_reveal handles the reveal + shuffle-back; this
-    only places the chosen creature."""
+    """Reveal the top ten cards; put a creature card from among them onto
+    the battlefield with three +1/+1 counters and hexproof until your next
+    turn; then shuffle. begin_throne_reveal handles the reveal + shuffle-
+    back; this only places the chosen creature."""
     def _place(state, chosen):
         if chosen is None:  # no creature revealed
             return
@@ -291,23 +247,22 @@ _ROOM_EFFECTS = {
 # --- goad + the "until your next turn" durations ---
 
 def apply_goad(state, permanent, goader_idx):
-    """Goad `permanent` (Arena): its controller must attack with it if able,
-    until the GOADER's next turn. Enforcement is in game.effects.combat
-    (has_unfulfilled_goad); this stamps who goaded it and when so
-    expire_until_next_turn can clear it at the goader's next turn."""
+    """Goad `permanent` (Arena): its controller must attack with it if
+    able, until the goader's next turn. Enforcement lives in
+    game.effects.combat (has_unfulfilled_goad); this stamps who goaded it
+    and when so expire_until_next_turn can clear it."""
     permanent.flags["goaded_by"] = goader_idx
     permanent.flags["goaded_set_turn"] = state.turn_number
     state.log_event("goaded", permanent=(permanent.card_def.name, permanent.slot), by=goader_idx)
 
 
 def expire_until_next_turn(state):
-    """Turn-start cleanup (game.turn.untap_step, turn player active) for the two
-    "until your next turn" durations this subsystem adds. Goad ends at the
-    GOADER's next turn; Throne hexproof ends at the granted creature's
-    CONTROLLER's next turn. Both were stamped with the turn_number they began
-    on, so a strictly-later turn_number for the owning player clears them (never
-    the same turn they were applied). Scans every battlefield -- a goaded
-    creature is often the opponent's."""
+    """Turn-start cleanup (game.turn.untap_step) for the two "until your
+    next turn" durations: goad ends at the goader's next turn, Throne
+    hexproof at the granted creature's controller's next turn. Both are
+    cleared once the owning player's turn_number strictly exceeds the
+    stamped one. Scans every battlefield -- a goaded creature is often the
+    opponent's."""
     tp = state.turn_player_idx
     for idx, player in enumerate(state.players):
         for p in player.battlefield:

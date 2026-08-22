@@ -1,11 +1,7 @@
-"""White-identity card catalog: every card whose real mana cost is
-mono-white (or, for lands with no cost, whose only mana output is white).
-Every card's cost/type/oracle-text below is a direct Scryfall pull, except
-creature power/toughness, which is a design choice, not Scryfall data.
-
-Same shape as every other color file: a WHITE_CARD_CATALOG dict (name ->
-CardDef) and a WHITE_EFFECT_REGISTRY dict (EffectId -> spec), unioned into
-game.CARD_DEFS/EFFECT_REGISTRY by game/registry.py."""
+"""White-identity card catalog: WHITE_CARD_CATALOG (name -> CardDef) and
+WHITE_EFFECT_REGISTRY (EffectId -> spec), unioned into game.CARD_DEFS /
+EFFECT_REGISTRY by game/registry.py. Cost/type/oracle text is from
+Scryfall; power/toughness is a design choice."""
 
 from ..cards import CardDef, CardType, EffectId
 from ..effects.casting import cast_aura
@@ -23,18 +19,12 @@ WHITE_CARD_CATALOG = {
 
 
 def cartouche_of_solidarity_attach(state, aura):
-    """ETB: create a 1/1 white Warrior creature token with vigilance --
-    see EffectId.WARRIOR_TOKEN's own registry entry below (vigilance means
-    attacking no longer taps it, combat.declare_attacker)."""
+    """ETB: creates a 1/1 white Warrior token with vigilance."""
     create_token(state, WARRIOR_TOKEN_CARD_DEF)
 
 
 def cast_cartouche_of_solidarity(state, card_def):
-    """"Enchant creature YOU CONTROL" -- unlike Rancor/Ancestral Mask/
-    Ethereal Armor/Armadillo Cloak's plain "Enchant creature" (any side),
-    this one is restricted to the caster's own battlefield (verified via
-    Scryfall, not guessed); `p in state.battlefield` narrows cast_aura's
-    default either-side predicate to that."""
+    """Enchant creature YOU CONTROL only (not any creature)."""
     cast_aura(
         state, card_def, lambda p: p.card_type == CardType.CREATURE and p in state.battlefield,
         on_attached=cartouche_of_solidarity_attach,
@@ -50,37 +40,29 @@ WHITE_EFFECT_REGISTRY = {
         "mana": ("fixed", "W"),
     },
     EffectId.CARTOUCHE_OF_SOLIDARITY: {
-        # Real text: enchanted creature also gets +1/+1 (both pt_bonus and
-        # toughness_bonus below -- full-stats pass) and has first strike.
+        # Enchanted creature gets +1/+1 and first strike.
         "cast": {
             "resolve": lambda state, card_def: cast_cartouche_of_solidarity(state, card_def),
-            "extra_legal": lambda state: any_creature_on_battlefield(state),  # "you control" only -- caster's own zone
-            "precast_choice": True,  # real MTG "enchant target creature" -- must be chosen before the stack, see drl_env._precast_choice_execute
+            "extra_legal": lambda state: any_creature_on_battlefield(state),  # caster's own creatures only
+            "precast_choice": True,  # target chosen before the stack (drl_env._precast_choice_execute)
         },
-        "pending_kinds": {"choose_any_target"},  # Aura: cast_aura targets a creature YOU CONTROL only, hexproof moot (never an opponent's)
+        "pending_kinds": {"choose_any_target"},  # targets a creature you control
         "pt_bonus": lambda state, aura: 1,
         "toughness_bonus": lambda state, aura: 1,
         "keywords": {"first_strike"},
     },
     EffectId.ETHEREAL_ARMOR: {
-        # Real text: +1/+1 for each enchantment you control -- INCLUDING
-        # itself (unlike Ancestral Mask's "each OTHER enchantment";
-        # verified via Scryfall, not guessed) -- and has first strike.
+        # +1/+1 for each enchantment you control, including itself; first strike.
         "cast": {
             "resolve": lambda state, card_def: cast_ethereal_armor(state, card_def),
             "extra_legal": lambda state: any_creature_on_either_battlefield(state),
-            "precast_choice": True,  # real MTG "enchant target creature" -- must be chosen before the stack, see drl_env._precast_choice_execute
+            "precast_choice": True,  # target chosen before the stack (drl_env._precast_choice_execute)
         },
-        "pending_kinds": {"choose_any_target"},  # Aura: cast_aura targets any creature (either side), hexproof-aware
+        "pending_kinds": {"choose_any_target"},  # targets any creature, either side (hexproof-aware)
         "pt_bonus": lambda state, aura: enchantment_count(state, aura),
         "toughness_bonus": lambda state, aura: enchantment_count(state, aura),
         "keywords": {"first_strike"},
     },
-    EffectId.SAMURAI_TOKEN: {"keywords": {"vigilance"}},  # 2/2 white Samurai (Experimental Synthesizer, G8)
-    EffectId.WARRIOR_TOKEN: {
-        # Cartouche of Solidarity's own ETB token (cartouche_of_solidarity_
-        # attach above) -- vigilance means attacking never taps it
-        # (combat.declare_attacker).
-        "keywords": {"vigilance"},
-    },
+    EffectId.SAMURAI_TOKEN: {"keywords": {"vigilance"}},  # 2/2 white Samurai (Experimental Synthesizer)
+    EffectId.WARRIOR_TOKEN: {"keywords": {"vigilance"}},  # Cartouche of Solidarity's ETB token
 }

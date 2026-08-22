@@ -1,36 +1,19 @@
-"""ABSOLUTE SCALE: what is a trained league checkpoint actually worth?
+"""Scores league checkpoints against a fixed reference of known strength: a
+fully untrained DeckNetwork (random encoder and heads), the zero of the scale.
 
-Every existing instrument -- vs_gauntlet, vs_history, vs_heuristic -- reports a
-win rate against ONE opponent of unknown strength, so "51% vs the gauntlet"
-cannot answer whether 60,001 games/deck bought anything at all. Nothing in the
-repo has ever measured against a fixed point whose strength is known by
-construction. This does: a fully UNTRAINED DeckNetwork -- random encoder and
-random heads alike -- is the zero of the scale.
-
-Default vintages `0,live` DECOMPOSE the run rather than merely scoring it.
-snapshot_0 is a ~200-game policy (snapshot_every_games=200), so:
+Default vintages `0,live` decompose the run:
 
     row(0)     = what the first ~200 games/deck bought
-    row(live)  = what all 60,001 bought
-    the gap    = what the remaining ~59,800 bought
+    row(live)  = what all games so far bought
+    the gap    = what the games between them bought
 
-That decomposition is the point. vs_history already shows three of four decks
-at parity with their own 200-game-old selves, so if the two rows here land on
-top of each other, the plateau is not a plateau -- almost nothing was ever
-learned past the first few hundred games, and the diagnosis ends there.
+Runs both greedy and sampled play against the anchor by default (--mode
+both) and reports them side by side: argmax over a randomly initialized head
+can be a near-constant policy, which would understate the anchor's strength,
+so a large greedy/sampled split flags a degenerate greedy anchor.
 
-GREEDY vs SAMPLED: the in-training evals all use greedy=True (measure best
-play, not an exploration sample), and matching them keeps these numbers
-comparable. But argmax over a RANDOMLY initialized head is a near-constant
-policy -- it can lock onto one action index and, say, never play a land -- which
-would understate the anchor and inflate every gap measured against it. So this
-runs BOTH by default (--mode both) and reports them side by side; a large split
-between them means the greedy anchor degenerated and the sampled row is the
-honest one.
-
-AUTONOMY: the anchor is a DeckNetwork choosing over the engine's own legality
-mask -- a policy making its own decisions, just an untrained one. It is not a
-scripted rule set and is never a training target. Evaluation-only.
+The anchor is a DeckNetwork choosing over the engine's own legality mask, not
+a scripted rule set, and is never a training target. Evaluation-only.
 
 Usage:
   python analysis/eval/run_anchor_eval.py [--games 100] [--vintages 0,live] [--mode both]
@@ -38,7 +21,7 @@ Usage:
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))  # src/, for `repo_paths` / `rl.*` -- these live two levels up now that this script sits in analysis/eval/
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))  # src/
 import argparse
 import math
 import time
@@ -50,7 +33,7 @@ from rl.model.mulligan import MulliganNet
 from rl.decision.agent import SeatAgent
 from rl.league.league import LeaguePool
 from rl.roster import build_pool
-from analysis.eval.report_metrics import wilson as _wilson  # same helper, one definition -- both live in analysis/ now
+from analysis.eval.report_metrics import wilson as _wilson
 from rl.league.league_runner import (HORIZON, build_deck_net, league_roster, load_vintage_agent,
                                      _play_paired_eval_games)
 
@@ -61,18 +44,13 @@ from rl.league.league_runner import (HORIZON, build_deck_net, league_roster, loa
 def _anchor_agent(deck_ctx, seed):
     """A fully untrained agent -- random encoder, random heads.
 
-    Constructed with DeckNetwork's default trunk_hidden, which is what
-    _run_eval_vs_gauntlet also assumes when it loads live.pt, so the anchor is
-    architecture-matched to the thing it is scoring and the only difference
-    between them is training. It is a STRICTLY weaker floor than it used to
-    be: the anchor once sat on the real pretrained frozen stack, so it had
-    trained perception and only random heads. With per-deck encoders there is
-    no pretrained perception to borrow, so the whole network is random -- the
-    scale's zero moved, and anchor win rates are not comparable across that
-    change.
+    Built with DeckNetwork's default trunk_hidden, matching what
+    _run_eval_vs_gauntlet assumes when loading live.pt, so the anchor is
+    architecture-matched to the thing it scores and the only difference is
+    training.
     """
     vocab, fixed_table = deck_ctx
-    torch.manual_seed(seed)  # reproducible anchor: same random weights every run
+    torch.manual_seed(seed)  # reproducible anchor weights across runs
     net = build_deck_net(vocab.size, len(fixed_table))
     net.eval()
     mull = MulliganNet(net.encoder)
@@ -117,9 +95,8 @@ def main():
             agent = load_vintage_agent(league_dir, deck, vintage, deck_ctx, pool=pool)
             line = f"{deck:<16}{vintage:>9}"
             for mode in modes:
-                # Fresh rng per cell off the same base seed: every (deck, vintage,
-                # mode) cell sees the SAME shuffle sequence, so differences between
-                # rows are policy, not deck order.
+                # Same base seed per cell: every (deck, vintage, mode) cell sees
+                # the same shuffle sequence, so differences are policy, not deck order.
                 res = _play_paired_eval_games(agent, anchor, decklists[deck], args.games, HORIZON,
                                               args.seed, "anchor_wins",
                                               greedy=(mode == "greedy"))

@@ -16,8 +16,7 @@ from game.turn import run_multiplayer_game
 
 
 def test_event_log_none_is_noop():
-    # event_log=None (the default) is a true no-op -- log_event never
-    # builds a dict, self.event_log stays None.
+    # event_log=None (the default) is a true no-op.
     off_state = GameState(on_the_play=True)
     assert off_state.event_log is None
     off_state.log_event("whatever", foo="bar")
@@ -25,8 +24,7 @@ def test_event_log_none_is_noop():
 
 
 def test_log_event_envelope():
-    # Direct log_event call: every event carries the same envelope
-    # (turn/phase/active_idx/turn_player_idx) automatically, on top of
+    # Every event carries the same envelope automatically, on top of
     # whatever fields the call site passed.
     log = []
     on_state = GameState(on_the_play=True, event_log=log)
@@ -34,28 +32,23 @@ def test_log_event_envelope():
     on_state.log_event("tap", permanent=("Mountain", 1))
     assert len(log) == 1
     event = log[0]
-    # _safe() normalizes tuples -> lists (JSON has no tuple type), so the
-    # (name, slot) comes back as a list, not the tuple that was passed in.
+    # _safe() normalizes tuples -> lists, so (name, slot) comes back as a list.
     assert event["kind"] == "tap" and event["permanent"] == ["Mountain", 1]
     assert event["turn"] == 3 and event["active_idx"] == 0 and event["turn_player_idx"] == 0
 
 
 def test_real_game_event_log():
-    # End to end through a REAL 2-player game (run_multiplayer_game -> every
-    # instrumented mutation site across mana.py/turn.py/resolution/*.py/
-    # game/effects/*.py) -- player 0 taps a Mountain, casts Lightning Bolt at
-    # player 1, and lets it resolve; player 1 only ever passes. Confirms that
-    # state changes happening as an automatic side effect of "Pass" (the
-    # stack push/resolve, the phase-boundary mana-pool clear) are still
-    # captured -- not just changes triggered by an explicit model decision.
+    # End to end through a REAL 2-player game: player 0 taps a Mountain,
+    # casts Lightning Bolt at player 1, and lets it resolve; player 1 only
+    # ever passes. Confirms that state changes happening as an automatic
+    # side effect of "Pass" (stack push/resolve, mana-pool clear) are still
+    # captured, not just changes from an explicit model decision.
     bolt_def = registry.CARD_DEFS["Lightning Bolt"]
 
-    # Lightning Bolt's production "cast" resolve is a precast "any target"
-    # choice (game.catalog.red_cards) that would open a choose_any_target
-    # pending this toy logging policy doesn't model -- same reason turn.py's
-    # own real-game self-check uses a local direct-to-opponent resolve. This
-    # test is about the event_log plumbing, not targeting, so decouple it the
-    # same way.
+    # Lightning Bolt's production "cast" resolve opens a choose_any_target
+    # pending this toy policy doesn't model, so use a local
+    # direct-to-opponent resolve to keep this test about the event_log
+    # plumbing, not targeting.
     def bolt_resolve(s, cd):
         if cd in s.hand:
             s.hand.remove(cd)
@@ -71,9 +64,8 @@ def test_real_game_event_log():
         if state.active_idx != 0:
             return None  # player 1 never acts otherwise
         if state.pending_resolution is not None:  # paying the Bolt's {R}
-            # Cast-then-pay (601.2f/g): the spell is announced first, so THIS is
-            # the window where mana gets produced -- tap a source when the pool
-            # can't cover the remainder yet, then spend what's floating.
+            # Cast-then-pay: tap a source when the pool can't cover the
+            # remainder yet, then spend what's floating.
             options = mana.pool_spend_options(state)
             if options:
                 return lambda: mana.execute_pool_spend(state, options[0])
@@ -81,15 +73,11 @@ def test_real_game_event_log():
             return (lambda: mana.activate_mana_source(state, mtn)) if mtn is not None else None
         if state.lands_played_this_turn == 0 and any(c.name == "Mountain" for c in state.hand):
             return lambda: play_land_from_hand(state, registry.CARD_DEFS["Mountain"])
-        # hand_count - stacked_count, same accounting drl_env._hand_count_available
-        # and turn.py's own self-check use: a copy already paid-for-but-
-        # unresolved on the stack is still physically in hand (push_to_stack
-        # only removes it once it actually resolves) but isn't really available.
+        # hand_count - stacked_count: a copy already paid-for but unresolved
+        # on the stack is still physically in hand until it resolves.
         hand_count = sum(1 for c in state.hand if c.name == "Lightning Bolt")
         stacked_count = sum(1 for e in state.stack if e["card_def"].name == "Lightning Bolt")
         if hand_count > stacked_count:
-            # plan_payment now counts untapped sources as well as the pool, so
-            # no pre-float step is needed -- announce, then pay above.
             if mana.plan_payment(state, bolt_def.cast_cost) is not None:
                 def _cast_bolt():
                     mana.begin_pay_cost(state, bolt_def.cast_cost, on_complete=lambda s: push_to_stack(s, bolt_def, bolt_resolve))
@@ -109,17 +97,14 @@ def test_real_game_event_log():
     assert "mana_tap" in kinds and "mana_spend" in kinds
     assert "pass" in kinds  # Pass itself is a real, loggable event, not silently skipped
     assert "life_change" in kinds  # the Bolt's own damage to the opponent's life_total
-    # Every draw -- both opening hands AND every in-game draw -- is recorded as
-    # one library->hand zone_move (reason="draw") naming the cards, via the
-    # single generic hook; each opening 7 IS a draw event at turn 0.
+    # Every draw, opening hands included, is recorded as one library->hand
+    # zone_move (reason="draw") naming the cards.
     draw_moves = [e for e in events if e.get("reason") == "draw"]
     assert draw_moves, "expected draws to be logged"
     assert all(e["from_zone"] == "library" and e["to_zone"] == "hand" and e["cards"] for e in draw_moves)
     assert any(e["turn"] == 0 and len(e["cards"]) == 7 for e in draw_moves)  # an opening hand
     assert any(e["turn"] > 0 for e in draw_moves)  # at least one in-game draw (a turn's draw_step)
-    # Every event's envelope is well-formed regardless of kind.
     for e in events:
         assert set(e) >= {"kind", "turn", "phase", "active_idx", "turn_player_idx"}
-    # Order is causally sensible: a Mountain tap (mana_tap) happens before the
-    # spend (mana_spend) that actually pays for the Bolt.
+    # Order is causally sensible: the tap happens before the spend that pays for the Bolt.
     assert kinds.index("mana_tap") < kinds.index("mana_spend")

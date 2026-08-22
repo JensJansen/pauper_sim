@@ -17,32 +17,26 @@ def test_push_and_resolve_basic():
 
 
 def test_reserved_hand_card_lifecycle():
-    # Reserved-hand-card lifecycle: a normally-cast spell must LEAVE hand at
-    # cast -- else it stays castable off the stack while a second, distinct
-    # copy's own resolve would find it already gone. Cast it, confirm it left
-    # hand AT CAST, then resolve: resolve_top_of_stack transiently restores it
-    # so the unchanged resolve moves it to graveyard.
+    # a cast spell must leave hand at cast, stay out of hand during its own
+    # resolution, then end up in graveyard as a fresh instance (move_card)
     state_r = GameState(on_the_play=True)
     spell = CardDef("Reserved Spell", CardType.INSTANT, {}, EffectId.FILLER)
     state_r.hand.append(spell)
     seen = {}
 
     def _spell_resolve(s, c):
-        seen["in_hand_during_resolve"] = c in s.hand  # MUST be False -- never back in hand
-        s.move_card(c, s.graveyard)  # off hand since cast: stack -> graveyard (fresh instance)
+        seen["in_hand_during_resolve"] = c in s.hand
+        s.move_card(c, s.graveyard)
 
     push_to_stack(state_r, spell, _spell_resolve)
     assert spell not in state_r.hand, "a cast spell must leave hand AT CAST (else it stays re-castable off the stack)"
     assert len(state_r.stack) == 1 and state_r.stack[0]["card_def"] is spell
     resolve_top_of_stack(state_r)
     assert seen["in_hand_during_resolve"] is False, "a resolving spell must NEVER be in hand during its own resolution"
-    # ends in graveyard as a FRESH instance (move_card), not the hand CardDef itself.
     assert spell not in state_r.hand and [g.name for g in state_r.graveyard] == ["Reserved Spell"], "a resolved spell ends in graveyard, not hand"
 
 
 def test_countered_reserved_hand_card_goes_to_graveyard_once():
-    # A countered reserved-hand-card spell (already off hand at cast) still goes
-    # to its controller's graveyard exactly once, never stranded in hand.
     state_c = GameState(on_the_play=True)
     spell_c = CardDef("Countered Spell", CardType.INSTANT, {}, EffectId.FILLER)
     state_c.hand.append(spell_c)
@@ -53,8 +47,8 @@ def test_countered_reserved_hand_card_goes_to_graveyard_once():
 
 
 def test_controller_restored_at_resolution():
-    # controller restoration: pushed while active_idx=1, resolved while
-    # active_idx has since moved to 0 -- resolve must still see active_idx=1.
+    # pushed while active_idx=1; resolve must still see active_idx=1 even
+    # though active_idx has since moved to 0
     state2 = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
     state2.active_idx = 1
     seen_active_idx = []
@@ -66,11 +60,9 @@ def test_controller_restored_at_resolution():
 
 
 def test_on_cast_trigger_queues_and_fires_only_on_resolution():
-    # on_cast_trigger: only QUEUES a trigger (faithful timing -- the ability
-    # goes on the stack at the next priority point, not inline), for
-    # INSTANT/SORCERY casts, only for permanents whose registry entry
-    # actually has an "on_cast" hook. The effect fires only once that queued
-    # trigger is promoted to the stack and resolved.
+    # on_cast_trigger only queues a trigger for INSTANT/SORCERY casts, for
+    # permanents whose registry entry has an "on_cast" hook; the effect
+    # fires only once that trigger is promoted to the stack and resolved.
     from game.effects.triggers import promote_triggers_to_stack
 
     calls = []
@@ -92,13 +84,9 @@ def test_on_cast_trigger_queues_and_fires_only_on_resolution():
 
 
 def test_ability_on_stack_never_logged_as_a_card_zone_move():
-    # An activated/triggered ability going on -- or resolving off -- the stack
-    # moves no card, so it must emit NO card zone_move: emitting one would make
-    # the replay converter mint a phantom library copy per activation
-    # (Makeshift Munitions, Krark-Clan Shaman, ...), inflating the shown deck
-    # size; and marking such an ability is_spell=True would also make it a
-    # wrongly-legal Counterspell target. A real spell still logs hand->stack
-    # then a stack resolution.
+    # an ability going on/off the stack moves no card, so it must emit no
+    # zone_move event and must be marked is_spell=False; a real spell still
+    # logs hand->stack then its stack resolution.
     log = []
     logged = GameState(on_the_play=True, event_log=log)
     enchantment = CardDef("An Enchantment", CardType.ENCHANTMENT, {}, EffectId.FILLER)

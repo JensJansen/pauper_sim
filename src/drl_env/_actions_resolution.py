@@ -1,14 +1,12 @@
 """Generic pending-resolution dispatch: Pass, the shared by-name "Choose: X"
-dispatch (search_fetch/discard/scry/ponder/...), exact-(name, slot) permanent
-targeting (own and cross-player), pool-mana spending, and every small
-"universal decision row" (pay_unless, tuck_position, may_transform/copy/cast,
-choose_room, target player/any-target, madness, discard-or-sacrifice, and
-each kind's own optional Decline) -- none of these are cast/combat/mana
-specific, each just answers one pending_resolution kind. legal(state)/
-execute(state) factory pairs (or bare module-level legal/execute functions,
-for the state-argument-only ones) build_action_table (drl_env._actions_table)
-wires into every deck's table, most of them unconditionally (see
-build_action_table's own "UNIVERSAL DECISION ROWS" comment for why)."""
+dispatch (search_fetch/discard/scry/ponder/...), exact-(name, slot)
+permanent targeting (own and cross-player), pool-mana spending, and every
+small universal decision row (pay_unless, tuck_position, may_transform/
+copy/cast, choose_room, target player/any-target, madness, discard-or-
+sacrifice, and each kind's optional Decline). Each just answers one
+pending_resolution kind; none is cast/combat/mana specific. legal(state)/
+execute(state) factory pairs (or bare functions) build_action_table wires
+into every deck's table, most unconditionally."""
 
 import game
 
@@ -18,11 +16,8 @@ from ._actions_common import _GATE_NO_PENDING
 def _pass_legal(state):
     if state.pending_resolution is not None:
         return False
-    # Goad (Undercity Arena): a goaded creature that CAN attack must be
-    # declared -- its controller may not end their own declare-attackers step
-    # (Pass) while one is still able and undeclared. game.has_unfulfilled_goad
-    # only ever returns True during DECLARE_ATTACKERS for the turn player, so
-    # this is a no-op everywhere else.
+    # Goad: a goaded creature that can attack must be declared before Pass ends
+    # declare-attackers.
     if state.phase is game.turn.Phase.DECLARE_ATTACKERS and game.has_unfulfilled_goad(state):
         return False
     return True
@@ -32,7 +27,7 @@ _pass_legal._pending_gate = _GATE_NO_PENDING
 
 
 def _pass_execute(state):
-    pass  # no-op: a Pass is signalled by choose_action returning None (the game loop then advances), never by invoking this execute fn
+    pass  # no-op: Pass is signalled by choose_action returning None, never by calling this
 
 
 def _tuck_position_legal(state):
@@ -44,30 +39,17 @@ _tuck_position_legal._pending_gate = frozenset({"tuck_position"})
 
 
 # The complete set of pending kinds _choose_name_options ever dispatches --
-# the SOLE authoritative list (both _choose_name_legal's gate and
-# legal_action_mask's own coverage guard below read this SAME constant, so
-# there is exactly one place that can ever drift out of sync with the
-# dispatch table above/below it).
+# the sole authoritative list (_choose_name_legal's gate and
+# legal_action_mask's coverage guard both read this same constant).
 #
-# STRUCTURAL INVARIANT, not a convention to remember: every kind in this set
-# MUST have its candidate names confined to the DECIDING PLAYER'S OWN cards
-# (their hand/library/battlefield/graveyard/trigger_queue -- all already
-# active-player-proxied). A "Choose: X" row only ever exists for a name in
-# the ASKING player's own deck (build_action_table's choosable_names, built
-# once per deck) -- so a kind whose candidates could ever include another
-# player's card CANNOT be represented here, no matter how many rows exist.
-# choose_graveyard_card and choose_stack_target both learned this the hard
-# way (Relic of Progenitus/Mesmeric Fiend reach the opponent's graveyard/
-# hand; a spell to counter is very often the opponent's) and were migrated
-# to POINTER addressing instead (rl.decision.action_bridge) -- pointer scoring reads
-# live token identity, never a per-deck name table, so it needs no such
-# guarantee. A future kind belongs in this set ONLY if it can never read
-# anything but the acting player's own zones; otherwise it must be a pointer
-# target. This is not merely documented: legal_action_mask's own coverage
-# check below FAILS LOUDLY, the first time any game ever exercises it, if a
-# kind in this set ever produces a candidate this constant's own promise
-# doesn't cover -- so a future violation cannot ship unnoticed the way this
-# one did.
+# INVARIANT: every kind in this set must have its candidate names confined
+# to the deciding player's own cards (hand/library/battlefield/graveyard/
+# trigger_queue). A "Choose: X" row only ever exists for a name in the
+# asking player's own deck, so a kind whose candidates could include
+# another player's card must use pointer addressing instead
+# (rl.decision.action_bridge), not this by-name dispatch. legal_action_mask's
+# coverage check fails loudly if a kind in this set ever produces a
+# candidate outside that promise.
 _CHOOSE_NAME_PENDING_KINDS = frozenset({
     "search_fetch", "throne_reveal", "discard",
     "discard_or_sacrifice", "ancient_stirrings", "malevolent_rumble", "scry", "surveil",
@@ -76,49 +58,32 @@ _CHOOSE_NAME_PENDING_KINDS = frozenset({
 
 
 def _choose_name_options(state):
-    """Plain (uncolored) 'Choose: X' names currently legal, given whatever
-    kind of pending resolution -- if any -- is active. "choose_permanent"
-    is NOT handled here -- see _choose_permanent_legal/_choose_permanent_
-    execute below: it needs exact (name, slot) addressing (docs/
-    "Permanent identity"), same as
-    "choose_opponent_permanent" already gets, not this generic by-name
-    dispatch.
+    """Plain (uncolored) 'Choose: X' names currently legal for whatever
+    pending resolution is active. "choose_permanent" is not handled here
+    (see _choose_permanent_legal/_choose_permanent_execute below): it needs
+    exact (name, slot) addressing, not this by-name dispatch.
 
-    Every kind handled here must be in _CHOOSE_NAME_PENDING_KINDS -- see
-    that constant's own docstring for the invariant it (and this function)
-    are required to uphold."""
+    Every kind handled here must be in _CHOOSE_NAME_PENDING_KINDS."""
     pending = state.pending_resolution
     if pending is None:
         return []
     kind = pending["kind"]
-    # "pay_cost" is absent from this by-name dispatch on purpose. A payment's
-    # own choices are not NAMED options: producing mana is the ordinary "Tap X"
-    # mana-ability rows (601.2f -- legal during a payment, which is how mana is
-    # produced under cast-then-pay), and spending it is the "Spend <color> from
-    # pool" rows. Neither routes through a by-name option list.
+    # "pay_cost" is absent on purpose: producing mana is the "Tap X" mana-ability
+    # rows, spending it is "Spend <color> from pool" -- neither is a named option.
     if kind == "search_fetch":
         return game.search_fetch_options(state)
-    if kind == "throne_reveal":  # Undercity Throne: pick a creature card from the revealed top 10
+    if kind == "throne_reveal":  # Undercity Throne: pick a creature from the revealed top 10
         return game.throne_reveal_options(state)
-    # choose_graveyard_card, choose_stack_target, and choose_permanent
-    # (which now also covers every generic sacrifice) are deliberately
-    # absent: all are POINTER targets (rl.decision.action_bridge), not by-name fixed
-    # actions -- the chosen card/stack-entry/permanent is picked by pointing
-    # at its token, so an opponent's cards are reachable (and a battlefield
-    # permanent is addressed exactly, not by a fungible name) without a
-    # whole-league "Choose: X" fixed row per card name.
+    # choose_graveyard_card, choose_stack_target, and choose_permanent are
+    # deliberately absent: all are pointer targets (rl.decision.action_bridge),
+    # since their candidates can include an opponent's cards or need exact
+    # permanent addressing.
     if kind == "discard":
         return game.discard_options(state)
     if kind == "discard_or_sacrifice":
-        # Only the DISCARD half reuses this generic "Choose: X" dispatch
-        # (bare hand-card names, same as plain "discard") -- the sacrifice
-        # half is a single trigger action that opens its own nested
-        # choose_permanent pointer choice instead (see
-        # _discard_or_sacrifice_trigger_sacrifice_legal's own docstring),
-        # precisely to avoid ambiguity if a hand card and a battlefield land
-        # ever share a name (e.g. a Mountain in hand while Mountains are
-        # also in play) -- two different action shapes, never one bare name
-        # that could mean either.
+        # Only the discard half reuses this dispatch; the sacrifice half opens
+        # its own nested choose_permanent pointer choice instead, to avoid
+        # ambiguity when a hand card and a battlefield permanent share a name.
         return game.discard_or_sacrifice_discard_options(state)
     if kind == "ancient_stirrings":
         return [n for n in game.ancient_stirrings_options(state) if n != "decline"]
@@ -174,14 +139,11 @@ def _choose_name_execute(name):
 
 def _choose_permanent_legal(name, slot):
     """The "choose_permanent" resolution's action-table half (Aura
-    enchant-targets, Crop Rotation's sacrifice cost, land bounce) -- legal
-    only while that kind is pending and (name, slot) is one of its own
-    current options. Exact (name, slot) addressing, same reason
-    _choose_opponent_permanent_legal below needs it (docs/
-    "Permanent identity") -- a plain by-name "Choose:
-    X" can't tell two same-named permanents apart, and cast_aura's whole
-    fizzle-on-invalid-target contract depends on knowing exactly which one
-    was chosen."""
+    enchant-targets, Crop Rotation's sacrifice cost, land bounce). Legal
+    only while that kind is pending and (name, slot) is a current option.
+    Exact (name, slot) addressing: a plain by-name "Choose: X" can't tell
+    two same-named permanents apart, and cast_aura's fizzle-on-invalid-
+    target contract depends on knowing exactly which one was chosen."""
     def legal(state):
         pending = state.pending_resolution
         return (
@@ -199,13 +161,9 @@ def _choose_permanent_execute(name, slot):
 
 
 def _choose_opponent_permanent_legal(name, slot):
-    """The general cross-player targeting primitive's action-table half
-    -- legal only while a "choose_opponent_permanent"
-    resolution is pending and (name, slot) is one of its own current
-    options. Only ever correct when the referencing side is already the
-    active perspective (game.begin_choose_opponent_permanent's own
-    docstring) -- blocking's own defender-decision channel is what
-    guarantees that, not this function."""
+    """Cross-player targeting primitive's action-table half. Legal only
+    while a "choose_opponent_permanent" resolution is pending and
+    (name, slot) is a current option."""
     def legal(state):
         pending = state.pending_resolution
         return (
@@ -255,11 +213,8 @@ def _dispose_execute(state):
     game.execute_scry_surveil_option(state, "dispose")
 
 
-# NOTE: nothing in this action table references pregame mulligan decisions --
-# the MulliganNet (rl.model.mulligan) owns the pregame phase instead (see the
-# pregame-mulligan note further down, near the universal decision rows). The
-# engine's own mulligan (game.execute_mulligan_keep/take, game.turn.
-# run_mulligan_phase) is unaffected.
+# Pregame mulligan decisions are not in this action table -- MulliganNet
+# (rl.model.mulligan) owns the pregame phase instead.
 
 
 def _decline_legal(state):
@@ -287,9 +242,8 @@ def _decline_malevolent_rumble_execute(state):
 
 
 def _ponder_shuffle_legal(state):
-    """Ponder's "you may shuffle" -- an alternative to ordering the revealed
-    cards, so legal only BEFORE any card has been placed on top (ordered
-    still empty). Once ordering has begun, that choice is made."""
+    """Ponder's "you may shuffle" -- legal only before any card has been
+    placed on top (ordered still empty)."""
     pending = state.pending_resolution
     return pending is not None and pending["kind"] == "ponder" and not pending["ordered"]
 
@@ -303,9 +257,8 @@ def _ponder_shuffle_execute(state):
 
 def _pay_unless_pay_legal(state):
     """"Pay {N}" for the Spell Pierce / Ward rider -- legal only while a
-    pay_unless resolution is open AND the payer can actually afford the {N}
-    (active_idx is already flipped to the payer, so plan_payment reads THEIR
-    sources)."""
+    pay_unless resolution is open and the payer can afford the {N}
+    (active_idx is already flipped to the payer)."""
     pending = state.pending_resolution
     if pending is None or pending["kind"] != "pay_unless":
         return False
@@ -410,10 +363,9 @@ def _decline_search_execute(state):
 
 
 def _decline_graveyard_card_legal(state):
-    """Only for an OPTIONAL choose_graveyard_card (Masked Vandal's "you may
-    exile a creature card from your graveyard") with real options to decline
-    -- gated on pending["optional"] so it never appears for Dread Return /
-    Relic's own MANDATORY graveyard picks, which share the same kind."""
+    """Only for an optional choose_graveyard_card (e.g. Masked Vandal) with
+    real options to decline -- gated on pending["optional"] so it never
+    appears for a mandatory graveyard pick sharing the same kind."""
     pending = state.pending_resolution
     return (
         pending is not None and pending["kind"] == "choose_graveyard_card" and pending.get("optional")
@@ -456,11 +408,7 @@ def _target_self_execute(state):
 
 
 def _target_opponent_legal(state):
-    """Legal only once a real second PlayerState exists -- "target
-    player" genuinely offers a choice the instant one does (Relic of
-    Progenitus' own repeatable exile ability), same "only legal with a
-    real opponent" gate deal_damage_to_opponent's own 2-player branch
-    already uses elsewhere."""
+    """Legal only once a real second PlayerState exists."""
     pending = state.pending_resolution
     return pending is not None and pending["kind"] == "choose_target_player" and len(state.players) > 1
 
@@ -473,12 +421,11 @@ def _target_opponent_execute(state):
 
 
 def _target_any_self_legal(state):
-    """The "any target" player half (real Magic: a player is always a legal
-    "any target", including yourself -- Lightning Bolt to your own face is
-    legal, if rarely wise). Only offered when the pending choose_any_target
-    allows players (a "target creature"-only choice sets allow_players=False
-    and this stays masked). The creature half of the same choice rides the
-    identity pointer scheme (rl.decision.action_bridge), not a fixed action."""
+    """The "any target" player half (a player is always a legal any
+    target, including yourself). Only offered when the pending
+    choose_any_target allows players. The creature half of the same choice
+    rides the identity pointer scheme (rl.decision.action_bridge), not a
+    fixed action."""
     pending = state.pending_resolution
     return pending is not None and pending["kind"] == "choose_any_target" and pending["allow_players"]
 
@@ -506,9 +453,8 @@ def _target_any_opponent_execute(state):
 
 
 def _target_any_decline_legal(state):
-    """Decline an "up to one target" (optional) choose_any_target -- e.g.
-    Pinnacle Kill-Ship's ETB choosing zero targets. Only legal when the
-    pending was begun optional=True."""
+    """Decline an optional "up to one target" choose_any_target. Only
+    legal when the pending was begun optional=True."""
     pending = state.pending_resolution
     return pending is not None and pending["kind"] == "choose_any_target" and pending.get("optional", False)
 
@@ -521,17 +467,11 @@ def _target_any_decline_execute(state):
 
 
 def _discard_or_sacrifice_trigger_sacrifice_legal(state):
-    """The SACRIFICE half of Highway Robbery's own "discard a card or
-    sacrifice a land" -- ONE trigger action (not one per land name):
-    picking it opens a nested choose_permanent sub-decision for WHICH exact
-    land pays the cost (game.execute_discard_or_sacrifice_trigger_
-    sacrifice), giving the model the same real per-instance choice
-    begin_sacrifice's own predicate-driven picks get (see that function's
-    own docstring for why first-same-name-match isn't good enough --
-    battlefield permanents aren't fungible the way hand/library cards are),
-    instead of a name per eligible land the way the DISCARD half's "Choose:
-    X" rows work. Legal only while discard_or_sacrifice is pending and at
-    least one eligible permanent exists."""
+    """The sacrifice half of "discard a card or sacrifice a land" -- one
+    trigger action (not one per land name); picking it opens a nested
+    choose_permanent sub-decision for which exact land pays the cost.
+    Legal only while discard_or_sacrifice is pending and at least one
+    eligible permanent exists."""
     pending = state.pending_resolution
     return (
         pending is not None and pending["kind"] == "discard_or_sacrifice"
@@ -559,9 +499,8 @@ def _decline_discard_or_sacrifice_execute(state):
 
 
 def _madness_cast_legal(state):
-    """Legal only if the model can actually afford the exiled card's
-    madness cost right now -- same "guaranteed payable, not a maybe"
-    contract every other alternate cast path here already follows."""
+    """Legal only if the model can afford the exiled card's madness cost
+    right now."""
     pending = state.pending_resolution
     if pending is None or pending["kind"] != "madness_decision":
         return False

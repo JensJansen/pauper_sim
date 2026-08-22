@@ -1,8 +1,5 @@
-"""Scenarios that exercise multiple game.effects submodules together and don't
-belong to any single one of them. Every other submodule's own single-module
-scenarios live in its own test_*.py file instead; this file is only for the
-handful that genuinely need two or more modules cooperating to mean
-anything."""
+"""Scenarios that need two or more game.effects submodules cooperating
+together; single-module scenarios live in each submodule's own test_*.py."""
 from game import mana, registry, resolution
 from game.cards import CardDef, CardType, EffectId
 from game.effects import combat, madness_and_plot, stack, state_based, triggers
@@ -10,14 +7,9 @@ from game.state import GameState, Permanent, PlayerState
 
 
 def test_madness_chain_triggers_stack_madness_and_plot_mana_resolution():
-    # Madness chain end to end: triggers.py + stack.py + madness_and_plot.py
-    # + mana.py + resolution, all in one pass (discard -> exile + queue ->
-    # drain -> decision -> pay madness cost -> resolve -> drain again). No real
-    # madness card exists yet (deck assembly out of scope), so this borrows
-    # EffectId.FILLER for the fake spell, saving/restoring its real (empty)
-    # registry entry around the check; the mana source is a genuine Forest
-    # CardDef (EffectId.FOREST already has a real "mana" spec, no faking
-    # needed for that half).
+    # full madness chain: discard -> exile + queue -> drain -> decision ->
+    # pay madness cost -> resolve -> drain again, across triggers.py,
+    # stack.py, madness_and_plot.py, mana.py, and resolution.
     resolved_calls = []
 
     def _fake_resolve(s, c):
@@ -38,12 +30,9 @@ def test_madness_chain_triggers_stack_madness_and_plot_mana_resolution():
         assert state.pending_resolution is None  # discard's own resolution is done; nothing queued mid-discard
         assert len(state.trigger_queue) == 1 and state.trigger_queue[0]["kind"] == "madness"
 
-        # Top-level orchestration point (game.turn's own priority round in
-        # real play, once the enclosing top-level action is fully done):
-        # promote. The trigger itself is now a real stack entry -- an
-        # opponent gets a priority window before the cast-or-decline choice
-        # is even offered -- so resolving it
-        # is what actually opens the decision, not promotion itself.
+        # promote (game.turn's priority round): the trigger becomes a real
+        # stack entry, giving the opponent a priority window before the
+        # cast-or-decline choice is offered; resolving it opens the decision.
         triggers.promote_triggers_to_stack(state)
         assert state.pending_resolution is None  # just sitting on the stack, not open yet
         assert len(state.stack) == 1 and state.stack[0]["card_def"] is madness_card
@@ -52,21 +41,15 @@ def test_madness_chain_triggers_stack_madness_and_plot_mana_resolution():
         assert resolution.madness_decision_options(state) == ["cast", "decline"]
 
         madness_and_plot.execute_madness_cast(state)
-        # begin_pay_cost's own resolution is now pending (paying {G}) --
-        # confirms this correctly nests through it via the captured
-        # outer_on_complete, instead of crashing on a stale pending_resolution
-        # reference once pay_cost's own resolution clears it.
+        # begin_pay_cost's resolution (paying {G}) nests through the
+        # captured outer_on_complete correctly
         assert state.pending_resolution["kind"] == "pay_cost"
-        # Pre-float (optional under cast-then-pay): float {G} from the Forest (a mana ability resolves at once,
-        # even when paying a cost -- rule 605.3a), then spend it explicitly.
+        # float {G} from the Forest (605.3a: a mana ability resolves at once), then spend it
         mana.activate_mana_source(state, state.battlefield[0])
         mana.execute_pool_spend(state, "G")
 
-        # Payment complete -> pushed to the stack (not resolved yet, a real
-        # independent stack entry) -> the enclosing madness_decision's own
-        # on_complete fires (a no-op today) -> fully back to no pending
-        # resolution. The effect itself only fires once something actually
-        # resolves the stack (a "Pass" in real play).
+        # payment complete -> pushed to the stack, not resolved yet -> back
+        # to no pending resolution; the effect fires only once the stack resolves
         assert resolved_calls == []
         assert len(state.stack) == 1 and state.stack[0]["card_def"] is madness_card
         assert state.pending_resolution is None
@@ -80,19 +63,12 @@ def test_madness_chain_triggers_stack_madness_and_plot_mana_resolution():
 
 
 def test_combat_and_state_based_mutual_damage_creature_death_handoff():
-    # Blocking's own mutual combat damage + creature death: combat.py's own
-    # combat_damage_step handing off to state_based.py's
-    # check_state_based_actions -- a blocked attacker deals no damage to the
-    # opponent (absorbed), but IT and its blocker now fight each other for
-    # real, and check_state_based_actions kills whichever side(s) that's
-    # lethal for. Needs a genuine 2-player GameState: a dying BLOCKER's own
-    # zones belong to the DEFENDER, not whichever side state.active_idx (the
-    # attacker, throughout combat_damage_step) currently proxies to --
-    # exactly the bug state_based._destroy_creature's own docstring
-    # explains. Two blocked pairs in ONE combat: pair A's attacker dies, its
-    # blocker survives; pair B's blocker dies, its attacker survives --
-    # proving the death check applies independently per creature, not
-    # "whoever's weaker overall."
+    # combat_damage_step hands off to check_state_based_actions: a blocked
+    # attacker deals no damage to the opponent, but it and its blocker fight
+    # each other, and a dying blocker's zones must resolve to the DEFENDER's
+    # side, not state.active_idx (the attacker throughout combat_damage_step).
+    # Two blocked pairs: pair A's attacker dies, blocker survives; pair B's
+    # blocker dies, attacker survives -- death is checked per creature.
     _card_defs_backup = dict(registry.CARD_DEFS)
     try:
         state = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
@@ -117,26 +93,23 @@ def test_combat_and_state_based_mutual_damage_creature_death_handoff():
         state.blocked_by[attacker_b] = [blocker_b]
         combat.combat_damage_step(state)
 
-        assert state.players[1].life_total == 18  # 20 - only the unblocked attacker's power (2); A/B's is absorbed
+        assert state.players[1].life_total == 18  # only the unblocked attacker's power (2) gets through
         assert state.attackers == []
-        # Pair A: attacker_a (toughness 3) took blocker_a's 5 power -> dead.
-        # blocker_a (toughness 2) took attacker_a's 1 power -> survives.
+        # pair A: attacker_a (toughness 3) takes 5 -> dies; blocker_a (toughness 2) takes 1 -> survives
         assert attacker_a not in state.players[0].battlefield and blocker_a in state.players[1].battlefield
-        assert [c.name for c in state.players[0].graveyard] == ["Attacker A"]  # landed in ITS OWN owner's graveyard, not the active player's by coincidence
+        assert [c.name for c in state.players[0].graveyard] == ["Attacker A"]  # its own owner's graveyard
         assert blocker_a.damage_marked == 1 and not blocker_a.tapped
-        # Pair B: attacker_b (toughness 3) took blocker_b's 1 power -> survives.
-        # blocker_b (toughness 2) took attacker_b's 5 power -> dead, and its
-        # zones are the DEFENDER's, proving _destroy_creature found the right
-        # owner rather than assuming state.active_idx (still the attacker here).
+        # pair B: attacker_b (toughness 3) takes 1 -> survives; blocker_b (toughness 2) takes 5 -> dies,
+        # in the DEFENDER's zones, not state.active_idx (still the attacker here)
         assert attacker_b in state.players[0].battlefield and blocker_b not in state.players[1].battlefield
         assert [c.name for c in state.players[1].graveyard] == ["Blocker B"]
         assert attacker_b.damage_marked == 1 and attacker_b.tapped
 
-        # A fresh combat resets blocked_by too, not just attackers.
+        # a fresh combat resets blocked_by too, not just attackers
         combat.declare_attackers_step(state)
         assert state.blocked_by == {}
 
-        # cleanup_step clears damage_marked for EVERY permanent, BOTH players.
+        # cleanup_step clears damage_marked for every permanent, both players
         assert blocker_a.damage_marked == 1
         state_based.cleanup_step(state)
         assert state.pending_resolution is None

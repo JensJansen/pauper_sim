@@ -1,8 +1,7 @@
 """Tests for drl_env's action table (drl_env._actions_table and its sibling
 category modules): build_action_table, legal_action_mask, and the Plot/
-on-cast-trigger/token/targeting/combat mechanics they wire together, end to
-end through the REAL production functions -- never a parallel
-reimplementation."""
+on-cast-trigger/token/targeting/combat mechanics they wire together, end
+to end through the real production functions."""
 
 from pathlib import Path
 
@@ -34,20 +33,15 @@ def _boggles_decklist():
 
 
 def test_plot_and_on_cast_trigger():
-    # Exercises Plot and the on-cast trigger hook (item 11) through the REAL
-    # _plot_legal/_plot_execute/_cast_from_exile_legal/_cast_from_exile_execute
-    # functions -- not a parallel reimplementation. No real Plot/Guttersnipe
-    # card exists yet (deck assembly out of scope), so this temporarily
-    # injects into the global game.CARD_DEFS/game.EFFECT_REGISTRY, saving/
-    # restoring both.
+    # Exercises Plot and the on-cast trigger hook through the real _plot_legal/
+    # _plot_execute/_cast_from_exile_legal/_cast_from_exile_execute functions.
+    # No real Plot/Guttersnipe card exists yet, so this temporarily injects
+    # into the global game.CARD_DEFS/game.EFFECT_REGISTRY, saving/restoring both.
     _card_defs_backup = dict(game.CARD_DEFS)
     _filler_backup = game.EFFECT_REGISTRY[EffectId.FILLER]
     _generous_ent_backup = game.EFFECT_REGISTRY[EffectId.GENEROUS_ENT]
 
-    PLOT_COST = {"generic": 1, "B": 1}  # {B}, not {R} -- EffectId.SWAMP is a real, already-correctly-wired
-    # mana source (registry.py's per-effect_id EFFECT_REGISTRY entries are consulted directly by
-    # mana_ability_options/activate_mana_source; injecting a fake "mana" spec onto FILLER wouldn't
-    # be picked up as a real source's real color, so reusing a real fixed-color land sidesteps that).
+    PLOT_COST = {"generic": 1, "B": 1}  # {B}, not {R}: EffectId.SWAMP is a real, correctly-wired mana source
 
     on_cast_calls = []
     plot_spell = CardDef("Fake Plot Spell", CardType.SORCERY, PLOT_COST, EffectId.FILLER)
@@ -63,7 +57,7 @@ def test_plot_and_on_cast_trigger():
     }
     try:
         state = GameState(on_the_play=True)
-        state.phase = game.turn.Phase.MAIN1  # Plot Speed defaults to SORCERY (a CardType.SORCERY card, no override) -- needs a sorcery-speed phase to be legal at all now
+        state.phase = game.turn.Phase.MAIN1  # Plot defaults to SORCERY speed, needs a sorcery-speed phase
         state.hand = [plot_spell]
         state.battlefield = [
             Permanent(CardDef("Swamp", CardType.LAND, None, EffectId.SWAMP)),
@@ -71,10 +65,8 @@ def test_plot_and_on_cast_trigger():
             Permanent(CardDef("Guttersnipe-ish", CardType.CREATURE, None, EffectId.GENEROUS_ENT)),
         ]
 
-        # Plot it: pay {1}{B}, exile with this turn's stamp. Float-first: float
-        # {B}{B} from the two Swamps BEFORE plotting (1 generic + 1 B needed --
-        # a mana ability floats immediately and never uses the stack), then pay
-        # by spending from the pool.
+        # Plot it: pay {1}{B}, exile with this turn's stamp. Float {B}{B} from
+        # the two Swamps before plotting, then pay by spending from the pool.
         game.activate_mana_source(state, state.battlefield[0])
         game.activate_mana_source(state, state.battlefield[1])
         assert _plot_legal("Fake Plot Spell", PLOT_COST, game.turn.Speed.SORCERY)(state)
@@ -95,19 +87,17 @@ def test_plot_and_on_cast_trigger():
         assert _cast_from_exile_legal("Fake Plot Spell", None, game.turn.Speed.SORCERY)(state)
         _cast_from_exile_execute("Fake Plot Spell", game.EFFECT_REGISTRY[EffectId.FILLER]["cast"]["resolve"])(state)
         assert state.exile == []
-        # on_cast now QUEUES the trigger (faithful timing) -- it fires only
-        # once game.turn's priority round promotes it onto the stack (above
-        # the spell) and it resolves, not inline at cast.
+        # on_cast queues the trigger; it fires only once game.turn's priority
+        # round promotes it onto the stack and resolves, not inline at cast.
         assert on_cast_calls == []
         assert [e["type"] for e in state.trigger_queue] == ["cast_trigger"]
         game.promote_triggers_to_stack(state)
         game.resolve_top_of_stack(state)
         assert on_cast_calls == ["Guttersnipe-ish"]
 
-        # extra_legal gate on the cast-from-exile path (Highway Robbery's
-        # own need: Plot waives the mana cost, not other costs a normal
-        # cast's extra_legal already checks). Re-plot, then simulate an
-        # extra_legal that's never satisfiable.
+        # extra_legal gate on the cast-from-exile path: Plot waives the mana
+        # cost, not other costs a normal cast's extra_legal already checks.
+        # Re-plot, then simulate an extra_legal that's never satisfiable.
         game.EFFECT_REGISTRY[EffectId.FILLER] = {
             "cast": {"resolve": lambda s, c: None, "extra_legal": lambda s: False},
             "plot": {"cost": PLOT_COST, "resolve": lambda s, c: (s.hand.remove(c), s.exile.append((c, s.turn_number)))},
@@ -134,12 +124,10 @@ def test_plot_and_on_cast_trigger():
 
 
 def test_on_cast_trigger_fires_only_after_cost_paid():
-    # Regression: on_cast_trigger (Guttersnipe) must fire only once a spell's
-    # cost is actually paid -- queued in _cast_execute's _after_pay, never
-    # inline the instant the cast is announced. Pre-float (optional under cast-then-pay): float {B}, announce
-    # the cast (opens pay_cost), confirm the trigger has NOT fired while payment
-    # is still pending, then spend to complete it and confirm it queues, then
-    # fires only on resolve.
+    # on_cast_trigger (Guttersnipe) must fire only once a spell's cost is
+    # actually paid, queued in _cast_execute's _after_pay. Float {B}, announce
+    # the cast, confirm the trigger has not fired while payment is pending,
+    # then spend to complete it and confirm it fires only on resolve.
     _card_defs_backup = dict(game.CARD_DEFS)
     _filler_backup = game.EFFECT_REGISTRY[EffectId.FILLER]
     _generous_ent_backup = game.EFFECT_REGISTRY[EffectId.GENEROUS_ENT]
@@ -163,11 +151,11 @@ def test_on_cast_trigger_fires_only_after_cost_paid():
         cast_legal = _cast_legal("Fake Bolt", None, game.turn.Speed.INSTANT)
         cast_execute = _cast_execute("Fake Bolt", game.EFFECT_REGISTRY[EffectId.FILLER]["cast"]["resolve"])
 
-        game.activate_mana_source(state, swamp)  # float {B} BEFORE casting (a pre-float is optional now, not required)
+        game.activate_mana_source(state, swamp)  # float {B} before casting
         assert cast_legal(state)
         cast_execute(state)
         assert state.pending_resolution["kind"] == "pay_cost"
-        assert on_cast_calls == []  # NOT fired yet -- the cost isn't paid
+        assert on_cast_calls == []  # not fired yet -- the cost isn't paid
         game.execute_pool_spend(state, "B")  # pay {B} from the pool -> cost complete
         # Paid: the spell is on the stack and the on_cast trigger is queued
         # (not fired inline). Promote + resolve to fire it, above the spell.
@@ -186,10 +174,8 @@ def test_on_cast_trigger_fires_only_after_cost_paid():
 
 
 def test_faithless_looting_flashback_requires_mana():
-    """Regression: real Flashback cost is {2}{R} -- FAITHLESS_LOOTING's
-    registry entry used to omit "cost" entirely, so _flashback_legal skipped
-    plan_payment and the action showed legal with 0 floating mana (live
-    game: flashed back for free, no cost ever paid)."""
+    """Flashback cost is {2}{R} and must actually be checked by
+    _flashback_legal/plan_payment, not skipped."""
     decklist = [("Faithless Looting", 1), ("Mountain", 3)]
     actions = build_action_table(decklist, game.EFFECT_REGISTRY)
     _fb_name, fb_legal, fb_execute = next(
@@ -206,7 +192,7 @@ def test_faithless_looting_flashback_requires_mana():
     mountains = [Permanent(game.CARD_DEFS["Mountain"]) for _ in range(3)]
     state.battlefield = mountains
     for m in mountains:
-        game.activate_mana_source(state, m)  # float 3 R BEFORE flashing back (a pre-float is optional now, not required)
+        game.activate_mana_source(state, m)  # float 3 R before flashing back
     assert fb_legal(state)
     fb_execute(state)
     assert state.pending_resolution["kind"] == "pay_cost"
@@ -217,13 +203,11 @@ def test_faithless_looting_flashback_requires_mana():
 
 
 def test_tokens_blood_sacrifice():
-    # Tokens (item 8): build_action_table's token_card_defs param is what
-    # actually makes "Activate Blood (sac)" exist as an action at all --
-    # "Blood" is never a decklist name, so the plain distinct_names-driven
-    # loop alone (used by every other activated ability) can't find it.
+    # build_action_table's token_card_defs param is what makes "Activate
+    # Blood (sac)" exist as an action -- "Blood" is never a decklist name.
     empty_decklist = []
     no_token_actions = build_action_table(empty_decklist, game.EFFECT_REGISTRY)
-    assert not any("Blood" in nm for nm, _l, _e in no_token_actions)  # opt-in: omitted => absent, zero effect on existing decks
+    assert not any("Blood" in nm for nm, _l, _e in no_token_actions)  # opt-in: omitted => absent
 
     token_actions = build_action_table(empty_decklist, game.EFFECT_REGISTRY, token_card_defs=(game.BLOOD_TOKEN_CARD_DEF,))
     activate_name, activate_legal, activate_execute = next(
@@ -237,50 +221,38 @@ def test_tokens_blood_sacrifice():
     state.library = [CardDef("Library Card", CardType.SORCERY, {}, None)]
 
     swamp = next(p for p in state.battlefield if p.card_def.name == "Swamp")
-    game.activate_mana_source(state, swamp)  # pre-float (still valid, just no longer required): float {B} BEFORE activating (Blood's {1})
+    game.activate_mana_source(state, swamp)  # float {B} before activating (Blood's {1})
     assert activate_legal(state)
-    activate_execute(state)  # pays {1} via the real begin_pay_cost path, same as every other cost_key ability
+    activate_execute(state)  # pays {1} via the real begin_pay_cost path
     assert state.pending_resolution["kind"] == "pay_cost"
-    # The floated B pays the {generic:1} (this engine never auto-spends floated
-    # mana toward generic -- mana.py's own design -- so spend it explicitly).
+    # This engine never auto-spends floated mana toward generic; spend explicitly.
     game.execute_pool_spend(state, game.pool_spend_options(state)[0])
 
-    assert state.pending_resolution["kind"] == "discard"  # Blood's discard -- a COST, paid before the effect
+    assert state.pending_resolution["kind"] == "discard"  # Blood's discard -- a cost, paid before the effect
     game.execute_discard_option(state, "Card To Discard")
     assert state.pending_resolution is None
     assert [p.card_def.name for p in state.battlefield] == ["Swamp"]  # Blood is gone, never added to any zone
-    # The DRAW is Blood's effect -- on the stack now (faithful timing), not
-    # fired the instant its costs (sac + discard) were paid. Resolve it.
+    # The draw is Blood's effect -- on the stack now, not fired inline. Resolve it.
     assert len(state.stack) == 1 and state.hand == []
     game.resolve_top_of_stack(state)
     assert [c.name for c in state.hand] == ["Library Card"]  # discarded one, drew one
 
 
 def test_cross_player_targeting():
-    # Cross-player targeting: build_action_table's
-    # opponent_decklist/opponent_token_card_defs params register "Choose
-    # opponent's: X (slot k)" actions from the OTHER side's own card pool
-    # -- blocking's first consumer, but exercised standalone here since
-    # blocking itself isn't built yet. Boggles on both sides -- what's
-    # under test is MY OWN action table's opponent-facing entries, not
-    # anything about my own cards, so a real decklist with real creature
-    # quantities on both sides is all this needs.
+    # build_action_table's opponent_decklist/opponent_token_card_defs params
+    # register "Choose opponent's: X (slot k)" actions from the other side's
+    # own card pool. Boggles on both sides since a real decklist with real
+    # creature quantities on both sides is all this needs.
     boggles_decklist = _boggles_decklist()
 
     no_opponent_actions = build_action_table(boggles_decklist, game.EFFECT_REGISTRY)
-    assert not any(nm.startswith("Choose opponent's:") for nm, _l, _e in no_opponent_actions)  # 1p mode: never registered at all
+    assert not any(nm.startswith("Choose opponent's:") for nm, _l, _e in no_opponent_actions)  # 1p mode: never registered
 
     my_actions = build_action_table(boggles_decklist, game.EFFECT_REGISTRY, opponent_decklist=boggles_decklist)
     bogle_slot_actions = [nm for nm, _l, _e in my_actions if nm.startswith("Choose opponent's: Slippery Bogle")]
     assert bogle_slot_actions == [f"Choose opponent's: Slippery Bogle (slot {k})" for k in range(1, 5)]  # boggles.txt: 4 copies
-    # Registered for every opponent choosable name, not just creatures -- same
-    # "pre-register broadly, mask precisely" pattern as "Choose target: X"
-    # (own side) above. A creature-only filter here used to omit non-creature
-    # names (e.g. this Forest), which silently broke the instant a predicate
-    # legitimately wanted a non-creature opponent permanent (Masked Vandal's
-    # ETB targets an opponent artifact/enchantment) -- an all-False mask
-    # crash, since begin_choose_opponent_permanent found a real option but no
-    # action row existed to select it.
+    # Registered for every opponent choosable name, not just creatures (e.g.
+    # Masked Vandal's ETB targets an opponent artifact/enchantment).
     forest_slot_actions = [nm for nm, _l, _e in my_actions if nm.startswith("Choose opponent's: Forest")]
     assert forest_slot_actions == [f"Choose opponent's: Forest (slot {k})" for k in range(1, 13)]  # boggles.txt: 12 Forests
 
@@ -292,7 +264,7 @@ def test_cross_player_targeting():
     attacker_bogle_2.slot = 2
     state = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
     state.players[0].battlefield = [attacker_bogle_1, attacker_bogle_2]
-    state.active_idx = 1  # simulating the defender's own already-flipped perspective (see game.begin_choose_opponent_permanent's own docstring)
+    state.active_idx = 1  # simulating the defender's own already-flipped perspective
 
     _, legal_slot_2, execute_slot_2 = my_actions[target_slot_2]
     _, legal_slot_1, _ = my_actions[target_slot_1]
@@ -309,14 +281,10 @@ def test_cross_player_targeting():
 
 
 def test_turn_owner_priority_holder_split():
-    # Turn-owner / priority-holder split:
-    # _land_drop_legal (via speed_legal) and _attack_legal must both
-    # refuse the non-turn player even when state.phase/state.
-    # lands_played_this_turn/their own eligible creature would otherwise
-    # look legal -- simulates a priority consult (active_idx flipped away
-    # from turn_player_idx) without needing the full priority round built
-    # yet. Rebuilds its own boggles action table (rather than depending on
-    # test_cross_player_targeting's) so the two run independently of order.
+    # _land_drop_legal (via speed_legal) and _attack_legal must both refuse
+    # the non-turn player even when state.phase/lands_played_this_turn/their
+    # own eligible creature would otherwise look legal -- simulates a
+    # priority consult (active_idx flipped away from turn_player_idx).
     boggles_decklist = _boggles_decklist()
     my_actions = build_action_table(boggles_decklist, game.EFFECT_REGISTRY, opponent_decklist=boggles_decklist)
 
@@ -350,17 +318,12 @@ def test_turn_owner_priority_holder_split():
 
 
 def test_blocking():
-    # Blocking: build_action_table's "Assign Blocker:
-    # <name> (slot j)" / "Done blocking" entries, end to end through the
-    # REAL production functions (_assign_blocker_legal/_execute,
-    # _done_blocking_legal/_execute) -- not a parallel reimplementation.
-    # Two attacking Slippery Bogles (real power=1 stats), one defending
-    # Slippery Bogle blocks only ONE of them. Rebuilds its own boggles
-    # action table (rather than depending on other tests') so this runs
-    # independently of order.
+    # build_action_table's "Assign Blocker: <name> (slot j)" / "Done blocking"
+    # entries, end to end through the real production functions. Two
+    # attacking Slippery Bogles, one defending Slippery Bogle blocks only one.
     boggles_decklist = _boggles_decklist()
     my_actions = build_action_table(boggles_decklist, game.EFFECT_REGISTRY, opponent_decklist=boggles_decklist)
-    boggles_pending_kinds = game.derive_pending_kinds(boggles_decklist)  # exercised for its own sake, unused beyond this line
+    boggles_pending_kinds = game.derive_pending_kinds(boggles_decklist)  # exercised for its own sake
 
     assign_slot_1 = _action_index(my_actions, "Assign Blocker: Slippery Bogle (slot 1)")
     done_blocking_idx = _action_index(my_actions, "Done blocking")
@@ -375,7 +338,7 @@ def test_blocking():
     state.players[0].battlefield = [atk_bogle_1, atk_bogle_2]
     state.players[0].attackers = [atk_bogle_1, atk_bogle_2]
     atk_bogle_1.tapped = True
-    atk_bogle_2.tapped = True  # declare_attacker's own effect -- simulated directly, attacking itself isn't under test here
+    atk_bogle_2.tapped = True  # declare_attacker's effect, simulated directly here
     state.players[1].battlefield = [defender_bogle]
     state.active_idx = 1  # simulating _declare_blockers_gen's own flip to the defender
 
@@ -393,10 +356,8 @@ def test_blocking():
     assert target_legal(state)
     target_execute(state)  # assigns it to block atk_bogle_1 specifically, not atk_bogle_2
 
-    # Re-opened (drl_env._assign_blocker_execute's own nested on_complete):
-    # defender_bogle is now spoken for, so it's no longer offered again --
-    # confirms creature_block_eligible actually gates the SAME action a
-    # second time, not just the first.
+    # Re-opened: defender_bogle is now spoken for, so it's no longer offered
+    # again -- confirms creature_block_eligible gates the same action twice.
     assert state.pending_resolution["kind"] == "declare_blockers"
     assert not assign_legal(state)
     assert done_legal(state)
@@ -407,17 +368,10 @@ def test_blocking():
 
 
 def test_flying_blocker_restriction():
-    # Flying: _assign_blocker_execute's own
-    # extra_predicate (game.has_keyword), end to end through the REAL
-    # action table -- Silhana Ledgewalker (real "can't be blocked except
-    # by creatures with flying," modeled as the "flying" keyword) can only
-    # be blocked by a creature that itself has flying (Kitchen Imp, real
-    # flying) -- a plain Slippery Bogle is otherwise a perfectly legal
-    # (untapped) blocker, but can never be assigned to THIS specific
-    # attacker. Mixes cards from different real color catalogs
-    # (green/multicolor + black) purely to exercise the engine mechanism
-    # -- not a claim either card is ever actually run together in a real
-    # deck.
+    # _assign_blocker_execute's extra_predicate (game.has_keyword), end to
+    # end: Silhana Ledgewalker ("can't be blocked except by flying") can
+    # only be blocked by a flier (Kitchen Imp) -- a plain Slippery Bogle is
+    # otherwise a legal untapped blocker but can never be assigned here.
     flying_decklist = [("Silhana Ledgewalker", 2), ("Slippery Bogle", 2), ("Kitchen Imp", 2)]
     flying_actions = build_action_table(flying_decklist, game.EFFECT_REGISTRY, opponent_decklist=flying_decklist)
 
@@ -435,11 +389,8 @@ def test_flying_blocker_restriction():
     state.active_idx = 1  # simulating _declare_blockers_gen's own flip to the defender
 
     game.begin_declare_blockers(state, on_complete=lambda s: None)
-    # GANG-BLOCKING eligibility: Slippery Bogle (no flying) is NOT even
-    # offered here -- the only attacker (Silhana Ledgewalker, modeled with
-    # flying) can only be blocked by a flyer, so Bogle has no legal target
-    # and "Assign Blocker: Slippery Bogle" is illegal. Kitchen Imp (flying)
-    # IS a legal blocker.
+    # Slippery Bogle (no flying) is not even offered: the only attacker can
+    # only be blocked by a flier, so Bogle has no legal target.
     assert not bogle_legal(state)
     assert imp_legal(state)
 
@@ -451,17 +402,12 @@ def test_flying_blocker_restriction():
 
 
 def test_aura_targeting_exact_slot_addressing():
-    # Targeting (real MTG rule, per drl_env._precast_choice_execute /
-    # game.effects.casting.cast_aura's own docstrings): a target is chosen once,
-    # at cast time, exact (name, slot) addressed -- not just by name -- and
-    # re-validated by identity only once the spell resolves off the stack.
-    # End to end through the REAL action table: "Cast Rancor" pays its {G}
-    # cost, then (precast_choice, not deferred) immediately opens
-    # choose_permanent with BOTH Slippery Bogles offered by their own
-    # distinct slot; "Choose target: Slippery Bogle (slot 2)" picks the
-    # specific one, which pushes to the stack (not yet attached, still in
-    # hand); resolving the stack attaches it to exactly the one chosen, not
-    # an arbitrary same-named match.
+    # A target is chosen once, at cast time, exact (name, slot) addressed,
+    # and re-validated by identity only once the spell resolves off the
+    # stack. "Cast Rancor" pays its {G} cost, then (precast_choice) opens
+    # choose_permanent with both Slippery Bogles offered by distinct slot;
+    # picking slot 2 pushes to the stack; resolving attaches it to exactly
+    # the one chosen, not an arbitrary same-named match.
     targeting_decklist = [("Slippery Bogle", 2), ("Rancor", 2), ("Forest", 10)]
     targeting_actions = build_action_table(targeting_decklist, game.EFFECT_REGISTRY)
 
@@ -476,42 +422,37 @@ def test_aura_targeting_exact_slot_addressing():
     state.hand = [rancor_card]
 
     _, cast_rancor_legal, cast_rancor_execute = targeting_actions[_action_index(targeting_actions, "Cast Rancor")]
-    targeting_actions[_action_index(targeting_actions, "Tap Forest")][2](state)  # pre-float (still valid, just no longer required): float {G} BEFORE casting
+    targeting_actions[_action_index(targeting_actions, "Tap Forest")][2](state)  # float {G} before casting
     assert cast_rancor_legal(state)
     cast_rancor_execute(state)
     assert state.pending_resolution["kind"] == "pay_cost"
     targeting_actions[_action_index(targeting_actions, "Spend G from pool")][2](state)  # pays Rancor's {G} from the pool
 
-    # Cost fully paid -- precast_choice means cast_aura runs its target
-    # choice IMMEDIATELY here, NOT deferred to when this eventually pops
-    # off the stack (that's the whole point of this redesign).
-    # Aura now targets any creature on EITHER battlefield (real "Enchant
-    # creature"), hexproof-aware -- the creature half rides the identity
-    # pointer scheme (rl.decision.action_bridge), so we drive it via the same
-    # execute the pointer path calls, not a "Choose target:" fixed action.
+    # Cost fully paid -- precast_choice means cast_aura runs its target choice
+    # immediately here, not deferred to when this eventually pops off the
+    # stack. The creature half rides the identity pointer scheme
+    # (rl.decision.action_bridge), so this drives it via the same execute the
+    # pointer path calls, not a "Choose target:" fixed action.
     assert state.pending_resolution["kind"] == "choose_any_target"
     assert set(game.choose_any_target_creature_options(state)) == {(0, "Slippery Bogle", 1), (0, "Slippery Bogle", 2)}
 
-    game.execute_choose_any_target_creature(state, 0, "Slippery Bogle", 2)  # the SPECIFIC slot-2 bogle
-    # Target chosen -- pushed to the stack, not yet attached. The card LEFT
-    # hand at cast (push_to_stack), so it can't be re-cast off the stack;
-    # resolve_top_of_stack restores it transiently for the attach resolve.
+    game.execute_choose_any_target_creature(state, 0, "Slippery Bogle", 2)  # the specific slot-2 bogle
+    # Target chosen -- pushed to the stack, not yet attached. The card left
+    # hand at cast; resolve_top_of_stack restores it transiently for the
+    # attach resolve.
     assert state.pending_resolution is None
     assert state.hand == [] and len(state.stack) == 1
 
     game.resolve_top_of_stack(state)
     assert state.hand == []
     rancor_permanent = next(p for p in state.battlefield if p.card_def.name == "Rancor")
-    assert rancor_permanent.flags["enchanting"] is bogle_2  # the SPECIFIC one chosen -- not bogle_1, despite the identical name
+    assert rancor_permanent.flags["enchanting"] is bogle_2  # the specific one chosen, not bogle_1
 
 
 def test_aura_target_fizzle():
-    # Fizzle, same end-to-end path as test_aura_targeting_exact_slot_addressing:
-    # the exact chosen permanent (bogle_1 this time) is gone by the time the
-    # cast resolves -- the whole spell fails, no effect, straight to the
-    # graveyard, never attaches. Rebuilds its own action table/rancor_card
-    # (fresh, deterministic) rather than depending on the other test's
-    # objects, so the two run independently of order.
+    # Same path as test_aura_targeting_exact_slot_addressing, but the exact
+    # chosen permanent (bogle_1) is gone by the time the cast resolves -- the
+    # whole spell fails, no effect, straight to the graveyard, never attaches.
     targeting_decklist = [("Slippery Bogle", 2), ("Rancor", 2), ("Forest", 10)]
     targeting_actions = build_action_table(targeting_decklist, game.EFFECT_REGISTRY)
     rancor_card = game.CARD_DEFS["Rancor"]
@@ -523,10 +464,10 @@ def test_aura_target_fizzle():
     state.battlefield = [bogle_1, forest]
     state.hand = [rancor_card]
 
-    targeting_actions[_action_index(targeting_actions, "Tap Forest")][2](state)  # pre-float (still valid, just no longer required): float {G} first
+    targeting_actions[_action_index(targeting_actions, "Tap Forest")][2](state)  # float {G} first
     targeting_actions[_action_index(targeting_actions, "Cast Rancor")][2](state)
     targeting_actions[_action_index(targeting_actions, "Spend G from pool")][2](state)
-    game.execute_choose_any_target_creature(state, 0, "Slippery Bogle", 1)  # Aura targets via the any-target pointer path now
+    game.execute_choose_any_target_creature(state, 0, "Slippery Bogle", 1)  # Aura targets via the any-target pointer path
     assert len(state.stack) == 1
     state.battlefield.remove(bogle_1)  # dies before the cast resolves
 
@@ -537,77 +478,65 @@ def test_aura_target_fizzle():
 
 
 def test_mana_ability_options_cache_no_stale_leak():
-    # _mana_ability_options_cache memoization never returns a stale answer:
-    # build a state with exactly 1 untapped Mountain, sweep the mask
-    # (populating the cache -- "Tap Mountain" legal), activate it (a real
-    # mutation -- 0 untapped sources left, so the ability is gone), then sweep
-    # again -- the second sweep must see the mutation, not the first sweep's
-    # cached answer, proving the cache doesn't leak across separate
-    # legal_action_mask calls.
+    # _mana_ability_options_cache memoization must never return a stale
+    # answer: sweep the mask with 1 untapped Mountain ("Tap Mountain" legal),
+    # activate it (0 untapped sources left), then sweep again -- it must see
+    # the mutation, not the first sweep's cached answer.
     perf_decklist = [("Mountain", 10), ("Lightning Bolt", 5)]
     perf_actions = build_action_table(perf_decklist, game.EFFECT_REGISTRY)
     perf_tap_mountain = _action_index(perf_actions, "Tap Mountain")
     perf_state = GameState(on_the_play=True, players=[PlayerState(True)])
     perf_mtn = Permanent(game.CARD_DEFS["Mountain"])
     perf_state.battlefield = [perf_mtn]
-    # Speculative floating is main-phase-only (see _mana_timing_legal); the
-    # default GameState carries no phase at all, which would fail the timing
-    # gate before the cache this test is actually about ever gets consulted.
+    # Speculative floating is main-phase-only; the default GameState carries
+    # no phase, which would fail that gate before this test's own cache check.
     perf_state.phase = game.turn.Phase.MAIN1
     assert legal_action_mask(perf_state, perf_actions)[perf_tap_mountain]
-    assert _actions_mana._mana_ability_options_cache is None  # cleared again once the sweep itself returns
-    game.activate_mana_source(perf_state, perf_mtn)  # taps the only Mountain -- 0 untapped sources left
+    assert _actions_mana._mana_ability_options_cache is None  # cleared once the sweep returns
+    game.activate_mana_source(perf_state, perf_mtn)  # taps the only Mountain
     assert ("Mountain", None) not in game.mana_ability_options(perf_state)  # ground truth: nothing left to tap
-    assert not legal_action_mask(perf_state, perf_actions)[perf_tap_mountain]  # would be wrongly True if the first sweep's stale cache leaked through
+    assert not legal_action_mask(perf_state, perf_actions)[perf_tap_mountain]  # would be wrongly True if stale
 
 
 def test_saruli_caretaker_two_stage_mana_subdecision():
-    # Saruli Caretaker (Option A: gate-free two-stage mana_subdecision, see
-    # state.mana_subdecision's own docstring): its extra cost -- tap ANOTHER
-    # untapped creature -- is a COST CHOICE (602.5g), decided first ("Tap
-    # Saruli Caretaker", gate-free, opens the mana_subdecision), then the
-    # tap-TARGET (pointer-routed in real play, rl.decision.action_bridge -- exercised
-    # there; here the resulting state transition is driven directly via
+    # Saruli Caretaker's extra cost -- tap another untapped creature -- is a
+    # cost choice (602.5g), decided first ("Tap Saruli Caretaker", gate-free,
+    # opens the mana_subdecision), then the tap-target (driven directly via
     # game.execute_mana_subdecision_target, same call the pointer dispatch
-    # makes), THEN the color (shared "Produce <color>" buttons, gated via
-    # legal_action_mask's own _mana_subdecision_gate dispatch, not this
-    # closure's own pending-agnostic check) -- matching real sequencing (cost
-    # paid before the ability's own color-choice effect resolves), never the
-    # stack (605.1a).
+    # makes), then the color (shared "Produce <color>" buttons, gated via
+    # legal_action_mask's _mana_subdecision_gate dispatch) -- matching real
+    # sequencing, never the stack (605.1a).
     saruli_decklist = [("Saruli Caretaker", 2), ("Slippery Bogle", 2)]
     saruli_actions = build_action_table(saruli_decklist, game.EFFECT_REGISTRY)
 
     saruli = Permanent(game.CARD_DEFS["Saruli Caretaker"])
-    saruli.summoning_sick = False  # Saruli's own {T} ability needs this (302.6) -- the TARGET's own sickness doesn't matter (being tapped as a cost isn't a {T} ability of its own)
+    saruli.summoning_sick = False  # Saruli's own {T} ability needs this (302.6)
     bogle_1 = Permanent(game.CARD_DEFS["Slippery Bogle"])
     bogle_2 = Permanent(game.CARD_DEFS["Slippery Bogle"])
     bogle_2.slot = 2
-    bogle_2.tapped = True  # already tapped -- would be excluded downstream, not relevant to this row's own aggregate legality
+    bogle_2.tapped = True  # already tapped, not relevant to this row's aggregate legality
     state = GameState(on_the_play=True, event_log=[])
-    # Speculative floating is the active player's own main phase only
-    # (drl_env._actions_mana._mana_timing_legal); a bare GameState has no
-    # phase at all, which would fail that gate before reaching what this
-    # test is actually about.
+    # Speculative floating is the active player's own main phase only; a bare
+    # GameState has no phase, which would fail that gate first.
     state.phase = game.turn.Phase.MAIN1
     state.battlefield = [saruli, bogle_1, bogle_2]
 
     tap_idx = _action_index(saruli_actions, "Tap Saruli Caretaker")
     _, tap_legal, tap_execute = saruli_actions[tap_idx]
-    assert tap_legal(state)  # at least one OTHER untapped creature exists (bogle_1) -- aggregate check, no per-target/color row anymore
+    assert tap_legal(state)  # at least one other untapped creature exists (bogle_1)
     tap_execute(state)
     sub = state.mana_subdecision
     assert sub is not None and sub["stage"] == "choose_target" and sub["source"] is saruli and sub["target"] is None, (
-        "must open a mana_subdecision at the choose_target stage, source resolved to THIS Saruli"
+        "must open a mana_subdecision at the choose_target stage, source resolved to this Saruli"
     )
 
-    # Same row is no longer even reachable while the sub-decision is open --
-    # legal_action_mask's own exclusive-priority dispatch, not this closure's
-    # own logic (tap_legal itself doesn't check mana_subdecision at all).
+    # No longer reachable while the sub-decision is open (legal_action_mask's
+    # exclusive-priority dispatch; tap_legal itself doesn't check this).
     assert not legal_action_mask(state, saruli_actions)[tap_idx]
 
-    game.execute_mana_subdecision_target(state, bogle_1)  # same call rl.decision.action_bridge's pointer dispatch makes -- exercised end to end there
+    game.execute_mana_subdecision_target(state, bogle_1)  # same call the pointer dispatch makes
     assert state.mana_subdecision["stage"] == "choose_color" and state.mana_subdecision["target"] is bogle_1
-    assert not bogle_1.tapped, "the target isn't tapped until the color is actually chosen (execute_mana_subdecision_color's own order)"
+    assert not bogle_1.tapped, "the target isn't tapped until the color is actually chosen"
 
     color_idx = _action_index(saruli_actions, "Produce G")
     mask = legal_action_mask(state, saruli_actions)
@@ -619,11 +548,9 @@ def test_saruli_caretaker_two_stage_mana_subdecision():
     assert state.mana_subdecision is None
     assert saruli.tapped and bogle_1.tapped and bogle_2.tapped  # bogle_2 was already tapped, untouched otherwise
     assert state.mana_pool == {"G": 1}
-    assert not tap_legal(state)  # Saruli itself now tapped -- no untapped source left, no longer offered at all
-    # bogle_1 is the mana-subdecision TARGET (not the activator's own Saruli,
-    # already exercised elsewhere) -- the exact owner-disambiguation case
-    # this diff's tap_for_cost/set_tapped choke point exists for. Only one
-    # tap_or_untap event: bogle_1's own tap (Saruli's tap is logged
+    assert not tap_legal(state)  # Saruli itself now tapped -- no untapped source left
+    # bogle_1 is the mana-subdecision target, not the activator's own Saruli.
+    # Only one tap_or_untap event: bogle_1's tap (Saruli's tap is logged
     # separately, as a "mana_tap" event, by activate_mana_source).
     tap_events = [e for e in state.event_log if e["kind"] == "tap_or_untap"]
     assert len(tap_events) == 1
@@ -633,26 +560,20 @@ def test_saruli_caretaker_two_stage_mana_subdecision():
 
 
 def test_mana_filter_two_step_color_choice():
-    # Mana filter (Barrels of Blasting Jelly / Conduit Pylons), two-step
-    # redesign reusing Saruli Caretaker's own choose_color mana_subdecision
-    # machinery (game.begin_mana_color_choice): step 1, a flat fixed-table
-    # row "Filter X, paying <input>", pays the cost immediately (taps/flags
-    # the source, spends the input pip) and opens the shared choose_color
-    # stage; step 2, one of the same "Produce <color>" buttons Saruli uses,
-    # produces the chosen output color into the pool. No nested pay_cost --
-    # state.mana_subdecision stays a field separate from
-    # state.pending_resolution throughout. Float {U}: paying with it is
-    # legal only while that U pip is actually floating; illegal for a color
-    # not currently floating.
+    # Mana filter (Barrels of Blasting Jelly), two-step design reusing
+    # Saruli Caretaker's choose_color mana_subdecision machinery: step 1, a
+    # flat fixed-table row "Filter X, paying <input>", pays the cost
+    # immediately and opens the shared choose_color stage; step 2, a
+    # "Produce <color>" button, produces the chosen output color into the
+    # pool. No nested pay_cost -- state.mana_subdecision stays separate from
+    # state.pending_resolution throughout.
     filter_decklist = [("Barrels of Blasting Jelly", 2)]
     filter_actions = build_action_table(filter_decklist, game.EFFECT_REGISTRY)
 
     barrels = Permanent(game.CARD_DEFS["Barrels of Blasting Jelly"])
     state = GameState(on_the_play=True)
-    # Speculative floating is the active player's own main phase only
-    # (drl_env._actions_mana._mana_timing_legal); a bare GameState has no
-    # phase at all, which would fail that gate before reaching what this
-    # test is actually about.
+    # Speculative floating is the active player's own main phase only; a
+    # bare GameState has no phase, which would fail that gate first.
     state.phase = game.turn.Phase.MAIN1
     state.battlefield = [barrels]
     state.mana_pool = {"U": 1}
@@ -662,15 +583,13 @@ def test_mana_filter_two_step_color_choice():
     _, legal_pay_u, execute_pay_u = filter_actions[pay_u_idx]
     _, legal_pay_w, _execute_pay_w = filter_actions[pay_w_idx]
 
-    # Exactly one row per POOL_COLOR (no output_color cross product anymore):
-    # the redesign's own stated goal -- 6 rows for this one source, not 30.
+    # Exactly one row per POOL_COLOR (no output_color cross product): 6 rows
+    # for this one source, not 30.
     filter_rows = [n for n, _l, _e in filter_actions if n.startswith("Filter Barrels of Blasting Jelly")]
     assert len(filter_rows) == len(game.POOL_COLORS) == 6, filter_rows
 
-    # A deck with a filter card but NO Saruli-shaped mana_extra_choose card
-    # must still get the shared "Produce <color>" rows -- build_action_table's
-    # needs_mana_subdecision_color_buttons gate must trigger on filter_mana
-    # too, not just mana_extra_choose.
+    # A deck with a filter card but no Saruli-shaped mana_extra_choose card
+    # must still get the shared "Produce <color>" rows.
     for color in game.COLORS:
         assert f"Produce {color}" in [n for n, _l, _e in filter_actions]
 
@@ -682,10 +601,8 @@ def test_mana_filter_two_step_color_choice():
     assert barrels.flags.get("used_this_turn", False) is True, "cost paid immediately, same as before the redesign"
     assert state.mana_subdecision is not None and state.mana_subdecision["stage"] == "choose_color"
 
-    # Exclusive priority: no OTHER filter row (this source's own gate is
-    # already closed anyway, but even a hypothetical second untapped source
-    # would be suppressed) is reachable while the subdecision is open --
-    # legal_action_mask's own dispatch, not either closure's own logic.
+    # Exclusive priority: no other filter row is reachable while the
+    # subdecision is open, via legal_action_mask's own dispatch.
     mask = legal_action_mask(state, filter_actions)
     assert not any(mask[i] for i, (n, _l, _e) in enumerate(filter_actions) if n.startswith("Filter "))
     for color in game.COLORS:
@@ -698,12 +615,11 @@ def test_mana_filter_two_step_color_choice():
     produce_b_execute(state)
 
     assert state.mana_pool == {"B": 1}  # U spent at step 1, B produced at step 2 -- net one pip converted
-    # A filter's output is never single-pip-tagged, even though it's
-    # exactly 1 symbol -- a deliberate pool->pool conversion, not
-    # reflexive tapping (game.mana.float_mana's taggable=False).
+    # A filter's output is never single-pip-tagged: a deliberate pool->pool
+    # conversion, not reflexive tapping (float_mana's taggable=False).
     assert state.mana_pool_single_pip == {}
     assert state.mana_subdecision is None
-    assert not legal_pay_u(state)  # Barrels' own once-per-turn gate now closed -- no more floating U to spend either way
+    assert not legal_pay_u(state)  # Barrels' once-per-turn gate now closed
 
 
 def test_mana_filter_same_color_round_trip_erases_single_pip_tag():
@@ -722,10 +638,8 @@ def test_mana_filter_same_color_round_trip_erases_single_pip_tag():
     barrels = Permanent(game.CARD_DEFS["Barrels of Blasting Jelly"])
     forest = Permanent(game.CARD_DEFS["Forest"])
     state = GameState(on_the_play=True)
-    # Speculative floating is the active player's own main phase only
-    # (drl_env._actions_mana._mana_timing_legal); a bare GameState has no
-    # phase at all, which would fail that gate before reaching what this
-    # test is actually about.
+    # Speculative floating is the active player's own main phase only; a
+    # bare GameState has no phase, which would fail that gate first.
     state.phase = game.turn.Phase.MAIN1
     state.battlefield = [barrels, forest]
 
@@ -749,12 +663,10 @@ def test_mana_filter_same_color_round_trip_erases_single_pip_tag():
 
 
 def test_mana_filter_row_count_stays_flat_not_cross_product():
-    # Durable regression guard against re-introducing the output_color x
-    # input_color cross product: monster_tron runs BOTH real filter cards
-    # (Conduit Pylons + Barrels of Blasting Jelly), so its table is where the
-    # old design's ~60-row block lived. Now: POOL_COLORS (6) rows per source,
-    # nothing more -- output color is chosen via the shared "Produce <color>"
-    # buttons, not a per-row dimension.
+    # Regression guard against re-introducing the output_color x input_color
+    # cross product: monster_tron runs both real filter cards. POOL_COLORS
+    # (6) rows per source, nothing more -- output color is chosen via the
+    # shared "Produce <color>" buttons, not a per-row dimension.
     tron_decklist = game.parse_decklist_file(str(DATA_DIR / "monster_tron.txt"))
     tron_actions = build_action_table(tron_decklist, game.EFFECT_REGISTRY)
     filter_rows = [n for n, _l, _e in tron_actions if n.startswith("Filter ")]
@@ -764,11 +676,9 @@ def test_mana_filter_row_count_stays_flat_not_cross_product():
 
 
 def test_mana_subdecision_rows_cache_stays_bounded():
-    # Regression guard: _mana_subdecision_rows_cache persists ACROSS sweeps
-    # (unlike its per-sweep-reset siblings -- see its own docstring), so it
-    # must never grow without bound when many distinct `actions` tables are
-    # looked up over a process's lifetime (e.g. a multiprocessing worker
-    # rebuilding a fresh table per task instead of reusing one per deck).
+    # _mana_subdecision_rows_cache persists across sweeps, so it must never
+    # grow without bound when many distinct `actions` tables are looked up
+    # over a process's lifetime.
     tron_decklist = game.parse_decklist_file(str(DATA_DIR / "monster_tron.txt"))
     _actions_table._mana_subdecision_rows_cache.clear()
     for _ in range(_actions_table._MANA_SUBDECISION_ROWS_CACHE_CAP + 10):
@@ -779,22 +689,15 @@ def test_mana_subdecision_rows_cache_stays_bounded():
 
 
 def test_mana_filter_mid_pay_cost_completes_without_disturbing_original_payment():
-    # The reason filtering couldn't just be an ordinary nested pay_cost in
-    # the first place: state.pending_resolution is a single slot. This
-    # proves the two-step redesign genuinely preserves that guarantee --
-    # opening state.mana_subdecision mid an already-open pay_cost, then
-    # completing BOTH subdecision steps, must leave the ORIGINAL
-    # pending_resolution completely untouched and still completable
-    # afterward (not just legal to attempt, per
-    # test_stranded_payment_filter_regression -- this drives it all the way
-    # through, the same real scenario a training game encounters).
+    # state.pending_resolution is a single slot, so filtering can't be an
+    # ordinary nested pay_cost. This drives the two-step subdecision all the
+    # way through mid an already-open pay_cost: the original
+    # pending_resolution must stay untouched and still completable after.
     tron_decklist = game.parse_decklist_file(str(DATA_DIR / "monster_tron.txt"))
     tron_actions = build_action_table(tron_decklist, game.EFFECT_REGISTRY)
     state = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
-    # Speculative floating is the active player's own main phase only
-    # (drl_env._actions_mana._mana_timing_legal); a bare GameState has no
-    # phase at all, which would fail that gate before reaching what this
-    # test is actually about.
+    # Speculative floating is the active player's own main phase only; a
+    # bare GameState has no phase, which would fail that gate first.
     state.phase = game.turn.Phase.MAIN1
     state.battlefield = [Permanent(game.CARD_DEFS["Barrels of Blasting Jelly"])]
     state.mana_pool.update({"G": 2})  # a SPARE green pip -- converting one away can't strand the {G} still owed
@@ -826,17 +729,14 @@ def test_mana_filter_mid_pay_cost_completes_without_disturbing_original_payment(
 
 
 def test_mana_row_generation_derives_from_registry_kind():
-    # Row count per mana source is now DERIVED from the registry's own "mana"
-    # spec kind (build_action_table), not a blanket no-color-plus-6-colors for
-    # every source name -- a row a source can never make legal is a dead
-    # output neuron. Three shapes in one deck: a non-land FIXED source
-    # (Llanowar Elves) needs only its own no-color row; a LAND fixed source
-    # (Mountain) still needs every color Abundant Growth's registry entry
-    # could ever grant it (game.EFFECT_REGISTRY is the FULL registry, not
-    # just this decklist -- an opponent's Abundant Growth can enchant this
-    # deck's own Mountain); a non-land FLEXIBLE source (Bonder's Ornament)
-    # needs only its own real colors, and -- unlike a fixed source -- no
-    # no-color row at all.
+    # Row count per mana source is derived from the registry's "mana" spec
+    # kind, not a blanket no-color-plus-6-colors for every source. Three
+    # shapes in one deck: a non-land fixed source (Llanowar Elves) needs only
+    # its no-color row; a land fixed source (Mountain) still needs every
+    # color the full registry could ever grant it (an opponent's Abundant
+    # Growth can enchant this deck's own Mountain); a non-land flexible
+    # source (Bonder's Ornament) needs only its real colors and no no-color
+    # row.
     decklist = [("Llanowar Elves", 4), ("Mountain", 4), ("Bonder's Ornament", 2)]
     actions = build_action_table(decklist, game.EFFECT_REGISTRY)
     labels = [name for name, _l, _e in actions]
@@ -846,16 +746,15 @@ def test_mana_row_generation_derives_from_registry_kind():
     assert labels.count("Tap Llanowar Elves") == 1
     assert not any(l.startswith("Tap Llanowar Elves for") for l in labels)
 
-    # Mountain: fixed R, but a LAND -- keeps a row for every color
-    # game.EFFECT_REGISTRY declares grantable (Abundant Growth's own entry),
-    # even though this decklist has no Abundant Growth of its own.
+    # Mountain: fixed R, but a land -- keeps a row for every color the full
+    # registry declares grantable, even with no Abundant Growth in this deck.
     assert labels.count("Tap Mountain") == 1
     for color in game.COLORS:
         assert f"Tap Mountain for {color}" in labels
-    assert "Tap Mountain for C" not in labels  # colorless is never a color CHOICE
+    assert "Tap Mountain for C" not in labels  # colorless is never a color choice
 
     # Bonder's Ornament: flexible over all 5 colors, non-land -- one row per
-    # real color, and NO no-color row (its native ability never offers one).
+    # real color, and no no-color row.
     assert "Tap Bonder's Ornament" not in labels
     for color in game.COLORS:
         assert f"Tap Bonder's Ornament for {color}" in labels
@@ -863,11 +762,9 @@ def test_mana_row_generation_derives_from_registry_kind():
 
 
 def test_impulse_actions_gated_on_own_decklist():
-    # Impulse is never cross-player (state.impulse is always the ACTIVE
-    # player's own zone) -- unlike pay_unless. build_action_table has no
-    # pending_kinds parameter at all (an opponent's card can never pose an
-    # impulse decision to a deck without one), so a decklist with no impulse
-    # card gets zero "Play from exile" rows, purely from its own contents.
+    # Impulse is never cross-player (state.impulse is always the active
+    # player's own zone), unlike pay_unless. A decklist with no impulse card
+    # gets zero "Play from exile" rows.
     decklist = [("Mountain", 4), ("Lightning Bolt", 4)]
     actions = build_action_table(decklist, game.EFFECT_REGISTRY)
     assert not any(name.startswith("Play from exile") for name, _l, _e in actions)
@@ -879,10 +776,9 @@ def test_impulse_actions_gated_on_own_decklist():
 
 
 def test_mana_ability_legal_mid_pay_unless():
-    # A mana ability must stay legal during ANY pending resolution (605.1a/
-    # 605.3b: a mana ability may be activated even mid-resolution of something
-    # else, INCLUDING while paying a cost). Covers a Ward/Spell-Pierce-style
-    # pay_unless: the payer floats mana IN RESPONSE (not pre-floated), then pays.
+    # A mana ability must stay legal during any pending resolution (605.1a/
+    # 605.3b), including while paying a cost. Covers a Ward/Spell-Pierce-style
+    # pay_unless: the payer floats mana in response, then pays.
     pu_decklist = [("Mountain", 4)]
     pu_actions = build_action_table(pu_decklist, game.EFFECT_REGISTRY)
     pu_tap_idx = _action_index(pu_actions, "Tap Mountain")
@@ -894,15 +790,11 @@ def test_mana_ability_legal_mid_pay_unless():
     pu_results = []
     game.begin_pay_unless(pu_state, 0, {"generic": 1}, lambda s, paid: pu_results.append(paid))
     assert pu_state.pending_resolution["kind"] == "pay_unless"
-    # No phase is set on this state at all, so nothing here is legal by way of
-    # the main-phase rule -- everything below is the PAYMENT window (605.3a's
-    # "whenever a rule or effect asks for a mana payment"), which is exactly
-    # what this test exists to pin.
+    # No phase is set, so nothing here is legal via the main-phase rule --
+    # everything below is the payment window (605.3a).
     assert legal_action_mask(pu_state, pu_actions)[pu_tap_idx]  # CAN tap right now, mid-resolution
-    # Payable BEFORE anything is floated: cast-then-pay counts the untapped
-    # Mountain, so the payer is not required to pre-float to be offered the
-    # choice. Under float-first this assertion read `not ...` -- that was the
-    # bug being fixed, not a property worth keeping.
+    # Payable before anything is floated: cast-then-pay counts the untapped
+    # Mountain, so the payer isn't required to pre-float to be offered the choice.
     assert legal_action_mask(pu_state, pu_actions)[pu_pay_idx]
 
     pu_actions[pu_tap_idx][2](pu_state)
@@ -916,9 +808,9 @@ def test_mana_ability_legal_mid_pay_unless():
 
 
 def test_mana_ability_legal_mid_any_pending_resolution():
-    # Generalize past pay_unless specifically: a mana ability must stay legal
-    # mid-resolution of an ENTIRELY UNRELATED pending kind too (discard), and
-    # activating it must not disturb that unrelated resolution at all.
+    # Generalize past pay_unless: a mana ability must stay legal mid-
+    # resolution of an entirely unrelated pending kind too (discard), and
+    # activating it must not disturb that resolution at all.
     mid_decklist = [("Mountain", 4), ("Lightning Bolt", 2)]
     mid_actions = build_action_table(mid_decklist, game.EFFECT_REGISTRY)
     mid_tap_idx = _action_index(mid_actions, "Tap Mountain")
@@ -926,10 +818,8 @@ def test_mana_ability_legal_mid_any_pending_resolution():
     mid_mtn = Permanent(game.CARD_DEFS["Mountain"])
     mid_state.battlefield = [mid_mtn]
     mid_state.hand = [game.CARD_DEFS["Lightning Bolt"]]
-    # The discard here is an unrelated pending, NOT a payment, so this float is
-    # speculative and needs the main phase (_mana_timing_legal). The property
-    # being pinned -- a mana ability neither needs nor disturbs an unrelated
-    # open resolution -- is unchanged.
+    # The discard is an unrelated pending, not a payment, so this float is
+    # speculative and needs the main phase (_mana_timing_legal).
     mid_state.phase = game.turn.Phase.MAIN1
 
     discard_completed = []
@@ -947,20 +837,14 @@ def test_mana_ability_legal_mid_any_pending_resolution():
 
 
 def test_mana_subdecision_does_not_hijack_the_other_seat():
-    """A mana subdecision claims EXCLUSIVE priority -- its owner may take no
-    other action until it completes, which is how the engine models a mana
-    ability being atomic. state.mana_subdecision is a single global slot, so
-    before it carried an owner that exclusivity landed on whichever seat was
-    asked NEXT rather than the one that opened it.
-
-    Live consequence, 2026-08-16: the DEFENDER opened a Saruli Caretaker
-    subdecision and never completed it; the ATTACKER was then asked to assign
-    combat damage, rl.decision.action_bridge built the pointer mask for the defender's
-    tap-target choice instead of the attacker's blockers, nothing matched, and
-    the all-False mask crashed an 11-deck training run twice.
+    """A mana subdecision claims exclusive priority -- its owner may take no
+    other action until it completes, modeling a mana ability as atomic.
+    state.mana_subdecision is a single global slot, so it must carry an
+    owner: without one, exclusivity would land on whichever seat asks next
+    rather than the one that opened it.
 
     Pins both halves: the non-owner is unaffected, and the owner still gets
-    exclusive priority (i.e. is forced to finish)."""
+    exclusive priority (is forced to finish)."""
     saruli_decklist = [("Saruli Caretaker", 2), ("Slippery Bogle", 2)]
     actions = build_action_table(saruli_decklist, game.EFFECT_REGISTRY)
 
@@ -968,16 +852,14 @@ def test_mana_subdecision_does_not_hijack_the_other_seat():
     saruli.summoning_sick = False
     bogle = Permanent(game.CARD_DEFS["Slippery Bogle"])
     state = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
-    # Speculative floating is the active player's own main phase only
-    # (drl_env._actions_mana._mana_timing_legal); a bare GameState has no
-    # phase at all, which would fail that gate before reaching what this
-    # test is actually about.
+    # Speculative floating is the active player's own main phase only; a
+    # bare GameState has no phase, which would fail that gate first.
     state.phase = game.turn.Phase.MAIN1
     state.players[1].battlefield = [saruli, bogle]
 
-    # Seat 1 opens the subdecision while it is the active seat. It must be seat
-    # 1's own turn too: speculative floating is the ACTIVE PLAYER's main phase,
-    # which is turn ownership, not just the phase (_mana_timing_legal).
+    # Seat 1 opens the subdecision while it is the active seat, and must also
+    # be the turn player: speculative floating requires turn ownership, not
+    # just the phase.
     state.active_idx = 1
     state.turn_player_idx = 1
     tap_idx = _action_index(actions, "Tap Saruli Caretaker")
@@ -1006,21 +888,14 @@ def test_mana_subdecision_does_not_hijack_the_other_seat():
 
 
 def test_reach_blocker_vs_flying_attacker_is_not_a_no_op():
-    # REGRESSION (2026-08-19): the "Assign Blocker" legality check and the
-    # per-attacker predicate its executor passes down MUST agree, or the
-    # action becomes legal-but-unfulfillable and the declare-blockers round
-    # never ends.
+    # The "Assign Blocker" legality check and the per-attacker predicate its
+    # executor passes down must agree, or the action becomes legal-but-
+    # unfulfillable and the declare-blockers round never ends.
     #
-    # game.can_block lets REACH block a flier. creature_block_eligible (hence
-    # _assign_blocker_legal) consults it, so a reach blocker facing only
-    # fliers is correctly offered. _assign_blocker_execute used to inline a
-    # flying-ONLY copy of that rule, so the nested attacker choice it opened
-    # matched nothing, recorded no block, and re-opened begin_declare_blockers
-    # on an identical state -- the same action legal again, forever. Real
-    # decks hit it: elves' Generous Ent (reach) vs dmir_terror's Sneaky
-    # Snacker (flying). horizon bounds TURNS, and turn_number never advances
-    # inside a priority round, so nothing stopped it: collect workers grew
-    # ~1 GB/min until they died pickling their result.
+    # game.can_block lets reach block a flier, and creature_block_eligible
+    # (hence _assign_blocker_legal) consults it, so a reach blocker facing
+    # only fliers must be correctly offered and must actually be able to
+    # record a block against one.
     decklist = [("Generous Ent", 2), ("Sneaky Snacker", 2), ("Forest", 8)]
     actions = _actions_table.build_action_table(decklist, game.EFFECT_REGISTRY, opponent_decklist=decklist)
     _, ent_legal, ent_execute = actions[_action_index(actions, "Assign Blocker: Generous Ent (slot 1)")]
@@ -1042,9 +917,8 @@ def test_reach_blocker_vs_flying_attacker_is_not_a_no_op():
     assert ent_legal(state), "reach blocker vs flying attacker must be offered"
 
     ent_execute(state)
-    # The whole bug: this used to find zero candidates and silently re-open
-    # declare_blockers with nothing recorded. It must instead open a REAL
-    # choice that includes the flier.
+    # Must open a real choice that includes the flier, not silently re-open
+    # declare_blockers with nothing recorded.
     assert state.pending_resolution is not None
     assert state.pending_resolution["kind"] == "choose_opponent_permanent", (
         f"expected a real attacker choice, got {state.pending_resolution['kind']!r} -- "
@@ -1056,21 +930,13 @@ def test_reach_blocker_vs_flying_attacker_is_not_a_no_op():
 
 
 def test_attacker_that_left_the_battlefield_is_removed_from_combat():
-    # REGRESSION (2026-08-19), second declare-blockers infinite loop -- same
-    # legal-but-unfulfillable shape as the reach test above, reached by a
-    # completely different divergence.
-    #
-    # 506.4: a permanent removed from the battlefield stops being an attacking
-    # creature. Nothing pruned state.attackers, so a declared attacker killed
-    # during the declare-attackers priority window (dmir_terror's removal, on
-    # a developed board) stayed in the list while being gone from the
-    # battlefield. The two halves of "Assign Blocker" then disagreed:
-    #   creature_block_eligible          iterates state.opponent.attackers   -> still sees it
-    #   choose_opponent_permanent_options iterates state.opponent.battlefield -> does not
-    # so the action stayed legal, its nested choice matched nothing, fizzled
-    # with None, recorded no block, and re-opened begin_declare_blockers on an
-    # identical state -- forever. begin_declare_blockers' own "no attackers"
-    # early-out could not save it either: that tests the same stale list.
+    # Same legal-but-unfulfillable shape as the reach test above, reached by
+    # a different divergence: 506.4 says a permanent removed from the
+    # battlefield stops being an attacking creature, so state.attackers must
+    # be pruned when a declared attacker dies. Otherwise the two halves of
+    # "Assign Blocker" disagree -- creature_block_eligible iterates
+    # attackers, choose_opponent_permanent_options iterates battlefield --
+    # and the action stays legal with nothing to fulfil it.
     decklist = [("Generous Ent", 2), ("Sneaky Snacker", 2), ("Forest", 8)]
     actions = _actions_table.build_action_table(decklist, game.EFFECT_REGISTRY, opponent_decklist=decklist)
     _, ent_legal, ent_execute = actions[_action_index(actions, "Assign Blocker: Generous Ent (slot 1)")]
@@ -1101,16 +967,11 @@ def test_attacker_that_left_the_battlefield_is_removed_from_combat():
 
 
 def test_assign_damage_to_opponent_is_permanently_dead():
-    """a6f4639's trample fix (702.19b/510.1c): trample-to-player is never an
-    agent choice -- it's a forced, automatic outcome of assign_combat_damage's
-    own resolution (game.resolution.handlers_combat._autoresolve_if_no_
-    choices_left) once every blocker is at its own lethal cap. This row stays
-    registered (name + legal + execute) only so the fixed action table's
-    length -- and every trained DeckNetwork's action-output shape -- doesn't
-    change; it must never actually be reachable. No RL/action-table test
-    previously asserted this (the engine-layer coverage in
-    tests/game/effects/test_combat_damage_detail.py doesn't touch this row at
-    all)."""
+    """Trample-to-player is never an agent choice: it's a forced, automatic
+    outcome of assign_combat_damage's own resolution once every blocker is
+    at its lethal cap (702.19b/510.1c). This row stays registered only so
+    the fixed action table's length doesn't change; it must never actually
+    be reachable."""
     decklist = [("Reckless Lackey", 4), ("Mountain", 8)]
     actions = _actions_table.build_action_table(decklist, game.EFFECT_REGISTRY)
     _, legal, execute = actions[_action_index(actions, "Assign combat damage to opponent")]

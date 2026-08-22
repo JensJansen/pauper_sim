@@ -19,7 +19,7 @@ def _fixture():
     seat1.battlefield = [Permanent(game.CARD_DEFS["Kitchen Imp"]), Permanent(game.CARD_DEFS["Sneaky Snacker"])]
     state_a = GameState(on_the_play=True, players=[seat0, seat1])
 
-    seat0b = PlayerState(on_the_play=True)  # a SECOND, differently-sized state -- exercises real padding, not just batch-of-1
+    seat0b = PlayerState(on_the_play=True)  # a second, differently-sized state, to exercise real padding
     seat1b = PlayerState(on_the_play=False)
     state_b = GameState(on_the_play=True, players=[seat0b, seat1b])
 
@@ -66,9 +66,7 @@ def test_set_transformer_gradient_flows_to_embedding():
     net = SetTransformer(vocab.size, d_model=16, n_heads=2, n_layers=2, dim_feedforward=32)
     mine_summary, theirs_summary, _token_reps = net(vocab_idx, features, mask, side_flag)
 
-    # Gradient sanity: backward pass must reach the embedding table (confirms
-    # the whole pipeline is actually differentiable end to end, not just
-    # forward-correct).
+    # Backward pass must reach the embedding table (pipeline differentiable end to end).
     loss = mine_summary.sum() + theirs_summary.sum()
     loss.backward()
     assert net.embedding.weight.grad is not None
@@ -83,8 +81,7 @@ def test_set_transformer_permutation_invariance():
 
     net = SetTransformer(vocab.size, d_model=16, n_heads=2, n_layers=2, dim_feedforward=32)
 
-    # Permutation invariance: pooled output must not depend on token ORDER
-    # within a batch element (the whole point of a set encoder).
+    # Pooled output must not depend on token order within a batch element.
     net.eval()
     with torch.no_grad():
         tokens_a_shuffled = [tokens_a[2], tokens_a[0], tokens_a[1]]
@@ -111,5 +108,5 @@ def test_film_shapes_and_identity_init():
     for gamma, beta in params:
         assert gamma.shape == (2, 32) and beta.shape == (2, 32)
         assert torch.isfinite(gamma).all() and torch.isfinite(beta).all()
-    # At a freshly-initialized net (raw output near 0), gamma should start near 1.0 (identity modulation).
+    # gamma should start near 1.0 (identity modulation) at fresh init.
     assert torch.allclose(params[0][0].mean(), torch.tensor(1.0), atol=0.5)

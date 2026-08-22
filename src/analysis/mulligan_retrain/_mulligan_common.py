@@ -1,8 +1,7 @@
 """Shared helpers for the mulligan-net retrain scripts (train_mulligan_vs_twin.py,
-train_mulligan_self_mirror.py) -- net loading, the land-count audit, and the
-probe-hand trajectory tracker, all identical regardless of which opponent
-design a given script uses. Not a script itself; each caller does its own
-sys.path insert before importing this, same as any other src/ module.
+train_mulligan_self_mirror.py): net loading, land-count audit, and the
+probe-hand trajectory tracker. Not a script itself; each caller does its own
+sys.path insert before importing this.
 """
 import os
 
@@ -18,11 +17,7 @@ from rl.league.league_runner import build_deck_net
 
 def load_frozen_nets(league_dir, deck_names, vocab, fixed_tables):
     """Every deck's live net from one league directory, eval mode,
-    requires_grad=False -- structurally incapable of training regardless of
-    whether anything downstream ever builds an optimizer for it.
-    optimizer=None to load_deck_checkpoint: this only ever needs inference
-    weights, and loading optimizer state would be the one way a read-only
-    load could carry training state it shouldn't."""
+    requires_grad=False -- structurally incapable of training."""
     nets = {}
     for name in deck_names:
         live_path = f"{league_dir}/{name}/live.pt"
@@ -40,14 +35,11 @@ def load_frozen_nets(league_dir, deck_names, vocab, fixed_tables):
 
 def audit_land_counts(game_logs):
     """Reconstructs each game's hand at every keep/mulligan decision from its
-    event log (zone_move/draw, /mulligan_take, /mulligan_bottom -- see
-    game.state.GameState.draw's own docstring: there is no separate
-    "hand contents" event, the draw events ARE the hand) and buckets by land
-    count -- the exact method that first surfaced the pre-fix mulligan bug
-    (manual review + this same reconstruction over eval logs, 2026-08-20).
-    Only meaningful for an arm whose pregame decider is a real MulliganNet --
-    AlwaysKeep/RandomMulligan never emit the decision_weights events this
-    reads, so running it against their logs would just report nothing."""
+    event log (zone_move/draw, /mulligan_take, /mulligan_bottom -- there is
+    no separate "hand contents" event, the draw events are the hand) and
+    buckets by land count. Only meaningful for an arm whose pregame decider
+    is a real MulliganNet -- AlwaysKeep/RandomMulligan never emit the
+    decision_weights events this reads."""
     by_lc = {}
     for events in game_logs:
         hand = {0: [], 1: []}
@@ -87,26 +79,15 @@ def audit_land_counts(game_logs):
 
 
 def build_probe_hands(decklist, vocab):
-    """A small, FIXED set of synthetic opening hands for one deck -- every
+    """A small, fixed set of synthetic opening hands for one deck -- every
     land count 0 through 7, built from real cards in that deck's own list
-    (cycling through the land/nonland pools if a deck has fewer than 7
-    distinct names of either) -- through the exact same build_token_set
-    pipeline decide()/update() use, so what gets probed is bit-for-bit what
-    the net actually sees, not a hand-rolled stand-in.
+    (cycling through the land/nonland pools if fewer than 7 distinct names
+    exist) -- through the same build_token_set pipeline decide()/update()
+    use, so what gets probed is exactly what the net sees.
 
-    Why FIXED hands and not "sample real dealt hands": the point is a FIXED
-    yardstick, evaluated at the SAME hands every time training pauses to
-    check in, so a change in P(mulligan) run to run reflects the net moving,
-    not a different hand being asked about. 0 lands and 7 lands are the two
-    extremes (per the owner: "0-land hands are objectively incorrect in
-    every scenario" -- 7-land, flooded, is the mirror image, though
-    2026-08-21's stratify_7land_pct experiment found the net converges to
-    KEEPING flooded hands even given real training exposure to them, plausibly
-    because mana screw -- unable to cast anything regardless of what's
-    drawn -- and mana flood -- every future draw is still castable -- are not
-    actually symmetric outcomes); every land count in between is now probed
-    too instead of only 1 and 3, so a training run's full curve is visible,
-    not four sparse points on it."""
+    Fixed rather than sampled: evaluated at the same hands every time
+    training pauses to check in, so a change in P(mulligan) reflects the net
+    moving, not a different hand being asked about."""
     names = sorted({n for n, *_ in decklist})
     lands = [n for n in names if game.CARD_DEFS[n].card_type.name == "LAND"]
     nonlands = [n for n in names if game.CARD_DEFS[n].card_type.name != "LAND"]
@@ -126,13 +107,10 @@ def build_probe_hands(decklist, vocab):
 
 
 def probe_p_mulligan(net, probes, scalars=(0.0, 1.0)):
-    """{probe name: P(mulligan)} for the net's CURRENT weights -- read-only,
-    no_grad throughout net.encode() already (see MulliganNet.encode), and
-    net.decision() here adds nothing trainable of its own, so this is safe
-    to call mid-training without disturbing the optimizer's own graph.
+    """{probe name: P(mulligan)} for the net's current weights -- read-only,
+    safe to call mid-training without disturbing the optimizer's graph.
     scalars=(mulligans_taken/HAND, on_the_play): fixed at (0, on-the-play)
-    for every probe, matching a real opening-hand decision (never past the
-    cap, always the FIRST decision of the game)."""
+    for every probe, matching a real opening-hand decision."""
     out = {}
     sc = torch.tensor([list(scalars)], dtype=torch.float32)
     with torch.inference_mode():

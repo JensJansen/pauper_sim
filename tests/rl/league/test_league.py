@@ -30,9 +30,9 @@ def _registered_pool(tmp_path):
     of 3), plus the shared/fake net+mulligan-net used to register them --
     the shared setup most of this module's checks build on."""
     pool = _fresh_pool(tmp_path)
-    # Production encoder architecture, not a shrunken one: load_snapshot_agent
-    # rebuilds the encoder at SetTransformer's own defaults (see its assert),
-    # so a snapshot written at a custom width could never be loaded back.
+    # Production encoder architecture, not shrunken: load_snapshot_agent
+    # rebuilds at SetTransformer's own defaults, so a custom-width snapshot
+    # could never load back.
     shared = SetTransformer(vocab_size=5)
     fake_net = DeckNetwork(shared, film_condition_dim=shared.d_model, non_targeting_n_actions=4)
     fake_mull = MulliganNet(fake_net.encoder, hidden=8)  # snapshots are whole agents now (deck + mulligan)
@@ -78,10 +78,8 @@ def test_register_snapshot_evicts_oldest_past_cap(tmp_path):
 def test_sample_opponent_default_checkpoint_rate_stays_live(tmp_path):
     pool, _shared, _fake_net, _fake_mull = _registered_pool(tmp_path)
     rng = random.Random(0)
-    # DEFAULT checkpoint_rate (0.0): must stay live-only EVEN THOUGH deck_a
-    # now has 3 real snapshots on disk -- a full snapshot window must never
-    # silently imply mostly-checkpoint sampling (see this module's own
-    # docstring).
+    # Default checkpoint_rate (0.0): must stay live-only even though deck_a
+    # now has 3 real snapshots on disk.
     for _ in range(200):
         name, path = pool.sample_opponent("deck_a", rng)
         if name == "deck_a":
@@ -109,14 +107,10 @@ def test_sample_opponent_checkpoint_rate_one_always_draws_snapshot(tmp_path):
 def test_sample_opponent_checkpoint_rate_half_tracks_requested_fraction(tmp_path):
     pool, _shared, _fake_net, _fake_mull = _registered_pool(tmp_path)
     rng = random.Random(0)
-    # checkpoint_rate=0.5: the live/checkpoint split must roughly track the
-    # requested rate, independent of how many snapshots exist (3 here) -- not
-    # drift with snapshot count the way a 1/(1+N) split would.
-    # Filtered to deck_a draws only: deck_b has zero snapshots and would
-    # always read as "live" regardless of rate, diluting the measured
-    # fraction if mixed in (opponent-deck selection is a SEPARATE uniform
-    # draw from the live/checkpoint decision -- see this function's own
-    # docstring on the two-level structure).
+    # checkpoint_rate=0.5: the live/checkpoint split must track the
+    # requested rate, independent of snapshot count. Filtered to deck_a
+    # draws only: deck_b has zero snapshots and would always read as live,
+    # diluting the measured fraction if mixed in.
     deck_a_draws = [p for n, p in (pool.sample_opponent("deck_a", rng, checkpoint_rate=0.5) for _ in range(4000)) if n == "deck_a"]
     checkpoint_frac = sum(1 for p in deck_a_draws if p is not None) / len(deck_a_draws)
     assert abs(checkpoint_frac - 0.5) < 0.05, f"checkpoint_rate=0.5 should draw a snapshot ~50% of the time deck_a is picked, got {checkpoint_frac:.3f}"
@@ -176,11 +170,10 @@ def test_fresh_pool_rediscovers_snapshots_from_disk(tmp_path):
 
 @pytest.mark.slow
 def test_pfsp_cold_start_is_uniform_like_the_old_behavior(tmp_path):
-    # No recorded games anywhere -- every candidate gets the SAME weight
-    # (neutral 0.5 win-rate prior), so this must reproduce the old uniform
-    # distribution's statistical shape even though the sampling ALGORITHM
-    # changed (rng.choices, not rng.choice) -- same guarantee every pre-PFSP
-    # test in this file already relies on without being rewritten for it.
+    # No recorded games anywhere -- every candidate gets the same weight
+    # (neutral 0.5 win-rate prior), reproducing the old uniform
+    # distribution's shape even though the sampling algorithm changed
+    # (rng.choices, not rng.choice).
     pool = _fresh_pool(tmp_path)
     rng = random.Random(0)
     counts = {"deck_a": 0, "deck_b": 0}
@@ -214,10 +207,9 @@ def test_pfsp_weights_toward_the_deck_currently_beating_it(tmp_path):
 
 @pytest.mark.slow
 def test_pfsp_never_starves_an_opponent_entirely(tmp_path):
-    # Even a deck the training deck has NEVER lost to keeps a nonzero floor
-    # weight (PFSP_FLOOR) -- driving it to exactly 0 would silently reintroduce
-    # catastrophic forgetting, the exact failure this pool's history exists to
-    # prevent (see this module's own docstring).
+    # Even a deck the training deck has never lost to keeps a nonzero floor
+    # weight (PFSP_FLOOR) -- driving it to 0 would reintroduce catastrophic
+    # forgetting.
     pool = _fresh_pool(tmp_path)
     rng = random.Random(1)
     for _ in range(50):
@@ -259,11 +251,9 @@ def test_opponent_stats_persist_and_reload_and_eviction_drops_stale_entries(tmp_
     assert pool2.opponent_stats["deck_a"][("deck", "deck_b")] == (1, 2), \
         "opponent_stats must round-trip through save/load exactly (1 win, 2 games)"
 
-    # Fill deck_b's snapshot window to exactly its cap (nothing evicted yet),
-    # inject a stat against the one about to age out, then push it out with one
-    # more registration -- the stale snapshot-level stat must be dropped, not
-    # because it was measured wrong, but because it's no longer sample-able by
-    # ANYONE and would otherwise be permanent dead weight.
+    # Fill deck_b's window to its cap, inject a stat against the one about
+    # to age out, then evict it -- the stale snapshot-level stat must be
+    # dropped since it's no longer sampleable by anyone.
     shared = SetTransformer(vocab_size=5, d_model=8, n_heads=2, n_layers=1, dim_feedforward=16)
     fake_net = DeckNetwork(shared, film_condition_dim=8, non_targeting_n_actions=4)
     for _ in range(3):  # cap=3 -- fills the window exactly, no eviction yet
@@ -277,7 +267,7 @@ def test_opponent_stats_persist_and_reload_and_eviction_drops_stale_entries(tmp_
         "an evicted snapshot's stats must be dropped from every training deck's opponent_stats"
 
 
-# --- PFSP_POWER direction (2026-08-13) ---
+# --- PFSP_POWER direction ---
 
 
 def _stats_for_a_hopeless_matchup(pool, training_deck):
@@ -301,13 +291,9 @@ def _share_of_hardest(power, seed=0):
 
 @pytest.mark.slow
 def test_share_of_the_hardest_matchup_decreases_as_pfsp_power_decreases():
-    """THE invariant the 2026-08-06 change violated, with no test to catch it.
-
-    weight = FLOOR + (1 - win_rate) ** POWER, and (1 - win_rate) < 1, so a
-    LARGER exponent SHARPENS concentration onto the opponent you lose to most.
-    The change was made to reduce that concentration and did the opposite,
-    sending three of four decks to 58-77% of their training games in matchups
-    they win <25% of."""
+    """weight = FLOOR + (1 - win_rate) ** POWER, and (1 - win_rate) < 1, so a
+    larger exponent sharpens concentration onto the opponent you lose to
+    most; a smaller one flattens it."""
     shares = {p: _share_of_hardest(p) for p in (0.5, 1.0, 2.0)}
     hardest = {p: s[0] for p, s in shares.items()}
     mirror = {p: s[1] for p, s in shares.items()}

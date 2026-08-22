@@ -1,11 +1,9 @@
 """Multicolor-identity card catalog: any card whose real cost or mana
 output touches 2+ colors (e.g. Rakdos Carnarium's {T}: Add {B}{R}), one
-shared bucket regardless of which pair for now -- split into per-guild
-files later only if this one gets crowded. Every card's cost/type/
-oracle-text below is a direct Scryfall pull. Sneaky Snacker's real cost
-is {U}{B} -- never actually cast in either deck that plays it (no "cast"
-spec at all: it's discarded, then returned by its own on_draw_count
-trigger), kept here only as accurate catalog metadata.
+shared bucket regardless of pair. Cost/type/oracle text is from Scryfall.
+Sneaky Snacker's real cost is {U}{B} -- never actually cast in either
+deck that plays it (no "cast" spec: discarded, then returned by its own
+on_draw_count trigger), kept here as accurate catalog metadata.
 
 AUTHORIZED SIMPLIFICATION (owner, 2026-07-31): Slippery Bogle's real cost is
 the hybrid {G/U} -- multicolor for color identity purposes (a hybrid symbol
@@ -37,12 +35,9 @@ MULTICOLOR_CARD_CATALOG = {
     "Wooded Ridgeline": CardDef("Wooded Ridgeline", CardType.LAND, None, EffectId.WOODED_RIDGELINE),
     "Rakdos Carnarium": CardDef("Rakdos Carnarium", CardType.LAND, None, EffectId.RAKDOS_CARNARIUM),
     "Jagged Barrens": CardDef("Jagged Barrens", CardType.LAND, None, EffectId.JAGGED_BARRENS),
-    # --- new decks: the four indestructible "Bridge" artifact lands
-    # (grixis_affinity / jund_wildfire). Each enters tapped, taps for one of
-    # two colors, and is BOTH a land and an artifact (extra["artifact"]) --
-    # so it counts for affinity/metalcraft and is a legal artifact-sacrifice.
-    # Indestructible (extra["indestructible"]) matters against "destroy target
-    # land" effects (Cleansing Wildfire) -- honored by state_based.destroy_permanent. ---
+    # The four indestructible "Bridge" artifact lands: each enters tapped,
+    # taps for one of two colors, and is both a land and an artifact (so it
+    # counts for affinity/metalcraft and is a legal artifact-sacrifice).
     "Drossforge Bridge": CardDef(
         "Drossforge Bridge", CardType.LAND, None, EffectId.DROSSFORGE_BRIDGE, artifact=True, indestructible=True,
     ),
@@ -55,10 +50,8 @@ MULTICOLOR_CARD_CATALOG = {
     "Slagwoods Bridge": CardDef(
         "Slagwoods Bridge", CardType.LAND, None, EffectId.SLAGWOODS_BRIDGE, artifact=True, indestructible=True,
     ),
-    # U/B tapped duals (dmir_terror). NOT artifacts. Subtype Island (+Swamp)
-    # matters for Islandcycling's "search for an Island card" (G2). Ice
-    # Tunnel is a Snow land -- snow is a no-op in this pool (no card cares),
-    # so it's not tracked, only noted.
+    # U/B tapped duals. Not artifacts. Island subtype matters for Islandcycling.
+    # Ice Tunnel is a Snow land; snow is untracked (no card in this pool cares).
     "Contaminated Aquifer": CardDef(
         "Contaminated Aquifer", CardType.LAND, None, EffectId.CONTAMINATED_AQUIFER, subtypes=("Island", "Swamp"),
     ),
@@ -79,9 +72,7 @@ MULTICOLOR_CARD_CATALOG = {
     "Terminate": CardDef("Terminate", CardType.INSTANT, {"B": 1, "R": 1}, EffectId.TERMINATE),
     "Agony Warp": CardDef("Agony Warp", CardType.INSTANT, {"U": 1, "B": 1}, EffectId.AGONY_WARP),
 
-    # --- G8: jund_wildfire. Devoid -> colorless (extra["devoid"]); the {2}{R}{G}
-    # cost is what it's paid with (green half reachable in jund, so no
-    # hybrid/color simplification here). Reach.
+    # --- G8: jund_wildfire. Devoid -> colorless. Reach.
     "Writhing Chrysalis": CardDef(
         "Writhing Chrysalis", CardType.CREATURE, {"generic": 2, "R": 1, "G": 1}, EffectId.WRITHING_CHRYSALIS,
         power=2, toughness=3, devoid=True, subtypes=("Eldrazi", "Drone"),
@@ -90,17 +81,8 @@ MULTICOLOR_CARD_CATALOG = {
 
 
 def jagged_barrens_etb(state, permanent):
-    """When this land enters, it deals 1 damage to target opponent. Real
-    "target opponent": the opponent is the only ever-legal candidate in
-    this strictly-2-player engine (no player-hexproof/protection/removal-
-    from-game mechanic exists anywhere here to make them illegal -- same
-    vacuous-restriction class as Terminate's "can't be regenerated"), so the
-    target is captured directly rather than routed through
-    begin_choose_target_player, which would wrongly also offer "yourself"
-    (real "target opponent" never does) -- see black_cards.mesmeric_fiend_
-    etb's own docstring for the identical reasoning. Target-at-promotion
-    (etb_targets: True, 603.3d); no opponent (1-player) -> nothing to
-    target, so the ETB does nothing there."""
+    """When this land enters, it deals 1 damage to target opponent. Opponent
+    captured directly (the only legal target). No-op with no opponent."""
     if len(state.players) < 2:
         return
     opponent_idx = 1 - state.active_idx
@@ -112,10 +94,8 @@ def jagged_barrens_etb(state, permanent):
 
 
 def cast_writhing_chrysalis(state, card_def):
-    """{2}{R}{G} Devoid: "When you cast this spell, create two 0/1 Eldrazi
-    Spawn" -- made as it's cast (before it resolves), then the 2/3 enters on
-    resolution. Reach + "whenever you sacrifice another Eldrazi, +1/+1" (its
-    on_sacrifice below)."""
+    """{2}{R}{G} Devoid: when you cast this spell, create two 0/1 Eldrazi
+    Spawn, then the 2/3 enters on resolution."""
     create_token(state, ELDRAZI_SPAWN_TOKEN_CARD_DEF)
     create_token(state, ELDRAZI_SPAWN_TOKEN_CARD_DEF)
     push_to_stack(state, card_def, lambda st, cd: cast_permanent_from_hand(st, cd))
@@ -133,13 +113,10 @@ def cast_terminate(state, card_def):
 
 
 def cast_agony_warp(state, card_def):
-    """{U}{B}: "Target creature gets -3/-0 until end of turn. Target creature
-    gets -0/-3 until end of turn." Two independent targets, both locked at
-    cast (precast_choice) -- they MAY be the same creature (then -3/-3), so a
-    single legal creature is enough to cast. On resolution each half applies
-    only if its own target is still a legal creature (608.2c -- a spell does
-    as much as it can); a -0/-3 that drops a creature to 0 toughness kills it
-    via the state-based-action check."""
+    """{U}{B}: Target creature gets -3/-0 until end of turn. Target creature
+    gets -0/-3 until end of turn. Two independent targets, locked at cast,
+    that may be the same creature. Each half applies only if its own
+    target is still legal at resolution."""
     idx = state.active_idx
 
     def _on_first(state, desc1):
@@ -184,12 +161,9 @@ MULTICOLOR_EFFECT_REGISTRY = {
         "mana": ("flexible", {"B", "R"}),
         "enters_tapped": True,
         "etb_trigger": lambda state, permanent: jagged_barrens_etb(state, permanent),
-        "etb_targets": True,  # target opponent captured at promotion (603.3d); the only ever-legal candidate here
+        "etb_targets": True,  # target opponent captured at promotion; only legal candidate
     },
-    # --- the four indestructible Bridge artifact lands: enter tapped, tap
-    # for one of two colors. Indestructibility (extra["indestructible"]) is
-    # honored by state_based.destroy_permanent against "destroy target land"
-    # effects (Cleansing Wildfire). ---
+    # The four indestructible Bridge artifact lands: enter tapped, tap for one of two colors.
     EffectId.DROSSFORGE_BRIDGE: {
         "mana": ("flexible", {"B", "R"}),
         "enters_tapped": True,
@@ -214,25 +188,16 @@ MULTICOLOR_EFFECT_REGISTRY = {
         "mana": ("flexible", {"U", "B"}),
         "enters_tapped": True,
     },
-    # Never actually cast (real cost is {U}{B} -- off-color for both
-    # rakdos_madness and mono_red_madness, by design): always discarded,
-    # then returned by its own on_draw_count trigger. No "cast" spec at
-    # all -- matches Generous Ent's own "never hard-cast" precedent.
+    # Never actually cast (real cost {U}{B} is off-color for both decks that
+    # play it): always discarded, then returned by its own on_draw_count trigger.
     EffectId.SNEAKY_SNACKER: {
         "keywords": {"flying"},
         "on_draw_count": {"count": 3},
-        # order_triggers: reachable the
-        # instant 2+ copies both cross their own draw-count trigger on
-        # the same draw -- a real placement-order choice, not fixed
-        # queue order, even though this trigger is otherwise "automatic"
-        # (no cast-or-decline choice of its own).
+        # order_triggers: 2+ copies crossing their draw-count trigger on the same draw need a placement-order choice.
         "pending_kinds": {"order_triggers"},
     },
     EffectId.SLIPPERY_BOGLE: {
-        # Vanilla 1/1 with hexproof for {G}. Hexproof is now a REAL targeting
-        # restriction (stats.can_be_targeted): once opponents can target
-        # across sides (faithful burn/removal), this bogle can't be the
-        # target of their spells/abilities -- the whole point of the deck.
+        # Vanilla 1/1 with hexproof for {G} -- can't be targeted by opponents' spells/abilities.
         "cast": {"resolve": lambda state, card_def: cast_permanent_from_hand(state, card_def)},
         "keywords": {"hexproof"},
     },
@@ -255,35 +220,26 @@ MULTICOLOR_EFFECT_REGISTRY = {
     EffectId.AGONY_WARP: {
         "cast": {
             "resolve": lambda state, card_def: cast_agony_warp(state, card_def),
-            # Two targets, but they may be the SAME creature, so one legal
-            # creature is enough to cast.
-            "extra_legal": lambda state: has_creature_target(state),
-            "precast_choice": True,  # both targets locked at cast (like Ram Through)
+            "extra_legal": lambda state: has_creature_target(state),  # targets may be the same creature
+            "precast_choice": True,  # both targets locked at cast
         },
         "pending_kinds": {"choose_any_target"},
     },
     EffectId.ARMADILLO_CLOAK: {
-        # Real text: enchanted creature also gets trample (combat_damage_
-        # step's own trample-aware damage assignment reads the "keywords"
-        # below) and "whenever enchanted creature
-        # deals damage, you gain that much life" -- a TRIGGERED ability,
-        # not real lifelink, so it's its OWN "lifelink": True key
-        # (stats.lifelink_count), summed across every enchanting Aura
-        # rather than deduped into the boolean "keywords" set below: two
-        # Cloaks on the same creature really do trigger twice, once each,
-        # each for the full damage dealt (see stats.lifelink_count's own
-        # docstring for why a boolean keyword would silently undercount
-        # that stacking).
+        # Enchanted creature gets trample and +2/+2, and triggers a life gain
+        # equal to damage dealt whenever it deals damage -- not real lifelink,
+        # so it's its own "lifelink" key (stats.lifelink_count), summed across
+        # every enchanting Aura rather than deduped, so two Cloaks trigger twice.
         "cast": {
             "resolve": lambda state, card_def: cast_aura(
                 state, card_def, lambda p: p.card_type == CardType.CREATURE,
             ),
             "extra_legal": lambda state: any_creature_on_either_battlefield(state),
-            "precast_choice": True,  # real MTG "enchant target creature" -- must be chosen before the stack, see drl_env._precast_choice_execute
+            "precast_choice": True,  # target chosen before the stack
         },
-        "pending_kinds": {"choose_any_target"},  # Aura: cast_aura targets any creature (either side), hexproof-aware
+        "pending_kinds": {"choose_any_target"},
         "pt_bonus": lambda state, aura: 2,
-        "toughness_bonus": lambda state, aura: 2,  # real text is +2/+2
+        "toughness_bonus": lambda state, aura: 2,
         "keywords": {"trample"},
         "lifelink": True,
     },

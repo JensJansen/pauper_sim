@@ -1,9 +1,5 @@
-"""Plot's own resolve shape (plot_to_exile).
-
-execute_madness_cast is exercised together with triggers.py/stack.py's own
-machinery -- the full discard -> exile + queue -> drain -> decision -> pay ->
-resolve chain -- in tests/game/effects/test_integration_check.py, since it's
-genuinely a multi-module scenario, not just this one function."""
+"""Plot's own resolve shape (plot_to_exile). Full discard->exile->resolve
+chain (execute_madness_cast) is covered in test_integration_check.py."""
 from game.cards import CardDef, CardType, EffectId
 from game.effects.madness_and_plot import plot_to_exile
 from game.state import GameState

@@ -47,8 +47,7 @@ def test_discard_from_hand_to_graveyard_moves_fresh_instance():
     forest = state.hand[0]
     state.hand = [forest]
     discard_from_hand_to_graveyard(state, forest)
-    # library->hand->graveyard: the graveyard holds a FRESH instance (move_card),
-    # a distinct object from the hand CardDef, not the CardDef itself.
+    # graveyard entry is a fresh instance (move_card), not the hand CardDef.
     assert state.hand == [] and [c.name for c in state.graveyard] == ["Forest"]
     assert state.graveyard[0] is not forest, "graveyard entry must be a new instance, not the discarded CardDef"
 
@@ -64,12 +63,7 @@ def test_discard_from_hand_to_graveyard_raises_when_not_in_hand():
 
 
 def test_discard_from_hand_to_graveyard_logs_zone_move():
-    # Regression: a genuine hand-cost discard (Islandcycling/Cycling/
-    # Forestcycle -- none of which touch the stack) used to leave the
-    # engine's own state.hand correctly reduced but emit no zone_move event
-    # at all, so the replay/event log kept showing the card as still in
-    # hand forever. Only this branch (not the resolving-spell one, already
-    # logged at cast) needs the event.
+    # a hand-cost discard (never touches the stack) must still emit a zone_move event
     state = _make_state()
     state.event_log = []
     find_to_hand(state, "Forest")
@@ -83,17 +77,8 @@ def test_discard_from_hand_to_graveyard_logs_zone_move():
     assert moves[-1]["reason"] == "discard"
 
 
-# Every one of these now routes through state_based.sacrifice_to_graveyard,
-# the one canonical "leave the battlefield by sacrifice" path every
-# resolution.begin_sacrifice/discard_or_sacrifice pick also goes through --
-# five of them (activate_twisted_landscape_fetch/_expedition_map/
-# _candy_trail_sac/_reckless_lackey_sac/_melded_moxite_sac) used to
-# reimplement a manual subset of it instead, which skipped
-# fire_sacrifice_triggers entirely (Gixian Infiltrator silently never saw
-# those sacrifices) AND skipped 506.4 combat removal for creature sites
-# (Reckless Lackey). Regression coverage: every site queues an
-# "on_sacrifice" entry, no exceptions -- kept as a guard against a future
-# site reintroducing its own manual bypass.
+# every sacrifice site must route through state_based.sacrifice_to_graveyard
+# so Gixian Infiltrator's on_sacrifice trigger always fires
 _SACRIFICE_SITES = (
     ("activate_twisted_landscape_fetch", activate_twisted_landscape_fetch),
     ("activate_expedition_map", activate_expedition_map),

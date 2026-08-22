@@ -38,8 +38,8 @@ def _permanent(name, card_type):
 
 
 def test_discard_mandatory_fewer_than_n_available():
-    # Mandatory discard of fewer cards than n asks for: never crashes,
-    # stops once hand is exhausted instead of running remaining negative.
+    # Mandatory discard of fewer cards than n asks for: stops once hand is
+    # exhausted instead of running remaining negative.
     state = GameState(on_the_play=True)
     state.hand = [_card("A")]
     completed = []
@@ -52,7 +52,6 @@ def test_discard_mandatory_fewer_than_n_available():
 
 
 def test_discard_mandatory_exactly_n():
-    # Mandatory discard of exactly n, from a larger hand.
     state = GameState(on_the_play=True)
     state.hand = [_card("A"), _card("B"), _card("C")]
     completed = []
@@ -67,10 +66,8 @@ def test_discard_mandatory_exactly_n():
 
 @pytest.mark.parametrize("take", [False, True], ids=["declined", "taken"])
 def test_discard_optional(take):
-    # Optional discard, both branches: declined leaves hand/graveyard
-    # untouched but still completes with an empty discarded_cards list
-    # (Highway Robbery/Melded Moxite's own "if you do" check reads
-    # bool(discarded_cards) for exactly this); taken moves the card for real.
+    # Declined leaves hand/graveyard untouched but still completes with an
+    # empty discarded_cards list; taken moves the card for real.
     state = GameState(on_the_play=True)
     state.hand = [_card("A")]
     completed = []
@@ -88,11 +85,10 @@ def test_discard_optional(take):
 
 
 def test_discard_madness_routes_to_exile_and_queues_decision():
-    # Madness routing: a discarded card whose EffectId has a "madness"
-    # registry spec goes to exile + the trigger queue, not the graveyard.
-    # No real madness card exists yet (deck assembly is out of scope), so
-    # this borrows EffectId.FILLER for the duration of the check, saving
-    # and restoring its real (empty) registry entry around it.
+    # A discarded card whose EffectId has a "madness" registry spec goes to
+    # exile + the trigger queue, not the graveyard. No real madness card
+    # exists yet, so this borrows EffectId.FILLER, restoring its real
+    # (empty) registry entry after.
     filler_entry_backup = registry.EFFECT_REGISTRY[EffectId.FILLER]
     registry.EFFECT_REGISTRY[EffectId.FILLER] = {"madness": {"cost": {"R": 1}, "resolve": lambda s, c: None}}
     try:
@@ -107,9 +103,7 @@ def test_discard_madness_routes_to_exile_and_queues_decision():
         assert [c.name for c, _stamp in state.exile] == ["Fake Madness Card"]
         assert state.trigger_queue == [{"type": "decision", "kind": "madness", "card_def": madness_card}]
 
-        # Promoting the queue (game.effects.triggers.promote_triggers_to_
-        # stack's job in real play) and declining: back out of exile, into
-        # the graveyard.
+        # Declining: back out of exile, into the graveyard.
         state.trigger_queue.clear()
         drain_completed = []
         begin_madness_decision(state, madness_card, on_complete=lambda s: drain_completed.append(True))
@@ -123,20 +117,16 @@ def test_discard_madness_routes_to_exile_and_queues_decision():
 
 
 def test_sacrifice_creature_predicate():
-    # begin_sacrifice: predicate-based, not hardcoded to creatures --
-    # exercise a creature predicate (Dread Return's own shape) against the
-    # primitive. Each pick is now a real choose_permanent sub-decision
-    # (exact name+slot), chained one at a time until n are sacrificed --
-    # never an arbitrary first-same-name match (see test below for why that
-    # distinction is load-bearing).
+    # begin_sacrifice: predicate-based, not hardcoded to creatures. Each
+    # pick is a real choose_permanent sub-decision (exact name+slot),
+    # chained one at a time -- never an arbitrary first-same-name match.
     state = GameState(on_the_play=True)
     bear, wolf = _permanent("Bear", CardType.CREATURE), _permanent("Wolf", CardType.CREATURE)
     state.battlefield = [bear, wolf, _permanent("Mountain", CardType.LAND)]
-    # sacrifice_to_graveyard (the real removal path this now goes through)
-    # treats an unregistered name as a TOKEN that ceases to exist (real
-    # Magic 111.7) rather than hitting the graveyard -- register these two
-    # fake names for real so this test's graveyard assertion below actually
-    # exercises the ordinary "real card" path, not the token one.
+    # sacrifice_to_graveyard treats an unregistered name as a TOKEN that
+    # ceases to exist (111.7) rather than hitting the graveyard -- register
+    # these two fake names so the graveyard assertion below exercises the
+    # ordinary "real card" path.
     registry.CARD_DEFS["Bear"], registry.CARD_DEFS["Wolf"] = bear.card_def, wolf.card_def
     try:
         completed = []
@@ -157,8 +147,7 @@ def test_sacrifice_creature_predicate():
 
 
 def test_sacrifice_land_predicate():
-    # ...and a land predicate (Fireblast's alt-cost, Lava Dart's Flashback)
-    # against the same primitive.
+    # A land predicate (Fireblast's alt-cost, Lava Dart's Flashback).
     state = GameState(on_the_play=True)
     state.battlefield = [_permanent("Mountain", CardType.LAND), _permanent("Bear", CardType.CREATURE)]
     completed = []
@@ -170,12 +159,9 @@ def test_sacrifice_land_predicate():
 
 
 def test_sacrifice_lets_agent_choose_which_same_named_copy():
-    # The whole point of routing sacrifice through choose_permanent instead
-    # of a plain by-name pick: two same-named permanents are NOT
-    # interchangeable once one differs from the other (an attached Aura, a
-    # counter, ...) -- the agent must be able to choose exactly which one
-    # to sacrifice, not have the engine silently take "the first one found
-    # in battlefield order."
+    # Two same-named permanents are NOT interchangeable once one differs
+    # from the other -- the agent must choose exactly which to sacrifice,
+    # not have the engine take "the first one found."
     state = GameState(on_the_play=True)
     tagged = _permanent("Bear", CardType.CREATURE)
     tagged.slot = 1
@@ -197,7 +183,6 @@ def test_sacrifice_lets_agent_choose_which_same_named_copy():
 
 
 def test_explore_land_goes_to_hand():
-    # explore (Map token / Fanatical Offering): a land on top goes to hand.
     state = GameState(on_the_play=True)
     creature = Permanent(CardDef("Explorer", CardType.CREATURE, None, None, power=1, toughness=1))
     state.battlefield = [creature]
@@ -208,8 +193,6 @@ def test_explore_land_goes_to_hand():
 
 
 def test_explore_nonland_adds_counter_then_surveils():
-    # a nonland puts a +1/+1 counter on the exploring creature, then
-    # surveil 1 (keep on top or bin) on that same card.
     state = GameState(on_the_play=True)
     creature = Permanent(CardDef("Explorer", CardType.CREATURE, None, None, power=1, toughness=1))
     state.battlefield = [creature]
@@ -222,11 +205,8 @@ def test_explore_nonland_adds_counter_then_surveils():
 
 
 def test_choose_up_to_graveyard_identity_exclusion():
-    # begin_choose_up_to_graveyard: N-ary "up to X" multi-target selection
-    # with BY-IDENTITY exclusion (two same-named copies both reachable) and
-    # optional decline (the "up to" slack). graveyard up-to-2: two
-    # same-named "Bolt" instances -- both offered, and picking one excludes
-    # only THAT instance (its twin stays choosable).
+    # Two same-named "Bolt" instances -- both offered, and picking one
+    # excludes only THAT instance (its twin stays choosable).
     st = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
     st.active_idx = 0
     g1 = st.new_instance(CardDef("Bolt", CardType.INSTANT, {"R": 1}, EffectId.FILLER))

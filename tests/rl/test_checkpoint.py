@@ -1,13 +1,9 @@
-"""Tests for rl.checkpoint: the centralized save/load helpers for this
-repo's checkpoint schemas (see rl/checkpoint.py's own module docstring).
+"""Tests for rl.checkpoint: centralized save/load for this repo's
+checkpoint schemas.
 
-Focused on the one behavior change this module was explicitly authorized to
-make while centralizing: load_deck_checkpoint applies the SAME
-optimizer-migration guard to every caller (previously only run_league.py's
-live.pt path had it; mulligan.pt would KeyError on a legacy file with no
-"optimizer" key) -- plus a round trip per schema so the on-disk shape stays
-provably unchanged.
-"""
+Covers load_deck_checkpoint's optimizer-migration guard (tolerates a
+checkpoint saved without optimizer state) and round trips for both
+schemas."""
 import os
 
 import pytest
@@ -24,13 +20,8 @@ def _tiny_encoder():
 
 
 def test_save_with_retry_recovers_from_transient_lock_then_gives_up_if_it_never_clears(monkeypatch, tmp_path):
-    """Regression (2026-08): this repo lives inside a OneDrive-synced folder,
-    and a real multi-hour training run hit torch.save failing mid-write with
-    Windows error 1224 (ERROR_USER_MAPPED_FILE) -- OneDrive transiently
-    locking the file. _save_with_retry must ride out a transient failure
-    (succeed once the lock clears) but still raise if the failure never
-    clears (a real problem -- disk full, bad path -- must not be silently
-    swallowed forever)."""
+    """_save_with_retry must ride out a transient failure (succeed once the
+    lock clears) but still raise if the failure never clears."""
     monkeypatch.setattr(ckpt_io.time, "sleep", lambda seconds: None)  # don't actually wait in a test
 
     target = str(tmp_path / "live.pt")
@@ -40,10 +31,8 @@ def test_save_with_retry_recovers_from_transient_lock_then_gives_up_if_it_never_
         calls.append(1)
         if len(calls) < 3:
             raise RuntimeError("open file failed with error code: 1224")
-        # The save is ATOMIC now: torch.save writes a TEMP file which
-        # _save_with_retry then os.replace()s into position, so a stand-in has
-        # to actually create the file it was handed or the replace has nothing
-        # to move.
+        # The save is atomic: torch.save writes a temp file that
+        # _save_with_retry then os.replace()s into position.
         open(path, "wb").close()
 
     monkeypatch.setattr(ckpt_io.torch, "save", flaky_twice)
@@ -64,8 +53,8 @@ def test_load_deck_checkpoint_round_trips_net_and_optimizer(tmp_path):
     encoder = _tiny_encoder()
     net = DeckNetwork(encoder, film_condition_dim=8, non_targeting_n_actions=4)
     opt = torch.optim.Adam(net.parameters(), lr=3e-4)
-    # Move the optimizer's state away from its fresh-init defaults so a load that
-    # actually restored it is distinguishable from one that silently skipped it.
+    # Move the optimizer off its fresh-init defaults so a real load is
+    # distinguishable from a skipped one.
     for p in net.parameters():
         if p.requires_grad:
             p.grad = torch.ones_like(p)
@@ -102,11 +91,9 @@ def test_load_deck_checkpoint_missing_path_is_a_noop(tmp_path):
     lambda enc: MulliganNet(enc, hidden=8),
 ])
 def test_load_deck_checkpoint_legacy_file_without_optimizer_key_does_not_raise(tmp_path, net_factory):
-    """The authorized fix: BOTH the deck-net and mulligan-net paths now go
-    through the same load_deck_checkpoint, so a legacy checkpoint saved
-    before the optimizer-migration guard existed (just {"net": ...}, no
-    "optimizer" key) must load cleanly on either -- not just on the deck-net
-    path, which is all the old hand-rolled code guarded."""
+    """Both the deck-net and mulligan-net paths go through
+    load_deck_checkpoint, so a legacy checkpoint (no "optimizer" key) must
+    load cleanly on either."""
     encoder = _tiny_encoder()
     net = net_factory(encoder)
     opt = torch.optim.Adam([p for p in net.parameters() if p.requires_grad], lr=1e-3)
@@ -137,16 +124,11 @@ def test_snapshot_round_trips_trunk_hidden_and_optional_mulligan(tmp_path):
 
 @pytest.mark.slow
 def test_the_encoder_is_a_registered_child_of_its_deck_net():
-    """The inverse of what this file used to assert. While the perception
-    stack was SHARED across every deck it was deliberately kept OUT of
-    net.state_dict() (object.__setattr__), so that one instance could not be
-    rewound by loading some other deck's checkpoint. Each deck now owns its
-    encoder, and ownership is the point: it must ride along in the checkpoint,
-    or a saved policy would come back paired with random perception.
-
-    MulliganNet is the one that still holds a plain reference -- it reads its
-    deck's embedding but is trained by its own REINFORCE optimizer, which must
-    not also be stepping the encoder PPO owns."""
+    """Each deck owns its encoder, so it must ride along in the checkpoint --
+    a saved policy would otherwise come back paired with random perception.
+    MulliganNet holds a plain reference instead: it reads its deck's
+    embedding but trains via its own REINFORCE optimizer, which must not
+    also step the encoder PPO owns."""
     net = DeckNetwork(_tiny_encoder(), film_condition_dim=8, non_targeting_n_actions=4)
     mull = MulliganNet(net.encoder)
 
@@ -157,11 +139,8 @@ def test_the_encoder_is_a_registered_child_of_its_deck_net():
 
 @pytest.mark.slow
 def test_freezing_one_net_leaves_another_nets_encoder_alone():
-    """rl.league.league.LeaguePool.load_snapshot_agent sweeps requires_grad=False over
-    net.parameters(), and that sweep now DOES reach the encoder -- which is
-    correct, because the encoder belongs to that frozen snapshot alone. What
-    must not happen is one net's freeze reaching another's perception, the
-    failure that made unfreezing impossible under the shared design."""
+    """Freezing one net's requires_grad must reach its own encoder (a
+    registered child) but never another net's."""
     frozen = DeckNetwork(_tiny_encoder(), film_condition_dim=8, non_targeting_n_actions=4)
     other = DeckNetwork(_tiny_encoder(), film_condition_dim=8, non_targeting_n_actions=4)
 
@@ -173,15 +152,11 @@ def test_freezing_one_net_leaves_another_nets_encoder_alone():
 
 
 def test_a_save_killed_mid_write_leaves_the_previous_checkpoint_intact(monkeypatch, tmp_path):
-    """The reason _save_with_retry is atomic. torch.save streams into its
-    destination, truncating it first, so a write that dies partway used to
-    leave a truncated file that had ALREADY destroyed the previous good
-    checkpoint -- and live.pt carries the entire training history (22,848
-    games/deck at the time this was written), so that is unrecoverable, not
-    merely a lost session.
-
-    Writing to a temp file and os.replace()ing it means `path` always names
-    either the complete old checkpoint or the complete new one."""
+    """Atomicity: torch.save streams into the destination, truncating it
+    first, so a write that dies partway would otherwise destroy the
+    previous good checkpoint. Writing to a temp file and os.replace()ing it
+    means `path` always names either the complete old or complete new
+    checkpoint."""
     monkeypatch.setattr(ckpt_io.time, "sleep", lambda seconds: None)
     target = str(tmp_path / "live.pt")
 
@@ -189,8 +164,7 @@ def test_a_save_killed_mid_write_leaves_the_previous_checkpoint_intact(monkeypat
     assert torch.load(target, weights_only=False)["generation"] == 1
 
     def killed_mid_write(obj, path):
-        # Half a file on disk, then the process dies -- exactly what an OOM
-        # kill or Ctrl-C during torch.save looks like.
+        # Half a file on disk, then the process dies mid-write.
         with open(path, "wb") as handle:
             handle.write(b"\x00" * 2048)
         raise RuntimeError("killed mid-write")

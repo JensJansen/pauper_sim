@@ -2,14 +2,14 @@
 extra-cost ("tap another creature") sources, mana filters (Conduit Pylons/
 Barrels of Blasting Jelly), and Chromatic Star's choose_mana_color.
 
-None of these carry a _pending_gate (605.1a/605.3b -- a mana ability never uses
-the stack and doesn't require priority), except the shared choose_color
-mana_subdecision buttons and choose_mana_color, which are pending-kind-gated.
-That is what makes CR 601.2f work: a mana ability stays legal during an open
-payment, which under cast-then-pay is the normal way mana gets produced.
+None of these carry a _pending_gate (605.1a/605.3b: a mana ability never
+uses the stack or requires priority), except the shared choose_color
+mana_subdecision buttons and choose_mana_color, which are pending-kind-
+gated. That is what makes CR 601.2f work: a mana ability stays legal
+during an open payment, the normal way mana gets produced under
+cast-then-pay.
 
-Two rules cut across every entry point here, both added with cast-then-pay
-(2026-08-17):
+Two rules cut across every entry point here:
   _mana_timing_legal   WHEN a mana ability may be activated at all -- during a
                        payment (faithful, any phase), or speculatively in the
                        active player's own main phase (the one AUTHORIZED
@@ -29,8 +29,7 @@ _mana_ability_options_cache = None  # (state, result) -- one legal_action_mask s
 
 def _cached_mana_ability_options(state):
     """Memoizes game.mana_ability_options(state) for one legal_action_mask
-    sweep -- every "Tap X for <color>" row's legal() calls it, so a sweep would
-    otherwise recompute the identical battlefield scan once per mana row."""
+    sweep, since every "Tap X for <color>" row's legal() calls it."""
     global _mana_ability_options_cache
     if _mana_ability_options_cache is None or _mana_ability_options_cache[0] is not state:
         _mana_ability_options_cache = (state, game.mana_ability_options(state))
@@ -77,14 +76,13 @@ def _mana_timing_legal(state):
 
 def _mana_ability_legal(name, color):
     """Legal iff a source named `name` can produce `color` right now
-    (game.mana_ability_options; color=None for fixed/tron/count sources), the
-    timing window allows it (_mana_timing_legal), and tapping it that way leaves
+    (game.mana_ability_options; color=None for fixed/tron/count sources),
+    the timing window allows it (_mana_timing_legal), and tapping it leaves
     an open payment still finishable (game.payment_survives).
 
     No `_pending_gate` attribute, so legal_action_mask always calls this
-    regardless of what is pending -- which is what makes CR 601.2f work: a mana
-    ability is legal mid-payment, and under cast-then-pay that is the normal
-    way mana gets produced."""
+    regardless of what is pending, which is what makes a mana ability
+    legal mid-payment (CR 601.2f)."""
     def legal(state):
         if not _mana_timing_legal(state) or (name, color) not in _cached_mana_ability_options(state):
             return False
@@ -97,10 +95,10 @@ def _mana_ability_legal(name, color):
 
 
 def _find_mana_source(state, name, color):
-    """The specific untapped, available permanent named `name` that can produce
-    `color` now -- same-named sources are fungible, but `color` narrows to the
-    one flexible/granted source that can make it (e.g. an Abundant-Growth land).
-    Mirrors mana_ability_options' per-permanent gates (tap-lock, extra cost)."""
+    """The untapped, available permanent named `name` that can produce
+    `color` now (`color` narrows to the flexible/granted source that can
+    make it, e.g. an Abundant Growth land). Mirrors mana_ability_options'
+    per-permanent gates (tap-lock, extra cost)."""
     for p in state.battlefield:
         if p.card_def.name != name or p.tapped or game.tap_summoning_locked(state, p):
             continue
@@ -119,12 +117,9 @@ _mana_source_cache = None  # (state, {(name, color): Permanent or None}) -- one 
 
 
 def _cached_mana_source(state, name, color):
-    """Memoizes _find_mana_source(state, name, color) per (name, color) for one
-    legal_action_mask sweep -- every extra-tap row sharing a (name, color) pair
-    (one per target name/slot) would otherwise re-scan state.battlefield from
-    scratch; same "profiled, not guessed" caching _cached_battlefield_lookup/
-    _cached_mana_ability_options already apply to the analogous per-row scans
-    above."""
+    """Memoizes _find_mana_source per (name, color) for one legal_action_mask
+    sweep, since every row sharing a (name, color) pair would otherwise
+    re-scan state.battlefield from scratch."""
     global _mana_source_cache
     if _mana_source_cache is None or _mana_source_cache[0] is not state:
         _mana_source_cache = (state, {})
@@ -143,16 +138,11 @@ def _mana_ability_execute(name, color):
 
 
 def _find_mana_extra_source(state, name):
-    """Same as _find_mana_source, minus the color-producibility check --
-    for a mana_extra_choose source (Saruli Caretaker), the color isn't
-    chosen until the SECOND stage of its mana_subdecision (601.2f-shaped:
-    the cost -- tapping a creature -- is paid before the color-choice
-    effect resolves), so there's no color to check availability against
-    yet at this point. Only mana_extra_choose currently exists on one card
-    with no per-instance color restriction, so no generic color-dependent
-    availability case is being dropped here -- see _mana_subdecision_color_
-    legal for where that check properly lives instead, against the
-    already-resolved source."""
+    """Same as _find_mana_source, minus the color-producibility check: for
+    a mana_extra_choose source (Saruli Caretaker), the color isn't chosen
+    until the second stage of its mana_subdecision, so there's no color to
+    check yet. See _mana_subdecision_color_legal for where that check
+    lives instead."""
     for p in state.battlefield:
         if p.card_def.name != name or p.tapped or game.tap_summoning_locked(state, p):
             continue
@@ -164,32 +154,20 @@ def _find_mana_extra_source(state, name):
 
 
 def _mana_extra_choose_legal(name):
-    """Saruli-Caretaker-shaped mana ability whose additional cost is tapping
-    ANOTHER untapped creature (registry "mana_extra_choose") -- a COST
-    CHOICE (602.5g), decided as the FIRST stage of a mana_subdecision (see
-    game.resolution.begin_mana_subdecision), not enumerated as a fixed-table
-    row anymore. No pending-resolution gate (same reasoning
-    _mana_ability_legal's own docstring gives -- a mana ability is legal in
-    ANY priority window, even mid-resolution of anything else, 605.1a/
-    605.3b) -- gate-free is load-bearing here specifically (confirmed:
-    Quirion Ranger + an opposing Ward creature reaches this exact window in
-    real league play, see the self-check below). Legal iff a source of this
-    name is currently untapped/available AND at least one OTHER creature
-    satisfies the source's own mana_extra_choose predicate. Looks up
-    extra_pred off the resolved permanent's own card_def.effect_id (not a
-    closed-over table-build-time value) -- same reasoning
-    _mana_extra_choose_execute gives, handles a token-sourced name
-    identically to a real decklist name. Timing follows the shared
-    _mana_timing_legal rule, same as every other mana entry point.
+    """Saruli-Caretaker-shaped mana ability whose additional cost is
+    tapping another untapped creature (registry "mana_extra_choose") -- a
+    cost choice (602.5g), decided as the first stage of a
+    mana_subdecision. No pending-resolution gate: a mana ability is legal
+    in any priority window (605.1a/605.3b). Legal iff a source of this
+    name is untapped/available and at least one other creature satisfies
+    the source's mana_extra_choose predicate. Timing follows the shared
+    _mana_timing_legal rule.
 
-    Mid-payment a candidate only counts if tapping IT specifically leaves the
-    payment finishable (mana_extra_choose_target_safe). Checking that HERE, and
-    not only at the target-choice step, is load-bearing: the choose_target stage
-    takes EXCLUSIVE priority (legal_action_mask suppresses every other action
-    while a mana_subdecision is open), so activating with no safe target left
-    would produce an all-False mask with no way back -- the exact failure this
-    gate exists to prevent. Any-not-all: one safe candidate is enough to
-    activate, and the target step then offers precisely those."""
+    Mid-payment a candidate only counts if tapping it specifically leaves
+    the payment finishable (mana_extra_choose_target_safe) -- checked here,
+    not only at the target-choice step, because that step takes exclusive
+    priority and offers no way back if it finds zero safe targets. One
+    safe candidate is enough to activate."""
     def legal(state):
         if not _mana_timing_legal(state):
             return False
@@ -207,35 +185,25 @@ def _mana_extra_choose_legal(name):
 
 
 def mana_extra_choose_target_safe(state, target):
-    """Would tapping `target` as a mana_extra_choose source's additional cost
-    (Saruli Caretaker's "tap another untapped creature you control") leave an
-    open payment still finishable?
-
-    Net effect on supply: `target` loses whatever it could still have produced,
-    and one pip of any color arrives once the color stage resolves. Saruli
-    itself contributes nothing to remove -- game.source_mana_units deliberately
-    excludes mana_extra_choose sources from the count, for exactly the reason
-    this function has to exist.
-
-    So it is a SWAP, not a gain, and in spy_combo the creature tapped is usually
-    itself a mana source (Overgrown Battlement, Wall of Roots, Lotus Petal).
-    Tapping Overgrown Battlement with several defenders out trades several green
-    pips for one, which is a real loss and can strand a payment. Shared with
-    rl.decision.action_bridge, which masks the target choice with this same predicate so
-    the two can never disagree about which creatures are on offer."""
+    """Would tapping `target` as a mana_extra_choose source's additional
+    cost (e.g. Saruli Caretaker's "tap another untapped creature") leave an
+    open payment still finishable? `target` loses whatever it could still
+    have produced, and one pip of any color arrives once the color stage
+    resolves -- a swap, not a gain, which is a real loss if `target` is
+    itself a mana source (e.g. Overgrown Battlement). Shared with
+    rl.decision.action_bridge, which masks the target choice with this same
+    predicate."""
     return game.payment_survives(state, game.units_after(
         state, tapped=[target], produced=[game.COLORS]))
 
 
 def _mana_extra_choose_execute(name):
-    """Resolves the specific source permanent NOW (not deferred) -- the
-    pointer-routed target-choice step needs to identity-exclude THIS exact
-    copy, not just any creature named `name`, when multiple same-named
-    sources exist (two Saruli Caretakers: tapping one to pay for the
-    other's ability is legal; tapping itself is not). extra_pred is looked
-    up off the resolved permanent's own card_def.effect_id, not
-    game.CARD_DEFS[name] -- a token-sourced name (extra_tap_source_names'
-    own token_card_defs union below) has no CARD_DEFS entry at all."""
+    """Resolves the specific source permanent now (not deferred): the
+    target-choice step must identity-exclude this exact copy, not just any
+    creature named `name` (two Saruli Caretakers: tapping the other is
+    legal, tapping itself is not). extra_pred is looked up off the
+    resolved permanent's card_def.effect_id, not game.CARD_DEFS[name],
+    since a token-sourced name has no CARD_DEFS entry."""
     def execute(state):
         p = _find_mana_extra_source(state, name)
         extra_pred = game.EFFECT_REGISTRY[p.card_def.effect_id]["mana_extra_choose"]
@@ -246,21 +214,15 @@ def _mana_extra_choose_execute(name):
 def _mana_subdecision_color_legal(color):
     """Shared "Produce <color>" button, reused by every gate-free mana
     ability with a final choose-a-color step (Saruli Caretaker;
-    filter_mana cards) -- legal only mid the choose_color stage of a
-    mana_subdecision, and only if whichever ability opened it says this
-    color is currently offerable (state.mana_subdecision["can_produce"],
-    bound as a closure by that opener -- see game.resolution.
-    begin_mana_color_choice's own docstring for what each real caller
-    binds). Generic: this function has no idea which ability is asking.
+    filter_mana cards). Legal only mid the choose_color stage of a
+    mana_subdecision, and only if the ability that opened it says this
+    color is offerable (state.mana_subdecision["can_produce"]).
 
-    Mid-payment it must additionally not strand that payment. This is the LAST
-    gate in the chain and the one that actually pins the color down: everything
-    upstream (the filter's activation, Saruli's activation and target) had to
-    reason optimistically about a color the agent had not chosen yet, crediting
-    one pip of ANY of the offered colors. Choosing here is where that optimism
-    is cashed in, so choosing a color the remaining cost cannot use is refused
-    rather than allowed to strand -- the same shape as tapping a dual land for
-    the wrong half, which is how this class of bug was first found."""
+    Mid-payment it must additionally not strand that payment: everything
+    upstream reasoned optimistically about a color not yet chosen,
+    crediting one pip of any offered color, so choosing a color the
+    remaining cost cannot use is refused here rather than allowed to
+    strand."""
     def legal(state):
         if not state.active_mana_subdecision["can_produce"](state, color):
             return False
@@ -303,10 +265,9 @@ _filter_source_cache = None  # (state, {name: Permanent or None}) -- one legal_a
 
 
 def _cached_filter_source(state, name):
-    """Memoizes _find_filter_source(state, name) per source name for one
-    legal_action_mask sweep -- every (output_color, input_color) row for the
-    same filter source (up to len(POOL_COLORS)**2 of them) would otherwise
-    re-scan state.battlefield from scratch."""
+    """Memoizes _find_filter_source per source name for one
+    legal_action_mask sweep, since every (output_color, input_color) row
+    for the same source would otherwise re-scan state.battlefield."""
     global _filter_source_cache
     if _filter_source_cache is None or _filter_source_cache[0] is not state:
         _filter_source_cache = (state, {})
@@ -317,30 +278,17 @@ def _cached_filter_source(state, name):
 
 
 def _filter_mana_legal(name, input_color):
-    """A mana filter's OWN activation cost -- "{1}[, {T}]: add one mana of
-    any color", the {1} half -- paid immediately as a flat fixed-table
-    action, one row per (source, input_color): which floating pip pays the
-    {1}. The output half (which color comes out) is a separate, later
-    choice via the shared choose_color mana_subdecision stage (see
-    _filter_mana_execute) -- reusing Saruli Caretaker's own machinery,
-    since "offer a small set of colors, then produce the chosen one" is
-    identical between the two abilities; only how each PAYS to get there
-    differs. Never a nested pay_cost for the {1} itself (which would risk
-    clobbering whatever pending_resolution is already open --
-    state.pending_resolution is a single slot, not a stack; same reasoning
-    state.mana_subdecision's own docstring gives) -- no pending-resolution
-    gate, per 605.1a. Legal iff the timing window allows a mana ability at
-    all (_mana_timing_legal), an unused filter named `name` exists, the pool
-    already holds a floating `input_color` pip (any color, including
-    colorless, can pay a generic cost), and converting that pip away would
-    not strand an open payment (_filter_would_strand_payment). Uses the
-    sweep-scoped _cached_filter_source cache, not a fresh scan -- this
-    legal() runs once per (source, input_color) row, POOL_COLORS-many per
-    source now instead of POOL_COLORS x len(colors).
-
-    A filter needs a floating pip to convert, so outside a payment it is
-    reachable only in a main phase anyway -- the timing gate is what makes
-    that a stated rule rather than an accident of when the pool is non-empty."""
+    """A mana filter's own activation cost -- "{1}[, {T}]: add one mana of
+    any color", the {1} half -- paid immediately, one row per (source,
+    input_color). The output half is a separate later choice via the
+    shared choose_color mana_subdecision stage (_filter_mana_execute),
+    reusing Saruli Caretaker's own machinery. No pending-resolution gate
+    (605.1a); never a nested pay_cost for the {1}, since
+    state.pending_resolution is a single slot, not a stack. Legal iff the
+    timing window allows a mana ability (_mana_timing_legal), an unused
+    filter named `name` exists, the pool holds a floating `input_color`
+    pip, and converting it away would not strand an open payment
+    (_filter_would_strand_payment)."""
     def legal(state):
         if not _mana_timing_legal(state) or _cached_filter_source(state, name) is None \
                 or state.mana_pool.get(input_color, 0) <= 0:
@@ -350,31 +298,17 @@ def _filter_mana_legal(name, input_color):
 
 
 def _filter_would_strand_payment(state, name, input_color):
-    """Would converting one `input_color` pip away right now make an ALREADY-
-    BEGUN payment -- or one about to begin the instant the current choice
-    resolves -- impossible to finish?
+    """Would converting one `input_color` pip away right now make an
+    already-begun payment (or one about to begin) impossible to finish?
 
-    A filter changes THREE things, and only asking about all three is correct:
-    the input pip is spent, the filter's own SOURCE is tapped, and one pip of
-    its output colors arrives (which color is a later agent choice, gated in
-    turn by _mana_subdecision_color_legal). So rebuild the unit list as it would
-    be afterwards and ask game.payment_survives, rather than reasoning about any
-    one of the three.
-
-    The middle one is the trap. A filter is one pip in and one pip out, so the
-    POOL's size is invariant -- which is why the float-first version of this
-    check looked only at whether the pool would still hold enough of the owed
-    color. But Conduit Pylons is both a filter AND a plain {C} mana source, and
-    under cast-then-pay an untapped Pylons is counted toward affordability, so
-    filtering with it deletes a unit the cast was allowed on: pool {U}, owing
-    {2}, Pylons the only other source -- payable on 2 units, and 1 left after.
-    The old check saw `remaining["U"] == 0` and allowed exactly that.
-
-    Both windows a payment can be pending in are covered, because
-    game.payment_survives asks game.outstanding_cost: an open pay_cost, and the
-    real pretrain crash that first motivated this check (monster_tron, turn 10:
-    tap Forest for the only {G}, cast Crop Rotation for {G}, then filter that
-    {G} into {U} -- all-False mask, RuntimeError)."""
+    A filter changes three things -- the input pip is spent, the source is
+    tapped, and one pip of an output color arrives -- so this rebuilds the
+    unit list as it would be afterward and asks game.payment_survives,
+    rather than reasoning about pool size alone. The source-tapping part
+    matters because a filter source (e.g. Conduit Pylons) can also be a
+    plain mana source counted toward affordability: filtering with it can
+    delete a unit the cast was relying on even though the pool's total size
+    is unchanged."""
     source = _cached_filter_source(state, name)
     if source is None:
         return False
@@ -385,13 +319,10 @@ def _filter_would_strand_payment(state, name, input_color):
 
 def _filter_mana_execute(name, input_color):
     """Pays the {1} immediately (taps/flags the resolved source, spends the
-    chosen input pip -- exactly what the pre-split atomic execute did for
-    this half, unchanged), then opens the SHARED choose_color
-    mana_subdecision stage (game.begin_mana_color_choice) for the output
-    half -- can_produce/on_choose_color read the resolved source's own
-    "filter_mana" spec fresh (not a closed-over table-build-time value),
-    same reasoning _mana_extra_choose_execute's own docstring gives for a
-    token-sourced name."""
+    chosen input pip), then opens the shared choose_color mana_subdecision
+    stage (game.begin_mana_color_choice) for the output half. can_produce/
+    on_choose_color read the resolved source's "filter_mana" spec fresh,
+    not a closed-over table-build-time value."""
     def execute(state):
         p = _find_filter_source(state, name)
         if name == "Barrels of Blasting Jelly":

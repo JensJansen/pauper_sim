@@ -6,53 +6,38 @@ from . import stats
 from .. import mana, registry, resolution
 from ..cards import CardType
 
-HAND_SIZE_LIMIT = 7  # real Magic's own rule -- not a per-config tunable, no card in this pool ever modifies it
+HAND_SIZE_LIMIT = 7  # real Magic's own rule; no card in this pool modifies it
 
 
 def is_token(name):
     """True iff `name` isn't a real card in the decklist registry -- the
-    engine's only way to recognize a token, since tokens are never added to
-    registry.CARD_DEFS."""
+    only way to recognize a token, since tokens are never in registry.CARD_DEFS."""
     return name not in registry.CARD_DEFS
 
 
 def departing_card_def(permanent):
-    """The CardDef that actually goes to another zone when `permanent` leaves the
-    battlefield. For a transformed double-faced permanent (Insectile Aberration)
-    that's its FRONT face (Delver of Secrets) -- a DFC is only its back face while
-    on the battlefield; in every other zone it's the front face (real Magic 712.4a).
-    This also keeps the is-token check honest: the back face's name isn't in
-    registry.CARD_DEFS, so without reverting here a dying Insectile Aberration would
-    be misread as a token and deleted instead of putting Delver in the graveyard."""
+    """The CardDef that goes to another zone when `permanent` leaves the
+    battlefield. For a transformed DFC (Insectile Aberration) that's its
+    front face (Delver of Secrets) -- a DFC is only its back face while on
+    the battlefield (712.4a); also keeps the is-token check honest, since
+    the back face's name isn't in registry.CARD_DEFS."""
     return permanent.flags.get("front_card_def", permanent.card_def)
 
 
 def check_state_based_actions(state):
-    """Creature-death check: every creature on either battlefield with lethal
-    marked damage (>= effective toughness), or any damage from a deathtouch
-    source, dies -- to the graveyard, its Aura(s) orphaned. Collects all dead
-    FIRST, then removes them (real Magic's simultaneous SBA semantics, not a
-    one-at-a-time recheck). Scans the whole battlefield -- a strict, cheap
-    superset of "just-damaged," since this runs before every priority round,
-    not just once per combat.
-
-    Every candidate's enchanting Auras are looked up via ONE battlefield scan
-    (stats.enchanting_by_target) instead of stats.permanent_toughness
-    re-scanning per creature -- same fetch-once-reuse pattern as combat.
-    combat_damage_step's own creature_facts; see that shared helper's own
-    docstring for why this snapshot is safe today.
-
-    Also the single choke point (every candidate, every priority round) that
-    logs "stats_changed" events for the replay viewer when logging is on --
-    see _log_stat_changes below."""
+    """Creature-death check: every creature on either battlefield with
+    lethal marked damage, or any deathtouch damage, dies to the graveyard,
+    its Auras orphaned. Collects all dead first, then removes them
+    (simultaneous SBA semantics). Also the choke point that logs
+    "stats_changed" events for the replay viewer (see _log_stat_changes)."""
     candidates = [
         p for player in state.players for p in player.battlefield if p.card_type == CardType.CREATURE
     ]
     enchanting_by_target = stats.enchanting_by_target(state) if candidates else {}
     if state.event_log is not None:
         _log_stat_changes(state, candidates, enchanting_by_target)
-    # flags["deathtouched"] (set by combat only on a real deathtouch hit)
-    # implies damage was dealt (704.5h); toughness <= 0 is caught too (0 >= 0).
+    # flags["deathtouched"] (set by combat on a real deathtouch hit) implies
+    # damage was dealt (704.5h); toughness <= 0 is caught too (0 >= 0).
     dead = [
         p for p in candidates
         if p.damage_marked >= stats.permanent_toughness(state, p, enchanting_auras=enchanting_by_target.get(id(p), ()))
@@ -63,18 +48,11 @@ def check_state_based_actions(state):
 
 
 def _log_stat_changes(state, candidates, enchanting_by_target):
-    """Emits a "stats_changed" event for any creature whose effective power/
-    toughness (stats.permanent_power/permanent_toughness -- the single source
-    of truth already folding in counters, until-EOT pump, Auras, animate/
-    transform, and conditional static-self boosts) differs from what was last
-    logged for it, so the replay viewer can show a creature's CURRENT stats
-    instead of just its printed ones frozen at zone-entry (game.effects.
-    casting.enters_battlefield only ever logs the printed base). The last-
-    logged value is cached on the permanent itself (flags["_logged_pt"]) so
-    this only fires on a real change, not every priority round. Gated by the
-    caller on state.event_log being on -- this runs before every priority
-    round, so it would otherwise cost two stats.py calls per creature on
-    every bulk-training rollout for a value nothing ever reads."""
+    """Emits a "stats_changed" event for any creature whose effective
+    power/toughness differs from what was last logged (cached on
+    flags["_logged_pt"]), so the replay viewer shows current stats instead
+    of the printed base logged at zone-entry. Caller gates this on
+    state.event_log being on, to skip the cost when nothing reads it."""
     for p in candidates:
         auras = enchanting_by_target.get(id(p), ())
         pt = (stats.permanent_power(state, p, enchanting_auras=auras),
@@ -86,40 +64,18 @@ def _log_stat_changes(state, candidates, enchanting_by_target):
 
 def _queue_leave_triggers(state, permanent, owner_idx):
     """Queue a leaves-the-battlefield triggered ability (Mesmeric Fiend's
-    exiled-card return) for a permanent that JUST left the battlefield, so
-    game.turn's priority round puts it on the stack (real Magic 603.3 -- an
-    LTB trigger goes on the stack, doesn't take effect the instant it fires).
-    `permanent` is already off the battlefield but still carries whatever the
-    trigger needs on its flags (the linked exiled card). No-op unless the
+    exiled-card return) for a permanent that just left the battlefield,
+    for game.turn's priority round to put on the stack. No-op unless the
     card's effect_id has an "ltb_trigger" spec.
 
-    Appends to owner_idx's OWN trigger_queue (state.players[owner_idx], not
-    the state.trigger_queue active-player proxy): state-based death checks
-    scan BOTH battlefields every priority round regardless of whose turn it
-    is (check_state_based_actions above), so the dying permanent's owner can
-    be the NON-active player (their blocker died in combat, or a removal
-    spell killed their creature, on the active player's own turn) -- writing
-    through the proxy would silently misfile their trigger into the active
-    player's queue, then hand the active player an order_triggers choice
-    naming a card from the OPPONENT's deck (drl_env's own coverage guard
-    asserts every name it offers a player belongs to that player's own deck,
-    so a misfiled trigger here would surface as exactly that kind of
-    cross-deck name leak).
-    game.effects.triggers.promote_triggers_to_stack reads every player's own
-    queue, each ordering only ITS OWN simultaneous triggers (603.3b
-    APNAP), so this is the one and only place that needs the true owner
-    threaded through instead of the proxy.
+    Appends to owner_idx's own trigger_queue directly, not the
+    state.trigger_queue active-player proxy: state-based death checks scan
+    both battlefields regardless of whose turn it is, so the dying
+    permanent's owner can be the non-active player -- writing through the
+    proxy would misfile the trigger into the active player's own queue.
 
-    Called from the two -- and, in this card pool, only -- ways a creature
-    (the sole card type with an LTB trigger here) leaves: death (below) and
-    being sacrificed (sacrifice_to_graveyard, further down this same module
-    -- every sacrifice path, including resolution.begin_sacrifice/Highway
-    Robbery's own discard-or-sacrifice, routes through it rather than each
-    inlining its own copy of this owner-threading logic). No other removal
-    path in this pool takes a creature off the battlefield (bounce is
-    lands-only; every exile ability exiles its own non-creature source), so
-    this is complete, not a simplification -- thread it through a new
-    removal site if a future card ever makes one reachable."""
+    Called from the two ways a creature leaves: death (below) and being
+    sacrificed (sacrifice_to_graveyard, further down this module)."""
     spec = registry.EFFECT_REGISTRY.get(permanent.card_def.effect_id, {})
     if spec.get("ltb_trigger") is not None:
         state.players[owner_idx].trigger_queue.append(
@@ -127,40 +83,32 @@ def _queue_leave_triggers(state, permanent, owner_idx):
 
 
 def _destroy_creature(state, permanent):
-    """One creature's death: battlefield -> graveyard, orphaning its Aura(s).
-    Finds the owning PlayerState by membership, NOT the active-player proxy --
-    combat runs with active_idx on the ATTACKER, but the dying creature can be
-    the DEFENDER's blocker, whose zones the proxy would get wrong (or raise on
-    battlefield.remove).
+    """One creature's death: battlefield -> graveyard, orphaning its Auras.
+    Finds the owning PlayerState by membership, not the active-player proxy
+    (combat can run with active_idx on the attacker while the dying creature
+    is the defender's blocker).
 
-    A TOKEN (name not in registry.CARD_DEFS) ceases to exist -- never added to
-    a graveyard (real Magic; the observation encoding also keys graveyards by
-    real decklist names, so a token there would corrupt the next obs).
+    A token ceases to exist -- never added to a graveyard.
 
-    Three orphan outcomes, each a fixed per-card registry flag: a Bestowed
-    permanent (Nyxborn Hydra, "becomes_creature_when_orphaned") STAYS and
-    reverts to a creature (clear type_override; counters untouched) -- checked
-    first, mutually exclusive with the zone moves; Rancor
-    ("returns_to_hand_when_orphaned") returns to hand; every other Aura goes to
-    its controller's graveyard (the default)."""
+    Three orphan outcomes per registry flag: a Bestowed permanent
+    ("becomes_creature_when_orphaned") stays and reverts to a creature;
+    Rancor ("returns_to_hand_when_orphaned") returns to hand; every other
+    Aura goes to its controller's graveyard (the default)."""
     owner_idx = stats.controller_idx(state, permanent)
     assert owner_idx is not None, "_destroy_creature: permanent not found on any battlefield"
     owner = state.players[owner_idx]
-    # Stashed so an ltb_trigger resolving LATER (after a priority window, by
-    # which point state.active_idx may no longer be this permanent's owner --
-    # see Nihil Spellbomb's dies-trigger) can still recover its true
+    # Stashed so an ltb_trigger resolving later can recover the true
     # controller instead of misreading whoever's turn it now is.
     permanent.flags["owner_idx"] = owner_idx
     owner.battlefield.remove(permanent)
-    from .combat import remove_from_combat  # local: combat imports this module (SBAs run in the damage step)
-    remove_from_combat(state, permanent)  # 506.4 -- see that helper for the loop this prevents
+    from .combat import remove_from_combat  # local: combat imports this module
+    remove_from_combat(state, permanent)  # 506.4
     departing = departing_card_def(permanent)  # front face for a DFC leaving the battlefield
     departed_is_token = is_token(departing.name)
     if not departed_is_token:
-        # 400.7 linked-ability tracking: stash the freshly minted graveyard
-        # instance on the dying permanent's own flags, so an ltb_trigger that
-        # needs to reference the EXACT card that died (Lembas: "shuffles it
-        # into their library") can, instead of bridging by name.
+        # 400.7 linked-ability tracking: stash the graveyard instance so an
+        # ltb_trigger needing the exact card that died (Lembas) can reference
+        # it instead of bridging by name.
         permanent.flags["graveyard_instance"] = state.move_card(departing, owner.graveyard)
     state.log_event(
         "state_based_death", permanent=(permanent.card_def.name, permanent.slot), owner_idx=owner_idx,
@@ -192,17 +140,12 @@ def _destroy_creature(state, permanent):
 
 
 def destroy_permanent(state, permanent):
-    """A targeted "destroy" effect (Cast Down/Terminate/Snuff Out destroy a
-    creature; Cleansing Wildfire destroys a land). Indestructible permanents
-    (extra["indestructible"] -- the four Bridge lands) CAN'T be destroyed:
-    the destroy simply does nothing to them (real Magic 701.7c), returning
-    False. A creature routes through _destroy_creature (Aura-orphaning, LTB,
-    token-ceases-to-exist); any other permanent type (a land) is removed to
-    its owner's graveyard directly -- no Aura/LTB in this pool attaches to a
-    non-creature. "Can't be regenerated" riders (Terminate/Snuff Out) are a
-    no-op: regeneration isn't modeled (no card in this pool grants a regen
-    shield), so there's never anything to prevent. Returns True iff actually
-    destroyed."""
+    """A targeted "destroy" effect (Cast Down/Terminate/Snuff Out a
+    creature; Cleansing Wildfire a land). Indestructible permanents
+    (extra["indestructible"]) can't be destroyed (701.7c), returning False.
+    A creature routes through _destroy_creature; any other permanent type
+    goes to its owner's graveyard directly. "Can't be regenerated" riders
+    are a no-op (regeneration isn't modeled). Returns True iff destroyed."""
     if permanent.card_def.extra.get("indestructible"):
         state.log_event("destroy_failed_indestructible", permanent=(permanent.card_def.name, permanent.slot))
         return False
@@ -221,46 +164,34 @@ def destroy_permanent(state, permanent):
         to_zone=("ceases_to_exist" if permanent_is_token else "graveyard"),
     )
     if not permanent_is_token:
-        _queue_leave_triggers(state, permanent, owner_idx)  # a "put into a graveyard from the battlefield" (dies) trigger, if any
+        _queue_leave_triggers(state, permanent, owner_idx)  # a "dies" trigger, if any
     return True
 
 
 def sacrifice_to_graveyard(state, permanent):
-    """Sacrifice a permanent: battlefield -> its owner's graveyard (or cease,
-    for a token), queuing any leaves-the-battlefield / "put into a graveyard
-    from the battlefield" (dies) trigger. The single path every "Sacrifice
-    this" ability and artifact-sacrifice cost routes through, so a dies
-    trigger (Ichor Wellspring, Chromatic Star, Nihil Spellbomb, Lembas) fires
-    no matter which effect did the sacrificing -- while battlefield->exile
-    paths (Masked Vandal's exile) deliberately do NOT go through here, so they
-    correctly don't fire a "put into a graveyard" trigger. Reuses the existing
-    ltb_trigger mechanism: in this pool these artifacts only ever leave the
-    battlefield by going to the graveyard, so ltb == dies-to-graveyard for
-    them.
+    """Sacrifice a permanent: battlefield -> its owner's graveyard (or
+    cease, for a token), queuing any dies trigger. The single path every
+    "Sacrifice this" ability and artifact-sacrifice cost routes through, so
+    a dies trigger fires no matter which effect did the sacrificing --
+    battlefield->exile paths (Masked Vandal) deliberately don't go through
+    here.
 
     Also discounts mana.mana_pool_single_pip for whatever this permanent
-    could have produced (mana.discount_departing_source) -- a mana source
-    that's leaving the battlefield anyway can never have "wastefully" tapped
-    for mana, tagged or not, so any of its own color(s) still tagged as
-    floating gets excused. Applies to every sacrifice uniformly, including
-    opponent-forced ones, since this is the one choke point all of them
-    share."""
+    could have produced (mana.discount_departing_source): a mana source
+    leaving the battlefield can never have "wastefully" tapped for mana."""
     from .shared import fire_sacrifice_triggers
 
     owner_idx = stats.controller_idx(state, permanent)
     assert owner_idx is not None, "sacrifice_to_graveyard: permanent not found on any battlefield"
     owner = state.players[owner_idx]
     mana.discount_departing_source(state, permanent, owner_idx)
-    permanent.flags["owner_idx"] = owner_idx  # see _destroy_creature's own comment -- true controller for a later-resolving ltb_trigger
+    permanent.flags["owner_idx"] = owner_idx  # true controller for a later-resolving ltb_trigger
     owner.battlefield.remove(permanent)
-    from .combat import remove_from_combat  # local: combat imports this module (SBAs run in the damage step)
-    remove_from_combat(state, permanent)  # 506.4 -- a sacrificed attacker/blocker leaves combat too
+    from .combat import remove_from_combat  # local: combat imports this module
+    remove_from_combat(state, permanent)  # 506.4
     departing = departing_card_def(permanent)  # front face for a DFC leaving the battlefield
     departed_is_token = is_token(departing.name)
     if not departed_is_token:
-        # 400.7 linked-ability tracking: see _destroy_creature's own comment --
-        # stash the fresh graveyard instance so an ltb_trigger needing the
-        # EXACT card that left (Lembas) can reference it, not bridge by name.
         permanent.flags["graveyard_instance"] = state.move_card(departing, owner.graveyard)
     state.log_event(
         "zone_move", permanent=(permanent.card_def.name, permanent.slot), from_zone="battlefield",
@@ -272,41 +203,18 @@ def sacrifice_to_graveyard(state, permanent):
 
 
 def cleanup_step(state):
-    """game.turn.Phase.END: clears combat damage off EVERY permanent, both
-    players (real Magic: damage clears at cleanup regardless of whose
-    turn it is -- iterates state.players directly, not the active-player-
-    proxied state.battlefield, which would only ever reach the active
-    player's own side), then discards the ACTIVE player down to
-    HAND_SIZE_LIMIT, real agency over which cards go via begin_discard --
-    the same machinery every other discard effect already uses, not an
-    automatic/arbitrary discard. Only the active player discards here,
-    matching real Magic's own rule (this runs once per player's own turn
-    -- the other player's hand, if any, is untouched until THEIR turn's
-    own end); no-op if already at or under the limit (begin_discard's own
-    n<=0 short-circuit handles that for free, no guard needed here).
+    """game.turn.Phase.END: clears combat damage off every permanent, both
+    players, then discards the active player down to HAND_SIZE_LIMIT via
+    begin_discard (real agency over which cards go, same machinery every
+    other discard effect uses). No-op if already at or under the limit.
 
-    Also runs check_state_based_actions right after the reset (below) so any
-    until-end-of-turn pump/debuff wearing off (Timberwatch Elf's +X/+X, Agony
-    Warp's -3/-0 / -0/-3, ...) logs its own "stats_changed" event immediately.
-    Without this, the replay/event log would keep showing the expired,
-    stale power/toughness until the NEXT check_state_based_actions call --
-    which, since Phase.UNTAP takes no priority round at all (rule 4), isn't
-    until the following turn's first priority round -- making the buff look
-    like it lasted into the opponent's whole turn even though the actual
-    game state (stats.permanent_power/toughness, read live everywhere else,
-    e.g. combat and rl.model.features) was already correct the instant cleanup ran.
-    Safe to call here: damage_marked is already zeroed above (in the same
-    loop, before this runs), so no creature can newly die from a shrinking
-    temp_toughness -- this call only ever logs, never destroys, at this
-    point in cleanup.
-
-    This is the only ceiling on hand size in an adversarial 2-player game."""
-    # `damaged` is a snapshot taken BEFORE the clearing loop below, same shape
-    # turn.untap_step's own "untapped" list used to be built in -- safe today
-    # only because nothing in that loop re-damages a permanent (no "undo"
-    # branch like untap_step's skip_next_untap). If a future effect ever
-    # needs to re-mark damage inside this same loop, log it there and stop
-    # trusting this pre-built list, the same fix untap_step needed.
+    Also runs check_state_based_actions right after the reset, so any
+    until-end-of-turn pump/debuff wearing off logs its own "stats_changed"
+    event immediately instead of only at the next priority round. Safe to
+    call here: damage_marked is already zeroed above, so this can only log,
+    never destroy, at this point in cleanup."""
+    # Snapshot taken before the clearing loop below; safe since nothing in
+    # that loop re-damages a permanent.
     damaged = [
         (p.card_def.name, p.slot) for player in state.players for p in player.battlefield if p.damage_marked > 0
     ]
@@ -325,8 +233,6 @@ def cleanup_step(state):
     check_state_based_actions(state)  # logs stats_changed for any pump/debuff that just wore off
     n = max(0, len(state.hand) - HAND_SIZE_LIMIT)
     if n > 0:
-        # One count per TURN this player over-drew and had to pitch the excess
-        # (hoarding proxy for rl.rewards.deploy_reward's loss band) -- only the
-        # hand-size cleanup discard, never any other discard effect.
+        # Hoarding proxy for rl.rewards.deploy_reward's loss band.
         state.players[state.active_idx].cleanup_discard_turns += 1
     resolution.begin_discard(state, n, optional=False, on_complete=lambda s, _cards: None)

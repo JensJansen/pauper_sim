@@ -1,12 +1,9 @@
 """A hand-authored, non-learned opponent -- the gauntlet mechanism's tier-1
 member (see README's Gauntlet section).
 
-Split out of rl/decision/agent.py 2026-08-17: agent.py is the LEARNED path (feature
-extraction, the policy's decision plumbing, SeatAgent), and a rules-based
-opponent that merely reuses that plumbing does not belong in the same file.
-The dependency is one-way -- this module imports rl.decision.agent, never the reverse --
-so nothing in the trained path can come to depend on the heuristic.
-"""
+Imports rl.decision.agent for its decision plumbing (_build_decision,
+_executor_for, _is_pass, AlwaysKeep); the dependency is one-way, so nothing
+in the trained path depends on the heuristic."""
 
 import numpy as np
 
@@ -16,11 +13,9 @@ from rl.decision.agent import (PREGAME_KINDS, AlwaysKeep, DecisionResult, _build
 
 
 def _card_name_from_cast_action(name):
-    """"Cast X" / "Cast X (free)" / "Cast X (plotted)" / "Cast X (omen)" /
-    "Cast X (prototype)" -> X, matching drl_env.build_action_table's own
-    f"Cast {name}" / f"Cast {name} ({suffix})" naming. Only ever called on a
-    name already known to start with "Cast " -- a parenthesized suffix is the
-    only other thing that can follow the card name in that scheme."""
+    """"Cast X" / "Cast X (free)" / "Cast X (plotted)" / ... -> X, matching
+    drl_env.build_action_table's naming. Only called on a name already known
+    to start with "Cast "."""
     rest = name[len("Cast "):]
     paren = rest.find(" (")
     return rest[:paren] if paren != -1 else rest
@@ -32,11 +27,9 @@ def _cmc(card_def):
 
 def _fixed_tier(name):
     """Rough priority for a legal fixed-table action when no pointer rule
-    applies: a land drop first, then a cast (ties broken by CMC below --
-    "cast the highest-cost thing you can afford"; legality already means
-    affordable), then anything else fixed (Activate, Forestcycle, Decline,
-    Abandon payment, ...), Pass only as an actual last resort -- the owner's
-    own rule order ends "...; else pass"."""
+    applies: land drop first, then a cast (ties broken by CMC -- "cast the
+    highest-cost thing affordable"), then any other fixed action, Pass as
+    last resort."""
     if name.startswith("Play land: "):
         return 3
     if name.startswith("Cast "):
@@ -62,10 +55,8 @@ def _fixed_index_named(fixed_table, fixed_legal, name):
 
 
 def _could_be_blocked_by(state, attacker, blocker):
-    """The one block restriction this engine encodes beyond raw eligibility
-    (declare_blocker_assignment's own extra_predicate; see action_bridge.py's
-    execute_pointer_choice for the same check on the real assignment path):
-    a flying attacker can only be blocked by a flying blocker."""
+    """A flying attacker can only be blocked by a flying blocker (the one
+    block restriction beyond raw eligibility)."""
     return not game.has_keyword(state, attacker, "flying") or game.has_keyword(state, blocker, "flying")
 
 
@@ -89,14 +80,11 @@ def _attack_is_worthwhile(state, attacker):
 
 
 def _blocker_worth_assigning(state, blocker):
-    """"Block to kill when possible" -- does this potential blocker
-    (state.battlefield, already block-eligible per the engine's own mask)
-    have enough power to kill at least one of the opponent's currently
-    declared attackers. Deliberately rough: doesn't re-derive already-
-    assigned/gang-block state itself -- the engine's own legal-action mask
-    is what actually restricts which blocker/attacker pairings are offered,
-    so picking a legal-but-redundant blocker here is at worst a wasted
-    action, never an illegal or crashing one."""
+    """"Block to kill when possible": does this already block-eligible
+    blocker have enough power to kill at least one of the opponent's
+    declared attackers. Deliberately rough -- picking a legal-but-redundant
+    blocker is at worst wasted, never illegal, since the engine's own mask
+    restricts which pairings are offered."""
     return any(
         _could_be_blocked_by(state, attacker, blocker)
         and game.permanent_power(state, blocker) >= game.permanent_toughness(state, attacker)
@@ -105,15 +93,11 @@ def _blocker_worth_assigning(state, blocker):
 
 
 def _heuristic_action_index(state, dec):
-    """Picks one legal index (fixed or pointer half) per the owner's rough
-    rule set: play a land if possible; else cast the highest-cost thing
-    affordable; attack a creature only if safe or a fair-or-better trade;
-    block to kill when possible; else pass. Any pointer category outside
-    attack/block/"which attacker does my just-assigned blocker hit" (a
-    resolving spell's own target choice, a sacrifice cost, ...) has no rule
-    from the owner -- falls back to the first legal option, deterministic
-    rather than guessed-at, since this bot was only asked to cover general
-    play principles, not reimplement optimal targeting for every card."""
+    """Picks one legal index per the owner's rough rule set: play a land if
+    possible; else cast the highest-cost thing affordable; attack only if
+    safe or a fair-or-better trade; block to kill when possible; else pass.
+    Any pointer category with no owner rule (a resolving spell's own target,
+    a sacrifice cost, ...) falls back to the first legal option."""
     legal = np.flatnonzero(dec.full_mask)
     n_fixed = dec.n_fixed
     fixed_legal = [i for i in legal if i < n_fixed]
@@ -138,10 +122,8 @@ def _heuristic_action_index(state, dec):
             return named
 
     elif pending is not None and pending["kind"] == "choose_opponent_permanent" and pointer_legal:
-        # The common real use of this primitive here is "which of my just-
-        # assigned blocker's legal attackers does it block" -- prefer the
-        # biggest threat among whatever's actually offered (already filtered
-        # to what THIS specific blocker may legally block).
+        # Usually "which attacker does my just-assigned blocker hit" --
+        # prefer the biggest threat among what's offered.
         return max(pointer_legal, key=lambda i: game.permanent_power(state, dec.identities[i - n_fixed]))
 
     if fixed_legal:
@@ -151,13 +133,10 @@ def _heuristic_action_index(state, dec):
 
 class HeuristicAgent:
     """A hand-authored, non-learned opponent -- the gauntlet mechanism's
-    tier-1 member (see README's Gauntlet section). Reuses the SAME legal-
-    action machinery a trained SeatAgent's main policy does (_build_decision,
-    _executor_for) but scores among the legal choices by the owner's own
-    rough, general-principle rules instead of a trained policy: a fixed,
-    non-self-play reference for catching population-wide blind spots a
-    hand-authored, never-adapting strategy wouldn't share. Pregame (mulligan)
-    delegates to AlwaysKeep -- no heuristic pregame logic was asked for."""
+    tier-1 member (see README's Gauntlet section). Reuses SeatAgent's
+    legal-action machinery (_build_decision, _executor_for) but scores among
+    legal choices by fixed, general-principle rules instead of a trained
+    policy. Pregame (mulligan) delegates to AlwaysKeep."""
 
     def __init__(self, deck_ctx):
         self.deck_ctx = deck_ctx

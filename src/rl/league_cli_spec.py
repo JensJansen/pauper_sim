@@ -1,32 +1,22 @@
 """run_league.py's CLI surface, torch-free.
 
-build_arg_parser() (moved here verbatim from run_league.py) only calls
-argparse.ArgumentParser()/add_argument() -- it never touches torch or rl.*
--- so it lives in its own module that imports nothing but argparse/stdlib,
-independent of run_league.py itself, which imports rl.model.arch/rl.model.deck/
-rl.league.league/rl.decision.agent/rl.training.train/rl.model.mulligan and, through them, torch -- a
-multi-second cost this module avoids paying just to read the flag spec.
-
-This module used to also hold LEAGUE_MODES/LEAGUE_GLOBAL, hand-authored
-UI-grouping metadata for the training-ops web UI's form -- removed along
-with that UI (2026-08-19); run_league.py's real CLI (below) is the only
-surface now."""
+build_arg_parser() only calls argparse.ArgumentParser()/add_argument() -- it
+never touches torch or rl.* -- so it lives in its own module importing
+nothing but argparse/stdlib, independent of run_league.py itself (which
+imports rl.model.arch/rl.model.deck/rl.league.league/rl.decision.agent/
+rl.training.train/rl.model.mulligan and, through them, torch)."""
 import argparse
 
 
 def build_arg_parser(description=None):
-    """description defaults to None (no --help description) since this
-    module's own __doc__ is about league_cli_spec.py, not run_league.py --
-    run_league.py's main() passes its own __doc__ explicitly so `python
-    run_league.py --help` still shows the real script's usage text unchanged."""
+    """description defaults to None; run_league.py's main() passes its own
+    __doc__ explicitly so `python run_league.py --help` shows the real
+    script's usage text."""
     parser = argparse.ArgumentParser(description=description, formatter_class=argparse.RawDescriptionHelpFormatter)
-    # Every flag below whose default is None (instead of a real value) is
-    # CONFIG-BACKED: main() resolves it as explicit-flag > --run-config /
-    # --league-config value > the hardcoded fallback commented alongside each
-    # one -- see main()'s own resolution block, the ONE place all three tiers
-    # are reconciled. None here means "the user didn't say," never "off" or
-    # "zero" -- so a config-backed value can still validly BE 0 or empty
-    # without being mistaken for "not given" (e.g. checkpoint_opponent_rate=0.0).
+    # Flags defaulting to None are CONFIG-BACKED: main() resolves them as
+    # explicit-flag > --run-config/--league-config value > hardcoded fallback
+    # (see main()'s own resolution block). None means "not given", never
+    # "off" or "zero", so a config-backed value can still validly be 0.
     parser.add_argument("--n-iterations", type=int, default=None,
                          help="Force this exact number of iterations, bypassing auto-SIZING (debugging / "
                               "one-off runs only). Never fed back into the doubling ladder, so a forced "

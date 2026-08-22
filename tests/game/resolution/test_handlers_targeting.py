@@ -31,14 +31,9 @@ def _permanent(name, card_type):
 
 
 def test_choose_opponent_permanent_targets_specific_slot():
-    # Cross-player targeting: begin_choose_opponent_permanent
-    # targets state.opponent's battlefield, addressed by (name, slot) --
-    # not name alone, since two same-named OPPOSING permanents aren't
-    # necessarily interchangeable. Only correct once the referencing player
-    # is already the active one (blocking's own defender-decision channel
-    # flips active_idx before ever calling this) -- simulated here by
-    # setting active_idx directly to "the defender," same as that channel
-    # would.
+    # Targets state.opponent's battlefield, addressed by (name, slot).
+    # Simulates blocking's own defender-decision channel by setting
+    # active_idx directly to "the defender."
     attacker_bogle_1 = _permanent("Slippery Bogle", CardType.CREATURE)
     attacker_bogle_2 = _permanent("Slippery Bogle", CardType.CREATURE)
     attacker_bogle_2.slot = 2
@@ -57,8 +52,6 @@ def test_choose_opponent_permanent_targets_specific_slot():
 
 
 def test_choose_opponent_permanent_empty_options_fizzles():
-    # Empty-options safety net: no eligible opposing permanent -> fizzles
-    # immediately with None, same convention as begin_choose_permanent.
     state = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
     state.players[0].battlefield = [_permanent("Forest", CardType.LAND)]
     state.active_idx = 1
@@ -80,9 +73,7 @@ def _open_choose_permanent(state, predicate, on_complete):
 
 def _open_choose_any_target_creature_only(state, predicate, on_complete):
     # allow_players=False, optional=False -- the one configuration that can
-    # ever go all-False; with allow_players=True a player is always legal,
-    # and optional=True always offers a decline, so neither ever needs this
-    # re-check.
+    # ever go all-False.
     begin_choose_any_target(state, predicate, on_complete, allow_players=False, optional=False)
 
 
@@ -92,16 +83,10 @@ def _open_choose_any_target_creature_only(state, predicate, on_complete):
     ids=["choose_opponent_permanent", "choose_permanent", "choose_any_target_creature_only"],
 )
 def test_refizzle_if_now_targetless_fizzles(open_resolution):
-    # begin_choose_* only validates non-empty options ONCE, at open time. If
-    # a state_based_actions pass removes the only legal target before the
-    # next decision point, the pending resolution would otherwise sit there
-    # with an all-False mask and no recovery -- game.turn._run_priority_round_gen's
-    # own refizzle_if_now_targetless call is what catches that, across all
-    # three predicate-driven "choose a target" kinds that can hit this gap
-    # (see the open_resolution variants above). Simulates the gap directly:
-    # open with one legal target, remove it (standing in for an SBA), then
-    # confirm the re-check fizzles cleanly with None instead of leaving a
-    # dead resolution.
+    # begin_choose_* only validates non-empty options ONCE, at open time.
+    # Simulates the gap directly: open with one legal target, remove it
+    # (standing in for an SBA), then confirm the re-check fizzles cleanly
+    # with None instead of leaving a dead resolution.
     target = _permanent("Slippery Bogle", CardType.CREATURE)
     state = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
     state.players[0].battlefield = [target]
@@ -117,8 +102,6 @@ def test_refizzle_if_now_targetless_fizzles(open_resolution):
 
 
 def test_refizzle_if_now_targetless_leaves_still_legal_resolution_alone():
-    # No-op when the pending resolution's options are still non-empty -- the
-    # common case, every priority-loop iteration.
     target = _permanent("Slippery Bogle", CardType.CREATURE)
     state = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
     state.players[0].battlefield = [target]
@@ -133,10 +116,8 @@ def test_refizzle_if_now_targetless_leaves_still_legal_resolution_alone():
 
 
 def test_refizzle_if_now_targetless_ignores_unrelated_kinds():
-    # search_fetch reads the library, which state_based_actions never mutates --
-    # not in refizzle_if_now_targetless's covered set, so even an empty-options
-    # search_fetch (its own open-time safety net already fizzled it) is simply
-    # not its concern. No pending resolution at all is the other no-op case.
+    # search_fetch reads the library, which state_based_actions never
+    # mutates, so it's not in refizzle_if_now_targetless's covered set.
     state = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
     state.library = []
     completed = []
@@ -147,11 +128,8 @@ def test_refizzle_if_now_targetless_ignores_unrelated_kinds():
 
 
 def test_choose_any_target_creature_and_player():
-    # "Any target" (begin_choose_any_target): a single target spanning BOTH
-    # battlefields' creatures plus either player -- real Magic's "any
-    # target" (Lightning Bolt). Creatures addressed by (side, name, slot)
-    # so a same-named creature on each side stays distinguishable; players
-    # by index.
+    # A single target spanning BOTH battlefields' creatures plus either
+    # player. Creatures addressed by (side, name, slot); players by index.
     mine = _permanent("Grizzly Bears", CardType.CREATURE)
     theirs = _permanent("Grizzly Bears", CardType.CREATURE)  # same name, opposite side
     my_land = _permanent("Forest", CardType.LAND)
@@ -173,8 +151,6 @@ def test_choose_any_target_creature_and_player():
 
 
 def test_choose_any_target_no_players_no_creatures_fizzles():
-    # allow_players=False + no creature anywhere -> immediate None (fizzle/
-    # can't-target), same empty-options net as the other primitives.
     empty = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
     empty.players[0].battlefield = [_permanent("Forest", CardType.LAND)]
     completed = []
@@ -183,7 +159,6 @@ def test_choose_any_target_no_players_no_creatures_fizzles():
 
 
 def test_choose_any_target_no_players_with_creature_offers_creatures_only():
-    # allow_players=False WITH a creature -> creatures only, no player option offered
     mine = _permanent("Grizzly Bears", CardType.CREATURE)
     theirs = _permanent("Grizzly Bears", CardType.CREATURE)  # same name, opposite side
     my_land = _permanent("Forest", CardType.LAND)
@@ -196,8 +171,8 @@ def test_choose_any_target_no_players_with_creature_offers_creatures_only():
 
 
 def test_choose_up_to_any_target_board_identity_exclusion():
-    # board up-to-2: two same-named "Bear" (distinct slots) -- both
-    # reachable, picking slot 1 excludes only it (slot 2 stays choosable).
+    # Two same-named "Bear" (distinct slots) -- both reachable, picking
+    # slot 1 excludes only it (slot 2 stays choosable).
     st = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
     st.active_idx = 0
     bear1 = Permanent(CardDef("Bear", CardType.CREATURE, {"G": 1}, EffectId.FILLER, power=2, toughness=2))

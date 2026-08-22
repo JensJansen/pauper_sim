@@ -1,12 +1,4 @@
-"""Tests for game.catalog.black_cards.
-
-black_cards.py's own module docstring: every card's cost/type/oracle-text is
-a direct Scryfall pull, except creature power/toughness (a design choice,
-not Scryfall data). Real Jagged Barrens/End the Festivities/Vampire's
-Kiss/Voldaren Epicure/Alms of the Vein reference "each opponent"/"target
-opponent" -- all of these route through win_check.deal_damage_to_opponent,
-which hits the opponent's real per-player life_total.
-"""
+"""Tests for game.catalog.black_cards."""
 
 import contextlib
 import io
@@ -48,68 +40,51 @@ from game.state import GameState, Permanent, PlayerState
 from game.turn import Phase
 
 
-# --- Dread Return: target locked at cast, effect on the stack, and the
-# 608.2b fizzle when the chosen creature card leaves the graveyard before it
-# resolves (reachable via opponent graveyard hate). ---
+# --- Dread Return: target locked at cast; fizzles if the target leaves the
+# graveyard before it resolves. ---
 
 _DREAD_RETURN = CardDef("Dread Return", CardType.SORCERY, {"generic": 2, "B": 2}, EffectId.DREAD_RETURN)
 _GRIZZLY_BEARS = CardDef("Grizzly Bears", CardType.CREATURE, {"G": 1}, EffectId.FILLER, power=2, toughness=2)
 
 
 def _dread_return_cast_and_target():
-    """Shared setup for both Dread Return tests below: hard-cast Dread
-    Return, which locks its reanimation target -- a creature card in the
-    graveyard -- AT CAST, by object identity (the exact CardInstance), per
-    real MTG 400.7/608.2b -- so two same-named copies are distinct (one can
-    leave while the other stays)."""
+    """Hard-cast Dread Return and lock its reanimation target (a graveyard
+    creature card, by object identity)."""
     state = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
     state.hand = [_DREAD_RETURN]
     grizzly_inst = state.new_instance(_GRIZZLY_BEARS)
     state.graveyard = [grizzly_inst]
-    cast_dread_return(state, _DREAD_RETURN)  # precast: begins the graveyard-target choice
+    cast_dread_return(state, _DREAD_RETURN)
     assert state.pending_resolution["kind"] == "choose_graveyard_card"
-    resolution.execute_choose_graveyard_card_option(state, grizzly_inst)  # the exact instance
+    resolution.execute_choose_graveyard_card_option(state, grizzly_inst)
     return state, grizzly_inst
 
 
 def test_dread_return_hard_cast_reanimates_target():
-    """(a) hard cast reanimates the chosen creature card. The graveyard holds
-    a CardInstance; the pick captures that EXACT instance."""
+    """Hard cast reanimates the chosen creature card."""
     state, grizzly_inst = _dread_return_cast_and_target()
-    assert state.hand == [] and len(state.stack) == 1  # Dread Return LEFT hand at cast, now on the stack
+    assert state.hand == [] and len(state.stack) == 1
     resolve_top_of_stack(state)
-    assert any(c.name == "Dread Return" for c in state.graveyard)  # Dread Return resolved -> graveyard
+    assert any(c.name == "Dread Return" for c in state.graveyard)
     assert any(p.card_def is _GRIZZLY_BEARS for p in state.battlefield)  # reanimated
-    assert all(c.name != "Grizzly Bears" for c in state.graveyard)  # left the graveyard
+    assert all(c.name != "Grizzly Bears" for c in state.graveyard)
 
 
 def test_dread_return_fizzles_if_target_leaves_graveyard():
-    """(b) fizzle: the chosen instance leaves the graveyard before
-    resolution (608.2b -- reachable via opponent graveyard hate, e.g. Relic
-    of Progenitus exiling graveyards)."""
+    """Fizzles if the target leaves the graveyard before it resolves."""
     state, grizzly_inst = _dread_return_cast_and_target()
-    state.graveyard.remove(grizzly_inst)  # exiled by graveyard hate before Dread Return resolves
+    state.graveyard.remove(grizzly_inst)
     log = io.StringIO()
     with contextlib.redirect_stdout(log):
         resolve_top_of_stack(state)
     assert "fizzle" in log.getvalue().lower()
-    assert any(c.name == "Dread Return" for c in state.graveyard)  # Dread Return still goes to the graveyard
+    assert any(c.name == "Dread Return" for c in state.graveyard)
     assert not any(p.card_def is _GRIZZLY_BEARS for p in state.battlefield)  # nothing reanimated
 
 
 def test_bojuka_bog_etb_exiles_target_players_graveyard():
-    """Bojuka Bog: enters tapped, and its ETB "exile target player's
-    graveyard" is a real target-player choice resolved off the stack (ETBs
-    go through the trigger queue now). 2-player so targeting the OPPONENT
-    empties THEIR graveyard, never the active player's own.
-
-    Target-at-promotion (project_targeted_triggered_abilities): the target
-    player is chosen as the ability goes on the stack, and the exile happens
-    at resolution -- "target player" is always legal (no way to make a
-    player an illegal target), so this never fizzles, but choosing at
-    promotion still surfaces the decision one priority window earlier, which
-    can inform play, so it's modeled faithfully rather than collapsed to
-    resolution."""
+    """Bojuka Bog enters tapped; its ETB targets a player and exiles their
+    graveyard, never the caster's own."""
     state = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
     state.players[0].graveyard = [CardDef("Mine", CardType.CREATURE, None, EffectId.FILLER)]
     state.players[1].graveyard = [CardDef("Theirs", CardType.CREATURE, None, EffectId.FILLER)]
@@ -117,25 +92,20 @@ def test_bojuka_bog_etb_exiles_target_players_graveyard():
     enters_battlefield(state, bog, from_zone="hand")
     bog_perm = next(p for p in state.battlefield if p.card_def.name == "Bojuka Bog")
     assert bog_perm.tapped  # enters tapped
-    # ETB queued (faithful timing), not run inline. Target-at-promotion: promote
-    # opens the target-player choice; picking it pushes the exile effect.
     assert state.pending_resolution is None
     assert [e["type"] for e in state.trigger_queue] == ["etb"]
-    promote_triggers_to_stack(state)  # opens the target-player choice at promotion
+    promote_triggers_to_stack(state)
     assert state.pending_resolution["kind"] == "choose_target_player"
-    resolution.execute_choose_target_player_option(state, 1)  # target the opponent -> effect pushed onto the stack
+    resolution.execute_choose_target_player_option(state, 1)  # target the opponent
     assert state.pending_resolution is None and len(state.stack) == 1
-    resolve_top_of_stack(state)  # exile that player's graveyard
+    resolve_top_of_stack(state)
     assert state.players[1].graveyard == []  # their graveyard exiled
     assert [c.name for c in state.players[0].graveyard] == ["Mine"]  # own graveyard untouched
 
 
-# --- Mesmeric Fiend: ETB exiles a nonland from target opponent's hand
-# (tracked, linked to this Fiend); its leaves-the-battlefield trigger -- the
-# engine's first -- returns that card when the Fiend leaves, whether it DIES
-# (state-based) or is SACRIFICED (resolution.begin_sacrifice, via
-# state_based.sacrifice_to_graveyard), the two ways a creature leaves in
-# this pool. ---
+# --- Mesmeric Fiend: ETB exiles a nonland from the opponent's hand; the
+# Fiend's leaves-the-battlefield trigger returns it, whether the Fiend dies
+# or is sacrificed. ---
 
 _MESMERIC_FIEND_DEF = CardDef(
     "Mesmeric Fiend", CardType.CREATURE, {"generic": 1, "B": 1}, EffectId.MESMERIC_FIEND, power=1, toughness=1,
@@ -143,9 +113,8 @@ _MESMERIC_FIEND_DEF = CardDef(
 
 
 def _enter_fiend_and_exile():
-    """Shared setup for the three Mesmeric Fiend tests below: the Fiend
-    enters, and its ETB exiles a nonland card from the opponent's hand,
-    tracked and linked to this exact Fiend permanent."""
+    """The Fiend enters and its ETB exiles a nonland card from the
+    opponent's hand, tracked and linked to this Fiend."""
     st = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
     a_spell = CardDef("Their Spell", CardType.SORCERY, {"B": 1}, EffectId.FILLER)
     a_land = CardDef("Their Land", CardType.LAND, None, EffectId.SWAMP)
@@ -164,7 +133,7 @@ def _enter_fiend_and_exile():
 
 
 def test_mesmeric_fiend_dies_returns_exiled_card_to_owner():
-    """(a) the Fiend DIES -> LTB returns the exiled card to its owner's hand."""
+    """The Fiend dying returns the exiled card to its owner's hand."""
     state, fiend, a_spell = _enter_fiend_and_exile()
     fiend.damage_marked = _MESMERIC_FIEND_DEF.extra["toughness"]  # lethal
     check_state_based_actions(state)
@@ -177,7 +146,7 @@ def test_mesmeric_fiend_dies_returns_exiled_card_to_owner():
 
 
 def test_mesmeric_fiend_sacrificed_returns_exiled_card_to_owner():
-    """(b) the Fiend is SACRIFICED (e.g. to Dread Return's Flashback) -> same LTB."""
+    """Sacrificing the Fiend also returns the exiled card."""
     state, fiend, a_spell = _enter_fiend_and_exile()
     resolution.begin_sacrifice(state, lambda p: p.card_def.name == "Mesmeric Fiend", 1, on_complete=lambda s, ok: None)
     assert state.pending_resolution["kind"] == "choose_permanent"
@@ -190,11 +159,7 @@ def test_mesmeric_fiend_sacrificed_returns_exiled_card_to_owner():
 
 
 def test_mesmeric_fiend_solo_no_opponent_etb_is_noop():
-    """(c) 1-player (no opponent to target): ETB does nothing, no exile.
-    Target-at-promotion (etb_targets: True) means the opponent is captured
-    -- or, here, found not to exist -- AT PROMOTION, so with no legal
-    target the ability never even reaches the stack (nothing for
-    resolve_top_of_stack to pop), unlike a plain non-targeting ETB."""
+    """No opponent to target -> ETB does nothing, no exile."""
     solo = GameState(on_the_play=True)
     solo_fiend = enters_battlefield(solo, _MESMERIC_FIEND_DEF, from_zone="hand")
     promote_triggers_to_stack(solo)
@@ -202,10 +167,8 @@ def test_mesmeric_fiend_solo_no_opponent_etb_is_noop():
 
 
 def test_balustrade_spy_etb_mills_target_players_library():
-    """Balustrade Spy: real "target player" (begin_choose_target_player),
-    same shape as Bojuka Bog's own ETB -- targeting the OPPONENT mills
-    THEIR library, never the caster's own, until a land turns up
-    (inclusive)."""
+    """ETB targets a player and mills their library until a land turns up
+    (inclusive), never the caster's own."""
     state = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
     state.players[0].library = [CardDef("Own1", CardType.CREATURE, None, EffectId.FILLER)]
     state.players[1].library = [
@@ -216,7 +179,7 @@ def test_balustrade_spy_etb_mills_target_players_library():
     spy = CardDef("Balustrade Spy", CardType.CREATURE, {"generic": 3, "B": 1}, EffectId.BALUSTRADE_SPY, power=2, toughness=2)
     enters_battlefield(state, spy, from_zone="hand")
     assert [e["type"] for e in state.trigger_queue] == ["etb"]
-    promote_triggers_to_stack(state)  # target-at-promotion opens the target-player choice
+    promote_triggers_to_stack(state)
     assert state.pending_resolution["kind"] == "choose_target_player"
     resolution.execute_choose_target_player_option(state, 1)  # target the opponent
     resolve_top_of_stack(state)
@@ -226,20 +189,10 @@ def test_balustrade_spy_etb_mills_target_players_library():
 
 
 def test_blood_fountain_returns_up_to_two_targets_with_partial_fizzle():
-    """Blood Fountain: {3}{B}, {T}, Sacrifice: return up to two TARGET
-    creature cards from your graveyard to hand -- both targets locked at
-    ACTIVATION (before the ability goes on the stack), and 608.2c partial
-    fizzle: if one target leaves the graveyard in response, the other
-    still comes back.
-
-    Also regression-covers the webapp-visualizer bug where this {T} cost
-    was paid (permanent.tapped set) but never logged -- missed by the
-    earlier Wellwisher-class fix because the permanent sacrifices itself on
-    the very next line, so there was never a rendered frame showing the gap
-    (masked, not fixed). Now routed through tap_for_cost (game.effects.
-    shared), same as every other non-mana {T}-cost site; the tap event
-    fires BEFORE the sacrifice's own zone_move, tapping first then leaving
-    the battlefield, same order the real cost pays in."""
+    """{3}{B}, {T}, Sacrifice: return up to two target creature cards from
+    the graveyard to hand, both targets locked at activation; if one leaves
+    the graveyard in response, the other still comes back. Also checks the
+    {T} cost is logged, tapping before the sacrifice's zone_move."""
     state = GameState(on_the_play=True, event_log=[])
     fountain = Permanent(CardDef(
         "Blood Fountain", CardType.ARTIFACT, {"B": 1}, EffectId.BLOOD_FOUNTAIN, sac_ability_cost={"generic": 3, "B": 1},
@@ -261,17 +214,14 @@ def test_blood_fountain_returns_up_to_two_targets_with_partial_fizzle():
     assert state.pending_resolution["kind"] == "choose_graveyard_card"
     resolution.execute_choose_graveyard_card_option(state, bear)
     resolution.execute_choose_graveyard_card_option(state, wolf)
-    assert state.pending_resolution is None and len(state.stack) == 1  # both targets locked, ability on the stack
-    state.graveyard.remove(bear)  # bear reanimated/exiled in response -- an illegal target by resolution
+    assert state.pending_resolution is None and len(state.stack) == 1
+    state.graveyard.remove(bear)  # bear becomes an illegal target before resolution
     resolve_top_of_stack(state)
-    assert [c.name for c in state.hand] == ["Wolf"]  # only the surviving target returns (bear silently skipped)
+    assert [c.name for c in state.hand] == ["Wolf"]  # only the surviving target returns
 
 
 def test_alms_of_the_vein_target_opponent_loses_life_caster_gains():
-    """Alms of the Vein: target opponent loses 3, caster gains 3 -- BOTH
-    halves of the real text. Target (the opponent) is locked at CAST
-    (precast_choice), and the spell can't be cast at all without one
-    (extra_legal, since "target opponent" needs a legal target to exist)."""
+    """Target opponent loses 3 life, caster gains 3."""
     state = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
     state.players[0].life_total = 20
     state.players[1].life_total = 20
@@ -284,17 +234,14 @@ def test_alms_of_the_vein_target_opponent_loses_life_caster_gains():
 
 
 def test_alms_of_the_vein_uncastable_with_no_opponent():
-    """No opponent -> the mandatory "target opponent" has no legal target,
-    so the spell can't be cast at all (601.2c)."""
+    """No opponent -> no legal target -> can't be cast."""
     state = GameState(on_the_play=True)
     assert not registry.EFFECT_REGISTRY[EffectId.ALMS_OF_THE_VEIN]["cast"]["extra_legal"](state)
 
 
 def test_vampires_kiss_targets_any_player_and_grants_life():
-    """Vampire's Kiss: real "target player" -- ANY player, unlike Alms of
-    the Vein's opponent-restricted version. Targeting the opponent drains
-    them; the caster still gains 2 life and two Blood tokens either way
-    (the gain-life half was previously dropped entirely)."""
+    """Targets any player; caster gains 2 life and two Blood tokens, and the
+    targeted player loses 2 life."""
     state = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
     state.players[0].life_total = 20
     state.players[1].life_total = 20
@@ -315,9 +262,8 @@ def _g3_two():
 
 
 def _pay_cost_fully(state):
-    """Drain a "pay_cost" pending resolution by repeatedly taking the first
-    available pool-spend option, the same guarded loop every mana-cost-paying
-    test below drives to completion."""
+    """Drain a "pay_cost" pending resolution via the first available
+    pool-spend option each iteration."""
     guard = 0
     while state.pending_resolution is not None and state.pending_resolution["kind"] == "pay_cost":
         guard += 1
@@ -341,10 +287,8 @@ def test_cast_down_destroys_target_creature():
 
 
 def test_snuff_out_nonblack_targeting_and_alt_cost():
-    """Snuff Out: nonblack only ("nonblack creature" -- colorless, e.g. a
-    Devoid creature, counts as nonblack), and the 4-life alt cost ("you may
-    pay 4 life rather than pay this spell's mana cost", legal only with a
-    Swamp, >= 4 life, and a legal nonblack target)."""
+    """Only targets nonblack creatures; the 4-life alt cost requires a
+    Swamp, >= 4 life, and a legal nonblack target."""
     assert _nonblack(Permanent(CardDef("R Creature", CardType.CREATURE, {"R": 1}, EffectId.FILLER, power=1, toughness=1)))
     assert not _nonblack(Permanent(CardDef("B Creature", CardType.CREATURE, {"B": 1}, EffectId.FILLER, power=1, toughness=1)))
     state = _g3_two()
@@ -365,8 +309,7 @@ def test_snuff_out_nonblack_targeting_and_alt_cost():
 
 
 def test_unexpected_fangs_grants_counter_and_lifelink():
-    """Unexpected Fangs: puts a +1/+1 counter AND a lifelink counter on the
-    target (the lifelink counter grants lifelink)."""
+    """Puts a +1/+1 counter and a lifelink counter on the target."""
     state = _g3_two()
     c = Permanent(CardDef("Bear", CardType.CREATURE, {"G": 1}, EffectId.FILLER, power=1, toughness=1))
     c.slot = 1
@@ -380,10 +323,8 @@ def test_unexpected_fangs_grants_counter_and_lifelink():
 
 
 def test_toxin_analysis_grants_deathtouch_lifelink_and_clue_then_cleanup_clears():
-    """Toxin Analysis: target creature gains deathtouch and lifelink until
-    end of turn (temp_keywords, cleared at cleanup_step); then Investigate (a
-    Clue token) -- Investigate is inside the target-legal branch: if the only
-    target is gone, the spell doesn't resolve at all, so no Clue is made."""
+    """Target creature gains deathtouch and lifelink until end of turn, and
+    a Clue token is created; the keywords clear at cleanup."""
     state = _g3_two()
     c = Permanent(CardDef("Bear", CardType.CREATURE, {"G": 1}, EffectId.FILLER, power=1, toughness=1))
     c.slot = 1
@@ -409,8 +350,7 @@ def test_refurbished_familiar_affinity_cost_reduction():
 
 
 def test_refurbished_familiar_etb_opponent_empty_hand_draws_instead():
-    """"For each opponent who can't [discard], you draw a card." Opponent's
-    hand is empty -> you draw instead of them discarding."""
+    """Opponent's hand is empty -> caster draws instead of them discarding."""
     state = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
     state.active_idx = 0
     state.players[1].hand = []
@@ -420,15 +360,7 @@ def test_refurbished_familiar_etb_opponent_empty_hand_draws_instead():
 
 
 def test_gurmag_angler_delve_exiles_graveyard_cards_to_pay_generic():
-    """Gurmag Angler Delve: delve N exiles N graveyard cards + pays
-    {6-N}{B}. Delve-only cast: "Cast Gurmag Angler", then a generic "Delve N"
-    (N in 0..6; delve 0 is the plain {6}{B} cast) choice exiles N graveyard
-    cards to pay {N} of the generic (drl_env delve loop). 702.66/601.2f: the
-    delve amount is its own generic sub-decision, chosen BEFORE the exile
-    sub-cost opens -- "Delve 2" is a shared button (drl_env._choose_delve_
-    amount_legal), not baked into the cast row. Graveyard holds distinct
-    CardInstances (object-identity model); delve exiles the exact chosen
-    instance, so seed + pick by object, not by name."""
+    """Delve N exiles N graveyard cards and pays {6-N}{B} for the rest."""
     dl = [("Gurmag Angler", 4), ("Swamp", 8)]
     byname = {
         a[0]: (a[1], a[2])
@@ -443,9 +375,9 @@ def test_gurmag_angler_delve_exiles_graveyard_cards_to_pay_generic():
         state.new_instance(CardDef("g1", CardType.INSTANT, {"U": 1}, EffectId.FILLER)),
         state.new_instance(CardDef("g2", CardType.INSTANT, {"U": 1}, EffectId.FILLER)),
     ]
-    state.battlefield = [Permanent(registry.CARD_DEFS["Swamp"]) for _ in range(5)]  # {6}{B} minus delve 2 = {4}{B} = 5 mana
+    state.battlefield = [Permanent(registry.CARD_DEFS["Swamp"]) for _ in range(5)]  # {6}{B} minus delve 2 = 5 mana
     for sw in state.battlefield:
-        activate_mana_source(state, sw)  # pre-float (still valid, just no longer required): float 5 B into the pool BEFORE casting
+        activate_mana_source(state, sw)
     legal, execute = byname["Cast Gurmag Angler"]
     assert legal(state)
     execute(state)
@@ -453,26 +385,16 @@ def test_gurmag_angler_delve_exiles_graveyard_cards_to_pay_generic():
     delve_legal, delve_execute = byname["Delve 2"]
     assert delve_legal(state)
     delve_execute(state)
-    resolution.execute_choose_graveyard_card_option(state, resolution.choose_graveyard_card_options(state)[0])  # exile 1st (delve 1)
-    resolution.execute_choose_graveyard_card_option(state, resolution.choose_graveyard_card_options(state)[0])  # exile 2nd (delve 2)
+    resolution.execute_choose_graveyard_card_option(state, resolution.choose_graveyard_card_options(state)[0])
+    resolution.execute_choose_graveyard_card_option(state, resolution.choose_graveyard_card_options(state)[0])
     _pay_cost_fully(state)
     resolve_top_of_stack(state)
     assert any(p.card_def.name == "Gurmag Angler" for p in state.battlefield) and state.graveyard == []
 
 
 def test_no_mana_tap_during_delve_exile_step():
-    """774fe5b's actual fix: delve's exile-to-graveyard sub-cost sits BETWEEN
-    announcing the cast and the payment opening, so no mana ability may be
-    activated during it (601.2f, game.mana.mid_cast) -- begin_exile_n_from_
-    graveyard passes mid_cast=True precisely so drl_env._actions_mana.
-    _mana_timing_legal refuses every "Tap X" row for its duration. Found
-    live, not hypothetical (that commit's own docstring): dmir_terror tapped
-    both Contaminated Aquifers for {U} mid-exile, stranding the delve-reduced
-    {B} with no way to pay it. This drives the SPECIFIC exile-step pending
-    (kind="choose_graveyard_card", mid_cast stamped) that test_no_mana_
-    ability_during_a_casting_step_before_601_2f does not reach -- that test
-    only exercises the generic _CASTING_STEP_PENDING_KINDS path
-    (choose_cast_copy), a different branch of game.mana.mid_cast."""
+    """No mana ability may be activated during delve's exile-to-graveyard
+    sub-cost, which sits between announcing the cast and payment opening."""
     dl = [("Gurmag Angler", 4), ("Contaminated Aquifer", 8)]
     byname = {
         a[0]: (a[1], a[2])
@@ -487,9 +409,8 @@ def test_no_mana_tap_during_delve_exile_step():
         state.new_instance(CardDef("g1", CardType.INSTANT, {"U": 1}, EffectId.FILLER)),
         state.new_instance(CardDef("g2", CardType.INSTANT, {"U": 1}, EffectId.FILLER)),
     ]
-    # 5 Contaminated Aquifers (each U-or-B): {6}{B} minus delve 2 = {4}{B},
-    # payable from these 5 sources ONLY if at least one taps for B -- none
-    # pre-floated, so the payment is still wide open when delve starts.
+    # 5 Contaminated Aquifers (each U-or-B), none pre-floated: payment is
+    # still wide open when delve starts.
     state.battlefield = [Permanent(registry.CARD_DEFS["Contaminated Aquifer"]) for _ in range(5)]
 
     tap_for_u_legal, _ = byname["Tap Contaminated Aquifer for U"]
@@ -523,9 +444,7 @@ def test_no_mana_tap_during_delve_exile_step():
         if options:
             execute_pool_spend(state, options[0])
         else:
-            # Nothing floated yet -- tap a source for whichever color is
-            # still owed (mirrors the live incident's fix: B must remain
-            # reachable here, which is exactly what mid_cast protected).
+            # Nothing floated yet -- tap a source for whichever color is still owed.
             still_owed = state.pending_resolution["remaining"]
             color = "B" if still_owed.get("B", 0) > 0 else "U"
             byname[f"Tap Contaminated Aquifer for {color}"][1](state)
@@ -537,11 +456,7 @@ def test_no_mana_tap_during_delve_exile_step():
 
 def _drive8(s):
     promote_triggers_to_stack(s)
-    # Ichor Wellspring's own "dies: draw" LTB trigger and Gixian Infiltrator's
-    # "sacrifice: +1/+1" trigger can queue simultaneously for the same
-    # controller -- real Magic (603.3b) lets that player choose the
-    # placement order, opening an order_triggers pending resolution instead
-    # of placing both automatically (resolution.begin_order_triggers).
+    # Simultaneous triggers for the same controller need an explicit order choice.
     while s.pending_resolution is not None and s.pending_resolution["kind"] == "order_triggers":
         resolution.execute_order_triggers_option(s, resolution.order_triggers_options(s)[0])
     while s.stack:
@@ -549,12 +464,8 @@ def _drive8(s):
 
 
 def test_gixian_infiltrator_gains_counter_on_sacrifice():
-    """Gixian Infiltrator: "Whenever you sacrifice another permanent, put a
-    +1/+1 counter on this creature." A real triggered ability: queued by
-    shared.fire_sacrifice_triggers from every sacrifice path (it only
-    iterates the sacrificer's OTHER battlefield permanents, so "another" is
-    automatic) and placed on the stack at the next priority window, not
-    applied immediately."""
+    """"Whenever you sacrifice another permanent, put a +1/+1 counter on
+    this creature" -- a real triggered ability, not applied immediately."""
     state = GameState(on_the_play=True)
     gix = Permanent(registry.CARD_DEFS["Gixian Infiltrator"])
     gix.slot = 1
@@ -568,8 +479,7 @@ def test_gixian_infiltrator_gains_counter_on_sacrifice():
 
 
 def test_fanatical_offering_sac_draws_two_and_creates_map():
-    """Fanatical Offering: {1}{B}, sacrifice an artifact or creature: Draw
-    two cards and create a Map token."""
+    """{1}{B}, sacrifice an artifact or creature: draw two, create a Map token."""
     state = GameState(on_the_play=True)
     state.hand = [registry.CARD_DEFS["Fanatical Offering"]]
     state.library = [CardDef(f"n{i}", CardType.LAND, None, EffectId.SWAMP, basic=True) for i in range(5)]
@@ -583,8 +493,8 @@ def test_fanatical_offering_sac_draws_two_and_creates_map():
 
 
 def test_reckoners_bargain_gains_life_equal_to_mana_value_and_draws_two():
-    """Reckoner's Bargain: {1}{B}, sacrifice an artifact or creature: gain
-    life equal to the sacrificed permanent's mana value, draw two."""
+    """{1}{B}, sacrifice an artifact or creature: gain life equal to its
+    mana value, draw two."""
     state = GameState(on_the_play=True)
     state.hand = [registry.CARD_DEFS["Reckoner's Bargain"]]
     state.library = [CardDef(f"m{i}", CardType.LAND, None, EffectId.SWAMP, basic=True) for i in range(5)]
@@ -598,12 +508,8 @@ def test_reckoners_bargain_gains_life_equal_to_mana_value_and_draws_two():
 
 
 def test_refurbished_familiar_cross_player_discard_routing():
-    """Cross-player routing: Refurbished Familiar's "each opponent discards a
-    card" is the OPPONENT's own choice, not the caster's. The ETB flips
-    active_idx to the opponent for the forced discard and restores it after --
-    which is exactly what makes the training harness (keyed on
-    state.active_idx, see rl.training.train.collect_rollout) query the OPPONENT's own
-    net, never the active player deciding on their behalf."""
+    """"Each opponent discards a card" is the opponent's own choice: the ETB
+    flips active_idx to the opponent for the forced discard, then restores it."""
     rf = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
     rf.turn_player_idx = 0
     rf.active_idx = 0  # caster is the turn/active player
@@ -616,24 +522,16 @@ def test_refurbished_familiar_cross_player_discard_routing():
     assert [c.name for c in rf.players[1].graveyard] == ["Swamp"]
 
 
-# --- Regression: Balustrade Spy was missing Flying entirely ---
-
 def test_balustrade_spy_has_flying():
-    """Regression for the source fix: real Balustrade Spy is {3}{B} 2/3
-    Flying Vampire Rogue (Gatecrash #57) -- its registry entry previously
-    had no "keywords" spec at all."""
+    """Balustrade Spy has flying (regression: registry entry once lacked it)."""
     state = GameState(on_the_play=True)
     spy = Permanent(registry.CARD_DEFS["Balustrade Spy"])
     state.battlefield = [spy]
     assert has_keyword(state, spy, "flying")
 
 
-# --- Vault of Whispers / Bojuka Bog: the {T}: Add {B} mana ability itself
-# (Bojuka Bog's ETB is already tested above; this is just the tap). ---
-
 def test_vault_of_whispers_taps_for_black():
-    """Artifact land: {T}: Add {B} -- just the mana ability (its artifact-
-    ness is what affinity/metalcraft reads elsewhere, out of scope here)."""
+    """{T}: Add {B}."""
     state = GameState(on_the_play=True)
     vault = Permanent(registry.CARD_DEFS["Vault of Whispers"])
     state.battlefield = [vault]
@@ -644,9 +542,7 @@ def test_vault_of_whispers_taps_for_black():
 
 
 def test_bojuka_bog_taps_for_black():
-    """{T}: Add {B} -- just the mana ability (its ETB "exile target
-    player's graveyard" is covered by test_bojuka_bog_etb_exiles_target_
-    players_graveyard above)."""
+    """{T}: Add {B}."""
     state = GameState(on_the_play=True)
     bog = Permanent(registry.CARD_DEFS["Bojuka Bog"])
     bog.tapped = False  # real Bojuka Bog enters tapped; force untapped to isolate the mana ability
@@ -656,9 +552,6 @@ def test_bojuka_bog_taps_for_black():
     assert state.mana_pool == {"B": 1} and bog.tapped
     assert state.mana_pool_single_pip == {"B": 1}  # a 1-symbol event -- tagged single-pip
 
-
-# --- Lotleth Giant: Undergrowth ETB, "1 damage to the opponent per
-# creature card in your graveyard." ---
 
 def test_lotleth_giant_etb_damages_opponent_per_graveyard_creature():
     state = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
@@ -673,15 +566,10 @@ def test_lotleth_giant_etb_damages_opponent_per_graveyard_creature():
     assert state.players[1].life_total == 17  # 3 creature cards -> 3 damage, sorcery excluded
 
 
-# --- Dread Return: Flashback (sacrifice 3 creatures instead of {2}{B}{B}),
-# and extra_legal's false branch (no creature card in the graveyard). ---
-
 def test_dread_return_flashback_sacrifices_three_creatures_and_reanimates():
-    """Flashback -- sacrifice three creatures instead of paying mana. The
-    Dread Return card leaves the graveyard the instant Flashback is chosen
-    (exiled, untracked, after it resolves); the newly sacrificed creatures
-    land in the graveyard BEFORE the reanimation target is chosen, so
-    they're eligible targets too (a real interaction) -- this picks the
+    """Flashback: sacrifice three creatures instead of paying mana. The
+    sacrificed creatures land in the graveyard before the reanimation
+    target is chosen, so they're eligible targets too -- this picks the
     pre-existing Grizzly Bears instead, to keep the assertion unambiguous."""
     state = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
     dread_return_inst = state.new_instance(_DREAD_RETURN)
@@ -712,24 +600,15 @@ def test_dread_return_flashback_sacrifices_three_creatures_and_reanimates():
 
 
 def test_dread_return_uncastable_with_no_creature_card_in_graveyard():
-    """extra_legal's false branch: no creature card anywhere in the
-    graveyard -> illegal to hard-cast (a mandatory target needs one to
-    exist, 601.2c)."""
+    """No creature card anywhere in the graveyard -> illegal to hard-cast."""
     state = GameState(on_the_play=True)
     state.graveyard = [CardDef("Not A Creature", CardType.SORCERY, {"generic": 1}, EffectId.FILLER)]
     assert not registry.EFFECT_REGISTRY[EffectId.DREAD_RETURN]["cast"]["extra_legal"](state)
 
 
-# --- Kitchen Imp: its own registry Flying/haste, and a real Madness cast
-# from discard. ---
-
 def test_kitchen_imp_has_flying_and_haste():
-    """Real Oracle text: Flying, haste. Both are registry-driven keyword
-    flags -- the generic "haste": True mechanism itself is tested via a
-    monkeypatched FILLER card in tests/game/effects/test_combat.py; this
-    asserts it for Kitchen Imp's own real registry entry, together with
-    Flying, and proves haste actually lets a summoning-sick Kitchen Imp
-    attack and deal damage the turn it enters."""
+    """Flying and haste; haste lets a summoning-sick Kitchen Imp attack and
+    deal damage the turn it enters."""
     state = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
     imp = Permanent(registry.CARD_DEFS["Kitchen Imp"])
     assert imp.summoning_sick  # just entered
@@ -743,11 +622,9 @@ def test_kitchen_imp_has_flying_and_haste():
 
 
 def test_kitchen_imp_madness_cast_from_discard():
-    """Madness {B}: discarding Kitchen Imp exiles it instead of
-    graveyarding (madness_and_plot's replacement effect, fires regardless
-    of why it was discarded) and queues a cast-or-decline decision;
-    choosing "cast" pays {B} and puts it straight onto the battlefield from
-    exile -- never touching hand or graveyard."""
+    """Madness {B}: discarding Kitchen Imp exiles it and queues a
+    cast-or-decline decision; casting puts it on the battlefield straight
+    from exile, never touching hand or graveyard."""
     state = GameState(on_the_play=True)
     state.hand = [registry.CARD_DEFS["Kitchen Imp"]]
     state.battlefield = [Permanent(registry.CARD_DEFS["Swamp"])]
@@ -767,9 +644,6 @@ def test_kitchen_imp_madness_cast_from_discard():
         resolve_top_of_stack(state)
     assert any(p.card_def.name == "Kitchen Imp" for p in state.battlefield)
 
-
-# --- Alms of the Vein: Madness {B}, same target-opponent shape as the
-# hard cast, from exile. ---
 
 def test_alms_of_the_vein_madness_cast_from_discard():
     state = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
@@ -795,11 +669,6 @@ def test_alms_of_the_vein_madness_cast_from_discard():
     assert any(c.name == "Alms of the Vein" for c in state.graveyard)  # a sorcery -> graveyard, not exiled
 
 
-# --- Blood Fountain: the ETB (Blood token), and the activated ability's
-# {3}{B} mana-cost legality/payment driven through the real action table
-# (existing coverage calls blood_fountain_return directly, skipping cost
-# dispatch entirely). ---
-
 def test_blood_fountain_etb_creates_blood_token():
     state = GameState(on_the_play=True)
     fountain_def = CardDef(
@@ -814,12 +683,8 @@ def test_blood_fountain_etb_creates_blood_token():
 
 
 def test_blood_fountain_activate_via_action_table_pays_real_mana_cost():
-    """"Activate Blood Fountain (return)" through the REAL action table:
-    _activate_legal/_activate_execute (drl_env) gate on and pay the ability's
-    {3}{B} cost via begin_pay_cost, same dispatch every other cost_key
-    activated ability uses -- exercised end to end instead of jumping
-    straight to blood_fountain_return like the existing partial-fizzle test
-    does."""
+    """Activating through the real action table gates on and pays the
+    ability's {3}{B} cost."""
     dl = [("Blood Fountain", 4), ("Swamp", 8)]
     byname = {a[0]: (a[1], a[2]) for a in drl_env.build_action_table(dl, registry.EFFECT_REGISTRY)}
     state = GameState(on_the_play=True)
@@ -830,7 +695,7 @@ def test_blood_fountain_activate_via_action_table_pays_real_mana_cost():
     state.battlefield = [fountain] + [Permanent(registry.CARD_DEFS["Swamp"]) for _ in range(4)]
     for sw in state.battlefield:
         if sw.card_def.name == "Swamp":
-            activate_mana_source(state, sw)  # pre-float (still valid, just no longer required): float 4 B BEFORE activating ({3}{B} = 4 mana)
+            activate_mana_source(state, sw)  # pre-float 4 B before activating ({3}{B} = 4 mana)
     bear = state.new_instance(CardDef("Bear", CardType.CREATURE, {"G": 1}, EffectId.FILLER, power=1, toughness=1))
     state.graveyard = [bear]
 
@@ -841,18 +706,13 @@ def test_blood_fountain_activate_via_action_table_pays_real_mana_cost():
     assert state.pending_resolution["remaining"] == {"generic": 3, "B": 1}
     _pay_cost_fully(state)
 
-    # Cost paid -> resolve fires: {T} + Sacrifice paid here (fountain gone), then
-    # the up-to-two graveyard targets are chosen.
-    assert fountain not in state.battlefield
+    assert fountain not in state.battlefield  # {T} + Sacrifice paid on resolve
     assert state.pending_resolution["kind"] == "choose_graveyard_card"
     resolution.execute_choose_graveyard_card_option(state, bear)
     assert state.pending_resolution is None and len(state.stack) == 1  # only 1 eligible target -> selection auto-closed
     resolve_top_of_stack(state)
     assert [c.name for c in state.hand] == ["Bear"]
 
-
-# --- Fanatical Offering / Reckoner's Bargain: extra_legal's false branch
-# (no sacrificeable artifact or creature). ---
 
 def test_fanatical_offering_uncastable_with_no_sac_fodder():
     state = GameState(on_the_play=True)
@@ -864,12 +724,8 @@ def test_reckoners_bargain_uncastable_with_no_sac_fodder():
     assert not registry.EFFECT_REGISTRY[EffectId.RECKONERS_BARGAIN]["cast"]["extra_legal"](state)
 
 
-# --- Eviscerator's Insight: completely untested before this. ---
-
 def test_eviscerators_insight_sac_draws_two():
-    """{1}{B}, sacrifice an artifact or creature: Draw two cards -- no Map
-    token (unlike Fanatical Offering) and no life gain (unlike Reckoner's
-    Bargain), just the draw."""
+    """{1}{B}, sacrifice an artifact or creature: draw two, no other effect."""
     state = GameState(on_the_play=True)
     state.hand = [registry.CARD_DEFS["Eviscerator's Insight"]]
     state.library = [CardDef(f"n{i}", CardType.LAND, None, EffectId.SWAMP, basic=True) for i in range(5)]
@@ -892,9 +748,8 @@ def test_eviscerators_insight_extra_legal_both_branches():
 
 
 def test_eviscerators_insight_flashback_sac_draws_two_and_exiles():
-    """Flashback {4}{B} (paid by the graveyard-cast machinery) + the same
-    sac-fodder additional cost: draw two, then exile -- never returns to
-    the graveyard."""
+    """Flashback {4}{B} + the sac-fodder cost: draw two, then exile the
+    card instead of returning it to the graveyard."""
     state = GameState(on_the_play=True)
     insight_inst = state.new_instance(registry.CARD_DEFS["Eviscerator's Insight"])
     state.graveyard = [insight_inst]
@@ -913,13 +768,8 @@ def test_eviscerators_insight_flashback_sac_draws_two_and_exiles():
     assert all(c.name != "Eviscerator's Insight" for c in state.graveyard)  # exiled, not graveyarded
 
 
-# --- Snuff Out: the ordinary mana-paid cast (never tested standalone --
-# every existing test drives the 4-life alt cost instead), and each false
-# branch of the alt cost's own legality gate. ---
-
 def test_snuff_out_ordinary_mana_paid_cast():
-    """cast_snuff_out (the {3}{B} mana path), not cast_snuff_out_alt -- no
-    life paid, unlike every other Snuff Out test in this file."""
+    """The ordinary {3}{B} mana-paid cast: no life paid."""
     state = _g3_two()
     tgt = Permanent(CardDef("R Creature", CardType.CREATURE, {"R": 1}, EffectId.FILLER, power=1, toughness=1))
     tgt.slot = 1

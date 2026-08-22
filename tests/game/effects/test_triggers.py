@@ -1,7 +1,5 @@
 """The Madness "decision" branch is exercised together with
-madness_and_plot.execute_madness_cast in
-tests/game/effects/test_integration_check.py instead, since that chain
-needs both modules working together."""
+madness_and_plot.execute_madness_cast in test_integration_check.py instead."""
 from game import registry, resolution
 from game.cards import CardDef, CardType, EffectId
 from game.effects import state_based
@@ -31,8 +29,7 @@ def test_draw_counter_and_automatic_return():
         state.draw(1)  # a 4th draw must NOT re-trigger (exactly == 3, not >= 3)
         assert len(state.trigger_queue) == 2
 
-        # 2 simultaneous triggers -- a real placement-order choice, not fixed
-        # queue order.
+        # 2 simultaneous triggers -- a real placement-order choice
         promote_triggers_to_stack(state)
         assert state.players[0].triggers_fired_this_phase is True  # dense mana-burn-penalty exemption signal
         assert state.pending_resolution["kind"] == "order_triggers"
@@ -44,8 +41,7 @@ def test_draw_counter_and_automatic_return():
         assert len(state.stack) == 2
         assert state.trigger_queue == []
 
-        # No decision at any point once each stack entry resolves -- both
-        # copies return to the battlefield tapped.
+        # no decision at any point -- both copies return to the battlefield tapped
         while state.stack:
             resolve_top_of_stack(state)
         assert state.pending_resolution is None
@@ -57,10 +53,8 @@ def test_draw_counter_and_automatic_return():
 
 
 def test_two_simultaneous_targeting_etbs():
-    # 2 simultaneous targeting ETBs: both go through ONE begin_order_triggers
-    # ordering choice, each PLACED via its own etb_trigger hook (not a plain
-    # resolve). Placement order is the active player's choice; LIFO means
-    # placed-LAST resolves-FIRST.
+    # both go through one begin_order_triggers ordering choice, each placed
+    # via its own etb_trigger hook; LIFO means placed-last resolves-first
     etb_calls = []
 
     def _fake_targeting_etb(tag):
@@ -113,16 +107,11 @@ def test_two_simultaneous_targeting_etbs():
 
 
 def test_cross_owner_ltb_trigger_apnap_ordering():
-    # Cross-owner LTB trigger: a NON-active player's creature dying via
-    # state-based action (combat,
-    # removal -- check_state_based_actions scans BOTH battlefields every
-    # round) must queue into THAT player's own trigger_queue, not the
-    # active player's proxy -- and promote_triggers_to_stack must place each
-    # owner's group under ITS OWN active_idx (APNAP, 603.3b): the active
-    # player's single trigger placed first (resolves last), the opponent's
-    # single trigger placed second (resolves first), each stack entry
-    # controller-stamped to its TRUE owner, active_idx restored to the real
-    # active player once both groups are placed.
+    # a non-active player's creature dying to an SBA queues into THAT
+    # player's own trigger_queue, and promote_triggers_to_stack places each
+    # owner's group under its own active_idx (APNAP, 603.3b): active
+    # player's trigger placed first (resolves last), opponent's placed
+    # second (resolves first), active_idx restored once both are placed.
     ltb_fired = []
     _filler_backup3 = registry.EFFECT_REGISTRY[EffectId.FILLER]
     _ent_backup2 = registry.EFFECT_REGISTRY[EffectId.GENEROUS_ENT]
@@ -143,7 +132,7 @@ def test_cross_owner_ltb_trigger_apnap_ordering():
         mine.damage_marked = 1  # lethal for both -- simultaneous SBA deaths, cross-owner
         theirs.damage_marked = 1
         state_based.check_state_based_actions(state)
-        # Each landed in its OWN owner's queue, never the active-player proxy.
+        # each landed in its own owner's queue, never the active-player proxy
         assert [e["card_def"].name for e in state.players[0].trigger_queue] == ["Mine Dies"]
         assert [e["card_def"].name for e in state.players[1].trigger_queue] == ["Theirs Dies"]
 
@@ -165,13 +154,9 @@ def test_cross_owner_ltb_trigger_apnap_ordering():
 
 
 def test_opponent_owned_order_triggers_offers_only_their_own_names():
-    # The OPPONENT has 2+ simultaneous triggers of their OWN -- order_triggers
-    # must be answered by THAT player (active_idx
-    # set to them), offering ONLY their own card names, never the active
-    # player's -- this is what keeps order_triggers a safe by-name resolution
-    # (drl_env._actions_resolution._CHOOSE_NAME_PENDING_KINDS's own guaranteed invariant:
-    # every candidate it can ever offer is confined to the deciding player's
-    # own deck).
+    # when the opponent has 2+ simultaneous triggers of their own,
+    # order_triggers must be answered by that player (active_idx set to
+    # them), offering only their own card names, never the active player's
     _filler_backup4 = registry.EFFECT_REGISTRY[EffectId.FILLER]
     _ent_backup3 = registry.EFFECT_REGISTRY[EffectId.GENEROUS_ENT]
     registry.EFFECT_REGISTRY[EffectId.FILLER] = {"ltb_trigger": lambda s, p: None}
@@ -210,19 +195,11 @@ def test_opponent_owned_order_triggers_offers_only_their_own_names():
 
 
 def test_cross_owner_single_targeting_etb_does_not_stomp_active_idx():
-    # Regression for a real crash: a NON-active player's lone queued
-    # targeting ETB (a real target existed, e.g. Masked Vandal) must keep
-    # active_idx pointed at its TRUE owner -- the actual decision-maker,
-    # and whose "opponent" choose_opponent_permanent's own predicate reads
-    # -- until that decision is genuinely answered by _place_trigger_groups'
-    # single-entry targeting branch, not get stomped back to
-    # original_active_idx the instant the hook opens it (begin_resolution
-    # is a flat, single-slot assignment -- state.pending_resolution's own
-    # docstring). Confirmed live: an all-False choose_opponent_permanent
-    # mask + a RuntimeError, in real cross-deck league play, because the
-    # stomp both reassigned who answers the decision AND (since state.
-    # opponent re-reads state.active_idx fresh) flipped whose board was
-    # being offered as "the opponent."
+    # a non-active player's lone queued targeting ETB must keep active_idx
+    # pointed at its true owner (the actual decision-maker, and whose
+    # "opponent" choose_opponent_permanent reads) until the decision is
+    # answered, not get stomped back to original_active_idx the instant the
+    # hook opens it.
     resolved = []
     _filler_backup5 = registry.EFFECT_REGISTRY[EffectId.FILLER]
     registry.EFFECT_REGISTRY[EffectId.FILLER] = {
@@ -258,7 +235,7 @@ def test_cross_owner_single_targeting_etb_does_not_stomp_active_idx():
 
         assert resolved == [("Their Relic", art.slot)]
         assert state.pending_resolution is None
-        assert state.active_idx == 0  # restored to the true original active player once the decision (and the group) finishes
+        assert state.active_idx == 0  # restored once the decision (and the group) finishes
     finally:
         registry.EFFECT_REGISTRY[EffectId.FILLER] = _filler_backup5
         registry.CARD_DEFS.clear()
@@ -266,18 +243,11 @@ def test_cross_owner_single_targeting_etb_does_not_stomp_active_idx():
 
 
 def test_targeting_entry_inside_order_triggers_does_not_orphan_the_pick():
-    # Same root cause as test_cross_owner_single_targeting_etb_does_not_stomp_
-    # active_idx, but inside execute_order_triggers_option's own targeting
-    # branch (2+ simultaneous triggers for one owner): placing a targeting
-    # entry that opens a REAL nested decision replaces state.pending_
-    # resolution with that decision (begin_resolution is a flat, single-slot
-    # assignment), detaching the "order_triggers" dict this function's own
-    # `pending` local still references. Finishing this pick immediately
-    # afterward would either complete/clear the WRONG (freshly-opened)
-    # resolution or, if entries remain, silently strand them with nothing in
-    # state.pending_resolution ever pointing back to this order_triggers
-    # pick again. This drives BOTH remaining entries through to confirm
-    # neither one is lost.
+    # same root cause as test_cross_owner_single_targeting_etb_does_not_stomp_active_idx,
+    # but inside execute_order_triggers_option's targeting branch (2+
+    # simultaneous triggers for one owner): placing a targeting entry that
+    # opens a nested decision replaces state.pending_resolution, detaching
+    # the "order_triggers" dict; both remaining entries must still resolve.
     resolved = []
     _filler_backup6 = registry.EFFECT_REGISTRY[EffectId.FILLER]
     _ent_backup4 = registry.EFFECT_REGISTRY[EffectId.GENEROUS_ENT]

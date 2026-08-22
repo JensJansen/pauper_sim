@@ -1,8 +1,6 @@
-"""Attack eligibility + declaration + damage, then the keyword trio
-(vigilance/trample/first strike) -- everything specific to THIS module. The
-combat+SBA creature-death handoff lives in
-tests/game/effects/test_integration_check.py instead (it exercises
-state_based.py just as much as this module)."""
+"""Attack eligibility, declaration, damage, and the keyword trio
+(vigilance/trample/first strike). The combat+SBA creature-death handoff
+lives in test_integration_check.py instead."""
 import pytest
 
 from game import registry
@@ -27,10 +25,10 @@ def test_creature_attack_eligibility_and_damage():
     state = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
     attacker = Permanent(CardDef("Attacker", CardType.CREATURE, None, EffectId.FILLER, power=3))
     attacker.summoning_sick = False
-    sick = Permanent(CardDef("Sick", CardType.CREATURE, None, EffectId.FILLER, power=10))  # summoning_sick=True by construction -- never cleared here (that's untap_step's job)
+    sick = Permanent(CardDef("Sick", CardType.CREATURE, None, EffectId.FILLER, power=10))  # summoning_sick=True by construction
     already_tapped = Permanent(CardDef("Tapped Out", CardType.CREATURE, None, EffectId.FILLER, power=10), tapped=True)
     already_tapped.summoning_sick = False
-    vanilla = Permanent(CardDef("No Stats", CardType.CREATURE, None, EffectId.FILLER))  # no "power" key at all -- untracked-stats precedent (Masked Vandal, Mesmeric Fiend)
+    vanilla = Permanent(CardDef("No Stats", CardType.CREATURE, None, EffectId.FILLER))  # no "power" key at all
     vanilla.summoning_sick = False
     not_a_creature = Permanent(CardDef("Some Land", CardType.LAND, None, EffectId.FILLER, power=10))
     not_a_creature.summoning_sick = False
@@ -62,14 +60,8 @@ def test_creature_attack_eligibility_and_damage():
     ids=["flat_bool", "keyword_set"],
 )
 def test_haste_registry_spec(spec):
-    # Haste, both registry spec forms: a flat "haste": True (Kitchen Imp) and
-    # haste granted via the "keywords" set (Reckless Lackey, Clockwork
-    # Percussionist) must both let a summoning-sick creature be
-    # attack-eligible anyway. Regression (2026-08): creature_attack_eligible
-    # used to check ONLY the flat boolean, so a keyword-set haste creature
-    # could never attack the turn it was cast. Both are real branches of
-    # stats.has_haste -- the one canonical haste check creature_attack_eligible
-    # and mana.py's tap_summoning_locked both share.
+    # both registry spec forms -- flat "haste": True and haste via the
+    # "keywords" set -- must let a summoning-sick creature attack anyway
     state = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
     _filler_backup = registry.EFFECT_REGISTRY[EffectId.FILLER]
     registry.EFFECT_REGISTRY[EffectId.FILLER] = spec
@@ -87,10 +79,8 @@ def test_haste_registry_spec(spec):
 
 
 def test_vigilance_no_tap_and_no_redeclare():
-    # Vigilance: attacking with a vigilant creature never taps it, unlike an
-    # ordinary attacker.
     state = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
-    vigilant = Permanent(WARRIOR_TOKEN_CARD_DEF)  # the real EffectId.WARRIOR_TOKEN registry entry (white_cards.py) grants vigilance
+    vigilant = Permanent(WARRIOR_TOKEN_CARD_DEF)  # WARRIOR_TOKEN's registry entry grants vigilance
     vigilant.summoning_sick = False
     ordinary = Permanent(CardDef("Ordinary Attacker", CardType.CREATURE, None, EffectId.FILLER, power=1, toughness=1))
     ordinary.summoning_sick = False
@@ -101,13 +91,9 @@ def test_vigilance_no_tap_and_no_redeclare():
     assert not vigilant.tapped and vigilant in state.attackers
     assert ordinary.tapped and ordinary in state.attackers
 
-    # A vigilant creature staying untapped must NOT make it re-declarable --
-    # it already attacked this combat, tapped or not. Without
-    # creature_attack_eligible's own state.attackers guard, a vigilant
-    # creature (which skips the only other exclusion, tapped) would stay
-    # "eligible" forever, and repeated declare_attacker calls would silently
-    # duplicate it in state.attackers, multiplying its power in
-    # combat_damage_step's unblocked-damage total.
+    # staying untapped must not make vigilant re-declarable -- it already
+    # attacked this combat; creature_attack_eligible's state.attackers guard
+    # prevents duplicate declare_attacker calls from doubling its power
     assert not creature_attack_eligible(state, vigilant)
     assert state.attackers.count(vigilant) == 1
     combat_damage_step(state)
@@ -115,9 +101,8 @@ def test_vigilance_no_tap_and_no_redeclare():
 
 
 def test_trample_spills_excess_to_defending_player():
-    # Trample (the real EffectId.RANCOR registry entry): a blocked
-    # attacker with trample assigns only enough damage to be lethal to its
-    # blocker, letting the rest spill over to the DEFENDING player.
+    # a blocked trampler assigns only enough damage to be lethal to its
+    # blocker; the rest spills over to the defending player
     _card_defs_backup = dict(registry.CARD_DEFS)
     try:
         state = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
@@ -136,8 +121,7 @@ def test_trample_spills_excess_to_defending_player():
         state.blocked_by[trampler] = [weak_blocker]
         combat_damage_step(state)
 
-        # Effective power 7 (5 base + Rancor's +2): 2 assigned as lethal
-        # (weak_blocker's own toughness), 5 tramples through.
+        # effective power 7 (5 base + Rancor +2): 2 lethal to weak_blocker, 5 tramples through
         assert weak_blocker not in state.players[1].battlefield
         assert state.players[1].life_total == 15  # 20 - the 5 that trampled through
         assert trampler in state.players[0].battlefield and trampler.damage_marked == 1
@@ -147,16 +131,9 @@ def test_trample_spills_excess_to_defending_player():
 
 
 def test_trample_all_through_when_every_blocker_already_gone():
-    # A blocked trampler whose only blocker died BEFORE combat_damage_step
-    # ran (e.g. an instant-speed removal spell resolved in the real priority
-    # round game.turn gives both players right after blocks + damage
-    # assignment, still within Phase.DECLARE_BLOCKERS, before Phase.
-    # COMBAT_DAMAGE even starts) is still "blocked" -- 702.19e/510.1c: with
-    # no living blocker left to assign any lethal damage to, its FULL power
-    # tramples through to the defending player, not zero. Modeled directly
-    # here (state.blocked_by records the block; the blocker was simply never
-    # put on any battlefield, matching what "already gone by the time combat
-    # damage is dealt" looks like to combat_damage_step's own _is_alive checks).
+    # 702.19e/510.1c: a blocked trampler whose only blocker died before
+    # combat_damage_step ran is still "blocked", but with no living blocker
+    # to assign lethal damage to, its full power tramples through.
     _card_defs_backup = dict(registry.CARD_DEFS)
     try:
         state = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
@@ -167,17 +144,14 @@ def test_trample_all_through_when_every_blocker_already_gone():
         rancor_on_trampler.flags["enchanting"] = trampler
         gone_blocker = Permanent(CardDef("Gone Blocker", CardType.CREATURE, None, EffectId.FILLER, power=1, toughness=2))
         state.players[0].battlefield = [trampler, rancor_on_trampler]
-        # gone_blocker deliberately NOT added to either battlefield -- already
-        # dead by the time combat damage is dealt, same as _is_alive would see
-        # a real mid-combat removal target.
+        # gone_blocker deliberately not on any battlefield -- already dead by combat damage
 
         declare_attackers_step(state)
         declare_attacker(state, trampler)
         state.blocked_by[trampler] = [gone_blocker]
         combat_damage_step(state)
 
-        # Effective power 7 (5 base + Rancor's +2), ALL of it through -- no
-        # living blocker left to assign any of it to.
+        # effective power 7 (5 base + Rancor +2), all of it through
         assert state.players[1].life_total == 13  # 20 - 7
         assert trampler.damage_marked == 0  # a dead blocker deals no damage back
     finally:
@@ -186,9 +160,7 @@ def test_trample_all_through_when_every_blocker_already_gone():
 
 
 def test_first_strike_kills_before_blocker_deals_damage():
-    # First strike (the real EffectId.CARTOUCHE_OF_SOLIDARITY registry
-    # entry): a blocked attacker with first strike deals its damage BEFORE
-    # the blocker gets a chance to.
+    # a blocked first-strike attacker deals its damage before the blocker gets a chance to
     _card_defs_backup = dict(registry.CARD_DEFS)
     try:
         state = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
@@ -207,9 +179,8 @@ def test_first_strike_kills_before_blocker_deals_damage():
         state.blocked_by[fs_attacker] = [lethal_blocker]
         combat_damage_step(state)
 
-        # Effective power 5 (4 base + Cartouche's +1) >= lethal_blocker's
-        # toughness 3 -- dies in the FIRST STRIKE sub-step, before it ever
-        # deals its own power-3 damage back.
+        # effective power 5 (4 base + Cartouche +1) >= toughness 3 -- dies in the
+        # first-strike sub-step, before dealing its own damage back
         assert lethal_blocker not in state.players[1].battlefield
         assert fs_attacker in state.players[0].battlefield and fs_attacker.damage_marked == 0
     finally:
@@ -218,10 +189,7 @@ def test_first_strike_kills_before_blocker_deals_damage():
 
 
 def test_lifelink_unblocked_attacker():
-    # Lifelink (the real EffectId.ARMADILLO_CLOAK registry entry):
-    # "whenever enchanted creature deals damage, you gain that much life"
-    # -- credited to whichever side actually controls the damage-dealing
-    # creature.
+    # lifelink credits whichever side actually controls the damage-dealing creature
     _card_defs_backup = dict(registry.CARD_DEFS)
     try:
         state = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
@@ -236,9 +204,7 @@ def test_lifelink_unblocked_attacker():
         declare_attacker(state, lifelinker)
         combat_damage_step(state)  # unblocked
 
-        # Effective power 5 (3 base + Cloak's own +2, same Aura bonus
-        # permanent_power always applies) -- both the damage AND the
-        # lifelink gain use this effective total, not the base 3.
+        # effective power 5 (3 base + Cloak +2) -- both damage and lifelink gain use this total
         assert state.players[1].life_total == 15  # 20 - the unblocked lifelinker's power (5)
         assert state.players[0].life_total == 25  # STARTING_LIFE (20) + 5, unblocked lifelink
     finally:
@@ -247,11 +213,8 @@ def test_lifelink_unblocked_attacker():
 
 
 def test_lifelink_stacking_two_cloaks():
-    # STACKING: two Armadillo Cloaks on the SAME creature -- two
-    # independent triggers, not a boolean that dedups to one. Real
-    # rule (unlike real lifelink, which never stacks): each Cloak's
-    # own "whenever enchanted creature deals damage, you gain that
-    # much life" fires separately, each for the FULL damage dealt.
+    # two Armadillo Cloaks on the same creature: two independent triggers,
+    # each for the full damage dealt, not a boolean that dedups to one
     _card_defs_backup = dict(registry.CARD_DEFS)
     try:
         state = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
@@ -268,9 +231,7 @@ def test_lifelink_stacking_two_cloaks():
         declare_attacker(state, double_cloaked)
         combat_damage_step(state)  # unblocked
 
-        # Effective power 7 (3 base + 2+2 from both Cloaks). Life gained:
-        # 7 * 2 (one trigger per Cloak) = 14, NOT just 7 (what a boolean
-        # "lifelink" keyword would wrongly give, deduped to one trigger).
+        # effective power 7 (3 base + 2+2); life gained is 7*2=14, one trigger per Cloak
         assert state.players[1].life_total == 13  # 20 - the double-cloaked lifelinker's power (7)
         assert state.players[0].life_total == 34  # STARTING_LIFE (20) + 14
     finally:
@@ -279,11 +240,8 @@ def test_lifelink_stacking_two_cloaks():
 
 
 def test_lifelink_blocked_trample_gains_full_effective_power():
-    # A blocked lifelinker with trample: effective power 5 (3 base +
-    # Cloak's own +2) vs a 2-toughness blocker -- 2 assigned as
-    # lethal, 3 tramples through, but the FULL 5 is gained as life --
-    # Armadillo Cloak's own text has no "excess damage only" carve-out,
-    # unlike trample's own player-damage rule.
+    # a blocked lifelink trampler gains the FULL effective power as life,
+    # not just the excess that tramples through (no such carve-out on Cloak)
     _card_defs_backup = dict(registry.CARD_DEFS)
     try:
         state = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
@@ -310,10 +268,8 @@ def test_lifelink_blocked_trample_gains_full_effective_power():
 
 
 def test_lifelink_on_blocking_creature_credits_defender():
-    # A BLOCKING lifelinker: life goes to the DEFENDING player (index
-    # 1 here, since player 0 is the attacker/active side throughout
-    # combat_damage_step), never state.life_total (which would
-    # silently credit the wrong side).
+    # a blocking lifelinker's life goes to the defending player (idx 1),
+    # never state.life_total, which would credit the attacker instead
     _card_defs_backup = dict(registry.CARD_DEFS)
     try:
         state = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
@@ -340,14 +296,11 @@ def test_lifelink_on_blocking_creature_credits_defender():
 
 
 def test_gang_blocking_damage_split():
-    # --- GANG-BLOCKING: one attacker, two blockers, model-decided split ---
-    # A 3/3 attacker gang-blocked by two 2/2s. The attacker's controller
-    # assigns 2 damage to the first blocker (lethal -> dies) and only 1 to
-    # the second (survives) -- an ARBITRARY, non-lethal-to-all split, the
-    # whole point of the model decision. Both blockers deal 2 back, so the
-    # attacker takes 4 >= 3 and dies. The split is stashed on the
-    # attacker's own flags exactly as resolution.begin_assign_combat_damage
-    # records it, and must be consumed (popped) by the damage step.
+    # a 3/3 attacker gang-blocked by two 2/2s: controller assigns 2 (lethal)
+    # to the first, 1 to the second (survives); both deal 2 back so the
+    # attacker takes 4 and dies. The split lives on the attacker's flags as
+    # resolution.begin_assign_combat_damage records it, consumed (popped)
+    # by the damage step.
     _card_defs_backup = dict(registry.CARD_DEFS)
     try:
         gang_state = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
@@ -374,11 +327,8 @@ def test_gang_blocking_damage_split():
 
 
 def test_can_block_evasion_and_reach():
-    # can_block: evasion + reach. A real flier (Kitchen Imp) and
-    # Silhana's "can't be blocked except by flying" both demand a flying or
-    # reach blocker; reach (Bramble Wurm) satisfies that, a vanilla creature
-    # doesn't, and -- crucially -- Silhana itself (evasion, NOT real flying)
-    # can NOT block a flier.
+    # a real flier and Silhana's evasion both demand a flying/reach blocker;
+    # Silhana itself (evasion, not real flying) cannot block a flier
     kb_state = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
     imp = Permanent(CardDef("Imp", CardType.CREATURE, None, EffectId.KITCHEN_IMP, power=2, toughness=2))
     silhana = Permanent(CardDef("Silhana", CardType.CREATURE, None, EffectId.SILHANA_LEDGEWALKER, power=1, toughness=1))
@@ -394,11 +344,9 @@ def test_can_block_evasion_and_reach():
 
 
 def test_menace_block_incomplete_and_enforce_menace():
-    # Menace (509.1c): a declaration leaving a menace attacker with exactly ONE
-    # blocker is illegal. menace_block_incomplete flags it (so drl_env forbids
-    # "Done" until fixed -- 0 or 2+); enforce_menace is the cap-abandon backstop
-    # that drops a stray lone block. Player 0 attacks, player 1 (the defender,
-    # active during blocking) assigns blockers.
+    # 509.1c: a declaration leaving a menace attacker with exactly one
+    # blocker is illegal. menace_block_incomplete flags it (0 or 2+ only);
+    # enforce_menace is the backstop that drops a stray lone block.
     _fb = registry.EFFECT_REGISTRY[EffectId.FILLER]
     registry.EFFECT_REGISTRY[EffectId.FILLER] = {"keywords": {"menace"}}
     try:
@@ -418,8 +366,7 @@ def test_menace_block_incomplete_and_enforce_menace():
         state.players[0].blocked_by = {}  # zero -> also legal (unblocked)
         assert not menace_block_incomplete(state)
 
-        # Backstop: enforce_menace (active back on the attacker) drops a stray
-        # lone menace-block, keeping a two-block one.
+        # enforce_menace drops a stray lone menace-block, keeps a two-block one
         state.active_idx = 0
         state.players[0].blocked_by = {menacer: [lone]}
         enforce_menace(state)
@@ -432,8 +379,8 @@ def test_menace_block_incomplete_and_enforce_menace():
 
 
 def test_goad_forces_declaration_and_excludes_non_turn_player():
-    # Goad: a goaded creature that can attack blocks its controller's Pass
-    # (has_unfulfilled_goad) until it's declared.
+    # a goaded creature that can attack blocks its controller's Pass
+    # (has_unfulfilled_goad) until it's declared
     state = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
     state.active_idx = state.turn_player_idx = 0
     goaded = Permanent(CardDef("Goaded", CardType.CREATURE, None, EffectId.FILLER, power=2, toughness=2))
@@ -444,19 +391,15 @@ def test_goad_forces_declaration_and_excludes_non_turn_player():
     assert has_unfulfilled_goad(state)  # able + undeclared -> must attack
     declare_attacker(state, goaded)
     assert not has_unfulfilled_goad(state)  # now declared -> satisfied
-    # a goaded creature that CAN'T attack (tapped) never forces the issue
+    # a goaded creature that can't attack (tapped) never forces the issue
     state.players[0].attackers = []
     goaded.tapped = True
     assert not has_unfulfilled_goad(state)
 
-    # Goad binds the turn player during THEIR own declare step, not a NON-turn
-    # player who merely holds priority during DECLARE_ATTACKERS
-    # (game.turn._run_priority_round_gen flips active_idx to them). A forcing
-    # goaded creature under the non-turn player must NOT block their priority-
-    # Pass -- they cannot declare an attacker at all (_attack_legal needs
-    # active_idx == turn_player_idx), so blocking it would leave an all-False
-    # action mask (the rl.decision.agent._seat_step crash this guards against).
-    # turn_player_idx stays 0.
+    # goad binds the turn player during their own declare step; a non-turn
+    # player merely holding priority during DECLARE_ATTACKERS cannot declare
+    # an attacker at all (_attack_legal needs active_idx == turn_player_idx),
+    # so goad must not block their Pass either. turn_player_idx stays 0.
     nonturn_goaded = Permanent(CardDef("NonturnGoaded", CardType.CREATURE, None, EffectId.FILLER, power=2, toughness=2))
     nonturn_goaded.summoning_sick = False
     nonturn_goaded.flags["goaded_by"] = 0  # goaded by the turn player (idx 0)
@@ -466,10 +409,9 @@ def test_goad_forces_declaration_and_excludes_non_turn_player():
 
 
 def test_initiative_transfer_on_combat_damage():
-    # Initiative transfer: the holder taking combat damage queues the
-    # attacker's own "take_initiative" triggered ability (CR 722.2) -- a real
-    # trigger, not an instant effect, so it doesn't flip state.initiative_idx
-    # until IT resolves off the stack, which then queues the venture.
+    # dealing combat damage to the initiative holder queues a
+    # "take_initiative" trigger (CR 722.2), which only flips
+    # state.initiative_idx once it resolves off the stack, then queues venture
     state = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
     state.active_idx = state.turn_player_idx = 0
     state.initiative_idx = 1  # the DEFENDER holds it
@@ -488,13 +430,9 @@ def test_initiative_transfer_on_combat_damage():
 
 
 def test_initiative_transfer_not_masked_by_simultaneous_lifelink_gain():
-    # A lifelink blocker's life GAIN for the defender (routed to the
-    # defending player -- see test_lifelink_on_blocking_creature_credits_
-    # defender above) must not mask combat damage a separate unblocked
-    # attacker actually dealt to the initiative holder that same step. The
-    # transfer is keyed on damage dealt, not net life-total change (real
-    # Magic: "whenever one or more creatures a player controls deal combat
-    # damage to the player who has the initiative...").
+    # a lifelink blocker's life gain for the defender must not mask combat
+    # damage a separate unblocked attacker dealt that same step -- the
+    # transfer is keyed on damage dealt, not net life-total change
     state = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
     state.active_idx = state.turn_player_idx = 0
     state.initiative_idx = 1  # the DEFENDER holds it
@@ -511,8 +449,8 @@ def test_initiative_transfer_not_masked_by_simultaneous_lifelink_gain():
 
     combat_damage_step(state)
 
-    # Net life change is positive (+5 lifelink, -3 unblocked) -- a net-life
-    # check would wrongly conclude no combat damage reached the defender.
+    # net life change is positive (+5 lifelink, -3 unblocked) -- a net-life
+    # check would wrongly conclude no combat damage reached the defender
     assert state.players[1].life_total == 22  # 20 - 3 (Hitter, unblocked) + 5 (blocker's lifelink)
     assert any(e["type"] == "take_initiative" for e in state.players[0].trigger_queue)
     promote_triggers_to_stack(state)
@@ -522,23 +460,11 @@ def test_initiative_transfer_not_masked_by_simultaneous_lifelink_gain():
 
 
 def test_free_damage_assignment_skips_blockers_that_already_left():
-    """Rule 510.1a: an attacker assigns combat damage only among creatures
-    CURRENTLY blocking it.
-
-    combat_damage_step's auto path already handled dead blockers (see
-    test_trample_all_through_when_every_blocker_already_gone). The FREE
-    assignment path -- 2+ blockers, where the attacker's controller chooses the
-    split -- did not: it captured state.blocked_by at declaration and offered
-    the whole list, including any blocker killed by removal in the priority
-    round that game.turn gives both players right after blocks.
-
-    That was a hard crash, not a rules nicety. A dead blocker is not in
-    build_token_set (which walks the battlefield), so rl.decision.action_bridge's
-    pointer mask -- an identity match against the pending's blocker list --
-    could not address it, and with no trample option either the whole action
-    mask came back all-False. Hit on turn 79 of an 11-deck league game,
-    2026-08-16.
-    """
+    """510.1a: an attacker assigns combat damage only among creatures
+    currently blocking it. The free-assignment path (2+ blockers, controller
+    chooses the split) must exclude any blocker killed by removal during the
+    priority window after blocks, not just the auto-assignment path covered
+    by test_trample_all_through_when_every_blocker_already_gone."""
     from game.turn import _assign_combat_damage_gen
 
     _card_defs_backup = dict(registry.CARD_DEFS)
@@ -559,14 +485,12 @@ def test_free_damage_assignment_skips_blockers_that_already_left():
         declare_attacker(state, attacker)
         state.blocked_by[attacker] = [alive, dead]
 
-        # Two blockers declared, but only one still alive -> no free choice
-        # remains, so the generator must finish WITHOUT asking for a decision.
-        # It previously opened a pending whose only addressable option was gone.
+        # two blockers declared, only one alive -> no free choice remains,
+        # generator must finish without asking for a decision
         assert list(_assign_combat_damage_gen(state)) == []
         assert state.pending_resolution is None
 
-        # And with two survivors out of three, the decision IS offered -- over
-        # the living pair only, never the corpse.
+        # two survivors out of three: the decision is offered over the living pair only
         alive2 = blocker("Alive2")
         state.players[1].battlefield = [alive, alive2]
         state.blocked_by[attacker] = [alive, dead, alive2]
@@ -580,12 +504,9 @@ def test_free_damage_assignment_skips_blockers_that_already_left():
 
 
 def test_blocked_attacker_without_trample_deals_nothing_when_its_blocker_is_gone():
-    # 509.1h: a creature that was blocked REMAINS blocked even if every
-    # creature blocking it leaves combat. Without trample it therefore deals
-    # no combat damage at all -- it does NOT "become unblocked" and hit the
-    # player. The trample counterpart of this is
-    # test_trample_all_through_when_every_blocker_already_gone above; this is
-    # the case that must NOT spill through.
+    # 509.1h: a blocked creature remains blocked even if every blocker
+    # leaves combat; without trample it deals no damage at all (never
+    # "becomes unblocked"). Trample counterpart: test_trample_all_through_when_every_blocker_already_gone.
     state = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
     attacker = Permanent(CardDef("Grounded", CardType.CREATURE, None, EffectId.FILLER, power=5, toughness=3))
     attacker.summoning_sick = False
@@ -602,13 +523,10 @@ def test_blocked_attacker_without_trample_deals_nothing_when_its_blocker_is_gone
 
 
 def test_attacker_removed_after_blocks_deals_and_takes_no_damage():
-    # 506.4: an attacker removed from the battlefield after blockers were
-    # declared stops being an attacking creature -- it deals no combat damage
-    # to its blocker or the player, and its blocker deals none back to it.
-    # remove_from_combat prunes state.attackers but deliberately leaves the
-    # blocked_by ENTRY (509.1: its blockers stay declared and must not be
-    # freed to block again), so combat_damage_step -- which iterates
-    # blocked_by.items() -- has to skip the group on its own.
+    # 506.4: an attacker removed after blockers were declared stops being an
+    # attacking creature -- no damage either direction. remove_from_combat
+    # prunes state.attackers but leaves the blocked_by entry (509.1: its
+    # blockers stay declared), so combat_damage_step must skip that group itself.
     from game.effects.combat import remove_from_combat
 
     state = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
@@ -634,9 +552,7 @@ def test_attacker_removed_after_blocks_deals_and_takes_no_damage():
 
 
 def test_multi_blocker_damage_splits_over_living_blockers_only():
-    # Gang block, then one blocker dies before combat damage. The attacker's
-    # damage is assigned across the LIVING blockers only -- the dead one
-    # absorbs nothing and deals nothing back.
+    # a gang-blocker that dies before combat damage absorbs nothing and deals nothing back
     state = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
     attacker = Permanent(CardDef("Big", CardType.CREATURE, None, EffectId.FILLER, power=4, toughness=6))
     attacker.summoning_sick = False
@@ -657,13 +573,10 @@ def test_multi_blocker_damage_splits_over_living_blockers_only():
 
 
 def test_menace_attacker_legally_blocked_stays_blocked_when_one_blocker_dies():
-    # 509.1h vs 509.1c. A menace attacker legally blocked by TWO creatures,
-    # one of which then dies in the post-declare-blockers priority window,
-    # REMAINS blocked -- it does not revert to unblocked and hit the player.
-    # This works because game.turn calls enforce_menace once, right after the
-    # declaration is finalized and BEFORE that priority window (turn.py's own
-    # ordering comment); enforce_menace's lone-blocker drop is only ever the
-    # abandoned-declaration backstop, never a re-check after blocks are legal.
+    # 509.1h vs 509.1c: a menace attacker legally blocked by two creatures
+    # remains blocked if one later dies -- it never reverts to unblocked.
+    # enforce_menace runs once, right after declaration and before that
+    # priority window, so it never re-checks after blocks are already legal.
     _fb = registry.EFFECT_REGISTRY[EffectId.FILLER]
     registry.EFFECT_REGISTRY[EffectId.FILLER] = {"keywords": {"menace"}}
     try:
@@ -696,9 +609,7 @@ def test_menace_attacker_legally_blocked_stays_blocked_when_one_blocker_dies():
 
 
 def test_sacrificed_attacker_is_removed_from_combat():
-    # 506.4 via the sacrifice exit path (sacrifice_to_graveyard), the choke
-    # point every "Sacrifice this" ability and artifact-sac cost routes
-    # through -- distinct from the SBA-death path below.
+    # 506.4 via the sacrifice exit path (sacrifice_to_graveyard), distinct from the SBA-death path below
     from game.effects.state_based import sacrifice_to_graveyard
 
     state = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
@@ -718,9 +629,7 @@ def test_sacrificed_attacker_is_removed_from_combat():
 
 
 def test_attacker_killed_by_state_based_actions_is_removed_from_combat():
-    # 506.4 via the SBA-death exit path (check_state_based_actions ->
-    # _destroy_creature) -- the most common way an attacker leaves combat, and
-    # the one the second infinite declare-blockers loop was reached through.
+    # 506.4 via the SBA-death exit path (check_state_based_actions -> _destroy_creature)
     from game.effects.state_based import check_state_based_actions
 
     state = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])

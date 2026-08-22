@@ -33,10 +33,9 @@ def test_land_bounce_etb_is_queued_not_inline():
         ]
 
         state.hand.remove(carnarium)
-        enters_battlefield(state, carnarium)  # normal ETB path, exactly like play_land_from_hand would drive it
-        # The ETB is QUEUED now (faithful timing), not run inline -- it opens
-        # its choose_permanent only once promoted to the stack and resolved,
-        # exactly as game.turn's priority round drives it in real play.
+        enters_battlefield(state, carnarium)  # normal ETB path, like play_land_from_hand
+        # ETB is queued, not run inline -- choose_permanent opens only once
+        # promoted to the stack and resolved.
         assert state.pending_resolution is None
         assert [e["type"] for e in state.trigger_queue] == ["etb"]
         promote_triggers_to_stack(state)
@@ -90,10 +89,8 @@ def test_cast_aura_attaches_and_grants_bonus():
 
 
 def test_cast_aura_target_fizzle_when_target_dies_before_resolution():
-    # Fizzle: the EXACT permanent chosen as a target is gone by the time
-    # the spell resolves -- died, was sacrificed, bounced, doesn't matter
-    # how -- the whole spell fails outright, no effect, straight to the
-    # graveyard, never even entering the battlefield.
+    # the targeted permanent is gone by resolution: the spell fizzles
+    # outright, straight to graveyard, never entering the battlefield.
     state, bogle = _bogle_with_rancor_attached()
 
     other_bogle = enters_battlefield(
@@ -119,15 +116,9 @@ def test_cast_aura_target_fizzle_when_target_dies_before_resolution():
 
 
 def test_cast_targeting_creature_captured_none_when_no_legal_target_at_cast():
-    # captured=None end-to-end: cast_targeting_creature's own MANDATORY pick
-    # can still auto-complete with None (zero legal creature targets right
-    # NOW, not one that died later -- reachable in real play when this
-    # spell's own cost payment, paid AFTER targeting under this engine's
-    # cost-then-target order, kills the caster's last legal target; the same
-    # gap is reachable through a different begin_choose_any_target caller,
-    # cast_aura, covered separately). No
-    # creature anywhere at cast time, so begin_choose_any_target's own
-    # zero-candidate contract fires before this even reaches the stack.
+    # no creature anywhere at cast time: the mandatory pick auto-completes
+    # with captured=None via begin_choose_any_target's zero-candidate
+    # contract, before the spell even reaches the stack.
     state = GameState(on_the_play=True)
     snuff_out = CardDef("Snuff Out", CardType.INSTANT, {"B": 1}, EffectId.FILLER)
     state.hand = [snuff_out]
@@ -141,12 +132,8 @@ def test_cast_targeting_creature_captured_none_when_no_legal_target_at_cast():
 
 
 def test_cast_aura_no_target_fallback_bestow():
-    # cast_aura's no_target_fallback (Bestow, MTG 702.103e): captured=None at
-    # cast time should NOT plain-fizzle when a fallback is given -- the spell
-    # enters the battlefield (as a creature, for real Bestow) instead of
-    # going to the graveyard. Same zero-candidate cast-time gap as above,
-    # routed through cast_aura's own captured-is-None branch instead of
-    # cast_targeting_creature's.
+    # cast_aura's no_target_fallback (Bestow, 702.103e): captured=None at
+    # cast time enters the battlefield via the fallback instead of fizzling.
     no_target_fallback_calls = []
 
     def _bestow_no_target_fallback(state, card_def):
@@ -168,11 +155,9 @@ def test_cast_aura_no_target_fallback_bestow():
 
 
 def test_capture_any_target_and_target_still_legal():
-    # capture_any_target / target_still_legal: the shared cast-time lock +
-    # resolution-time legality for begin_choose_any_target. Two same-named
-    # creatures on opposite sides -- capture must lock the EXACT one named
-    # by (side, name, slot), and legality must flip only when that specific
-    # object leaves, not when its same-named twin does.
+    # two same-named creatures on opposite sides: capture must lock the
+    # exact one named by (side, name, slot), and legality flips only when
+    # that specific object leaves, not its same-named twin.
     mine = Permanent(CardDef("Grizzly Bears", CardType.CREATURE, {"G": 1}, EffectId.FILLER, power=2, toughness=2))
     theirs = Permanent(CardDef("Grizzly Bears", CardType.CREATURE, {"G": 1}, EffectId.FILLER, power=2, toughness=2))
     mine.slot = theirs.slot = 1

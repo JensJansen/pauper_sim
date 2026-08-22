@@ -1,7 +1,6 @@
-"""Aura-orphaning and token-death are the two scenarios specific to THIS module
-(check_state_based_actions/_destroy_creature), as opposed to the combat+SBA
-handoff exercised together with combat.py in
-tests/game/effects/test_integration_check.py."""
+"""Aura-orphaning and token-death: scenarios specific to
+check_state_based_actions/_destroy_creature. The combat+SBA handoff is
+covered in test_integration_check.py."""
 from game import registry, resolution
 from game.cards import CardDef, CardType, EffectId
 from game.effects.casting import enters_battlefield
@@ -13,9 +12,8 @@ from game.state import GameState, Permanent, PlayerState
 
 
 def test_aura_orphaning_and_cleanup():
-    # Aura-orphaning: Rancor returns to its controller's hand
-    # (returns_to_hand_when_orphaned, green_cards.py); every other Aura
-    # (Ancestral Mask here) to the graveyard, real Magic's default.
+    # Rancor returns to its controller's hand (returns_to_hand_when_orphaned);
+    # every other Aura (Ancestral Mask here) goes to the graveyard by default.
     rancor_def = CardDef("Rancor", CardType.ENCHANTMENT, {"G": 1}, EffectId.RANCOR)
     ancestral_mask_def = CardDef("Ancestral Mask", CardType.ENCHANTMENT, {"generic": 2, "G": 1}, EffectId.ANCESTRAL_MASK)
     _card_defs_backup = dict(registry.CARD_DEFS)
@@ -38,9 +36,7 @@ def test_aura_orphaning_and_cleanup():
 
         assert attacker_with_rancor not in state.players[0].battlefield
         assert [c.name for c in state.players[0].graveyard] == ["Rancor'd Attacker"]
-        # 400.7: the graveyard card is a FRESH instance, not the battlefield
-        # Permanent re-added (an identity check the by-name assert above can't
-        # make -- the exact minting-discipline bug this guards against).
+        # 400.7: the graveyard card is a fresh instance, not the battlefield Permanent re-added
         assert state.players[0].graveyard[0] is not attacker_with_rancor
         assert rancor_permanent not in state.players[0].battlefield
         assert [c.name for c in state.players[0].hand] == ["Rancor"]  # returned to hand, not the graveyard
@@ -50,12 +46,10 @@ def test_aura_orphaning_and_cleanup():
         assert blocker_with_mask not in state.players[1].battlefield
         assert mask_permanent not in state.players[1].battlefield
         assert sorted(c.name for c in state.players[1].graveyard) == ["Ancestral Mask", "Masked Blocker"]  # ordinary Aura -- graveyard, not hand
-        # both fresh instances, not the battlefield Permanents re-added (400.7)
-        assert all(c is not blocker_with_mask and c is not mask_permanent for c in state.players[1].graveyard)
+        assert all(c is not blocker_with_mask and c is not mask_permanent for c in state.players[1].graveyard)  # fresh instances (400.7)
         assert state.players[1].hand == []
 
-        # cleanup_step clears damage_marked for EVERY permanent, both
-        # players -- not just the active player's own side.
+        # cleanup_step clears damage_marked for every permanent, both players
         cleanup_step(state)
         assert state.pending_resolution is None
     finally:
@@ -64,10 +58,8 @@ def test_aura_orphaning_and_cleanup():
 
 
 def test_stats_changed_logged_on_counter_change_only_when_it_actually_changes():
-    # A +1/+1 counter moves effective power/toughness off the printed base --
-    # check_state_based_actions should log exactly one stats_changed event for
-    # it (see _log_stat_changes), and NOT re-log on a later call where nothing
-    # about this creature's stats moved.
+    # a +1/+1 counter logs one stats_changed event; a later call with no
+    # stat change must not re-log
     state = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)], event_log=[])
     bear = Permanent(CardDef("Bear", CardType.CREATURE, None, EffectId.FILLER, power=2, toughness=2))
     bear.slot = 1
@@ -90,13 +82,8 @@ def test_stats_changed_logged_on_counter_change_only_when_it_actually_changes():
 
 
 def test_cleanup_step_logs_stats_changed_when_a_temp_pump_expires():
-    # An until-end-of-turn pump (Timberwatch Elf's +X/+X) wearing off at
-    # cleanup must log its own stats_changed event immediately, not wait for
-    # the next check_state_based_actions call (delayed until the following
-    # turn's first priority round, since Phase.UNTAP takes none at all) --
-    # otherwise the replay/event log keeps showing the expired, pumped
-    # stats through the whole opponent turn even though the real state
-    # (temp_power/temp_toughness) was already reset.
+    # a temp pump wearing off at cleanup must log its stats_changed event
+    # immediately, not wait for the next check_state_based_actions call
     state = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)], event_log=[])
     bear = Permanent(CardDef("Bear", CardType.CREATURE, None, EffectId.FILLER, power=2, toughness=2))
     bear.slot = 1
@@ -114,9 +101,8 @@ def test_cleanup_step_logs_stats_changed_when_a_temp_pump_expires():
 
 
 def test_entering_via_enters_battlefield_does_not_log_a_redundant_stats_changed():
-    # enters_battlefield seeds flags["_logged_pt"] to the printed stats it just
-    # logged in its own zone_move event, so a plain ETB with no counters/Auras/
-    # pump active yet produces no immediately-redundant stats_changed step.
+    # enters_battlefield seeds flags["_logged_pt"] from its own zone_move
+    # event, so a plain ETB produces no redundant stats_changed
     state = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)], event_log=[])
     bear_def = CardDef("Bear", CardType.CREATURE, None, EffectId.FILLER, power=2, toughness=2)
     enters_battlefield(state, bear_def, from_zone="hand")
@@ -125,9 +111,6 @@ def test_entering_via_enters_battlefield_does_not_log_a_redundant_stats_changed(
 
 
 def test_token_creature_death_ceases_to_exist():
-    # Token creature death: ceases to exist entirely -- same real-Magic
-    # rule every existing token-removal path already follows, NOT the
-    # graveyard-goes-there-normally case above.
     state = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
     warrior_token = Permanent(WARRIOR_TOKEN_CARD_DEF)
     state.players[0].battlefield = [warrior_token]
@@ -180,7 +163,6 @@ def test_temp_toughness_reduction_lethal_via_sba():
 
 
 def test_cleanup_clears_temp_modifiers_and_deathtouch_marker():
-    # cleanup clears temp modifiers + deathtouch marker.
     state = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
     surv = Permanent(CardDef("Survivor", CardType.CREATURE, None, EffectId.FILLER, power=2, toughness=5))
     surv.temp_power, surv.temp_toughness, surv.temp_keywords = -3, -1, {"deathtouch"}
@@ -192,10 +174,8 @@ def test_cleanup_clears_temp_modifiers_and_deathtouch_marker():
 
 
 def test_sacrifice_to_graveyard_fires_dies_and_on_sacrifice_triggers():
-    # sacrifice_to_graveyard: fires a dies (ltb) trigger AND on_sacrifice
-    # triggers on the sacrificer's other battlefield permanents -- both real
-    # triggered abilities, queued and placed on the stack at the next
-    # priority window, not applied immediately.
+    # fires a dies (ltb) trigger and on_sacrifice on the sacrificer's other
+    # permanents -- both queued onto the stack, not applied immediately
     _filler_backup3 = registry.EFFECT_REGISTRY[EffectId.FILLER]
     dies_fired = []
     sac_seen = []
@@ -218,9 +198,7 @@ def test_sacrifice_to_graveyard_fires_dies_and_on_sacrifice_triggers():
         assert [e for e in state.trigger_queue if e["type"] == "on_sacrifice"]  # Watcher's trigger queued too
         assert sac_seen == []  # not applied yet -- still just queued
         promote_triggers_to_stack(state)
-        # Both queued triggers belong to the same controller -- 603.3b lets
-        # them choose the placement order (resolution.begin_order_triggers)
-        # rather than placing both automatically.
+        # same controller for both triggers -- 603.3b lets them choose placement order
         while state.pending_resolution is not None and state.pending_resolution["kind"] == "order_triggers":
             resolution.execute_order_triggers_option(state, resolution.order_triggers_options(state)[0])
         while state.stack:

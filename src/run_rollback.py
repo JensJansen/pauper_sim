@@ -1,30 +1,17 @@
-"""Promote a historical snapshot back to a deck's LIVE checkpoint.
+"""Promote a historical snapshot back to a deck's live checkpoint.
 
-WHY THIS EXISTS. Training can make a policy worse, and did: at 60,001
-games/deck, three of four decks in 4_deck_subleague_test lost head-to-head to
-their own ~200-game-old selves (dmir_terror 38%, elves 43%,
-rakdos_madness 35% against snapshot_0, measured by a snapshot round
-robin). Continuing to train from `live.pt` in that state means
-building on the worst version of the policy the run ever produced.
+Reconstructs the DeckNetwork (and its era-matched MulliganNet) from a
+snapshot and writes them as live.pt / mulligan.pt. `LeaguePool.
+register_snapshot` moves evictions into `<deck>/archive/` rather than
+deleting them, so any snapshot a run ever took is available to restore.
 
-NO NEW BACKUP IS NEEDED and this deliberately does not make one of the pool.
-`LeaguePool.register_snapshot` MOVES evictions into `<deck>/archive/` rather
-than deleting them, so every snapshot a run ever took is already on disk --
-290 per deck here, one per 200 games, ~1MB each. The rollback material exists;
-what was missing was a way to USE it. That is all this script is.
-
-What it does per deck: reconstruct the DeckNetwork (and its era-matched
-MulliganNet) from the snapshot and write them as live.pt / mulligan.pt.
-
-  - Optimizer state is deliberately NOT restored -- snapshots never carried
-    any. load_deck_checkpoint's migration guard re-warms a fresh Adam, which
-    is the correct behavior for a policy that is being rewound anyway; the
-    stale moment/variance estimates belonged to a trajectory being abandoned.
-  - The CURRENT live.pt/mulligan.pt are copied aside first (see --force), so a
-    rollback is itself reversible.
-  - session.txt and progress.json are untouched: the session counter is a log
-    of what has run, not a claim about the weights, and rewriting history there
-    would make metrics.jsonl unreadable.
+  - Optimizer state is NOT restored -- snapshots never carry any.
+    load_deck_checkpoint's migration guard re-warms a fresh Adam, correct
+    for a policy being rewound anyway.
+  - The current live.pt/mulligan.pt are copied aside first (see --force),
+    so a rollback is itself reversible.
+  - session.txt and progress.json are untouched: the session counter logs
+    what has run, not a claim about the weights.
 
 Usage:
   python run_rollback.py --league 4_deck_subleague_test --deck elves --snapshot 58
@@ -46,7 +33,7 @@ BACKUP_SUFFIX = ".before_rollback"
 
 def _snapshot_path(deck_dir, snapshot_id):
     """Snapshots live in the active pool dir until evicted, then under
-    archive/ -- try both, same as league_runner.load_vintage_agent."""
+    archive/ -- tries both, same as league_runner.load_vintage_agent."""
     for sub in ("", "archive"):
         path = os.path.join(deck_dir, sub, f"snapshot_{snapshot_id}.pt")
         if os.path.exists(path):
@@ -64,9 +51,9 @@ def rollback_deck(league_dir, deck, snapshot_id, deck_ctx, force=False, dry_run=
     if dry_run:
         return f"{deck}: would restore {os.path.relpath(src, league_dir)} -> live.pt"
 
-    # Back up the current live pair first. Refuse to clobber an existing backup
-    # unless --force: a second rollback would otherwise destroy the only copy of
-    # the pre-rollback state, which is exactly the mistake this guards against.
+    # Back up the current live pair first. Refuse to clobber an existing
+    # backup unless --force, so a second rollback can't destroy the only
+    # copy of the pre-rollback state.
     for path in (live_path, mull_path):
         backup = path + BACKUP_SUFFIX
         if os.path.exists(path):
@@ -87,9 +74,8 @@ def rollback_deck(league_dir, deck, snapshot_id, deck_ctx, force=False, dry_run=
         mull.load_state_dict(saved["mulligan_state_dict"])
         ckpt_io.save_deck_checkpoint(mull_path, mull)
     else:
-        # A deck-only snapshot carries no pregame policy. Leaving the CURRENT
-        # mulligan.pt in place would pair a rewound main policy with a mulligan
-        # net from the abandoned trajectory, so say so rather than do it quietly.
+        # A deck-only snapshot carries no pregame policy; mulligan.pt is left
+        # at its current version, so say so rather than do it quietly.
         note = "  (!! snapshot has no mulligan state -- mulligan.pt left at its current version)"
     return f"{deck}: restored snapshot_{snapshot_id} -> live.pt (backup at live.pt{BACKUP_SUFFIX}){note}"
 

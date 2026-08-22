@@ -1,24 +1,14 @@
 """Tests for rl.model.mulligan: the per-deck mulligan reward function and
 MulliganNet's REINFORCE training.
 
-Flakiness note: the REINFORCE assertions in
-test_mulligan_net_shapes_and_reinforce_learning check DIRECTION after a single
-update step (does a positive-advantage reward for an action raise/lower that
-action's own probability?), not convergence past a threshold after hundreds of
-steps -- the single-step property is what REINFORCE actually guarantees, and
-checking it directly is far cheaper and less exposed to random-init variance
-than the old convergence check was. Net init is still seeded (torch.manual_
-seed(0)) so the test is reproducible run to run.
-
-REVISED 2026-08-13. Seeding ONCE at the top was not enough, and the reason is
-worth recording: it made the assertions depend on how many random draws every
-object built in between happened to consume. SetTransformer's input_proj is
-`Linear(d_model + TOKEN_FEATURE_DIM, ...)`, so when ZONES gained a sixth entry
-("known_top") and TOKEN_FEATURE_DIM went 40 -> 41, the RNG stream shifted and
-MulliganNet was re-rolled onto an init these asserts fail from -- an unrelated
-observation-feature change breaking a mulligan test. torch.manual_seed(0) is
-now ALSO called immediately before MulliganNet is constructed, so this test
-depends only on its own subject. Feature dims will keep changing.
+The REINFORCE assertions in test_mulligan_net_shapes_and_reinforce_learning
+check direction after a single update step (does a positive-advantage
+reward for an action raise/lower that action's own probability?), which is
+what REINFORCE actually guarantees, rather than convergence past a
+threshold after many steps. Net init is seeded (torch.manual_seed(0))
+immediately before MulliganNet is constructed -- not just once at the top --
+so the test doesn't depend on how many random draws unrelated objects
+(e.g. SetTransformer, sized by TOKEN_FEATURE_DIM) consume first.
 """
 import random
 
@@ -34,21 +24,16 @@ from rl.model.mulligan import HAND, MulliganNet, decide, mulligan_reward, update
 
 @pytest.mark.slow
 def test_mulligan_reward_shape():
-    # reward shape (2026-08-21: no per-mulligan-count penalty -- see rl.model.mulligan's
-    # own docstring for why it was removed rather than left zeroed): win pays
-    # WIN_REWARD regardless of how many mulligans it took to get there, a loss
-    # is always exactly 0 -- mulliganing is discouraged only by its own effect
-    # on win probability, never by a flat count-based cost.
+    # No per-mulligan-count penalty: win pays WIN_REWARD regardless of how
+    # many mulligans it took, a loss is always exactly 0.
     assert abs(mulligan_reward(True) - 1.0) < 1e-9
     assert abs(mulligan_reward(False)) < 1e-9
 
 
 def _hand_tokens(decklist, vocab, names, rng, k=7):
     """A real (state, tokens) pair for a random k-card hand -- build_token_set's
-    real output, not a hand-rolled stand-in, since that's what decide()/update()
-    actually record and replay post-2026-08-20 (see rl.model.mulligan's module
-    docstring: the fix was giving the net this SAME structured representation
-    instead of a bare mean-pooled identity embedding)."""
+    real output, not a hand-rolled stand-in, since that's what decide()/
+    update() actually record and replay."""
     p0 = PlayerState(on_the_play=True)
     p1 = PlayerState(on_the_play=False)
     p0.hand = [_game.CARD_DEFS[rng.choice(names)] for _ in range(k)]
@@ -59,19 +44,15 @@ def _hand_tokens(decklist, vocab, names, rng, k=7):
 
 @pytest.mark.slow
 def test_mulligan_net_shapes_and_reinforce_learning():
-    torch.manual_seed(0)  # deterministic net init -- the REINFORCE direction asserts below
-    random.seed(0)        # are otherwise flaky (~1-in-several spurious failures on random init)
+    torch.manual_seed(0)  # deterministic net init: REINFORCE direction asserts are otherwise flaky
+    random.seed(0)
 
     decklist = _game.parse_decklist_file("../data/mono_blue_terror.txt")
     vocab = CardVocab([decklist])
     shared = SetTransformer(vocab.size, d_model=16, n_heads=2, n_layers=2, dim_feedforward=32)
-    # Re-seed HERE, immediately before the net whose init the assertions below
-    # actually depend on. Seeding only at the top couples this test to how many
-    # random draws SetTransformer happens to consume, which is a function of
-    # TOKEN_FEATURE_DIM -- so an unrelated observation-feature change (ZONES
-    # gained "known_top" on 2026-08-13, 40 -> 41) shifted the RNG stream and
-    # re-rolled MulliganNet onto an init the REINFORCE asserts fail from. The
-    # feature dim will keep changing; this test's subject is the mulligan net.
+    # Re-seed immediately before the net whose init the assertions depend on,
+    # so this test doesn't depend on how many random draws SetTransformer
+    # (sized by TOKEN_FEATURE_DIM) consumes first.
     torch.manual_seed(0)
     net = MulliganNet(shared, hidden=32)
 
@@ -86,35 +67,28 @@ def test_mulligan_net_shapes_and_reinforce_learning():
     sc = torch.tensor([[0.0, 1.0]], dtype=torch.float32)
     logits, value = net.decision(mine_summary, sc)
     assert logits.shape == (1, 2) and value.shape == (1,)
-    cand_reps = token_reps[:, [0, 1, 0], :]  # row 2 is a dummy -- masked below, same as a padded vocab index would be
+    cand_reps = token_reps[:, [0, 1, 0], :]  # row 2 is a dummy, masked below
     cm = torch.tensor([[True, True, False]], dtype=torch.bool)
     scores, _ = net.bottom(mine_summary, sc, cand_reps, cm)
     assert scores.shape == (1, 3) and scores[0, 2].item() < -1e7  # padded candidate masked out
 
-    # encoder boundary: MulliganNet.encode wraps the shared encoder forward in
-    # no_grad specifically so this net's own REINFORCE optimizer can never
-    # steer it (see the class docstring) -- backward above must therefore
-    # leave every one of the encoder's own params ungrated (nothing built a
-    # grad_fn through them at all, not just "grad happens to be zero").
+    # MulliganNet.encode wraps the shared encoder forward in no_grad so this
+    # net's own optimizer never steers it -- backward must leave every
+    # encoder param ungraded (no grad_fn reaches them at all).
     (logits.sum() + value.sum() + scores.sum()).backward()
     assert all(p.grad is None for p in shared.parameters()), (
         "a mulligan forward pass must never populate the shared encoder's .grad")
 
-    # REINFORCE direction: ONE update step, not a convergence threshold after
-    # hundreds (the old version of this test ran 300 iterations x 32-sample
-    # batches, TWICE, and per this file's own flakiness note above needed
-    # double-seeding even then just to stay reliable). What actually matters
-    # is whether a single step with a positive-advantage reward moves
-    # probability mass toward the action that earned it -- checked directly
-    # here on a fixed probe hand, once per direction, each from its own
-    # freshly re-seeded (same-seed, deterministic) net so the two checks
-    # can't interfere with each other's gradient step. MulliganNet has no
-    # dropout/stochastic layers (Linear+Tanh only), so decision() is a pure
-    # deterministic function of the weights -- no sampling needed to read it.
+    # REINFORCE direction: one update step, checking whether a
+    # positive-advantage reward moves probability mass toward the action
+    # that earned it -- on a fixed probe hand, once per direction, each from
+    # its own freshly re-seeded net so the two checks don't interfere.
+    # MulliganNet has no dropout/stochastic layers, so decision() is a pure
+    # deterministic function of the weights.
     probe_tokens, probe_scalars = _hand_tokens(decklist, vocab, names, rng), [0.0, 1.0]
 
     def _fresh_net():
-        torch.manual_seed(0)  # same init every time -- see the re-seed comment above
+        torch.manual_seed(0)
         return MulliganNet(shared, hidden=32)
 
     def _mull_prob(n):
@@ -124,8 +98,7 @@ def test_mulligan_net_shapes_and_reinforce_learning():
             lg, _ = n.decision(mine_summary, torch.tensor([probe_scalars]))
             return torch.softmax(lg, -1)[0, 1].item()
 
-    # Reward favors action=1 (mulligan) -> P(mulligan) on the same probe hand
-    # must go UP after one step.
+    # Reward favors action=1 (mulligan): P(mulligan) must go up after one step.
     net_up = _fresh_net()
     opt_up = torch.optim.Adam([p for p in net_up.parameters() if p.requires_grad], lr=1e-2)
     before_up = _mull_prob(net_up)
@@ -135,8 +108,7 @@ def test_mulligan_net_shapes_and_reinforce_learning():
         f"one REINFORCE step with a positive-advantage reward for action=1 must raise "
         f"P(mulligan): {before_up:.4f} -> {after_up:.4f}")
 
-    # Reward favors action=0 (keep) -> P(mulligan) on the same probe hand must
-    # go DOWN after one step, from a fresh (identically-initialized) net.
+    # Reward favors action=0 (keep): P(mulligan) must go down after one step.
     net_down = _fresh_net()
     opt_down = torch.optim.Adam([p for p in net_down.parameters() if p.requires_grad], lr=1e-2)
     before_down = _mull_prob(net_down)
@@ -149,16 +121,12 @@ def test_mulligan_net_shapes_and_reinforce_learning():
 
 @pytest.mark.slow
 def test_mulligan_net_bottom_branch_reinforce_direction():
-    """update()'s rewritten 'bottom' transition branch (torch.gather over
-    token_reps using recorded cand_pos indices -- replacing the old plain
-    vocab-index gather) had zero test coverage: every other REINFORCE check
-    in this file only ever feeds update() 'decision'-kind transitions.
-    Exercises it end to end with a REAL recorded transition (decide()'s own
-    output, not a hand-rolled stand-in) and checks the same
-    direction-not-convergence property test_mulligan_net_shapes_and_
-    reinforce_learning checks for the 'decision' branch: one REINFORCE step
-    with a positive-advantage reward for a candidate must raise that
-    candidate's own probability."""
+    """Exercises update()'s 'bottom' transition branch (torch.gather over
+    token_reps using recorded cand_pos indices) end to end with a real
+    recorded transition (decide()'s own output). Checks the same
+    direction-not-convergence property as the 'decision' branch test: one
+    REINFORCE step with a positive-advantage reward for a candidate must
+    raise that candidate's probability."""
     torch.manual_seed(0)
     random.seed(0)
 
@@ -182,7 +150,7 @@ def test_mulligan_net_bottom_branch_reinforce_direction():
     assert len(cand_pos) == 3  # one row per distinct hand name
 
     def _fresh_net():
-        torch.manual_seed(0)  # same init every time -- see the re-seed comment above
+        torch.manual_seed(0)
         return MulliganNet(shared, hidden=32)
 
     def _bottom_probs(n):
@@ -196,9 +164,7 @@ def test_mulligan_net_bottom_branch_reinforce_direction():
             return torch.softmax(scores, -1)[0]
 
     # Reward a fixed target candidate (index 0 into cand_pos, not whatever
-    # decide() happened to greedily choose) -- P(target) on the same probe
-    # hand must go UP after one step feeding this exact 'bottom' transition
-    # (recorded token set + cand_pos) through update().
+    # decide() happened to greedily choose): P(target) must go up after one step.
     target = 0
     net_up = _fresh_net()
     opt_up = torch.optim.Adam([p for p in net_up.parameters() if p.requires_grad], lr=1e-2)

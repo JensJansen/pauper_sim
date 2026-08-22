@@ -1,46 +1,28 @@
-"""Casting/activating/playing a card from a zone: table categories A (Play
-land), B's plain/modal/X-cost/Delve hand cast, C (Activate), and D
-(Forestcycle/Cycle) from drl_env._actions_table's own module docstring, plus
-impulse ("play from exile"). The rest of category B -- alt-cost/Flashback/
-Escape/Plot/Omen/Prototype, everything that casts from a NON-hand zone or
-for a non-default cost -- lives in the sibling drl_env._actions_cast_altzone
-(see its own module docstring for why it's split out). Each is a
-legal(state)/execute(state) factory pair build_action_table (drl_env.
-_actions_table) calls once per matching card."""
+"""Casting/activating/playing a card from a zone: play land, plain/modal/
+X-cost/Delve hand cast, activate, forestcycle/cycle, and impulse ("play
+from exile"). Casting from a non-hand zone or for a non-default cost
+(alt-cost/Flashback/Escape/Plot/Omen/Prototype) lives in the sibling
+_actions_cast_altzone. Each function here is a legal(state)/execute(state)
+factory pair that build_action_table calls once per matching card."""
 
 import game
 
 from ._actions_cast_altzone import _with_chosen_copy
 from ._actions_common import _GATE_NO_PENDING, _hand_count_available
 
-# Shared button-count caps for the generic choose_cast_mode/choose_cast_x/
-# choose_delve_amount sub-decisions (build_action_table's own cast_modes/
-# x_cast_modes/delve loops below) -- ponytail: sized to the current catalog's
-# own max (Utopia Sprawl's 5 modes, Nyxborn Hydra's X=0..10, Gurmag Angler's
-# delve 0..6), not a speculative ceiling. plan_payment/index-bounds masking
-# already keeps a card with a smaller max from ever offering more than its
-# own range, so raising these later for a bigger future card is the only
-# thing a new card can ever require here -- see each button's own legal()
-# below for the mask that makes over-provisioning safe.
+# Shared button-count caps for choose_cast_mode/choose_cast_x/
+# choose_delve_amount (sized to the current catalog's max: 5 modes, X=0..10,
+# delve 0..6). Raise if a future card needs more; per-button legal() masks
+# unaffordable/out-of-range values regardless of the cap.
 _CAST_MODE_BUTTON_MAX = 5
 _CAST_X_BUTTON_MAX = 10
 _DELVE_BUTTON_MAX = 6
 
 
 def _cast_speed(card_def, spec):
-    """The game.turn.Speed a cast-like action (cast/cast_modes/alt_cast/
-    flashback/plot -- each derived independently, once per action, in
-    build_action_table) resolves to: an explicit "speed" key in that
-    specific spec dict if a card ever needs to override it, else
-    Speed.INSTANT for an actual CardType.INSTANT card (its type line
-    already implies instant speed -- no per-card tag needed for the
-    common case), else Speed.SORCERY -- the default for every creature/
-    artifact/enchantment/sorcery/land absent a Flash-like exception, per
-    real Magic's own casting-speed rule. Flashback/Plot deliberately have
-    no override in this cube today, so they fall through to the same
-    CardType-derived answer the card's normal cast would -- correct per
-    real Magic (Flashback/Plot follow the same timing as the card
-    itself), not just a convenient default."""
+    """The game.turn.Speed for a cast-like action: an explicit "speed" key
+    in spec if given, else Speed.INSTANT for a CardType.INSTANT card, else
+    Speed.SORCERY."""
     override = spec.get("speed")
     if override is not None:
         return override
@@ -53,12 +35,8 @@ def _land_drop_legal(name):
     def legal(state):
         return (
             state.pending_resolution is None
-            # Real Magic: playing a land is always sorcery-speed (no
-            # per-card override exists in this cube) -- speed_legal's own
-            # Speed.SORCERY branch already requires state.active_idx ==
-            # state.turn_player_idx, so this alone
-            # already refuses a land drop offered to the non-turn player
-            # during a priority window, with no separate check needed here.
+            # Playing a land is sorcery-speed; speed_legal's SORCERY branch
+            # also requires active_idx == turn_player_idx.
             and game.turn.speed_legal(state, game.turn.Speed.SORCERY)
             and state.lands_played_this_turn == 0
             and any(c.name == name for c in state.hand)
@@ -74,14 +52,10 @@ def _land_drop_execute(name):
 
 
 def _effective_cast_cost(state, card_def):
-    """A card's cast cost after any registry "cost_reduction" -- a
-    lambda(state) -> int (affinity = # artifacts you control; the graveyard
-    instant/sorcery count for Tolarian Terror / Cryptic Serpent; cards drawn
-    this turn for Deem Inferior). The reduction lowers ONLY the generic pips,
-    floored at 0 -- colored pips are never reduced (real "costs {N} less").
-    A card with no such spec (every existing card, and every G1-G6 card) pays
-    card_def.cast_cost unchanged, so this is a transparent no-op for them --
-    the single reason it's safe to route the whole cast path through it."""
+    """Cast cost after any registry "cost_reduction" (a lambda(state) -> int,
+    e.g. affinity, graveyard instant/sorcery count, cards drawn this turn).
+    Lowers only the generic pips, floored at 0; colored pips are never
+    reduced. Cards without a cost_reduction spec pay cast_cost unchanged."""
     cost = card_def.cast_cost
     spec = game.EFFECT_REGISTRY.get(card_def.effect_id, {}).get("cost_reduction")
     if spec is None or cost is None:
@@ -114,55 +88,33 @@ def _cast_execute(name, resolve):
     def execute(state):
         card_def = game.CARD_DEFS[name]
         def _after_pay(s):
-            # Fires only once mana is actually paid -- NOT the instant this
-            # cast is announced. Real MTG (601.2i): a spell isn't "cast" until
-            # its cost is paid, so a "whenever you cast" trigger (e.g.
-            # Guttersnipe) must never fire before that. Every cast path (this one,
-            # alt_cast, flashback, plot-from-exile below) fires it
-            # identically once its own cost is similarly locked in.
+            # 601.2i: not "cast" until cost is paid, so a cast trigger fires here.
             game.on_cast_trigger(s, card_def)
-            # Once mana is fully paid, the spell is "cast" but not yet
-            # resolved -- push it onto state.stack (game.push_to_stack)
-            # instead of resolving immediately, so the model can respond
-            # with another instant-speed action first. Something (a
-            # "Pass" -- see game.turn._run_turn_gen) has to actually
-            # resolve it later.
+            # Cast but not yet resolved -- push onto the stack rather than
+            # resolving immediately, so priority can pass first.
             game.push_to_stack(s, card_def, resolve)
         game.begin_pay_cost(state, _effective_cast_cost(state, card_def), on_complete=_after_pay)
     return execute
 
 
 def _precast_choice_execute(name, resolve):
-    """Cast-like execute for a card whose own `resolve` needs to settle
-    something -- a real target (cast_aura's "enchant target creature"), or
-    an additional cost (cast_crop_rotation's "sacrifice a land") -- BEFORE
-    the spell is fully cast, not once it resolves off the stack. Real MTG:
-    both targets and additional costs are locked in as part of casting the
-    spell, never deferred to resolution; only the spell's own EFFECT waits
-    on the stack. Unlike _cast_execute, `resolve` is called directly as
-    pay_cost's on_complete and is responsible for its own game.push_to_stack
-    call (having already run whatever precast resolution it needs -- see
-    cast_aura/cast_crop_rotation's own docstrings for each one's exact
-    contract) instead of this function pushing to the stack generically on
-    its behalf. Selected via each registry cast/cast_modes spec's own
-    "precast_choice": True flag (build_action_table)."""
+    """Cast-like execute for a card whose `resolve` must settle a target
+    (cast_aura) or additional cost (cast_crop_rotation) before the spell is
+    fully cast, not on resolution. Unlike _cast_execute, `resolve` is called
+    directly as pay_cost's on_complete and pushes to the stack itself.
+    Selected via a cast/cast_modes spec's "precast_choice": True flag."""
     def execute(state):
         card_def = game.CARD_DEFS[name]
         def _after_pay(s):
-            game.on_cast_trigger(s, card_def)  # only once mana is irreversibly paid -- see _cast_execute's own comment
+            game.on_cast_trigger(s, card_def)
             resolve(s, card_def)
         game.begin_pay_cost(state, _effective_cast_cost(state, card_def), on_complete=_after_pay)
     return execute
 
 
 def _x_cast_legal(name, cost, extra_legal, speed):
-    """Like _cast_legal, but against an explicit `cost` instead of
-    card_def.cast_cost -- one X value's own concrete cost (an
-    "x_cast_modes" registry entry's own per-mode base cost plus that X's
-    own generic, build_action_table's own loop below), same "a real cost
-    distinct from card_def.cast_cost" shape _actions_cast_altzone._plot_legal/
-    _omen_cast_legal already use for their own alternate costs, not a param
-    bolted onto _cast_legal itself."""
+    """Like _cast_legal, but against an explicit `cost` (an x_cast_modes
+    mode's base cost plus a given X's generic) instead of card_def.cast_cost."""
     def legal(state):
         if state.pending_resolution is not None:
             return False
@@ -189,10 +141,9 @@ def _x_cast_execute(name, cost, resolve):
 
 
 def _x_precast_choice_execute(name, cost, resolve):
-    """Same shape as _precast_choice_execute, against an explicit `cost` --
-    Nyxborn Hydra's own Bestow mode needs both: a real target chosen before
-    the stack (cast_aura, same as Rancor/Ancestral Mask/Ethereal Armor) AND
-    its own X-dependent cost distinct from the card's normal cast_cost."""
+    """Same shape as _precast_choice_execute, against an explicit `cost`
+    (e.g. Nyxborn Hydra's Bestow mode: a precast target plus an X-dependent
+    cost)."""
     def execute(state):
         card_def = game.CARD_DEFS[name]
         def _after_pay(s):
@@ -211,11 +162,9 @@ def _delve_reduced_cost(card_def, n):
 
 
 def _delve_legal(name, max_n, speed):
-    """Cast <name> is legal iff at least one delve amount 0..max_n is
-    currently affordable given the current graveyard size -- aggregated
-    across the range (one "Cast <name>" row, not one per n); the shared
-    "Delve 0".."Delve 6" buttons (choose_delve_amount below) mask the
-    unaffordable amounts next, same plan_payment check just re-encoded."""
+    """Legal iff at least one delve amount 0..max_n is affordable given the
+    current graveyard size. One "Cast <name>" row; the shared "Delve n"
+    buttons mask unaffordable amounts."""
     def legal(state):
         if state.pending_resolution is not None:
             return False
@@ -233,18 +182,10 @@ def _delve_legal(name, max_n, speed):
 
 
 def _delve_execute(name, max_n, resolve):
-    """601.2f/702.66: the delve amount is chosen before the exile sub-cost
-    opens and the reduced cost is calculated -- begin_choose_delve_amount
-    (shared "Delve 0".."Delve 6" buttons) first, THEN exile that many
-    graveyard cards (the model chooses which -- begin_exile_n_from_
-    graveyard, unchanged), THEN pay the {generic-n} remainder, then cast
-    normally. The exile is a cost, paid first and irreversible.
-
-    Both the delve-amount choice and the exile are mid-cast, BEFORE 601.2f, so
-    no mana ability is legal during either (hence mid_cast=True below). Without
-    that, a tap taken during the exile could narrow a color the not-yet-open
-    payment depends on and leave every "Delve N" option unpayable -- see the
-    "no Abandon payment" note in build_action_table below."""
+    """601.2f/702.66: choose the delve amount, exile that many graveyard
+    cards (model chooses which) as a cost, pay the reduced remainder, then
+    cast normally. Both the amount choice and the exile happen before
+    601.2f, so mana abilities are illegal during them (mid_cast=True)."""
     def execute(state):
         card_def = game.CARD_DEFS[name]
 
@@ -254,10 +195,6 @@ def _delve_execute(name, max_n, resolve):
                     game.on_cast_trigger(s2, card_def)
                     game.push_to_stack(s2, card_def, resolve)
                 game.begin_pay_cost(s, _delve_reduced_cost(card_def, n), on_complete=_after_pay)
-            # mid_cast=True: this exile sits between announcing the spell and
-            # the payment opening, so no mana ability may be activated during
-            # it (601.2f). Without it, tapping a dual for the wrong half here
-            # strands the delve-reduced cost that follows.
             game.begin_exile_n_from_graveyard(state, n, _after_exile, mid_cast=True)
 
         game.begin_choose_delve_amount(state, card_def, max_n, _after_n)
@@ -265,11 +202,9 @@ def _delve_execute(name, max_n, resolve):
 
 
 def _choose_delve_amount_legal(n):
-    """Shared "Delve n" button (0..n..max_n), reused by every delve card --
-    legal only mid a choose_delve_amount resolution, within this specific
-    card's own max_n, with enough graveyard cards, and only if the resulting
-    reduced cost is actually affordable (the exact per-value masking a flat
-    per-row enumeration already did, just re-encoded)."""
+    """Shared "Delve n" button. Legal only mid a choose_delve_amount
+    resolution, within the card's max_n, with enough graveyard cards, and
+    only if the resulting reduced cost is affordable."""
     def legal(state):
         pending = state.pending_resolution
         if pending is None or pending["kind"] != "choose_delve_amount":
@@ -290,12 +225,10 @@ def _choose_delve_amount_execute(n):
 
 
 def _modal_legal(name, mode_items, speed):
-    """Cast <name> is legal iff at least one of its modes is currently
-    produceable -- extra_legal (if any) passes AND its own cost (mode
-    override, else the card's cast_cost via _effective_cast_cost) is
-    affordable. One "Cast <name>" row, not one per mode; the aggregate
-    check mirrors today's per-row plan_payment masking, now aggregated
-    across modes instead of enumerated per row."""
+    """Legal iff at least one mode is currently produceable: its
+    extra_legal (if any) passes and its cost (mode override, else
+    _effective_cast_cost) is affordable. One "Cast <name>" row, not one
+    per mode."""
     def legal(state):
         if state.pending_resolution is not None:
             return False
@@ -319,12 +252,10 @@ def _modal_legal(name, mode_items, speed):
 
 
 def _modal_execute(name, mode_items):
-    """601.2b: mode chosen before the cost is calculated -- opens the
-    generic choose_cast_mode resolution (shared "Mode 1".."Mode 5" buttons),
-    then -- once a mode is picked -- computes THAT mode's own cost and
-    proceeds exactly as a plain/cost-overridden cast would (begin_pay_cost
-    -> push_to_stack, or the precast_choice variant if this mode needs
-    one -- e.g. Utopia Sprawl's own "enchant target Forest")."""
+    """601.2b: mode chosen before cost is calculated. Opens
+    choose_cast_mode; once a mode is picked, computes its cost and proceeds
+    as a plain cast (begin_pay_cost -> push_to_stack), or via
+    precast_choice if the mode needs one (e.g. Utopia Sprawl)."""
     def execute(state):
         card_def = game.CARD_DEFS[name]
 
@@ -357,10 +288,8 @@ def _modal_execute(name, mode_items):
 
 
 def _x_modal_legal(name, mode_items, speed):
-    """Cast <name> is legal iff at least one (mode, X) pair is currently
-    affordable, X=0 upward per mode's own base cost -- aggregated across
-    modes AND the X range, mirroring today's per-(mode,X)-row masking, now
-    behind one "Cast <name>" row."""
+    """Legal iff at least one (mode, X) pair is affordable, X=0 upward per
+    mode's base cost."""
     def legal(state):
         if state.pending_resolution is not None:
             return False
@@ -385,12 +314,8 @@ def _x_modal_legal(name, mode_items, speed):
 
 def _x_modal_execute(name, mode_items):
     """601.2b then 601.2f: mode chosen first, X chosen second, both before
-    the total cost is calculated/paid -- matches real sequencing (mode is
-    part of announcing the spell; X is determined as part of costing it,
-    strictly afterward). Nyxborn Hydra's Bestow mode still needs a real Aura
-    target (precast_choice), settled after payment, same as a plain cast --
-    make_resolve(x) (green_cards.cast_nyxborn_hydra_creature/_bestow) is
-    called once X is known, at execute time rather than table-build time."""
+    cost is paid. make_resolve(x) is called once X is known, at execute
+    time rather than table-build time."""
     def execute(state):
         card_def = game.CARD_DEFS[name]
 
@@ -432,11 +357,9 @@ def _x_modal_execute(name, mode_items):
 
 
 def _choose_cast_mode_legal(mode_index):
-    """Shared "Mode n" button (1..5, drl_env's own numbering -- 0-based
-    internally), reused by every cast_modes/x_cast_modes card -- legal only
-    mid a choose_cast_mode resolution, within THIS card's own mode count,
-    and only if that specific mode's own extra_legal/affordability check
-    (closed over per-mode at "Cast <name>" execute time) currently passes."""
+    """Shared "Mode n" button. Legal only mid a choose_cast_mode
+    resolution, within the card's mode count, and only if that mode's
+    extra_legal/affordability check passes."""
     def legal(state):
         pending = state.pending_resolution
         if pending is None or pending["kind"] != "choose_cast_mode":
@@ -459,11 +382,9 @@ def _choose_cast_mode_execute(mode_index):
 
 
 def _choose_cast_x_legal(x):
-    """Shared "X=n" button (0..10), reused by every x_cast_modes card --
-    legal only mid a choose_cast_x resolution, within this mode's own
-    max_x, and only if base_cost+x's generic is actually affordable (the
-    exact per-value masking a flat per-row enumeration already did, just
-    re-encoded)."""
+    """Shared "X=n" button. Legal only mid a choose_cast_x resolution,
+    within the mode's max_x, and only if base_cost+x's generic is
+    affordable."""
     def legal(state):
         pending = state.pending_resolution
         if pending is None or pending["kind"] != "choose_cast_x":
@@ -485,11 +406,8 @@ def _choose_cast_x_execute(x):
 
 def _activate_legal(name, cost_key, speed, extra_legal=None):
     """extra_legal (optional): an additional state-only predicate beyond
-    "an untapped copy exists and its cost_key cost is payable" -- for an
-    ability whose OWN targets/effect impose a further precondition beyond
-    cost (Barrels of Blasting Jelly's "{5}, T, Sacrifice: 5 damage to
-    TARGET creature" can't be activated with zero legal creature targets on
-    board, 602.2b/601.2c), same role "extra_legal" plays on a "cast" spec."""
+    "an untapped copy exists and its cost_key cost is payable" -- e.g. an
+    ability requiring a legal target (602.2b/601.2c)."""
     def legal(state):
         if state.pending_resolution is not None:
             return False
@@ -531,15 +449,10 @@ def _forestcycle_execute(name, cost_key, resolve):
 
 
 def _graveyard_ability_legal(name, cost_key):
-    """Bramble Wurm's own "{2}{G}, Exile this card from your graveyard:
-    gain 5 life" -- same hand-zone/cost-key/card_def shape as
-    _forestcycle_legal above, just sourced from state.graveyard instead of
-    state.hand (a graveyard activated ability, unlike Flashback, never
-    recasts the spell -- resolve just runs the ability directly, no
-    push_to_stack, matching every other activated ability in this engine).
-    No speed gate: every existing activated ability defaults to "any
-    time" absent an explicit override (see build_action_table's own
-    activated_abilities loop), and this one has none."""
+    """Graveyard activated ability (e.g. Bramble Wurm's exile-for-life). Same
+    shape as _forestcycle_legal but sourced from state.graveyard; unlike
+    Flashback it resolves directly, no push_to_stack. No speed gate --
+    activated abilities default to "any time"."""
     def legal(state):
         if state.pending_resolution is not None:
             return False
@@ -552,17 +465,14 @@ def _graveyard_ability_legal(name, cost_key):
 
 
 def _graveyard_ability_execute(name, cost_key, resolve):
-    """resolve receives the graveyard CardInstance whose ability this is (NOT
-    the interned CardDef) -- see _actions_cast_altzone._graveyard_instance.
-    The cost itself is read
-    off game.CARD_DEFS[name]: a cost is a type-level rules property, identical
-    for every copy, so the canonical def is the right source for it."""
+    """resolve receives the graveyard CardInstance whose ability this is
+    (not the interned CardDef). The cost is read off game.CARD_DEFS[name]
+    since it's identical for every copy."""
     def execute(state):
         cost = game.CARD_DEFS[name].extra[cost_key]
 
         def _proceed(state, inst):
-            # Copy chosen first, then the cost is paid (602.2/601.2a order), then
-            # the ability's own resolve exiles that exact instance as its cost.
+            # Copy chosen, then cost paid (602.2/601.2a order), then resolve.
             game.begin_pay_cost(state, cost, on_complete=lambda s, inst=inst: resolve(s, inst))
 
         _with_chosen_copy(state, name, _proceed)
@@ -570,9 +480,9 @@ def _graveyard_ability_execute(name, cost_key, resolve):
 
 
 def _activate_no_cost_legal(name, ability_legal, speed):
-    """Non-mana activated-ability cost (Quirion Ranger's Forest bounce):
-    no {T}-of-self assumption, unlike _activate_legal -- the ability's own
-    legal(state, permanent) captures its whole cost precondition."""
+    """Non-mana activated-ability cost (e.g. Quirion Ranger's Forest
+    bounce): no {T}-of-self assumption; ability_legal(state, permanent)
+    captures the whole cost precondition."""
     def legal(state):
         if state.pending_resolution is not None:
             return False
@@ -592,9 +502,8 @@ def _activate_no_cost_execute(name, resolve):
 
 
 def _impulse_entry(state, name):
-    """The topmost still-unexpired impulse entry (card_def, deadline) for
-    `name`, or None. Expired entries are pruned at untap, but this also
-    re-checks the deadline defensively."""
+    """Topmost still-unexpired impulse entry (card_def, deadline) for
+    `name`, or None."""
     for cd, deadline in reversed(state.impulse):
         if cd.name == name and state.turn_number <= deadline:
             return (cd, deadline)
@@ -607,7 +516,7 @@ def _play_impulse_land_legal(name):
             return False
         if _impulse_entry(state, name) is None:
             return False
-        if not game.turn.speed_legal(state, game.turn.Speed.SORCERY):  # playing a land is sorcery-speed, your turn
+        if not game.turn.speed_legal(state, game.turn.Speed.SORCERY):
             return False
         return state.lands_played_this_turn == 0
     legal._pending_gate = _GATE_NO_PENDING
@@ -618,7 +527,7 @@ def _play_impulse_land_execute(name):
     def execute(state):
         entry = _impulse_entry(state, name)
         state.impulse.remove(entry)
-        state.hand.append(entry[0])  # source it via hand so play_land_from_hand works (Cascade-style insertion)
+        state.hand.append(entry[0])  # source via hand so play_land_from_hand works
         game.play_land_from_hand(state, entry[0])
     return execute
 
@@ -640,13 +549,10 @@ def _play_impulse_cast_legal(name, cost, extra_legal, speed):
 
 def _play_impulse_cast_execute(name, cost, resolve, precast):
     """Cast an impulse-exiled spell for `cost` (its normal cost -- impulse,
-    unlike Plot, is NOT free). Mirrors _cast_execute/_precast_choice_execute,
-    but the card is removed from the impulse zone only in _after_pay (once
-    mana is actually paid) -- so a not-yet-paid cast leaves it in impulse,
-    no leak. Then it's inserted into hand (Cascade-style, so the card's own
-    resolve, written for a hand cast, finds and removes it) and either pushed
-    to the stack (non-precast) or resolved directly (precast, which pushes
-    itself)."""
+    unlike Plot, is not free). The card leaves the impulse zone only once
+    mana is paid, then is inserted into hand so the card's own resolve
+    (written for a hand cast) finds and removes it, then either pushed to
+    the stack or resolved directly if precast."""
     def execute(state):
         entry = _impulse_entry(state, name)
 

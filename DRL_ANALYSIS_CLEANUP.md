@@ -14,8 +14,8 @@ into subdirectories by actual cohesion (not guessed from file names).
       callers. Only `deploy_reward_v6` (the live one) and its real
       dependencies remain.
 - [x] Deleted **`src/analysis/cross_league_round_robin.py`** — a strict
-      functional subset of `run_cross_league_eval.py`, written 13 hours
-      later the same day, never referenced elsewhere.
+      functional subset of `run_cross_league_eval.py`, never referenced
+      elsewhere.
 - [x] Deleted **`training_configs/run_bench_cpu.json`** /
       **`run_bench_gpu.json`** — byte-identical to `run_bench.json` except
       league name, neither ever opened by any script.

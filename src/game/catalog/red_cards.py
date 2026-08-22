@@ -1,9 +1,6 @@
-"""Red-identity card catalog: every card whose real mana cost is mono-red (or,
-for a cost-less land, whose only mana output is red). Costs/types/oracle text
-are direct Scryfall pulls; creature power/toughness is a design choice. Breath
-Weapon (real {2}{R}) files here despite being Tron filler; its "non-Dragon"
-filter is enforced against green's Avenging Hunter (a Dragon), so
-cast_breath_weapon is NOT a purely symmetric wipe -- Dragons are excluded."""
+"""Red-identity card catalog: cards whose real mana cost is mono-red (or, for
+a cost-less land, whose only mana output is red). cast_breath_weapon excludes
+Dragons, matching green's Avenging Hunter (a Dragon) in this card pool."""
 
 from .. import resolution
 from ..cards import CardDef, CardType, EffectId, card_subtypes, is_artifact
@@ -29,8 +26,7 @@ from ..effects.win_check import deal_damage_to_opponent, deal_damage_to_player
 
 RED_CARD_CATALOG = {
     "Mountain": CardDef("Mountain", CardType.LAND, None, EffectId.MOUNTAIN, basic=True, subtypes=("Mountain",)),
-    # Artifact land: played as a land, but also an artifact (affinity/
-    # metalcraft/artifact-sac read extra["artifact"]).
+    # Also an artifact: affinity/metalcraft/artifact-sac read extra["artifact"].
     "Great Furnace": CardDef("Great Furnace", CardType.LAND, None, EffectId.GREAT_FURNACE, artifact=True),
     "Voldaren Epicure": CardDef(
         "Voldaren Epicure", CardType.CREATURE, {"R": 1}, EffectId.VOLDAREN_EPICURE, power=1, toughness=1,
@@ -99,9 +95,9 @@ def _controls_artifact(state):
 
 
 def krark_clan_shaman_activate(state, permanent):
-    """Sacrifice an artifact: this creature deals 1 damage to each creature
-    without flying (both battlefields, itself included). The sacrifice is the
-    cost; the sweep is the effect (on the stack)."""
+    """Sacrifice an artifact: deal 1 damage to each non-flying creature on
+    either battlefield, itself included. Sacrifice is the cost; the sweep
+    resolves on the stack."""
     def _on_sac(state, _ok):
         def _effect(st):
             for player in st.players:
@@ -122,9 +118,9 @@ def _makeshift_munitions_legal(state, permanent):
 
 
 def makeshift_munitions_activate(state, permanent):
-    """{1}, Sacrifice an artifact or creature: this enchantment deals 1 damage
-    to any target. Pay {1}, then sacrifice (the cost), then the 1 damage waits
-    on the stack for its locked target."""
+    """{1}, Sacrifice an artifact or creature: deal 1 damage to any target.
+    Mana is paid, then the sacrifice, then the damage locks its target and
+    resolves on the stack."""
     def _after_pay(st):
         def _on_sac(st2, _ok):
             _burn_choose_target_and_push(st2, permanent.card_def, 1, lambda s, c: None, reserves_hand_card=False, is_spell=False)
@@ -135,29 +131,26 @@ def makeshift_munitions_activate(state, permanent):
 
 def experimental_synthesizer_sac(state, permanent):
     """{2}{R}, Sacrifice this artifact: create a 2/2 white Samurai with
-    vigilance. Sacrificing also fires its own "or leaves the battlefield"
-    impulse (its ltb_trigger, via sacrifice_to_graveyard)."""
-    sacrifice_to_graveyard(state, permanent)  # queues the LTB impulse
+    vigilance. sacrifice_to_graveyard also fires the card's own ltb_trigger
+    (impulse-exile)."""
+    sacrifice_to_graveyard(state, permanent)
     push_ability_to_stack(state, permanent.card_def, lambda st: create_token(st, SAMURAI_TOKEN_CARD_DEF))
 
 
 def _galvanic_blast_amount(state):
     """Metalcraft: 4 damage if you control 3+ artifacts, else 2. Evaluated at
-    resolution (state.battlefield is the caster's own, active_idx restored to
-    the controller by resolve_top_of_stack)."""
+    resolution, when active_idx is back on the controller."""
     return 4 if sum(1 for p in state.battlefield if is_artifact(p.card_def)) >= 3 else 2
 
 
 def cast_galvanic_blast(state, card_def):
-    """{R}: Galvanic Blast deals 2 damage to any target -- 4 with Metalcraft.
-    Reuses the shared any-target burn tail with a callable amount (the
-    Metalcraft check runs at resolution)."""
+    """{R}: deals 2 damage to any target, 4 with Metalcraft."""
     _cast_burn_any_target(state, card_def, _galvanic_blast_amount)
 
 
 def cast_rally_at_the_hornburg(state, card_def):
-    """{1}{R}: Create two 1/1 white Human Soldier tokens; Humans you control
-    gain haste until end of turn (temp keyword, cleared at cleanup)."""
+    """{1}{R}: create two 1/1 white Human Soldier tokens; Humans you control
+    gain haste until end of turn."""
     discard_from_hand_to_graveyard(state, card_def)
     create_token(state, HUMAN_SOLDIER_TOKEN_CARD_DEF)
     create_token(state, HUMAN_SOLDIER_TOKEN_CARD_DEF)
@@ -167,16 +160,11 @@ def cast_rally_at_the_hornburg(state, card_def):
 
 
 def activate_reckless_lackey_sac(state, permanent):
-    """{2}{R}, Sacrifice this creature: Draw a card and create a Treasure
-    token. The {2}{R} + untapped precondition come from the generic cost_key
-    wiring; sacrifice (a real card -> graveyard) is a cost paid now, and the
-    draw + Treasure are the effect (on the stack, after a priority window).
-
-    No {T} in the sac cost, so this stays legal after Reckless Lackey (haste)
-    has already attacked or blocked -- sacrifice_to_graveyard is what closes
-    506.4 for that case (removes it from state.attackers/blocked_by too, not
-    just the battlefield)."""
-    sacrifice_to_graveyard(state, permanent)  # queues the dies-trigger (Gixian Infiltrator); Reckless Lackey has no ltb_trigger of its own
+    """{2}{R}, Sacrifice this creature: draw a card and create a Treasure
+    token. No {T} in the cost, so this stays legal after Reckless Lackey has
+    already attacked or blocked; sacrifice_to_graveyard also removes it from
+    state.attackers/blocked_by."""
+    sacrifice_to_graveyard(state, permanent)  # queues the dies-trigger (Gixian Infiltrator)
 
     def _effect(st):
         st.draw(1)
@@ -200,9 +188,8 @@ def burning_tree_emissary_etb(state):
 
 
 def cast_reckless_impulse(state, card_def):
-    """{1}{R}: Exile the top two cards of your library; until the end of your
-    NEXT turn, you may play them (shared.impulse_exile -> the impulse zone;
-    the "Play from exile: X" actions cast/play them, paying normal costs)."""
+    """{1}{R}: exile the top two cards of your library; you may play them
+    until the end of your next turn."""
     discard_from_hand_to_graveyard(state, card_def)
     impulse_exile(state, 2, until_next_turn=True)
 
@@ -213,11 +200,8 @@ def _goblin_bushwhacker_kicked(state, card_def):
 
 
 def goblin_bushwhacker_etb(state, permanent):
-    """"When this creature enters, if it was kicked, creatures you control get
-    +1/+0 and gain haste until end of turn." Until-EOT team pump via the G3
-    temp-modifier machinery (temp_power / temp_keywords, cleared at cleanup).
-    Includes Bushwhacker itself, and the granted haste lets the team attack
-    this turn."""
+    """If kicked, creatures you control get +1/+0 and gain haste until end of
+    turn, itself included."""
     if not permanent.flags.get("kicked"):
         return
     for p in state.battlefield:
@@ -231,43 +215,37 @@ def _is_basic_land(card_def):
 
 
 def cast_cleansing_wildfire(state, card_def):
-    """{1}{R}: "Destroy target land. Its controller may search their library
-    for a basic land card, put it onto the battlefield tapped, then shuffle.
-    Draw a card." Target ANY land on either battlefield (locked at cast). The
-    DESTROYED land's CONTROLLER (not necessarily the caster) does the optional
-    search into THEIR OWN library, putting the basic onto THEIR battlefield
-    tapped and shuffling THEIR library; the CASTER draws.
-
-    The search and the draw happen regardless of whether the destroy actually
-    succeeded (an indestructible land survives, but the controller still
-    searches) -- both skipped only if the target land is gone by resolution
-    (target illegal -> the spell does nothing, 608.2b)."""
+    """{1}{R}: destroy target land (any land, either battlefield). Its
+    controller may search their library for a basic, put it onto the
+    battlefield tapped, and shuffle; the caster draws a card. Search and
+    draw happen even if the land survives (indestructible); both are
+    skipped only if the target is gone by resolution."""
     idx = state.active_idx
 
     def _on_target(state, descriptor):
         captured = capture_any_target(state, descriptor)
 
         def _resolve(state, card_def):
-            discard_from_hand_to_graveyard(state, card_def)  # the sorcery itself -> caster's graveyard
+            discard_from_hand_to_graveyard(state, card_def)
             if captured is None or not target_still_legal(state, captured):
                 where = (captured[1].card_def.name, captured[1].slot) if captured is not None else None
-                _log_target_fizzle(state, card_def, where)  # target gone -> no destroy, no search, no draw
+                _log_target_fizzle(state, card_def, where)
                 return
             land = captured[1]
-            caster = state.active_idx  # controller of the resolving spell
-            controller = controller_idx(state, land)  # the DESTROYED land's controller does the search
-            destroy_permanent(state, land)  # no-op if indestructible; search/draw still happen
+            caster = state.active_idx
+            controller = controller_idx(state, land)  # the destroyed land's controller does the search
+            destroy_permanent(state, land)  # no-op if indestructible
 
             def _after_search(state, fetched_name):
                 found = find_and_remove_by_name(state, fetched_name) if fetched_name is not None else None
-                shuffle_library(state)  # the controller's library (active_idx == controller here)
+                shuffle_library(state)
                 if found is not None:
-                    enters_battlefield(state, found, force_tapped=True)  # onto the controller's battlefield, tapped
-                state.active_idx = caster  # restore before the CASTER draws
-                state.draw(1)  # "Draw a card" (the caster) -- whether or not a basic was fetched
+                    enters_battlefield(state, found, force_tapped=True)
+                state.active_idx = caster  # restore so the caster draws
+                state.draw(1)
 
-            state.active_idx = controller  # the land's controller searches THEIR own library
-            resolution.begin_search_fetch(state, _is_basic_land, _after_search, optional=True)  # "MAY search"
+            state.active_idx = controller  # search runs as the land's controller
+            resolution.begin_search_fetch(state, _is_basic_land, _after_search, optional=True)
 
         push_to_stack(state, card_def, _resolve, targets=() if captured is None else (captured,))
 
@@ -279,27 +257,22 @@ def cast_cleansing_wildfire(state, card_def):
 
 
 def voldaren_epicure_etb(state):
-    """Oracle: "When this creature enters, it deals 1 damage to each
-    opponent. Create a Blood token." """
+    """When this creature enters: deal 1 damage to each opponent, create a
+    Blood token."""
     deal_damage_to_opponent(state, 1)
     create_token(state, BLOOD_TOKEN_CARD_DEF)
 
 
 def _resolve_burn_damage(state, captured, amount, card_def):
-    """Apply a burn spell's `amount` damage to its locked any-target when it
-    resolves off the stack. Real Magic 608.2b: if the target is now illegal
-    (a creature that has left the battlefield) the spell fizzles -- no
-    damage, already in the graveyard. A player target never becomes illegal.
-    Shared by every "N damage to any target" burn below; the card is already
-    hand->graveyard by the time this runs (its own resolve did that first,
-    same as any resolving spell)."""
+    """Apply a burn spell's `amount` damage to its locked any-target at
+    resolution. A creature target that has left the battlefield fizzles the
+    spell (608.2b); a player target is always legal. Shared by every burn
+    below."""
     if not target_still_legal(state, captured):
-        perm = captured[1]  # a creature target that's gone -- (name, slot) for the fizzle log
+        perm = captured[1]
         _log_target_fizzle(state, card_def, (perm.card_def.name, perm.slot))
         return
-    # `amount` may be a callable(state) -> int for a burn whose damage is
-    # decided at resolution (Galvanic Blast's Metalcraft: 4 if you control 3+
-    # artifacts, else 2), not a fixed int (Lightning Bolt).
+    # amount may be a callable(state) -> int (e.g. Galvanic Blast's Metalcraft).
     amt = amount(state) if callable(amount) else amount
     if captured[0] == "player":
         deal_damage_to_player(state, captured[1], amt)
@@ -309,21 +282,12 @@ def _resolve_burn_damage(state, captured, amount, card_def):
 
 
 def _burn_choose_target_and_push(state, card_def, amount, to_graveyard, reserves_hand_card=True, is_spell=True, exiles_on_resolve=False):
-    """Shared faithful-burn tail for every "deal `amount` damage to any target"
-    effect. Used both by burn SPELLS (Lightning Bolt, Fiery Temper, Fireblast,
-    Lava Dart -- is_spell=True) and by Makeshift Munitions' activated ABILITY
-    (is_spell=False -- an ability is not a Counterspell/Spell Pierce target, and
-    its source enchantment never leaves the battlefield). The target (any
-    creature on either battlefield -- hexproof/shroud aware -- or either player,
-    yourself legal) is chosen AS THE SPELL/ABILITY IS PUT ON THE STACK and locked
-    via capture_any_target; the effect waits on the stack and, on resolution,
-    hits that exact target or fizzles (a creature target gone by then, rule
-    608.2b). Each MODE supplies how its card reaches the graveyard on resolution
-    -- `to_graveyard(state, card_def)` (a no-op for the ability, whose source
-    stays put) -- and whether a same-named hand copy is still spoken for
-    (`reserves_hand_card`): a normal hand cast discards from hand and reserves;
-    madness/flashback/alt and the ability have already moved (or never had) the
-    card out of its prior zone by push time."""
+    """Shared tail for every "deal `amount` damage to any target" effect --
+    burn spells (is_spell=True) and Makeshift Munitions' ability
+    (is_spell=False). Target (a creature on either battlefield, or either
+    player) is chosen and locked as the spell/ability goes on the stack;
+    `to_graveyard` handles how the source card leaves its zone on
+    resolution, a no-op for the ability."""
     def _on_target(state, target):
         captured = capture_any_target(state, target)
 
@@ -334,8 +298,7 @@ def _burn_choose_target_and_push(state, card_def, amount, to_graveyard, reserves
         push_to_stack(state, card_def, _resolve, reserves_hand_card=reserves_hand_card, is_spell=is_spell,
                       exiles_on_resolve=exiles_on_resolve, targets=() if captured is None else (captured,))
 
-    # "any target" creature candidates exclude what the caster can't legally
-    # target: shroud (anyone) and opponent-controlled hexproof (can_be_targeted).
+    # excludes what the caster can't legally target: shroud, opponent hexproof.
     resolution.begin_choose_any_target(
         state,
         lambda p: p.card_type == CardType.CREATURE and can_be_targeted(state, p, state.active_idx),
@@ -344,8 +307,8 @@ def _burn_choose_target_and_push(state, card_def, amount, to_graveyard, reserves
 
 
 def _cast_burn_any_target(state, card_def, amount):
-    """Normal hand-cast of an 'any target' burn: card goes hand -> graveyard
-    on resolution (the 'still in hand while on the stack' convention)."""
+    """Normal hand-cast of an "any target" burn: card goes hand -> graveyard
+    on resolution."""
     _burn_choose_target_and_push(state, card_def, amount, discard_from_hand_to_graveyard)
 
 
@@ -360,31 +323,18 @@ def cast_fiery_temper(state, card_def):
 
 
 def madness_fiery_temper(state, card_def):
-    """Madness {R}: same "3 damage to any target", cast from exile. By the
-    time this runs (precast_choice, so execute_madness_cast calls it directly
-    rather than pushing it) the card is already out of exile -- it appends
-    itself to the graveyard on resolution, never touches hand. Target is
-    locked here as the spell is put on the stack, same as a hard cast."""
+    """Madness {R}: same "3 damage to any target", cast from exile. The card
+    never touches hand; it goes straight to the graveyard on resolution."""
     _burn_choose_target_and_push(state, card_def, 3, lambda s, c: s.move_card(c, s.graveyard), reserves_hand_card=False)
 
 
 def _chain_lightning_resolve_tail(state, captured, card_def):
-    """Chain Lightning's own effect once it (or a copy) resolves off the
-    stack: deal 3 to the locked any-target, then the copy rider. Real Magic
-    608.2b fizzle if a creature target has left; a player target is always
-    legal. "Then that player or that permanent's controller may pay {R}{R}. If
-    the player does, they may copy this spell and may choose a new target for
-    that copy" -- the affected player is the target player, or (for a creature
-    target) that creature's controller, captured BEFORE the 3 damage can kill
-    and remove it (last-known controller, matching the resolving instruction).
-
-    Two INDEPENDENT "may"s, faithfully separate: (1) the affected player may
-    pay {R}{R} (begin_pay_unless); (2) IF they paid, they may copy (begin_may_
-    copy) -- and only then choose a new target for the copy. active_idx is the
-    resolving spell's controller here; the payer/copier's own two decisions run
-    under active_idx flipped to them, restored to the controller once the whole
-    rider settles (the begin_pay_unless convention, extended across the copy)."""
-    controller = state.active_idx  # the resolving spell's/copy's own controller
+    """Chain Lightning's effect on resolution (spell or copy): deal 3 to the
+    locked any-target, then the copy rider -- the affected player (the target
+    player, or a creature target's controller, captured before the damage can
+    remove it) may pay {R}{R}; if they do, they may separately choose to copy
+    the spell with a new target."""
+    controller = state.active_idx
     if not target_still_legal(state, captured):
         perm = captured[1]
         _log_target_fizzle(state, card_def, (perm.card_def.name, perm.slot))
@@ -393,21 +343,20 @@ def _chain_lightning_resolve_tail(state, captured, card_def):
         affected_idx = captured[1]
         deal_damage_to_player(state, affected_idx, 3)
     else:  # ("creature", permanent)
-        affected_idx = controller_idx(state, captured[1])  # capture before SBA can remove it
+        affected_idx = controller_idx(state, captured[1])  # captured before SBA can remove it
         captured[1].damage_marked += 3
         check_state_based_actions(state)
 
     def _on_pay_result(state, paid):
         if not paid:
-            return  # first "may" declined (or unaffordable) -> no copy; active_idx already restored to controller
-        # {R}{R} paid. The SECOND, independent "may": the payer may copy.
-        state.active_idx = affected_idx  # the payer/copier owns the may-copy + new-target choices
+            return
+        state.active_idx = affected_idx  # payer/copier owns the may-copy + new-target choices
 
         def _on_copy_decision(state, do_copy):
             if do_copy:
                 _chain_lightning_make_copy(state, card_def, affected_idx, restore_idx=controller)
             else:
-                state.active_idx = controller  # paid but declined to copy (a legal, if rare, line)
+                state.active_idx = controller
 
         resolution.begin_may_copy(state, _on_copy_decision)
 
@@ -415,25 +364,20 @@ def _chain_lightning_resolve_tail(state, captured, card_def):
 
 
 def _chain_lightning_make_copy(state, card_def, copier_idx, restore_idx):
-    """The copier puts a COPY of Chain Lightning on the stack -- controlled by
-    them, so its own rider's payment/perspective are theirs -- and "may choose
-    a new target for that copy" (begin_choose_any_target from the copier's
-    perspective; keeping the same target is allowed). A copy is not a card: it
-    touches no zone and reserves no hand card, and simply ceases to exist after
-    resolving. The copy carries the identical resolve tail, so its own copy
-    rider fires recursively (mana-bounded). active_idx is set to the copier for
-    the target choice, then restored to restore_idx (the resolving spell's
-    controller) once the copy is on the stack."""
+    """The copier puts a copy of Chain Lightning on the stack, controlled by
+    them, and may choose a new target for it. A copy touches no zone and
+    reserves no hand card; it carries the same resolve tail, so its own copy
+    rider can fire recursively."""
     state.active_idx = copier_idx
 
     def _on_target(state, target):
         captured = capture_any_target(state, target)
         push_to_stack(
             state, card_def, lambda s, cd: _chain_lightning_resolve_tail(s, captured, cd),
-            reserves_hand_card=False,  # a copy, not the physical card
+            reserves_hand_card=False,
             targets=() if captured is None else (captured,),
         )
-        state.active_idx = restore_idx  # copy pushed with copier as controller; restore
+        state.active_idx = restore_idx
 
     resolution.begin_choose_any_target(
         state,
@@ -443,15 +387,13 @@ def _chain_lightning_make_copy(state, card_def, copier_idx, restore_idx):
 
 
 def cast_chain_lightning(state, card_def):
-    """{R} sorcery: Chain Lightning deals 3 damage to any target; then the copy
-    rider (see _chain_lightning_resolve_tail). Target locked as the spell is
-    put on the stack (precast_choice), like every other any-target burn; the
-    card goes hand -> graveyard on resolution, ahead of the damage."""
+    """{R} sorcery: deals 3 damage to any target, then the copy rider (see
+    _chain_lightning_resolve_tail)."""
     def _on_target(state, target):
         captured = capture_any_target(state, target)
 
         def _resolve(state, card_def):
-            discard_from_hand_to_graveyard(state, card_def)  # itself -> graveyard first
+            discard_from_hand_to_graveyard(state, card_def)
             _chain_lightning_resolve_tail(state, captured, card_def)
 
         push_to_stack(state, card_def, _resolve, targets=() if captured is None else (captured,))
@@ -464,9 +406,8 @@ def cast_chain_lightning(state, card_def):
 
 
 def faithless_looting_discard(state):
-    """Draw two, then discard two -- shared by the normal cast and
-    Flashback below (identical effect, only how the cost was paid
-    differs)."""
+    """Draw two, then discard two -- shared by the normal cast and Flashback
+    below."""
     state.draw(2)
     resolution.begin_discard(state, 2, optional=False, on_complete=lambda s, _cards: None)
 
@@ -477,29 +418,20 @@ def cast_faithless_looting(state, card_def):
 
 
 def flashback_faithless_looting(state, inst):
-    """Real Flashback cost is {2}{R} (unlike Dread Return/Lava Dart's free
-    sacrifice-only Flashback) -- the mana is already paid by the generic
-    flashback cost path (drl_env._actions_cast_altzone._flashback_execute) before this
-    resolve ever runs, so by the time we get here it's "fully paid for" and
-    pushes onto the stack immediately, not gated behind any further
-    resolution.
+    """Flashback cost is {2}{R}, already paid by the generic flashback cost
+    path before this resolve runs, so it pushes onto the stack immediately.
 
     inst: the exact graveyard CardInstance being flashed back -- see
     black_cards.flashback_dread_return."""
-    state.graveyard.remove(inst)  # leaves the graveyard the moment Flashback is chosen; exiled on resolution (702.34)
+    state.graveyard.remove(inst)  # exiled on resolution (702.34)
     push_to_stack(state, inst, lambda st, cd: faithless_looting_discard(st), reserves_hand_card=False, exiles_on_resolve=True)
 
 
 def _highway_robbery_effect(state):
-    """Oracle: "You may discard a card or sacrifice a land. If you do,
-    draw two cards." Both cost options offered as one optional decision
-    (resolution.begin_discard_or_sacrifice) -- genuinely optional (not an
-    additional cost, unlike Grab the Prize), so casting this never
-    requires a card in hand OR a land in play. Shared unchanged by both
-    the normal cast and Plot's cast-from-exile below: real Plot lets you
-    cast the card later "as you could normally cast it," which means this
-    same may-discard-or-sacrifice choice is made fresh at THAT time too,
-    not locked in when it was plotted."""
+    """You may discard a card or sacrifice a land; if you do, draw two cards.
+    Genuinely optional, so casting never requires a card in hand or a land in
+    play. Shared by the normal cast and Plot's cast-from-exile: the choice is
+    made fresh at cast time, not locked in when plotted."""
     resolution.begin_discard_or_sacrifice(
         state, lambda p: p.card_def.card_type == CardType.LAND,
         on_complete=lambda s, paid: s.draw(2) if paid else None,
@@ -512,32 +444,20 @@ def cast_highway_robbery(state, card_def):
 
 
 def cast_highway_robbery_from_exile(state, card_def):
-    """Plot's cast-from-exile resolve. By the time this runs, the card
-    already left exile, never hand -- unlike cast_highway_robbery above,
-    this never touches state.hand."""
+    """Plot's cast-from-exile resolve; the card never touches state.hand."""
     state.move_card(card_def, state.graveyard)
     _highway_robbery_effect(state)
 
 
 def _grab_the_prize_extra_legal(state):
-    """As an additional cost, discard a card -- needs a card in hand
-    besides the one being cast."""
+    """Additional-cost discard needs a card in hand besides the one cast."""
     return len(state.hand) >= 2
 
 
 def _grab_the_prize_effect(state, discarded_cards):
-    """Oracle: "Draw two cards. If the discarded card wasn't a land card,
-    Grab the Prize deals 2 damage to each opponent." discarded_cards is
-    always exactly 1 card here (mandatory n=1 discard, guaranteed payable
-    by extra_legal above).
-
-    This discard is a real-rules additional cost, but -- unlike Fireblast/
-    Lava Dart/Dread Return's sacrifice alt costs -- it happens after the
-    spell's own mana cost is already paid via the normal begin_pay_cost
-    path, so the whole cast_grab_the_prize call (discard included) is what
-    gets pushed onto the stack as one deferred unit, not split further. No
-    observable difference in this solitaire sim: nothing can respond to or
-    depend on the timing of an in-hand discard choice."""
+    """Draw two cards. If the discarded card wasn't a land, deal 2 damage to
+    each opponent. discarded_cards is always exactly 1 card (mandatory
+    discard, guaranteed payable by extra_legal above)."""
     state.draw(2)
     if discarded_cards and discarded_cards[0].card_type != CardType.LAND:
         deal_damage_to_opponent(state, 2)
@@ -556,24 +476,16 @@ def melded_moxite_etb(state):
 
 def activate_melded_moxite_sac(state, permanent):
     """{3}, Sacrifice this artifact: create a tapped 2/2 colorless Robot
-    artifact creature token (the same shared ROBOT_TOKEN_CARD_DEF).
-
-    Faithful timing: the sacrifice is a COST, paid
-    now on activation; creating the token is the effect, so it goes on the
-    stack (push_ability_to_stack) and resolves after a priority window.
-
-    Melded Moxite is a real (nontoken) card, so sacrificing it puts it in
-    the graveyard (real Magic 701.17 -- unlike Blood/Eldrazi Spawn tokens,
-    which cease to exist), same as Candy Trail's own sac ability."""
-    sacrifice_to_graveyard(state, permanent)  # queues the dies-trigger (Gixian Infiltrator); Melded Moxite has no ltb_trigger of its own
+    token. Sacrifice is the cost, paid now; the token creation is the effect,
+    resolving on the stack. Melded Moxite is a real card, so it goes to the
+    graveyard (701.17), unlike a token which would cease to exist."""
+    sacrifice_to_graveyard(state, permanent)  # queues the dies-trigger (Gixian Infiltrator)
     push_ability_to_stack(state, permanent.card_def, lambda st: create_token(st, ROBOT_TOKEN_CARD_DEF, tapped=True))
 
 
 def guttersnipe_on_cast(state, permanent):
-    """Whenever you cast an instant or sorcery spell, deals 2 damage to
-    each opponent -- fires via the generic on_cast_trigger chokepoint,
-    identically for every cast path (normal, Flashback, Madness, Plot)
-    already wired through it."""
+    """Whenever you cast an instant or sorcery, deal 2 damage to each
+    opponent."""
     deal_damage_to_opponent(state, 2)
 
 
@@ -588,11 +500,8 @@ def _fireblast_alt_extra_legal(state):
 
 def cast_fireblast_alt(state, card_def):
     """You may sacrifice two Mountains rather than pay this spell's mana
-    cost. Same "4 damage to any target" as the hard-cast; once the sacrifice
-    -- this alt cost -- is paid, the target is chosen and the effect pushed
-    onto the stack. The card goes to the graveyard as it's cast (eager, kept
-    from before this became targeted -- see drl_env's hand-count note), so
-    its stack resolve does no further zone move."""
+    cost. Same "4 damage to any target" as the hard cast, once the sacrifice
+    is paid."""
     discard_from_hand_to_graveyard(state, card_def)
     resolution.begin_sacrifice(
         state, lambda p: p.card_def.name == "Mountain", 2,
@@ -606,11 +515,8 @@ def cast_lava_dart(state, card_def):
 
 
 def flashback_lava_dart(state, inst):
-    """Flashback -- Sacrifice a Mountain: no mana component at all. Same "1
-    damage to any target"; once the sacrifice is paid, the target is chosen
-    and the effect pushed onto the stack. The card leaves the graveyard when
-    Flashback is chosen and is EXILED as it resolves (exiles_on_resolve) --
-    tracked in the exile zone, not the graveyard (702.34).
+    """Flashback -- Sacrifice a Mountain, no mana cost. Same "1 damage to any
+    target"; the card is exiled (not returned to graveyard) on resolution.
 
     inst: the exact graveyard CardInstance being flashed back -- see
     black_cards.flashback_dread_return."""
@@ -622,11 +528,8 @@ def flashback_lava_dart(state, inst):
 
 
 def cast_end_the_festivities(state, card_def):
-    """Real text (Innistrad: Crimson Vow, {R}): "End the Festivities deals 1
-    damage to each opponent and each creature and planeswalker they
-    control." NOT symmetric: only the OPPONENT's face and the OPPONENT's own
-    board take damage -- this deck's own creatures are untouched. (No deck's
-    pool has planeswalkers, so that clause never applies here.)"""
+    """{R}: deal 1 damage to each opponent and each creature they control.
+    Not symmetric -- this deck's own creatures are untouched."""
     discard_from_hand_to_graveyard(state, card_def)
     deal_damage_to_opponent(state, 1)
     for permanent in state.opponent.battlefield:
@@ -636,11 +539,9 @@ def cast_end_the_festivities(state, card_def):
 
 
 def cast_breath_weapon(state, card_def):
-    """Real text: deals 2 damage to each NON-DRAGON creature. Green's
-    Avenging Hunter (subtypes=("Dragon", "Ranger")) is a Dragon in this
-    pool, so the filter is live, not vacuous -- it must be excluded on
-    either battlefield, same symmetric-wipe shape otherwise (this deck's
-    own creatures included, exactly like the real card)."""
+    """Deal 2 damage to each non-Dragon creature on either battlefield,
+    including this deck's own. Green's Avenging Hunter is a Dragon, so the
+    exclusion is live in this pool."""
     discard_from_hand_to_graveyard(state, card_def)
     for player in state.players:
         for permanent in player.battlefield:
@@ -659,8 +560,7 @@ RED_EFFECT_REGISTRY = {
     EffectId.CLEANSING_WILDFIRE: {
         "cast": {
             "resolve": lambda state, card_def: cast_cleansing_wildfire(state, card_def),
-            # A targeted spell can't be cast with no legal target: needs >=1
-            # land on EITHER battlefield this player can target.
+            # needs >=1 targetable land on either battlefield
             "extra_legal": lambda state: any(
                 p.card_type == CardType.LAND and can_be_targeted(state, p, state.active_idx)
                 for pl in state.players for p in pl.battlefield),
@@ -687,8 +587,7 @@ RED_EFFECT_REGISTRY = {
     },
     EffectId.GOBLIN_TOMB_RAIDER: {
         "cast": {"resolve": lambda state, card_def: cast_permanent_from_hand(state, card_def)},
-        # "As long as you control an artifact, this creature gets +1/+0 and
-        # has haste." A conditional static self-boost (stats._static_self).
+        # gets +1/+0 and haste while you control an artifact
         "static_self": {
             "condition": lambda state, permanent: _goblin_tomb_raider_controls_artifact(state, permanent),
             "power": 1,
@@ -746,8 +645,7 @@ RED_EFFECT_REGISTRY = {
     },
     EffectId.GOBLIN_BUSHWHACKER: {
         "cast_modes": {
-            # Unkicked: {R} (card_def.cast_cost, no per-mode override). Kicked:
-            # {R}{R} (Kicker {R}), flagging the ETB to pump the team.
+            # kicked = {R}{R}, flags the ETB to pump the team
             "unkicked": {"resolve": lambda state, card_def: cast_permanent_from_hand(state, card_def)},
             "kicked": {"cost": {"R": 2}, "resolve": lambda state, card_def: _goblin_bushwhacker_kicked(state, card_def)},
         },
@@ -758,30 +656,23 @@ RED_EFFECT_REGISTRY = {
         "etb_trigger": lambda state, permanent: voldaren_epicure_etb(state),
     },
     EffectId.LIGHTNING_BOLT: {
-        # precast_choice: "any target" is locked in as the spell is cast
-        # (drl_env._precast_choice_execute), not at resolution -- real Magic.
+        # precast_choice: target locked as the spell is cast, not at resolution
         "cast": {"resolve": lambda state, card_def: cast_lightning_bolt(state, card_def), "precast_choice": True},
         "pending_kinds": {"choose_any_target"},
     },
     EffectId.CHAIN_LIGHTNING: {
-        # precast_choice: original target locked at cast, same as the burn above.
-        # The copy rider adds pay_unless (the {R}{R} may-pay) + another
-        # choose_any_target (the copier's new target); both drl_env-driven.
+        # copy rider adds pay_unless + a second choose_any_target for the copier
         "cast": {"resolve": lambda state, card_def: cast_chain_lightning(state, card_def), "precast_choice": True},
         "pending_kinds": {"choose_any_target", "pay_unless", "may_copy"},
     },
     EffectId.FIERY_TEMPER: {
-        # precast_choice on BOTH modes: "any target" is locked as the spell
-        # is put on the stack (madness routes through execute_madness_cast's
-        # own precast_choice branch), never at resolution.
         "cast": {"resolve": lambda state, card_def: cast_fiery_temper(state, card_def), "precast_choice": True},
         "madness": {
             "cost": {"R": 1}, "resolve": lambda state, card_def: madness_fiery_temper(state, card_def),
             "precast_choice": True,
         },
-        # order_triggers: reachable the
-        # instant 2+ Madness cards get discarded at once -- Faithless
-        # Looting's own discard-2, right below, is exactly that source.
+        # order_triggers: reachable when 2+ Madness cards discard at once,
+        # e.g. via Faithless Looting's discard-2 below.
         "pending_kinds": {"madness_decision", "order_triggers", "choose_any_target"},
     },
     EffectId.FAITHLESS_LOOTING: {
@@ -827,9 +718,8 @@ RED_EFFECT_REGISTRY = {
         "on_cast": lambda state, permanent: guttersnipe_on_cast(state, permanent),
     },
     EffectId.FIREBLAST: {
-        # Hard cast is precast_choice (target locked at cast); the alt_cast
-        # resolve chooses its own target after the sacrifice cost and pushes
-        # itself, so it needs no precast flag -- just the pending kind.
+        # alt_cast chooses its own target after the sacrifice cost, so it
+        # needs no precast_choice flag, just the pending kind.
         "cast": {"resolve": lambda state, card_def: cast_fireblast(state, card_def), "precast_choice": True},
         "alt_cast": {
             "extra_legal": lambda state: _fireblast_alt_extra_legal(state),

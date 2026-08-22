@@ -1,13 +1,10 @@
-"""Blue-identity card catalog: every card whose real mana cost is
-mono-blue (or, for lands with no cost, whose only mana output is blue).
-Same shape as every other color file: a BLUE_CARD_CATALOG dict (name ->
-CardDef) and a BLUE_EFFECT_REGISTRY dict (EffectId -> spec), unioned into
-game.CARD_DEFS/EFFECT_REGISTRY by game/registry.py. Every cost/type/
-oracle-text is a direct Scryfall pull.
+"""Blue-identity card catalog: BLUE_CARD_CATALOG (name -> CardDef) and
+BLUE_EFFECT_REGISTRY (EffectId -> spec), unioned into game.CARD_DEFS /
+EFFECT_REGISTRY by game/registry.py. Cost/type/oracle text is from
+Scryfall.
 
-Seat of the Synod is an ARTIFACT LAND -- played as a land (card_type LAND,
-land-drop path) but also an artifact (extra["artifact"]=True), so it
-counts for affinity/metalcraft and is a legal artifact-sacrifice."""
+Seat of the Synod is a land that's also an artifact, so it counts for
+affinity/metalcraft and is a legal artifact-sacrifice."""
 
 from .. import registry
 from ..cards import CardDef, CardType, EffectId, card_subtypes
@@ -72,44 +69,37 @@ BLUE_CARD_CATALOG = {
     "Delver of Secrets": CardDef("Delver of Secrets", CardType.CREATURE, {"U": 1}, EffectId.DELVER_OF_SECRETS, power=1, toughness=1),
 }
 
-# Back face of Delver of Secrets. Deliberately NOT in BLUE_CARD_CATALOG / CARD_DEFS:
-# it's never in a decklist, drawn, or cast -- it only exists as the identity a
-# Delver Permanent takes on once it transforms (execute_may_transform swaps the
-# Permanent's card_def to this). Same EffectId as the front face so every registry
-# lookup (the upkeep trigger, the transform spec, stats) still resolves; same cast
-# cost/color identity; 3/2 stats live here AND in the "transform" spec below (the
-# spec stays authoritative for combat via effects.stats._transform_spec, this def
-# carries them so any direct card_def.extra read stays consistent). A DFC reverts to
-# its front face in every zone but the battlefield, so state_based._departing_card_def
-# puts the FRONT def back when it leaves.
+# Back face of Delver of Secrets. Not in BLUE_CARD_CATALOG / CARD_DEFS -- only
+# reachable as the card_def a transformed Delver Permanent swaps to
+# (execute_may_transform). Same EffectId as the front face so registry
+# lookups still resolve. A DFC reverts to its front face in every zone but
+# the battlefield (state_based._departing_card_def).
 INSECTILE_ABERRATION_CARD_DEF = CardDef(
     "Insectile Aberration", CardType.CREATURE, {"U": 1}, EffectId.DELVER_OF_SECRETS, power=3, toughness=2,
 )
 
 
 def cast_deem_inferior(state, card_def):
-    """{3}{U} (costs {1} less per card drawn this turn): "The owner of target
-    NONLAND PERMANENT puts it into their library second from the top or on the
-    bottom." Target ANY nonland permanent on either battlefield (creature,
-    artifact, enchantment -- hexproof/shroud aware, Ward-aware via
-    capture_any_target), locked at cast; on resolution its owner tucks it (their
-    choice of position), or the spell fizzles if it has left the battlefield."""
+    """{3}{U} (costs {1} less per card drawn this turn): the owner of target
+    nonland permanent puts it into their library second from the top or on
+    the bottom. Target locked at cast; fizzles if the permanent has left
+    the battlefield by resolution."""
     idx = state.active_idx
 
     def _on_target(state, descriptor):
         captured = capture_any_target(state, descriptor)
 
         def _resolve(state, card_def):
-            discard_from_hand_to_graveyard(state, card_def)  # Deem Inferior itself -> graveyard
+            discard_from_hand_to_graveyard(state, card_def)
             if captured is None or not target_still_legal(state, captured):
                 where = (captured[1].card_def.name, captured[1].slot) if captured is not None else None
                 _log_target_fizzle(state, card_def, where)
                 return
             permanent = captured[1]
-            owner_idx = controller_idx(state, permanent)  # controller == owner (no control-changing in this pool)
+            owner_idx = controller_idx(state, permanent)
             state.players[owner_idx].battlefield.remove(permanent)
-            remove_from_combat(state, permanent)  # 506.4 -- tucking an attacker removes it from combat
-            # a DFC tucked into the library reverts to its front face (Delver, not Insectile)
+            remove_from_combat(state, permanent)  # tucking an attacker removes it from combat
+            # a tucked DFC reverts to its front face
             begin_tuck_to_library(state, departing_card_def(permanent), owner_idx)
 
         push_to_stack(state, card_def, _resolve, targets=() if captured is None else (captured,))
@@ -128,49 +118,38 @@ def cast_thoughtcast(state, card_def):
 
 
 def cast_abandon_attachments(state, card_def):
-    """{1}{U}: You may discard a card. If you do, draw two cards. (Same
-    "may discard, if you do draw" shape as Highway Robbery / Melded Moxite.)"""
-    discard_from_hand_to_graveyard(state, card_def)  # the instant itself -> graveyard
+    """{1}{U}: You may discard a card. If you do, draw two cards."""
+    discard_from_hand_to_graveyard(state, card_def)
 
     def _on_discard(state, discarded_cards):
-        if discarded_cards:  # a card was actually discarded ("if you do")
+        if discarded_cards:
             state.draw(2)
 
     begin_discard(state, 1, optional=True, on_complete=_on_discard)
 
 
 def _sleep_tap_skip(state, permanent):
-    """Tap the target creature; it doesn't untap during its controller's
-    next untap step (untap_step consumes the skip_next_untap flag). Routes
-    the tap through set_tapped (not a bare permanent.tapped = True) so the
-    replay log always records it -- the target may be the OPPONENT's
-    creature, not the caster's own, so set_tapped's owner_idx derivation
-    (not just state.active_idx) matters here."""
+    """Taps the target creature; it skips its controller's next untap step."""
     set_tapped(state, permanent, True, reason="sleep_of_the_dead")
     permanent.flags["skip_next_untap"] = True
 
 
 def cast_sleep_of_the_dead(state, card_def):
-    """{U}: Tap target creature; skip its next untap. Reuses the shared
-    single-target-creature primitive (target locked at cast, fizzles if
-    gone)."""
+    """{U}: Tap target creature; skip its next untap."""
     cast_targeting_creature(state, card_def, _sleep_tap_skip)
 
 
 def _exile_n_other_from_graveyard(state, n, exclude, on_complete):
-    """Escape's additional cost: the model exiles n cards from its own
-    graveyard OTHER than `exclude` (the exact graveyard INSTANCE being escaped),
-    one at a time (chained begin_choose_graveyard_card). Runs on_complete(state)
-    once n are exiled. Excludes `exclude` by object identity -- so a SECOND copy
-    of the same card in the graveyard (a distinct instance now) CAN be exiled to
-    pay, faithfully."""
+    """Escape's additional cost: exiles n cards from your graveyard other
+    than `exclude` (by object identity), one at a time, then runs
+    on_complete(state)."""
     def _step(remaining):
         if remaining == 0:
             on_complete(state)
             return
 
         def _chosen(state, chosen):
-            state.graveyard.remove(chosen)  # the exact chosen instance; exiled, untracked
+            state.graveyard.remove(chosen)
             state.log_event("zone_move", card=chosen.name, from_zone="graveyard", to_zone="exile_untracked", reason="escape")
             _step(remaining - 1)
 
@@ -180,35 +159,23 @@ def _exile_n_other_from_graveyard(state, n, exclude, on_complete):
 
 
 def _sleep_escape_legal(state):
-    """Escape {2}{U}, exile three OTHER cards from your graveyard: legal only
-    with 3+ other graveyard cards to exile AND a legal creature to tap
-    (a targeted spell needs a target). Mana + Sleep-in-graveyard are checked
-    by the generic graveyard-cast machinery (drl_env._flashback_legal)."""
-    # 3+ cards OTHER than the one Sleep being escaped -- any other card, INCLUDING
-    # a second Sleep copy (distinct instances now). Escape is only offered with a
-    # Sleep in the graveyard, so "others" = everything but that one card.
+    """Escape {2}{U}, exile three other graveyard cards: legal only with 3+
+    other graveyard cards and a legal creature to tap."""
     if not any(c.name == "Sleep of the Dead" for c in state.graveyard):
         return False
     return len(state.graveyard) - 1 >= 3 and has_creature_target(state)
 
 
 def escape_sleep_of_the_dead(state, inst):
-    """Escape: {2}{U} (paid by the graveyard-cast machinery) + exile three
-    other graveyard cards, then Sleep leaves the graveyard (escaping; exiled
-    after it resolves) and taps a target creature (chosen at cast, fizzles if
-    gone).
+    """Escape: {2}{U} + exile three other graveyard cards, then Sleep leaves
+    the graveyard and taps a target creature (chosen at cast).
 
-    inst: the exact graveyard CardInstance being escaped -- see
-    flashback_dread_return. Identity matters twice here, not just for the
-    removal: it's also the exclusion passed to _exile_n_other_from_graveyard,
-    whose predicate is `c is not exclude`, so a SECOND Sleep copy in the
-    graveyard stays a legal choice to exile as part of the cost (faithful --
-    it genuinely is "another card") while the escaping copy itself never is,
-    handed down directly by the caller (drl_env._actions_cast_altzone._graveyard_instance)."""
+    inst: the exact graveyard CardInstance being escaped, removed by object
+    identity; also the exclusion passed to _exile_n_other_from_graveyard."""
     sleep_inst = inst
 
     def _after_exile(state):
-        state.graveyard.remove(sleep_inst)  # escapes the graveyard; exiled after resolution (untracked)
+        state.graveyard.remove(sleep_inst)  # exiled after resolution
         idx = state.active_idx
 
         def _on_target(state, descriptor):
@@ -232,22 +199,11 @@ def escape_sleep_of_the_dead(state, inst):
 
 
 def sewer_cam_tap_or_untap(state, source_card_def):
-    """Sewer-veillance Cam ETB/LTB: "you may tap or untap target creature."
-    Target-at-promotion (etb_targets/ltb_targets: True on both halves): this
-    whole function runs AT PROMOTION, as the triggered ability goes on the
-    stack (603.3d) -- opening the optional target choice (either side,
-    hexproof/shroud-aware) right then, not once the ability actually
-    resolves, so an opponent gets a priority window against a known target.
-    on resolution it TOGGLES the target's tapped state -- observationally
-    identical to the real tap-or-untap choice, since the no-op direction
-    (tapping a tapped or untapping an untapped creature) is never the
-    meaningful pick -- fizzling if the target's gone by then (608.2b).
-
-    A toggle landing on the untap direction (target was tapped going in)
-    also discounts mana.mana_pool_single_pip for whatever the target can
-    produce (mana.discount_departing_source) -- see that function's own
-    docstring; the tap direction never does, since tapping a mana source
-    doesn't free anything up."""
+    """Sewer-veillance Cam ETB/LTB: you may tap or untap target creature.
+    Target chosen at promotion; toggles the target's tapped state
+    (equivalent to picking whichever direction is meaningful), fizzling if
+    the target's gone by resolution. Untapping also discounts any mana the
+    target could have produced (mana.discount_departing_source)."""
     idx = state.active_idx
 
     def _on_target(state, descriptor):
@@ -273,8 +229,8 @@ def sewer_cam_tap_or_untap(state, source_card_def):
 
 def sewer_cam_sac(state, permanent):
     """{3}{U}, Sacrifice this artifact: Draw two cards. Sacrificing also fires
-    its own LTB (tap/untap), via sacrifice_to_graveyard's ltb queue."""
-    sacrifice_to_graveyard(state, permanent)  # queues the LTB tap/untap
+    its own LTB (tap/untap)."""
+    sacrifice_to_graveyard(state, permanent)
     push_ability_to_stack(state, permanent.card_def, lambda st: st.draw(2))
 
 
@@ -283,17 +239,15 @@ def _has_stack_spell(state, predicate):
 
 
 def _cast_counter(state, card_def, predicate, on_countered=None):
-    """Shared body for a counterspell: choose a matching spell on the stack
-    (locked at cast, precast_choice), then push this counter spell's own
-    effect. On resolution the counter spell goes to the graveyard and, if the
-    chosen spell is still on the stack (else the counter fizzles, 608.2b), it
-    is countered -- or, for a rider (Spell Pierce), on_countered(entry)
-    decides via begin_pay_unless whether it actually gets countered."""
+    """Shared counterspell body: choose a matching spell on the stack (locked
+    at cast), then push this spell's own effect. On resolution, if the
+    chosen spell is still on the stack it's countered -- or, for a rider
+    (Spell Pierce), on_countered(entry) decides via begin_pay_unless."""
     def _on_target(state, entry):
         def _resolve(state, card_def):
-            discard_from_hand_to_graveyard(state, card_def)  # the counter spell itself -> graveyard
+            discard_from_hand_to_graveyard(state, card_def)
             if entry is None or entry not in state.stack:
-                _log_target_fizzle(state, card_def, None)  # the target spell already left the stack
+                _log_target_fizzle(state, card_def, None)
                 return
             if on_countered is None:
                 counter_spell(state, entry)
@@ -316,8 +270,7 @@ def cast_dispel(state, card_def):
 
 
 def _spell_pierce_countered(state, entry):
-    """"unless its controller pays {2}": the spell's controller may pay {2};
-    if they do, it is NOT countered."""
+    """Unless its controller pays {2}, it's countered."""
     def _on_result(state, paid):
         if not paid:
             counter_spell(state, entry)
@@ -335,33 +288,24 @@ def cast_spell_pierce(state, card_def):
 
 
 def _is_island_card(card_def):
-    """"an Island card" -- any card with the Island land subtype (basic
-    Island, Contaminated Aquifer, Ice Tunnel), matching Islandcycling's real
-    search."""
+    """Any card with the Island land subtype."""
     return "Island" in card_subtypes(card_def)
 
 
 def cast_mental_note(state, card_def):
-    """{U}: Mill two cards. Draw a card. Both halves affect YOU (no target).
-    The spell moves itself to the graveyard as it resolves, before the mill/
-    draw, same convention as every other instant/sorcery here."""
+    """{U}: Mill two cards. Draw a card."""
     discard_from_hand_to_graveyard(state, card_def)
     mill(state, 2)
     state.draw(1)
 
 
 def cast_thought_scour(state, card_def):
-    """{U}: Target player mills two cards. Draw a card (you). Real "target
-    player" -- a genuine begin_choose_target_player choice, locked at CAST
-    (precast_choice), not resolution: real Magic (601.2c) chooses targets
-    as the spell is announced, before it ever waits on the stack. "Target
-    player" is always legal (at minimum yourself), so this never fizzles.
-    Whoever is milled, the caster (active player) draws."""
+    """{U}: Target player mills two cards. You draw a card. Target locked at cast."""
     def _on_player(state, idx):
         def _resolve(state, card_def):
             discard_from_hand_to_graveyard(state, card_def)
             mill(state, 2, idx)
-            state.draw(1)  # the caster draws -- active_idx is the controller throughout (no flip)
+            state.draw(1)  # the caster draws, regardless of who's milled
 
         push_to_stack(state, card_def, _resolve)
 
@@ -375,54 +319,41 @@ def cast_lorien_revealed(state, card_def):
 
 
 def islandcycle_lorien_revealed(state, card_def):
-    """Islandcycling {1}: discard this card from hand, search library for an
-    Island card, put it into hand, shuffle. A real model choice among the
-    Island-subtype cards present (basic Island / Contaminated Aquifer / Ice
-    Tunnel), unlike Generous Ent's single fixed "Forest" -- same begin_search_
-    fetch-to-hand shape as Ash Barrens' basic landcycling."""
+    """Islandcycling {1}: discard this card, search library for an Island
+    card, put it into hand, shuffle."""
     discard_from_hand_to_graveyard(state, card_def)
     begin_search_fetch(state, _is_island_card, find_to_hand)
 
 
 def cast_brainstorm(state, card_def):
-    """{U}: Draw three cards, then put two cards from your hand on top of your
-    library in any order (begin_put_on_top_from_hand -- the model picks which
-    two and their order)."""
+    """{U}: Draw three cards, then put two cards from hand on top of the
+    library in any order."""
     discard_from_hand_to_graveyard(state, card_def)
     state.draw(3)
     begin_put_on_top_from_hand(state, 2, on_complete=lambda s: None)
 
 
 def cast_ponder(state, card_def):
-    """{U}: Look at the top three cards, put them back in any order OR shuffle
-    (begin_ponder), then draw a card (the on_complete, run either way)."""
+    """{U}: Look at the top three cards, reorder them or shuffle, then draw a card."""
     discard_from_hand_to_graveyard(state, card_def)
     begin_ponder(state, on_complete=lambda s: s.draw(1))
 
 
 def _target_player_draws(state, idx, n):
-    """Make player `idx` draw n cards. Flips active_idx to them so
-    GameState.draw hits THEIR library/hand -- and, if that draw decks them
-    out, LEAVES active_idx pointing at them so the turn generator's DeckedOut
-    handler awards the win to the other player (winner = 1 - active_idx).
-    active_idx is restored only on the normal, non-deck-out path (the restore
-    line simply isn't reached if draw() raised DeckedOut)."""
+    """Makes player `idx` draw n cards. Flips active_idx to them for the
+    draw; on a deck-out, active_idx stays on them so the loss attributes
+    correctly."""
     saved = state.active_idx
     state.active_idx = idx
-    state.draw(n)  # DeckedOut (idx had < n cards) propagates with active_idx == idx -- correct attribution
+    state.draw(n)
     state.active_idx = saved
 
 
 def _deep_analysis_choose_and_push(state, card_def, to_graveyard, reserves_hand_card, exiles_on_resolve=False):
-    """Choose the target player as Deep Analysis is put on the stack -- real
-    "target player" (601.2c: targets are chosen as a spell is cast, before
-    it ever waits on the stack), always legal (at minimum yourself), so this
-    never fizzles. Shared by the hard cast and Flashback below;
-    `to_graveyard`/`reserves_hand_card` say how the card itself reaches the
-    graveyard on resolution (hard cast: hand -> graveyard; Flashback:
-    already out of the graveyard, exiled after -- Dread Return's own
-    convention). Whoever is chosen draws two (cross-player via
-    _target_player_draws)."""
+    """Choose the target player as Deep Analysis is cast, shared by the hard
+    cast and Flashback below. `to_graveyard`/`reserves_hand_card` control how
+    the card itself reaches the graveyard on resolution. Whoever is chosen
+    draws two."""
     def _on_player(state, idx):
         def _resolve(state, card_def):
             to_graveyard(state, card_def)
@@ -434,39 +365,24 @@ def _deep_analysis_choose_and_push(state, card_def, to_graveyard, reserves_hand_
 
 
 def cast_deep_analysis(state, card_def):
-    """{3}{U}: Target player draws two cards. Locked at CAST
-    (precast_choice), not resolution."""
+    """{3}{U}: Target player draws two cards. Target locked at cast."""
     _deep_analysis_choose_and_push(state, card_def, discard_from_hand_to_graveyard, reserves_hand_card=True)
 
 
 def flashback_deep_analysis(state, inst):
-    """Flashback -- {1}{U}, Pay 3 life. The {1}{U} was already paid by the
-    generic mana-flashback path (drl_env._flashback_execute's begin_pay_cost);
-    pay the 3-life additional cost now, remove this card from the graveyard
-    (it leaves the moment Flashback is chosen; exiled afterward -- untracked,
-    Dread Return's precedent), then choose the target player and push the
-    same target-player-draws-two effect onto the stack -- Flashback casts
-    the spell too, so its target is locked here, at that moment, same as the
-    hard cast. Life >= 3 is enforced by the flashback's own legal predicate.
+    """Flashback {1}{U}, Pay 3 life: same effect, target locked as it's cast
+    from the graveyard; exiled after resolution.
 
-    inst: the exact graveyard CardInstance being flashed back -- see
-    flashback_dread_return. Matched and removed by object identity, not a
-    by-name lookup, since a graveyard can hold same-named CardInstances that
-    must stay distinct."""
+    inst: the exact graveyard CardInstance being flashed back, removed by
+    object identity."""
     state.graveyard.remove(inst)
     lose_life(state, 3, reason="deep_analysis_flashback")
     _deep_analysis_choose_and_push(state, inst, lambda s, cd: None, reserves_hand_card=False, exiles_on_resolve=True)
 
 
 def delver_upkeep(state, permanent):
-    """Delver of Secrets -- "At the beginning of your upkeep, look at the top
-    card of your library. You may reveal that card. If an instant or sorcery
-    card is revealed this way, transform Delver of Secrets."
-
-    Looking + the may-reveal are private information with no observable game
-    effect on their own, so they collapse to: if the top card is an instant or
-    sorcery, offer the transform choice (begin_may_transform); otherwise
-    nothing happens. Empty library -> nothing to look at."""
+    """Upkeep: look at the top card of your library; if it's an instant or
+    sorcery, offer to transform Delver of Secrets."""
     if not state.library:
         return
     top = state.library[0]
@@ -491,7 +407,7 @@ BLUE_EFFECT_REGISTRY = {
             "precast_choice": True,  # target player locked at cast
         },
         "flashback": {
-            "cost": {"generic": 1, "U": 1},  # the {1}{U} mana half -- paid by the generic mana-flashback path
+            "cost": {"generic": 1, "U": 1},
             "legal": lambda state: state.life_total >= 3,  # can pay the "Pay 3 life" additional cost
             "resolve": lambda state, card_def: flashback_deep_analysis(state, card_def),
         },
@@ -500,14 +416,11 @@ BLUE_EFFECT_REGISTRY = {
     EffectId.COUNTERSPELL: {
         "cast": {
             "resolve": lambda state, card_def: cast_counterspell(state, card_def),
-            "extra_legal": lambda state: _has_stack_spell(state, lambda e: True),  # a spell on the stack to counter
-            "precast_choice": True,  # target spell chosen at cast (from the current stack)
+            "extra_legal": lambda state: _has_stack_spell(state, lambda e: True),
+            "precast_choice": True,  # target spell chosen at cast
         },
-        # No "pending_kinds" entry: choose_stack_target is POINTER-addressed
-        # (rl.decision.action_bridge), not a by-name fixed action, so it needs no
-        # per-deck action-table declaration -- see begin_choose_stack_target's
-        # own docstring for why (the countered spell is very often the
-        # opponent's, which a by-name row could never represent).
+        # No pending_kinds: choose_stack_target is pointer-addressed (rl.decision.action_bridge),
+        # not a by-name fixed action.
     },
     EffectId.DISPEL: {
         "cast": {
@@ -522,7 +435,7 @@ BLUE_EFFECT_REGISTRY = {
             "extra_legal": lambda state: _has_stack_spell(state, lambda e: e["card_def"].card_type != CardType.CREATURE),
             "precast_choice": True,
         },
-        "pending_kinds": {"pay_unless"},  # the "unless controller pays {2}" rider -- still a real, live declaration
+        "pending_kinds": {"pay_unless"},
     },
     EffectId.ABANDON_ATTACHMENTS: {
         "cast": {"resolve": lambda state, card_def: cast_abandon_attachments(state, card_def)},
@@ -530,23 +443,18 @@ BLUE_EFFECT_REGISTRY = {
     },
     EffectId.UTROM_MONITOR: {
         "cast": {"resolve": lambda state, card_def: cast_permanent_from_hand(state, card_def)},
-        "cost_reduction": affinity_reduction,  # Affinity for artifacts
+        "cost_reduction": affinity_reduction,  # affinity for artifacts
         "keywords": {"flying"},
     },
     EffectId.THOUGHTCAST: {
         "cast": {"resolve": lambda state, card_def: cast_thoughtcast(state, card_def)},
-        "cost_reduction": affinity_reduction,  # Affinity for artifacts
+        "cost_reduction": affinity_reduction,  # affinity for artifacts
     },
     EffectId.TOLARIAN_TERROR: {
         "cast": {"resolve": lambda state, card_def: cast_permanent_from_hand(state, card_def)},
         "cost_reduction": graveyard_instant_sorcery_count,  # {1} less per I/S in graveyard
-        # Ward {2}: "Whenever this becomes the target of a spell or ability an
-        # opponent controls, counter it unless that player pays {2}." Fired by
-        # casting.capture_any_target (the universal creature-targeting choke
-        # point) when an OPPONENT locks it as a target -> a "ward" trigger
-        # (game.effects.triggers) that, above the triggering spell on the
-        # stack, makes that opponent pay {2} (begin_pay_unless) or the spell is
-        # countered. pending_kinds "pay_unless" for the opponent's pay decision.
+        # Ward {2}: countering an opponent's targeting spell/ability unless they pay {2}
+        # (fired via casting.capture_any_target when an opponent locks this as a target).
         "ward": {"generic": 2},
         "pending_kinds": {"pay_unless"},
     },
@@ -557,8 +465,7 @@ BLUE_EFFECT_REGISTRY = {
     EffectId.DEEM_INFERIOR: {
         "cast": {
             "resolve": lambda state, card_def: cast_deem_inferior(state, card_def),
-            # A targeted spell can't be cast with no legal target: needs >=1
-            # nonland permanent this player can target (hexproof/shroud aware).
+            # needs >=1 nonland permanent this player can legally target
             "extra_legal": lambda state: any(
                 p.card_type != CardType.LAND and can_be_targeted(state, p, state.active_idx)
                 for pl in state.players for p in pl.battlefield),
@@ -570,10 +477,7 @@ BLUE_EFFECT_REGISTRY = {
     EffectId.DELVER_OF_SECRETS: {
         "cast": {"resolve": lambda state, card_def: cast_permanent_from_hand(state, card_def)},
         "upkeep_trigger": delver_upkeep,
-        # Back face Insectile Aberration: 3/2 flying (flag-gated in effects.stats
-        # via permanent.flags["transformed"], set by execute_may_transform, which
-        # also swaps the Permanent's card_def to `card_def` so the game state's own
-        # identity -- name, logging, RL perception -- becomes the back face).
+        # Back face: 3/2 flying (execute_may_transform swaps the Permanent's card_def).
         "transform": {"name": "Insectile Aberration", "power": 3, "toughness": 2,
                       "keywords": {"flying"}, "card_def": INSECTILE_ABERRATION_CARD_DEF},
         "pending_kinds": {"may_transform"},
@@ -584,9 +488,9 @@ BLUE_EFFECT_REGISTRY = {
             "speed": Speed.INSTANT,  # Flash
         },
         "etb_trigger": lambda state, permanent: sewer_cam_tap_or_untap(state, permanent.card_def),
-        "etb_targets": True,  # target creature chosen at promotion (603.3d), not resolution
+        "etb_targets": True,  # target creature chosen at promotion
         "ltb_trigger": lambda state, permanent: sewer_cam_tap_or_untap(state, permanent.card_def),
-        "ltb_targets": True,  # same target-at-promotion timing for the leaves-the-battlefield half
+        "ltb_targets": True,
         "activated_abilities": {
             "draw": {"cost_key": "sac_ability_cost", "resolve": lambda state, permanent: sewer_cam_sac(state, permanent)},
         },
@@ -595,9 +499,7 @@ BLUE_EFFECT_REGISTRY = {
     EffectId.BIRD_ILLUSION_TOKEN: {"keywords": {"flying"}},  # 1/1 flyer made by Murmuring Mystic
     EffectId.MURMURING_MYSTIC: {
         "cast": {"resolve": lambda state, card_def: cast_permanent_from_hand(state, card_def)},
-        # "Whenever you cast an instant or sorcery spell, create a 1/1 blue
-        # Bird Illusion creature token with flying." Same on_cast chokepoint
-        # as Guttersnipe (fires for every cast path, faithful timing).
+        # Whenever you cast an instant or sorcery, create a 1/1 blue Bird Illusion with flying.
         "on_cast": lambda state, permanent: create_token(state, BIRD_ILLUSION_TOKEN_CARD_DEF),
     },
     EffectId.SLEEP_OF_THE_DEAD: {

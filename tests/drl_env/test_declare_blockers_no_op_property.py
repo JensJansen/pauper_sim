@@ -1,30 +1,20 @@
 """Structural anti-loop property test for the declare-blockers step.
 
-Both infinite declare-blockers loops found on 2026-08-19 had the identical
-shape, and neither was a rules bug that any specific rules test would have
-caught -- each was two readers of the same rule consulting different state:
+Both infinite declare-blockers loops found previously had the same shape:
+two readers of the same rule consulting different state (e.g. can_block
+honoring reach while a blocker-assignment predicate didn't, or one function
+iterating attackers while another iterated battlefield). In both cases a
+legal action recorded nothing and declare-blockers re-opened on a
+byte-identical state forever -- unbounded by `horizon`, which bounds turns,
+not priority rounds.
 
-  1. can_block honored REACH; _assign_blocker_execute inlined a flying-only
-     copy. A reach blocker facing only fliers was offered an action whose
-     nested attacker choice matched nothing.       (fixed: ee5e224)
-  2. creature_block_eligible iterated state.opponent.attackers while
-     choose_opponent_permanent_options iterated state.opponent.battlefield.
-     A killed attacker stayed in the first and vanished from the second, so
-     the same action was offered with nothing to fulfil it. (fixed: 112c8c5)
-
-In both cases the action was legal, executing it recorded nothing, and the
-declare-blockers step re-opened on a byte-identical state -- forever. Neither
-was bounded by `horizon`, which bounds TURNS, and turn_number does not advance
-inside a priority round.
-
-So this file does not test a rule. It tests the INVARIANT those bugs broke:
+So this file does not test a rule. It tests the invariant those bugs broke:
 
     while a declare_blockers resolution is pending, every legal action must
     change observable state, and the step must terminate.
 
-The boards are sampled from registry.CARD_DEFS itself rather than a hand-
-written list, so a newly added creature with a new evasion keyword is covered
-the day it lands, without anyone remembering to extend this file.
+Boards are sampled from registry.CARD_DEFS itself, so a newly added
+creature with a new evasion keyword is covered automatically.
 """
 import random
 
@@ -78,15 +68,13 @@ def _blocking_fingerprint(state):
 
 
 def _build_board(rng, names):
-    """A random mid-combat board: player 0 attacking, player 1 defending, with
-    attackers already declared and (sometimes) one of them already dead -- the
-    exact 506.4 situation that produced loop #2."""
-    # Bias the pool toward EVASION matchups. A uniform sample of the whole
-    # creature pool caught the reach/flying divergence (bug #1) with only 1 of
-    # 301 seeds, because boards mixing an evasive attacker with a reach-but-not-
-    # flying blocker are rare by chance. Seeding one flier and one reach
-    # creature into every board raises that to a dependable margin; the
-    # remaining slots stay uniformly sampled so nothing else loses coverage.
+    """A random mid-combat board: player 0 attacking, player 1 defending,
+    with attackers already declared and (sometimes) one already dead
+    (506.4)."""
+    # Bias the pool toward evasion matchups, since a uniform sample rarely
+    # mixes an evasive attacker with a reach-but-not-flying blocker. Seeding
+    # one flier and one reach creature into every board raises that
+    # coverage; remaining slots stay uniformly sampled.
     pool = rng.sample(names, k=min(2, len(names)))
     for keyword in ("flying", "reach"):
         candidates = _names_with_keyword(keyword)

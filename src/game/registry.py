@@ -1,21 +1,14 @@
 """Card catalog + effect registry, merged across every color identity.
 
-CARD_DEFS: one shared name->CardDef catalog, the union of every color
-catalog's XXX_CARD_CATALOG (a card's definition is fixed metadata, defined
-once regardless of how many decks play it). The single source of truth for
-"what is card X"; a decklist supplies only names + quantities.
+CARD_DEFS: shared name->CardDef catalog, union of each color catalog's
+XXX_CARD_CATALOG. EFFECT_REGISTRY: shared EffectId->spec dict, union of
+each color catalog's XXX_EFFECT_REGISTRY.
 
-EFFECT_REGISTRY: one EffectId->spec dict, the union of all 7 color catalogs'
-XXX_EFFECT_REGISTRY. An EffectId present here is "already implemented" -- what
-lets a card be reused by a future deck without new code.
-
-Importing this module triggers loading every catalog (and transitively most of
-game/effects, mana, resolution, state, cards). Those submodules reference
-`registry.EFFECT_REGISTRY`/`CARD_DEFS` only inside function bodies: this
-module's `catalog` import hasn't built these dicts yet when they first load, so
-a top-level `from .registry import EFFECT_REGISTRY` would bind a not-yet-built
-name -- importing the `registry` module object is fine, deferring the dot-access
-to call time breaks the cycle."""
+Importing this module loads every catalog and, transitively, most of
+game/effects, mana, resolution, state, cards. Those submodules reference
+`registry.EFFECT_REGISTRY`/`CARD_DEFS` only inside function bodies, since
+this module's dicts aren't built yet when they first load.
+"""
 
 from .catalog import black_cards, blue_cards, colorless_cards, green_cards, multicolor_cards, red_cards, white_cards
 
@@ -51,22 +44,13 @@ ENTERS_TAPPED_EFFECTS = {
 
 
 def derive_pending_kinds(decklist):
-    """Which pending-resolution kinds this decklist's own cards can
-    actually produce, beyond the universal baseline ("none"/"pay_cost")
-    every deck needs regardless -- the union of each distinct card's own
-    explicit "pending_kinds" registry annotation.
+    """Union of each card's own "pending_kinds" registry annotation across
+    this decklist, beyond the universal baseline ("none"/"pay_cost").
 
-    Not inferred from other spec keys ("cast"/"madness"/"flashback"/
-    "alt_cast"/"plot"): several of those call into resolution's generic
-    primitives (begin_discard, begin_sacrifice, ...) from inside a
-    hand-written Python function, which isn't statically inspectable --
-    e.g. a "flashback" spec might or might not itself need "sacrifice"
-    depending on what its own resolve function does, so the key's mere
-    presence doesn't tell you. Each EffectId instead declares directly
-    what it needs, so this stays a plain, robust union with no
-    special-casing. Means swapping which cards are in a decklist (not
-    just their quantities) never needs a hand-maintained pending_kinds
-    tuple updated to match -- this is it."""
+    Not inferred from other spec keys ("cast"/"madness"/"flashback"/...):
+    those call into resolution primitives from hand-written functions,
+    which isn't statically inspectable, so each EffectId declares its own
+    pending_kinds directly instead."""
     kinds = set()
     for name, _qty in decklist:
         effect_id = CARD_DEFS[name].effect_id

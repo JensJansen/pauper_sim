@@ -1,11 +1,9 @@
 """Single source of truth for this repo's directory layout.
 
-Lives directly in src/, so anything that can already `import repo_paths`
-(i.e. already has src/ on sys.path) needs no separate sys.path surgery for
-THIS import -- callers that also need OTHER src/ modules by bare name (e.g.
-run_league) may still need their own sys.path.insert(0, SRC_DIR) for that.
-
-Dependency-free (stdlib only) so importing it never drags in torch/etc.
+Lives in src/, so any caller with src/ already on sys.path can `import
+repo_paths` directly; importing other src/ modules by bare name may still
+need a separate sys.path.insert(0, SRC_DIR). Stdlib-only so importing it
+never pulls in torch.
 """
 from pathlib import Path
 

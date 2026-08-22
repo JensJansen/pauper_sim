@@ -1,17 +1,15 @@
-"""Black-identity card catalog: every card whose real mana cost is
-mono-black (or, for lands with no cost, whose only mana output is black).
-Every card's cost/type/oracle-text below is a direct Scryfall pull,
-except creature power/toughness, which is a design choice, not Scryfall
-data. Real End the Festivities/Voldaren Epicure reference "each opponent"
-(non-targeted -- these route through win_check.deal_damage_to_opponent,
-which hits the opponent's real per-player life_total). Vampire's Kiss/Alms
-of the Vein/Mesmeric Fiend/Balustrade Spy are genuinely TARGETED ("target
-player"/"target opponent"): each captures its target (a real
-begin_choose_target_player choice, or -- for the opponent-restricted cards
--- the opponent's index directly, since no player-hexproof/protection/
-removal-from-game mechanic exists anywhere in this engine to make them an
-illegal choice) at cast/activation or ETB-promotion time, same convention
-as Bojuka Bog's own "exile target player's graveyard"."""
+"""Black-identity card catalog: BLACK_CARD_CATALOG (name -> CardDef) and
+BLACK_EFFECT_REGISTRY (EffectId -> spec), unioned into game.CARD_DEFS /
+EFFECT_REGISTRY by game/registry.py. Cost/type/oracle text is from
+Scryfall; power/toughness is a design choice.
+
+"Each opponent" effects (End the Festivities, Voldaren Epicure) are
+non-targeted, via win_check.deal_damage_to_opponent. Cards with "target
+player"/"target opponent" (Vampire's Kiss, Alms of the Vein, Mesmeric
+Fiend, Balustrade Spy) capture a real target -- via
+begin_choose_target_player, or the opponent's index directly when only
+the opponent is a legal target -- at cast/activation or ETB-promotion
+time."""
 
 from .. import resolution
 from ..cards import CardDef, CardType, EffectId, card_colors, card_subtypes, is_artifact
@@ -26,9 +24,7 @@ from ..effects.win_check import deal_damage_to_opponent, deal_damage_to_player, 
 
 BLACK_CARD_CATALOG = {
     "Swamp": CardDef("Swamp", CardType.LAND, None, EffectId.SWAMP, basic=True, subtypes=("Swamp",)),
-    # Artifact land: played as a land, but also an artifact (affinity/
-    # metalcraft/artifact-sac read extra["artifact"]).
-    "Vault of Whispers": CardDef("Vault of Whispers", CardType.LAND, None, EffectId.VAULT_OF_WHISPERS, artifact=True),
+    "Vault of Whispers": CardDef("Vault of Whispers", CardType.LAND, None, EffectId.VAULT_OF_WHISPERS, artifact=True),  # land + artifact
     "Bojuka Bog": CardDef("Bojuka Bog", CardType.LAND, None, EffectId.BOJUKA_BOG),
     "Balustrade Spy": CardDef(
         "Balustrade Spy", CardType.CREATURE, {"generic": 3, "B": 1}, EffectId.BALUSTRADE_SPY, power=2, toughness=2,
@@ -36,9 +32,7 @@ BLACK_CARD_CATALOG = {
     "Lotleth Giant": CardDef(
         "Lotleth Giant", CardType.CREATURE, {"generic": 6, "B": 1}, EffectId.LOTLETH_GIANT, power=5, toughness=5,
     ),
-    # ETB exiles a nonland from target opponent's hand (tracked); its LTB
-    # returns that card when the Fiend leaves the battlefield -- the first
-    # leaves-the-battlefield trigger in the engine (mesmeric_fiend_etb/_ltb).
+    # ETB exiles a nonland from target opponent's hand; LTB returns it (mesmeric_fiend_etb/_ltb).
     "Mesmeric Fiend": CardDef(
         "Mesmeric Fiend", CardType.CREATURE, {"generic": 1, "B": 1}, EffectId.MESMERIC_FIEND, power=1, toughness=1,
     ),
@@ -69,8 +63,7 @@ BLACK_CARD_CATALOG = {
 
 
 def _nonblack(permanent):
-    """Snuff Out's "nonblack creature" target restriction -- colorless (a
-    Devoid creature like Writhing Chrysalis) counts as nonblack."""
+    """Snuff Out's "nonblack creature" restriction; colorless counts as nonblack."""
     return "B" not in card_colors(permanent.card_def)
 
 
@@ -79,45 +72,32 @@ def _destroy_on_resolve(state, permanent):
 
 
 def cast_cast_down(state, card_def):
-    """{1}{B}: Destroy target nonlegendary creature. No legendary creature
-    exists in this pool, so "nonlegendary" is every creature (default
-    eligible)."""
+    """{1}{B}: Destroy target nonlegendary creature."""
     cast_targeting_creature(state, card_def, _destroy_on_resolve)
 
 
 def cast_snuff_out(state, card_def):
-    """{3}{B} (or the 4-life alt cost below): Destroy target nonblack
-    creature. It can't be regenerated -- a no-op, since no card in this
-    engine ever grants regeneration."""
+    """{3}{B} (or the 4-life alt cost below): Destroy target nonblack creature."""
     cast_targeting_creature(state, card_def, _destroy_on_resolve, eligible=_nonblack)
 
 
 def _controls_a_swamp(state):
-    # "control a Swamp" -- any land with the Swamp subtype (basic Swamp, and
-    # the Island Swamp duals Contaminated Aquifer / Ice Tunnel).
     return any("Swamp" in card_subtypes(p.card_def) for p in state.battlefield)
 
 
 def snuff_out_alt_legal(state):
-    """The 4-life alt cost: legal only if you control a Swamp, have >= 4 life
-    to pay, and there's a legal nonblack creature to target (a targeted spell
-    needs a legal target regardless of how it's paid for)."""
+    """4-life alt cost is legal only with a Swamp, >= 4 life, and a legal nonblack target."""
     return _controls_a_swamp(state) and state.life_total >= 4 and has_creature_target(state, _nonblack)
 
 
 def cast_snuff_out_alt(state, card_def):
-    """Alt cost: pay 4 life instead of {3}{B} (real "you may pay 4 life
-    rather than pay this spell's mana cost"). Pay the life now (a cost, at
-    cast time), then the spell targets + resolves exactly like the normal
-    cast -- same cast_snuff_out body, which opens the target choice and
-    pushes the destroy onto the stack."""
+    """Pay 4 life instead of {3}{B}, then target and resolve like the normal cast."""
     lose_life(state, 4, reason="snuff_out_alt")
     cast_snuff_out(state, card_def)
 
 
 def _unexpected_fangs_resolve(state, permanent):
-    """Put a +1/+1 counter AND a lifelink counter on the target. The lifelink
-    counter grants lifelink (stats.creature_keywords reads counters["lifelink"])."""
+    """Puts a +1/+1 counter and a lifelink counter on the target."""
     permanent.counters["+1/+1"] = permanent.counters.get("+1/+1", 0) + 1
     permanent.counters["lifelink"] = permanent.counters.get("lifelink", 0) + 1
 
@@ -127,10 +107,7 @@ def cast_unexpected_fangs(state, card_def):
 
 
 def _toxin_analysis_resolve(state, permanent):
-    """Target creature gains deathtouch and lifelink until end of turn
-    (temp_keywords, cleared at cleanup_step); then Investigate (a Clue
-    token). Investigate is inside the target-legal branch: if the only
-    target is gone, the spell doesn't resolve at all, so no Clue is made."""
+    """Target creature gains deathtouch and lifelink until end of turn, then Investigate."""
     permanent.temp_keywords |= {"deathtouch", "lifelink"}
     create_token(state, CLUE_TOKEN_CARD_DEF)
 
@@ -140,17 +117,8 @@ def cast_toxin_analysis(state, card_def):
 
 
 def mill_until_land(state, permanent):
-    """Balustrade Spy's ETB: target player reveals cards from the top of
-    THEIR library until they reveal a land card, then mills everything
-    revealed (the land included) to THEIR graveyard. Real "target player"
-    choice (begin_choose_target_player), same shape as Bojuka Bog's own ETB
-    just above -- yourself is always legal, the opponent becomes a second
-    option once one exists. Target-at-promotion (etb_targets: True) --
-    never fizzles (a player is always a legal target), but surfaces the
-    choice one priority window earlier, same rationale as Bojuka Bog. If
-    the target's library empties before a land turns up, everything left
-    mills and the library simply ends up empty -- draw() (not this
-    function) is what detects and flags actually running out."""
+    """Balustrade Spy's ETB: target player mills cards off their library
+    until a land is milled (target chosen at promotion)."""
     def _on_player_chosen(state, idx):
         def _resolve(state, card_def):
             target = state.players[idx]
@@ -169,27 +137,15 @@ def mill_until_land(state, permanent):
 
 
 def lotleth_giant_etb(state):
-    """Undergrowth ETB: 1 damage to the opponent per creature card in your
-    graveyard."""
+    """Undergrowth ETB: 1 damage to the opponent per creature card in your graveyard."""
     creature_count = sum(1 for c in state.graveyard if c.card_type == CardType.CREATURE)
     deal_damage_to_opponent(state, creature_count)
 
 
 def bojuka_bog_etb(state, permanent):
-    """When Bojuka Bog enters, exile target player's graveyard. "Exile a
-    graveyard" just empties it here -- exile is untracked, same convention
-    as Relic of Progenitus' own graveyard-exile (game.catalog.colorless_
-    cards). A REAL target-player choice (begin_choose_target_player), same
-    as Relic's exile ability: "yourself" is always legal (true even alone in
-    a 1-player game), the opponent becomes a second option once one exists,
-    and the model picks explicitly.
-
-    Target-at-promotion (project_targeted_triggered_abilities): the target
-    player is chosen as the ability goes on the stack, and the exile happens at
-    resolution. "Target player" is always legal (no way to make a player an
-    illegal target), so this never fizzles -- but choosing at promotion still
-    surfaces the decision one priority window earlier, which can inform play,
-    so it's modeled faithfully rather than collapsed to resolution."""
+    """When Bojuka Bog enters, exile target player's graveyard (untracked
+    exile). Target is chosen at promotion; "yourself" is always a legal
+    choice, the opponent is a second option once one exists."""
     def _on_player_chosen(state, idx):
         def _resolve(state, card_def):
             target = state.players[idx]
@@ -204,28 +160,10 @@ def bojuka_bog_etb(state, permanent):
 
 def mesmeric_fiend_etb(state, permanent):
     """When Mesmeric Fiend enters, target opponent reveals their hand and you
-    choose a nonland card from it. Exile that card -- TRACKED, linked to THIS
-    exact Fiend on its own flags; the matching "when this creature leaves the
-    battlefield, return the exiled card to its owner's hand" is mesmeric_
-    fiend_ltb below.
-
-    Real "target opponent": the opponent is the only ever-legal candidate in
-    this strictly-2-player engine (no player-hexproof/protection/removal-
-    from-game mechanic exists anywhere here to make them illegal -- same
-    vacuous-restriction class as Cast Down's "nonlegendary"/Snuff Out's
-    "can't be regenerated"), so the target is captured directly rather than
-    routed through begin_choose_target_player, which would wrongly also
-    offer "yourself" (real "target opponent" never does). Needs a real
-    opponent (2-player) -- no legal target in a 1-player config, so the ETB
-    does nothing there.
-
-    Target-at-promotion (etb_targets: True, 603.3d): this whole function runs
-    AT PROMOTION (registry.etb_trigger invoked directly by triggers.
-    _place_trigger_groups for a targeting ETB), with active_idx already set
-    to the Fiend's controller -- so the opponent is captured here, and the
-    reveal/exile effect (including which nonland card gets picked, a modal
-    choice, not itself a target) is deferred onto the stack via push_to_stack,
-    same shape as Bojuka Bog's own ETB."""
+    choose a nonland card from it to exile (tracked, linked to this Fiend;
+    returned by mesmeric_fiend_ltb). The opponent is the only legal target
+    (captured directly, not via begin_choose_target_player, since "target
+    opponent" never includes yourself). No-op with no opponent."""
     if len(state.players) < 2:
         return
     opponent_idx = 1 - state.active_idx
@@ -234,11 +172,10 @@ def mesmeric_fiend_etb(state, permanent):
     def _resolve(state, card_def):
         def _on_chosen(state, chosen):
             if chosen is None:
-                return  # no nonland card in the opponent's hand
-            card = chosen  # the exact hand card (hand is DEFERRED -- still CardDefs, interned)
+                return  # no nonland card in hand
+            card = chosen
             opponent.hand.remove(card)
-            # Tracked exile, linked to this exact Fiend -- returned by its LTB.
-            permanent.flags["mesmeric_exiled"] = (card, opponent_idx)
+            permanent.flags["mesmeric_exiled"] = (card, opponent_idx)  # returned by mesmeric_fiend_ltb
             state.log_event(
                 "zone_move", card=card.name, from_zone="hand", to_zone="exile_mesmeric",
                 owner_idx=opponent_idx, source=(permanent.card_def.name, permanent.slot),
@@ -253,11 +190,7 @@ def mesmeric_fiend_etb(state, permanent):
 
 def mesmeric_fiend_ltb(state, permanent):
     """When Mesmeric Fiend leaves the battlefield, return the exiled card to
-    its owner's hand. Reads the linkage mesmeric_fiend_etb stored on this exact
-    permanent -- the object survives leaving the battlefield (state_based.
-    _queue_leave_triggers / sacrifice_to_graveyard carry it here). A no-op if
-    nothing was exiled (an empty/all-land opponent hand at ETB, or a 1-player
-    game where the ETB never fired)."""
+    its owner's hand. No-op if nothing was exiled."""
     exiled = permanent.flags.pop("mesmeric_exiled", None)
     if exiled is None:
         return
@@ -270,22 +203,14 @@ def mesmeric_fiend_ltb(state, permanent):
 
 
 def _dread_return_choose_and_push(state, card_def, to_graveyard, reserves_hand_card, exiles_on_resolve=False):
-    """Choose the reanimation target -- a creature card in your graveyard --
-    as Dread Return is put on the stack, lock it, and push the reanimation
-    resolve. On resolution the chosen card returns from the graveyard to the
-    battlefield; Dread Return FIZZLES if that card has left the graveyard by
-    then (608.2b -- reachable via opponent graveyard hate, e.g. Relic of
-    Progenitus exiling graveyards). Dread Return itself, a sorcery, is never a
-    legal creature target. `to_graveyard`/`reserves_hand_card` say how the
-    Dread Return card reaches the graveyard on resolution: from hand (hard
-    cast) or a no-op (Flashback -- exiled, untracked).
-
-    Target is locked at cast BY OBJECT IDENTITY: the exact chosen graveyard
-    instance is captured, and the fizzle check at resolution is "is that exact
-    instance still in the graveyard" -- so two same-named copies are now
-    distinct (one can leave while the other stays), per real MTG 400.7/608.2b."""
+    """Choose the reanimation target (a graveyard creature card) as Dread
+    Return is cast, then push the reanimation resolve. Fizzles if the
+    target has left the graveyard by resolution, tracked by object
+    identity so same-named copies are distinct. `to_graveyard`/
+    `reserves_hand_card` control how Dread Return itself reaches the
+    graveyard on resolution: from hand, or a no-op for Flashback."""
     def _on_chosen(state, chosen):
-        captured = chosen  # the exact graveyard instance, locked at cast
+        captured = chosen  # exact graveyard instance, locked at cast
 
         def _resolve(state, card_def):
             to_graveyard(state, card_def)
@@ -301,25 +226,18 @@ def _dread_return_choose_and_push(state, card_def, to_graveyard, reserves_hand_c
 
 
 def cast_dread_return(state, card_def):
-    """{2}{B}{B}: return target creature card from your graveyard to the
-    battlefield. precast_choice -- the target is locked as the spell is cast
-    (real Magic), the reanimation waits on the stack, and Dread Return itself
-    goes to the graveyard when it resolves."""
+    """{2}{B}{B}: return target creature card from your graveyard to the battlefield."""
     _dread_return_choose_and_push(state, card_def, to_graveyard=discard_from_hand_to_graveyard, reserves_hand_card=True)
 
 
 def flashback_dread_return(state, inst):
-    """Flashback -- Sacrifice three creatures instead of {2}{B}{B}. Same
-    reanimation; the target is chosen as the spell is put on the stack (after
-    the sacrifice cost is paid), not at resolution. The newly sacrificed
-    creatures are in the graveyard by then, so they're eligible targets (a
-    real interaction). Dread Return is exiled afterward (untracked, per its
-    own text), so its resolve makes no further zone move for itself.
+    """Flashback: sacrifice three creatures instead of {2}{B}{B}. Target is
+    chosen after the sacrifice, so newly sacrificed creatures are eligible.
+    Dread Return exiles afterward (untracked).
 
-    inst: the exact graveyard CardInstance being flashed back (resolved once at
-    the action boundary, drl_env._actions_cast_altzone._graveyard_instance) -- removed by
-    object identity, never by a name re-lookup."""
-    state.graveyard.remove(inst)  # leaves the graveyard the moment Flashback is chosen; exiled after (untracked)
+    inst: the exact graveyard CardInstance being flashed back, removed by
+    object identity."""
+    state.graveyard.remove(inst)  # exiled after resolution
     resolution.begin_sacrifice(
         state, lambda p: p.card_type == CardType.CREATURE, 3,
         on_complete=lambda s, ok: _dread_return_choose_and_push(
@@ -329,11 +247,7 @@ def flashback_dread_return(state, inst):
 
 
 def madness_kitchen_imp(state, card_def):
-    """Kitchen Imp -- Flying, haste. Madness {B}. No ETB at all (real
-    Oracle text has no triggered ability beyond Madness itself). Madness
-    resolve for a creature: execute_madness_cast has already pulled the
-    card out of exile, so this just needs the normal battlefield-entry
-    path -- never touches hand, unlike a normal cast."""
+    """Madness resolve: normal battlefield entry from exile, no hand step."""
     enters_battlefield(state, card_def)
 
 
@@ -345,13 +259,8 @@ def _vampires_kiss_resolve(state, player_idx):
 
 
 def cast_vampires_kiss(state, card_def):
-    """{1}{B}: Target player loses 2 life and you gain 2 life. Create two
-    Blood tokens. No Madness on this one (only Fiery Temper/Alms of the Vein
-    have it). Real "target player" -- ANY player, including yourself
-    (unusual but legal, unlike Alms of the Vein's opponent-restricted
-    version) -- a genuine begin_choose_target_player choice, locked at CAST
-    (precast_choice), not resolution; "target player" is always legal (at
-    minimum, yourself), so this never fizzles."""
+    """{1}{B}: Target player (any player, including yourself) loses 2 life,
+    you gain 2 life, create two Blood tokens. Target locked at cast."""
     def _on_player_chosen(state, idx):
         def _resolve(state, card_def):
             discard_from_hand_to_graveyard(state, card_def)
@@ -368,14 +277,8 @@ def _alms_of_the_vein_resolve(state, opponent_idx):
 
 
 def cast_alms_of_the_vein(state, card_def):
-    """{2}{B}: Target opponent loses 3 life and you gain 3 life. Madness
-    {B}. Real "target opponent": the opponent is the only ever-legal
-    candidate in this strictly-2-player engine (see mesmeric_fiend_etb's own
-    docstring for why that's captured directly rather than through
-    begin_choose_target_player), locked at CAST (precast_choice) rather than
-    resolution. The registry's own extra_legal gates casting on an opponent
-    actually existing (a mandatory single target needs one to be legal at
-    all, 601.2c)."""
+    """{2}{B}: Target opponent loses 3 life and you gain 3 life. Madness {B}.
+    Opponent captured directly (the only legal target), locked at cast."""
     opponent_idx = 1 - state.active_idx
 
     def _resolve(state, card_def):
@@ -386,12 +289,7 @@ def cast_alms_of_the_vein(state, card_def):
 
 
 def madness_alms_of_the_vein(state, card_def):
-    """Madness {B}: same target-opponent capture, from exile -- never
-    touches hand (see red_cards.madness_fiery_temper's own convention). No
-    extra_legal gate on the madness path itself (offered whenever the card
-    is discarded, regardless of opponent count, matching this engine's
-    existing "no legal opponent -> no-op" tolerance for the rare 1-player
-    edge case, same as mesmeric_fiend_etb's own guard)."""
+    """Madness {B}: same effect, cast from exile. No-op if no opponent exists."""
     opponent_idx = 1 - state.active_idx
 
     def _resolve(state, card_def):
@@ -466,12 +364,8 @@ def cast_eviscerators_insight(state, card_def):
 
 
 def flashback_eviscerators_insight(state, inst):
-    """Flashback {4}{B} (mana paid by the graveyard-cast machinery) + the same
-    sacrifice-an-artifact-or-creature additional cost: draw two, then exile.
-
-    inst: the exact graveyard CardInstance being flashed back -- see
-    flashback_dread_return."""
-    state.graveyard.remove(inst)  # leaves gy; exiled after resolution
+    """Flashback {4}{B}, sacrifice an artifact or creature: draw two, then exile."""
+    state.graveyard.remove(inst)  # exiled after resolution
 
     def _after_sac(state, _sacced):
         push_to_stack(state, inst, lambda st, cd: st.draw(2), reserves_hand_card=False, exiles_on_resolve=True)
@@ -480,31 +374,20 @@ def flashback_eviscerators_insight(state, inst):
 
 
 def blood_fountain_return(state, permanent):
-    """{3}{B}, {T}, Sacrifice: Return up to two target creature cards from your
-    graveyard to your hand. (Blood Fountain has no dies-trigger of its own.)
-
-    The {3}{B} is paid before this resolve fires (drl_env._activate_execute's
-    own begin_pay_cost call); {T} and Sacrifice are paid here, in that order,
-    same as any real activation -- tapping first, THEN sacrificing (tapping a
-    permanent that's about to leave the battlefield is otherwise inert, but
-    modeling both cost components keeps this faithful to the real cost).
-
-    Faithful targeting (matching Rooftop Percher's own "up to two target
-    cards from graveyards" shape): the up-to-2 targets are chosen NOW, as
-    the ability is activated -- BEFORE it goes on the stack -- captured by
-    object identity, and the return fizzles per-target at resolution:
-    returning every still-present target, doing nothing only if ALL chosen
-    targets have already left the graveyard by then (608.2c)."""
-    tap_for_cost(state, permanent)  # cost ({T})
-    sacrifice_to_graveyard(state, permanent)  # cost (Sacrifice)
+    """{3}{B}, {T}, Sacrifice: Return up to two target creature cards from
+    your graveyard to your hand. Targets are chosen as the ability
+    activates, and return fizzles per-target if a target has since left
+    the graveyard."""
+    tap_for_cost(state, permanent)
+    sacrifice_to_graveyard(state, permanent)
 
     def _on_targets(state, chosen):
-        captured = list(chosen)  # exact graveyard instances, locked as the ability is put on the stack
+        captured = list(chosen)  # exact graveyard instances, locked at activation
 
         def _resolve(state, card_def):
             survivors = [inst for inst in captured if inst in state.graveyard]
             if captured and not survivors:
-                _log_target_fizzle(state, card_def, None)  # every target left the graveyard -> nothing returns
+                _log_target_fizzle(state, card_def, None)
                 return
             for inst in survivors:
                 _return_creature_from_graveyard(state, inst)
@@ -518,25 +401,20 @@ def blood_fountain_return(state, permanent):
 
 
 def _return_creature_from_graveyard(state, chosen):
-    # chosen: the exact graveyard instance (or None if the optional pick declined).
     if chosen is not None:
         state.graveyard.remove(chosen)
-        state.hand.append(chosen.card_def)  # hand is DEFERRED -- CardDefs
+        state.hand.append(chosen.card_def)
         state.log_event("zone_move", card=chosen.name, from_zone="graveyard", to_zone="hand", reason="blood_fountain")
 
 
 def refurbished_familiar_etb(state):
-    """"When this creature enters, each opponent discards a card. For each
-    opponent who can't, you draw a card." 2-player: the one opponent discards
-    a card of THEIR choice (active_idx flipped to them for the discard) if
-    their hand is non-empty; otherwise (they can't) the caster draws one.
-    No opponent (1-player) -> nothing."""
+    """ETB: each opponent discards a card; if they can't, you draw a card."""
     if len(state.players) < 2:
         return
     caster = state.active_idx
     opp_idx = 1 - caster
     if not state.players[opp_idx].hand:
-        state.draw(1)  # opponent can't discard -> you draw
+        state.draw(1)
         return
 
     def _restore(s, _discarded):
@@ -555,15 +433,13 @@ BLACK_EFFECT_REGISTRY = {
     },
     EffectId.REFURBISHED_FAMILIAR: {
         "cast": {"resolve": lambda state, card_def: cast_permanent_from_hand(state, card_def)},
-        "cost_reduction": affinity_reduction,  # Affinity for artifacts
+        "cost_reduction": affinity_reduction,  # affinity for artifacts
         "keywords": {"flying"},
         "etb_trigger": lambda state, permanent: refurbished_familiar_etb(state),
         "pending_kinds": {"discard"},
     },
     EffectId.GURMAG_ANGLER: {
-        # Delve only -- "Cast Gurmag Angler", then a generic "Delve N" (N in
-        # 0..6; delve 0 is the plain {6}{B} cast) choice exiles N graveyard
-        # cards to pay {N} of the generic (drl_env delve loop).
+        # Delve N (0..6) exiles N graveyard cards to pay {N} of the generic cost.
         "delve": {"max": 6, "resolve": lambda state, card_def: cast_permanent_from_hand(state, card_def)},
         "pending_kinds": {"choose_graveyard_card"},
     },
@@ -577,10 +453,7 @@ BLACK_EFFECT_REGISTRY = {
     },
     EffectId.GIXIAN_INFILTRATOR: {
         "cast": {"resolve": lambda state, card_def: cast_permanent_from_hand(state, card_def)},
-        # "Whenever you sacrifice another permanent, put a +1/+1 counter on
-        # this creature." Fired by shared.fire_sacrifice_triggers from every
-        # sacrifice path (it only iterates the sacrificer's OTHER battlefield
-        # permanents, so "another" is automatic).
+        # Whenever you sacrifice another permanent, put a +1/+1 counter on this creature.
         "on_sacrifice": lambda state, permanent, sacrificed_card_def: permanent.counters.__setitem__(
             "+1/+1", permanent.counters.get("+1/+1", 0) + 1,
         ),
@@ -628,7 +501,7 @@ BLACK_EFFECT_REGISTRY = {
             "extra_legal": lambda state: has_creature_target(state, _nonblack),
             "precast_choice": True,
         },
-        "alt_cast": {  # "you may pay 4 life rather than pay this spell's mana cost" (needs a Swamp)
+        "alt_cast": {  # pay 4 life instead of mana cost (needs a Swamp)
             "extra_legal": lambda state: snuff_out_alt_legal(state),
             "resolve": lambda state, card_def: cast_snuff_out_alt(state, card_def),
         },
@@ -654,15 +527,15 @@ BLACK_EFFECT_REGISTRY = {
         "mana": ("fixed", "B"),
         "enters_tapped": True,
         "etb_trigger": lambda state, permanent: bojuka_bog_etb(state, permanent),
-        "etb_targets": True,  # target player chosen at promotion (never fizzles, but surfaces the choice early)
+        "etb_targets": True,  # target player chosen at promotion
         "pending_kinds": {"choose_target_player"},
     },
     EffectId.BALUSTRADE_SPY: {
         "cast": {"resolve": lambda state, card_def: cast_permanent_from_hand(state, card_def)},
         "etb_trigger": lambda state, permanent: mill_until_land(state, permanent),
-        "etb_targets": True,  # target player chosen at promotion (never fizzles, but surfaces the choice early)
+        "etb_targets": True,  # target player chosen at promotion
         "pending_kinds": {"choose_target_player"},
-        "keywords": {"flying"},  # real Balustrade Spy is 2/3 Flying (P/T is this file's own design choice per the module docstring; Flying is not)
+        "keywords": {"flying"},  # 2/3 Flying
     },
     EffectId.LOTLETH_GIANT: {
         "cast": {"resolve": lambda state, card_def: cast_permanent_from_hand(state, card_def)},
@@ -673,7 +546,7 @@ BLACK_EFFECT_REGISTRY = {
         # ETB: exile a nonland from target opponent's hand (tracked, linked to
         # this Fiend); LTB: return it to its owner's hand.
         "etb_trigger": lambda state, permanent: mesmeric_fiend_etb(state, permanent),
-        "etb_targets": True,  # target opponent captured at promotion (603.3d); the only ever-legal candidate here
+        "etb_targets": True,  # target opponent captured at promotion; only legal candidate
         "ltb_trigger": lambda state, permanent: mesmeric_fiend_ltb(state, permanent),
         "pending_kinds": {"choose_graveyard_card"},
     },
@@ -690,16 +563,11 @@ BLACK_EFFECT_REGISTRY = {
         "pending_kinds": {"choose_graveyard_card", "choose_permanent"},
     },
     EffectId.KITCHEN_IMP: {
-        # Real text: Flying, haste.
         "cast": {"resolve": lambda state, card_def: cast_permanent_from_hand(state, card_def)},
         "haste": True,
         "keywords": {"flying"},
         "madness": {"cost": {"B": 1}, "resolve": lambda state, card_def: madness_kitchen_imp(state, card_def)},
-        # order_triggers: reachable the
-        # instant 2+ Madness cards get discarded at once (Faithless
-        # Looting's discard-2) -- both trigger simultaneously and need a
-        # real placement-order choice.
-        "pending_kinds": {"madness_decision", "order_triggers"},
+        "pending_kinds": {"madness_decision", "order_triggers"},  # order_triggers: 2+ Madness cards discarded at once
     },
     EffectId.VAMPIRES_KISS: {
         "cast": {

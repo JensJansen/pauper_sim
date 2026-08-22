@@ -36,8 +36,7 @@ def _venture_to_secret_entrance():
 
 
 def test_take_initiative_and_secret_entrance():
-    # take_initiative sets it + queues a venture that enters Secret Entrance
-    # (a 1-way "not in dungeon" entry) and searches a basic land to hand.
+    # take_initiative queues a venture into Secret Entrance and searches a basic land to hand
     state = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
     state.active_idx = state.turn_player_idx = 0
     state.event_log = []  # capture zone_move below
@@ -53,9 +52,8 @@ def test_take_initiative_and_secret_entrance():
     resolution.execute_search_fetch_option(state, "Forest")
     assert basic in state.players[0].hand
     # Secret Entrance's fetch routes through the shared find_to_hand tail
-    # (game.effects.shared) like every other "search to hand" effect, so the
-    # library->hand move is logged the same way -- regression check for a bug
-    # where a hand-rolled fetch fizzled silently past the event log.
+    # (game.effects.shared), so the library->hand move is logged the same
+    # way as any other "search to hand" effect.
     zone_moves = [e for e in state.event_log if e["kind"] == "zone_move"]
     assert zone_moves == [{
         "kind": "zone_move", "turn": state.turn_number, "phase": state.phase,
@@ -65,20 +63,12 @@ def test_take_initiative_and_secret_entrance():
 
 
 def test_combat_damage_take_initiative_then_ventures_to_secret_entrance():
-    # End-to-end, through the real stack: combat damage to the current holder
-    # (game.effects.combat.combat_damage_step) queues a "take_initiative"
-    # triggered ability (CR 722.2's second) for the attacker, NOT an instant
-    # effect -- initiative_idx only flips once that trigger itself resolves,
-    # which is also the moment its own "you took the initiative -> venture"
-    # trigger (CR 722.2's third) gets queued. The intermediate steps of that
-    # transfer (attacker connects, initiative not yet flipped, trigger
-    # queued) are covered by test_combat.py's
-    # test_initiative_transfer_on_combat_damage; this test only needs to get
-    # to the point initiative HAS flipped, then confirm a brand-new holder
-    # (dungeon_room still None -- this player never held the initiative
-    # before) correctly enters the FIRST room once the venture trigger
-    # resolves too, exactly like take_initiative() called directly (the test
-    # above).
+    # combat damage queues a take_initiative trigger (CR 722.2) rather than
+    # flipping initiative_idx instantly; resolving it queues the venture
+    # trigger too. Covers a brand-new holder entering the first room, same
+    # as take_initiative() called directly above. The intermediate steps
+    # (attacker connects, initiative not yet flipped) are covered by
+    # test_combat.py's test_initiative_transfer_on_combat_damage.
     state = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
     state.active_idx = state.turn_player_idx = 0
     state.initiative_idx = 1  # the DEFENDER holds it; player 0 has never held it
@@ -100,12 +90,10 @@ def test_combat_damage_take_initiative_then_ventures_to_secret_entrance():
     assert state.players[0].dungeon_room == "Secret Entrance"
     assert state.pending_resolution["kind"] == "search_fetch"
     resolution.execute_search_fetch_option(state, "Forest")
-    assert basic in state.players[0].hand  # fetched
+    assert basic in state.players[0].hand
 
 
 def test_branch_choice_forge_puts_counters_on_creature():
-    # Branch choice: from Secret Entrance, venture again -> choose Forge or Lost
-    # Well. Pick Forge, then put two +1/+1 counters on a creature.
     state = _venture_to_secret_entrance()
     creature = Permanent(CardDef("Bear", CardType.CREATURE, None, EffectId.FILLER, power=2, toughness=2))
     creature.slot = 1
@@ -121,8 +109,6 @@ def test_branch_choice_forge_puts_counters_on_creature():
 
 
 def test_goad_expiry_at_goaders_next_turn():
-    # Goad expiry: goad set on turn 3 by player 0 persists, then clears at
-    # player 0's next turn (a strictly-later turn_number).
     state = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
     state.turn_number = 3
     state.turn_player_idx = 0
@@ -141,8 +127,6 @@ def test_goad_expiry_at_goaders_next_turn():
 
 
 def test_throne_places_creature_with_counters_and_hexproof():
-    # Throne: reveal top 10, put a creature onto the battlefield with 3 counters
-    # + hexproof until next turn.
     state = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
     state.active_idx = state.turn_player_idx = 0
     state.turn_number = 2

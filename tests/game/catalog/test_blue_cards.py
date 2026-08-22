@@ -1,6 +1,4 @@
-"""Tests for game.catalog.blue_cards. See the module under test for the
-card-implementation rationale (real-rules citations, etc.) each test below
-guards."""
+"""Tests for game.catalog.blue_cards."""
 
 import drl_env
 
@@ -71,15 +69,12 @@ def _lorien_def():
 
 
 def _stack_target_named(state, name):
-    """choose_stack_target is pointer-addressed (the exact stack-entry
-    object), not by name -- this finds the matching entry the same way a
-    real pointer pick would, for this self-check's own convenience."""
+    """Find a stack entry by card name (choose_stack_target is pointer-addressed)."""
     return next(e for e in choose_stack_target_options(state) if e["card_def"].name == name)
 
 
 def _stack_spell(st, name, controller=1):
-    """Put a real spell on the stack as if `controller` cast it (its card
-    physically in their hand, reserved -- what a normal cast looks like)."""
+    """Put a spell on the stack as if `controller` cast it from hand."""
     cd = CardDef(name, CardType.INSTANT if name != "Ponder" else CardType.SORCERY, {"U": 1}, EffectId.FILLER)
     st.players[controller].hand.append(cd)
     saved = st.active_idx
@@ -90,18 +85,14 @@ def _stack_spell(st, name, controller=1):
 
 
 def _drive(s):
-    """Promote any queued triggers to the stack and resolve the stack down to
-    empty -- the same 2-line drain used after every trigger-producing action
-    below."""
+    """Promote queued triggers to the stack and resolve it down to empty."""
     promote_triggers_to_stack(s)
     while s.stack:
         resolve_top_of_stack(s)
 
 
 def _pay_cost_fully(state):
-    """Drain a "pay_cost" pending resolution by repeatedly taking the first
-    available pool-spend option, the same guarded loop every mana-cost-paying
-    test below drives to completion."""
+    """Drain a pending "pay_cost" resolution by repeatedly taking the first pool-spend option."""
     guard = 0
     while state.pending_resolution is not None and state.pending_resolution["kind"] == "pay_cost":
         guard += 1
@@ -110,11 +101,8 @@ def _pay_cost_fully(state):
 
 
 def _cast_zap_at_tt(pay):
-    """G12 Ward {2}: an opponent targeting Tolarian Terror must pay {2} or
-    the spell is countered. Casts a targeted removal spell ("Zap") at
-    Tolarian Terror from the opponent's seat and drives the game up to the
-    Ward pay-or-counter decision, returning the state for the caller to
-    resolve either way."""
+    """Cast a targeted removal spell at Tolarian Terror, driving the game up
+    to its Ward {2} pay-or-counter decision."""
     state = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
     tt = Permanent(registry.CARD_DEFS["Tolarian Terror"])
     tt.slot = 1
@@ -126,11 +114,6 @@ def _cast_zap_at_tt(pay):
     state.players[1].hand = [zap]
     cast_targeting_creature(state, zap, lambda s, perm: destroy_permanent(s, perm))
     execute_choose_any_target_creature(state, 0, "Tolarian Terror", 1)  # lock the target -> Ward triggers, Zap pushed
-    # Ward is TOLARIAN TERROR'S OWN triggered ability -- it belongs to its
-    # controller (idx 0), not the caster (idx 1, state.active_idx right
-    # now): _maybe_trigger_ward writes into state.players[controller]
-    # directly rather than the active-player proxy, same owner-threading
-    # fix game.effects.state_based._queue_leave_triggers already needed.
     assert len(state.stack) == 1 and any(e["type"] == "ward" for e in state.players[0].trigger_queue)
     promote_triggers_to_stack(state)  # Ward goes ON TOP of Zap
     assert len(state.stack) == 2 and state.stack[-1]["card_def"].name == "Tolarian Terror"
@@ -140,8 +123,7 @@ def _cast_zap_at_tt(pay):
 
 
 def test_mental_note():
-    """Mental Note {U}: mill 2 (self), draw 1. The spell moves itself to the
-    graveyard as it resolves, ahead of the mill/draw."""
+    """Mental Note: mill 2, draw 1."""
     state = GameState(on_the_play=True)
     state.hand = [CardDef("Mental Note", CardType.INSTANT, {"U": 1}, EffectId.MENTAL_NOTE)]
     state.library = [
@@ -154,8 +136,7 @@ def test_mental_note():
 
 
 def test_thought_scour_target_opponent():
-    """Thought Scour {U}: target player mills 2, caster draws 1. Targeting the
-    OPPONENT mills THEIR library; the active player still draws."""
+    """Thought Scour: target player mills 2, caster draws 1."""
     state = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
     state.players[0].hand = [CardDef("Thought Scour", CardType.INSTANT, {"U": 1}, EffectId.THOUGHT_SCOUR)]
     state.players[0].library = [CardDef("MyCard", CardType.LAND, None, EffectId.ISLAND)]
@@ -173,7 +154,7 @@ def test_thought_scour_target_opponent():
 
 
 def test_lorien_revealed_cast_draws_three():
-    """Lórien Revealed {3}{U}{U}: cast draws three cards."""
+    """Lórien Revealed cast draws three cards."""
     state = GameState(on_the_play=True)
     lorien = _lorien_def()
     state.hand = [lorien]
@@ -183,8 +164,7 @@ def test_lorien_revealed_cast_draws_three():
 
 
 def test_lorien_revealed_islandcycling_searches_island_subtype():
-    """Islandcycling {1} searches for an Island-SUBTYPE card (basic Island /
-    Contaminated Aquifer / Ice Tunnel), not a Mountain."""
+    """Islandcycling searches for a card with the Island subtype, not just any land."""
     state = GameState(on_the_play=True)
     lorien = _lorien_def()
     state.hand = [lorien]
@@ -202,8 +182,7 @@ def test_lorien_revealed_islandcycling_searches_island_subtype():
 
 
 def test_brainstorm():
-    """Brainstorm {U}: draw 3, then put 2 hand cards on top in a chosen order
-    (first placed ends on top)."""
+    """Brainstorm: draw 3, then put 2 hand cards back on top in a chosen order."""
     state = GameState(on_the_play=True)
     state.hand = [CardDef("Brainstorm", CardType.INSTANT, {"U": 1}, EffectId.BRAINSTORM)]
     state.library = [_card("L1"), _card("L2"), _card("L3"), _card("L4")]
@@ -218,9 +197,8 @@ def test_brainstorm():
 
 
 def test_brainstorm_excludes_reserved_stack_card():
-    """Brainstorm can NOT put a spell that's currently on the stack (reserved,
-    still physically in the hand list) back on top of the library -- it's on
-    the stack, not in hand (real Magic)."""
+    """Brainstorm can't put a card back that's actually on the stack, even
+    though the reserved card is still physically in the hand list."""
     state = GameState(on_the_play=True)
     reserved_spell = CardDef("Gurmag Angler", CardType.CREATURE, {"generic": 6, "B": 1}, EffectId.FILLER, power=5, toughness=5)
     state.hand = [CardDef("Brainstorm", CardType.INSTANT, {"U": 1}, EffectId.BRAINSTORM), reserved_spell]
@@ -234,8 +212,7 @@ def test_brainstorm_excludes_reserved_stack_card():
 
 
 def test_ponder_order():
-    """Ponder {U}: look at the top three, put them back in a chosen order,
-    then draw the new top."""
+    """Ponder: reorder the top three, then draw the new top card."""
     state = GameState(on_the_play=True)
     state.hand = [CardDef("Ponder", CardType.SORCERY, {"U": 1}, EffectId.PONDER)]
     state.library = [_card("P1"), _card("P2"), _card("P3"), _card("P4")]
@@ -250,7 +227,7 @@ def test_ponder_order():
 
 
 def test_ponder_shuffle():
-    """Ponder {U}: OR shuffle the top three instead of ordering, then draw."""
+    """Ponder can shuffle the top three instead of ordering, then draw."""
     state = GameState(on_the_play=True)
     state.hand = [CardDef("Ponder", CardType.SORCERY, {"U": 1}, EffectId.PONDER)]
     state.library = [_card(f"S{i}") for i in range(6)]
@@ -260,7 +237,7 @@ def test_ponder_shuffle():
 
 
 def test_deep_analysis_cast():
-    """Deep Analysis {3}{U}: target player draws two."""
+    """Deep Analysis: target player draws two."""
     state = GameState(on_the_play=True)
     state.hand = [CardDef("Deep Analysis", CardType.SORCERY, {"generic": 3, "U": 1}, EffectId.DEEP_ANALYSIS)]
     state.library = [_card(f"D{i}") for i in range(4)]
@@ -272,23 +249,13 @@ def test_deep_analysis_cast():
 
 
 def test_deep_analysis_flashback():
-    """Flashback -- {1}{U}, Pay 3 life. The {1}{U} half is paid by the generic
-    mana-flashback path; the 3-life additional cost is paid here and the
-    effect goes on the stack.
-
-    The graveyard is built from a real CardInstance -- what an actual game
-    puts there (plans/object-identity-zone-model.md) -- and the instance is
-    what gets passed in, matching the contract drl_env._actions_cast_altzone.
-    _flashback_execute honors: state.graveyard.remove is matched by object identity,
-    which only a CardInstance (never the interned CardDef) can satisfy."""
+    """Flashback: pay 3 life plus mana, then cast from the graveyard."""
     state = GameState(on_the_play=True)
     da = CardInstance(CardDef("Deep Analysis", CardType.SORCERY, {"generic": 3, "U": 1}, EffectId.DEEP_ANALYSIS))
     state.graveyard = [da]
     state.library = [_card(f"F{i}") for i in range(4)]
     state.players[0].life_total = 10
     flashback_deep_analysis(state, da)  # mana already paid upstream in real play
-    # Flashback casts the spell too, so its target is chosen right here --
-    # before it ever reaches the stack (601.2c) -- same as the hard cast.
     assert state.graveyard == [] and state.life_total == 7 and state.stack == []
     assert state.pending_resolution["kind"] == "choose_target_player"
     execute_choose_target_player_option(state, 0)  # locked; the effect now goes on the stack
@@ -299,9 +266,7 @@ def test_deep_analysis_flashback():
 
 
 def test_deep_analysis_flashback_picks_exact_instance():
-    """Two same-named graveyard copies: the instance handed in is the one that
-    leaves, and the OTHER copy stays put -- the identity property the old
-    by-name lookup could not guarantee."""
+    """With two same-named graveyard copies, only the exact instance passed in leaves."""
     state = GameState(on_the_play=True)
     da_def = CardDef("Deep Analysis", CardType.SORCERY, {"generic": 3, "U": 1}, EffectId.DEEP_ANALYSIS)
     copy_a, copy_b = CardInstance(da_def), CardInstance(da_def)
@@ -313,8 +278,7 @@ def test_deep_analysis_flashback_picks_exact_instance():
 
 
 def test_counterspell():
-    """Counterspell counters any spell -> the countered spell to its
-    controller's graveyard."""
+    """Counterspell counters any spell, sending it to its controller's graveyard."""
     state = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
     tgt = _stack_spell(state, "Some Instant", controller=1)
     state.active_idx = 0
@@ -339,7 +303,7 @@ def test_dispel_legality_instant_only():
 
 
 def test_spell_pierce_decline_counters():
-    """Spell Pierce: controller declines to pay {2} -> countered."""
+    """Spell Pierce: controller declines to pay {2}, so the spell is countered."""
     state = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
     tgt = _stack_spell(state, "Ponder", controller=1)  # noncreature
     state.active_idx = 0
@@ -354,7 +318,7 @@ def test_spell_pierce_decline_counters():
 
 
 def test_spell_pierce_pay_survives():
-    """Spell Pierce: controller pays {2} -> spell survives."""
+    """Spell Pierce: controller pays {2}, so the spell survives."""
     state = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
     tgt = _stack_spell(state, "Ponder", controller=1)
     state.players[1].mana_pool = {"U": 2}  # can afford the {2}
@@ -383,17 +347,9 @@ def test_abandon_attachments():
 
 
 def test_sleep_of_the_dead_tap_and_skip_next_untap():
-    """Sleep of the Dead main cast: tap target + it skips its next untap.
-    Also regression-covers two webapp-visualizer bugs found alongside
-    Wellwisher's: (1) the tap itself was never logged at all (a spell EFFECT
-    tapping a target, as opposed to an activation cost) -- now routed
-    through set_tapped (game.effects.shared), which also stamps an explicit
-    owner_idx so the replay viewer resolves the OPPONENT's permanent here,
-    not the caster's, even though the caster (player 0) is state.active_idx
-    at cast time; (2) untap_step's "untapped" summary event used to be built
-    BEFORE the skip_next_untap re-tap could run, so it could still list a
-    permanent that actually stayed tapped -- and the re-tap itself used to
-    log nothing at all."""
+    """Sleep of the Dead: taps its target, which then skips its next untap.
+    Also checks the tap and skipped-untap events log the target's own
+    controller as owner, not the caster."""
     state = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)], event_log=[])
     victim = Permanent(CardDef("Victim", CardType.CREATURE, None, EffectId.FILLER, power=1, toughness=1))
     victim.slot = 1
@@ -427,11 +383,9 @@ def test_sleep_of_the_dead_tap_and_skip_next_untap():
 
 
 def test_sleep_of_the_dead_escape():
-    """Sleep of the Dead Escape: exile 3 other graveyard cards + tap; the card
-    escapes the graveyard."""
+    """Sleep of the Dead Escape: exile 3 other graveyard cards, then cast
+    from the graveyard to tap a target."""
     state = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
-    # Graveyard holds real CardInstances, as a live game does -- and `sd` (the
-    # instance) is what escape_sleep_of_the_dead now receives.
     sd = CardInstance(registry.CARD_DEFS["Sleep of the Dead"])
     state.players[0].graveyard = [sd, CardInstance(CardDef("g1", CardType.INSTANT, {"U": 1}, EffectId.FILLER)),
                                   CardInstance(CardDef("g2", CardType.INSTANT, {"U": 1}, EffectId.FILLER)),
@@ -453,11 +407,8 @@ def test_sleep_of_the_dead_escape():
 
 
 def test_murmuring_mystic_bird_illusion_on_cast_not_land():
-    """Murmuring Mystic -- casting an instant/sorcery makes a 1/1 flying
-    Bird Illusion; a land cast does not. "Whenever you cast an instant or
-    sorcery spell, create a 1/1 blue Bird Illusion creature token with
-    flying." Same on_cast chokepoint as Guttersnipe (fires for every cast
-    path, faithful timing)."""
+    """Murmuring Mystic: casting an instant/sorcery makes a 1/1 flying Bird
+    Illusion token; casting a land does not."""
     state = GameState(on_the_play=True)
     mystic = Permanent(registry.CARD_DEFS["Murmuring Mystic"])
     mystic.slot = 1
@@ -473,8 +424,8 @@ def test_murmuring_mystic_bird_illusion_on_cast_not_land():
 
 
 def test_sewer_veillance_cam_toggle_and_sac_draw_two():
-    """Sewer-veillance Cam -- ETB may tap/untap (toggle) target creature;
-    {3}{U},Sac -> draw 2."""
+    """Sewer-veillance Cam: ETB may toggle tap state of a target creature;
+    {3}{U}, Sacrifice draws 2."""
     state = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
     state.active_idx = 0
     opp = Permanent(CardDef("Opp", CardType.CREATURE, None, EffectId.FILLER, power=2, toughness=2))
@@ -499,16 +450,9 @@ def test_sewer_veillance_cam_toggle_and_sac_draw_two():
 
 
 def test_sewer_cam_untap_direction_discounts_mana_dork_tag():
-    """Untapping an already-tapped mana dork via the toggle is free value
-    (tapping it for {G} first costs nothing, since it's about to be untapped
-    again regardless), so its tagged pip is discounted
-    (mana.discount_departing_source) -- mirrors Quirion Ranger's own version
-    of this (test_quirion_ranger_untapping_a_mana_dork_discounts_its_tag).
-
-    Also regression-covers the same missing-owner_idx bug as Quirion
-    Ranger's toggle now routes through set_tapped too, logging
-    "tap_or_untap" with an explicit owner rather than the previous
-    owner-less call."""
+    """Toggling an already-tapped mana dork untapped discounts its tagged
+    mana pip, since tapping it for mana first cost nothing real. The
+    tap/untap event also logs an explicit owner_idx."""
     state = GameState(on_the_play=True, event_log=[])
     cam = Permanent(registry.CARD_DEFS["Sewer-veillance Cam"])
     elves = Permanent(registry.CARD_DEFS["Llanowar Elves"])
@@ -532,9 +476,8 @@ def test_sewer_cam_untap_direction_discounts_mana_dork_tag():
 
 
 def test_sewer_cam_tap_direction_never_discounts():
-    """The opposite toggle direction (untapped -> tapped) never discounts
-    anything -- tapping a mana source down doesn't free up any mana, so an
-    already-tagged pip from an unrelated source stays tagged."""
+    """Toggling untapped to tapped never discounts mana; an unrelated
+    already-tagged pip stays tagged."""
     state = GameState(on_the_play=True)
     cam = Permanent(registry.CARD_DEFS["Sewer-veillance Cam"])
     elves = Permanent(registry.CARD_DEFS["Llanowar Elves"])
@@ -552,11 +495,8 @@ def test_sewer_cam_tap_direction_never_discounts():
 
 
 def test_sewer_veillance_cam_etb_target_chosen_at_promotion_not_resolution():
-    """The ETB's "you may tap or untap target creature" must be chosen AS
-    THE TRIGGERED ABILITY GOES ON THE STACK (603.3d, etb_targets: True),
-    not once it resolves -- promote_triggers_to_stack alone (no
-    resolve_top_of_stack yet) must already open the target choice, with
-    nothing yet on the stack."""
+    """The ETB's target is chosen as the triggered ability is put on the
+    stack, before it resolves."""
     state = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
     state.active_idx = 0
     opp = Permanent(CardDef("Opp", CardType.CREATURE, None, EffectId.FILLER, power=2, toughness=2))
@@ -574,11 +514,8 @@ def test_sewer_veillance_cam_etb_target_chosen_at_promotion_not_resolution():
 
 
 def test_sewer_veillance_cam_ltb_target_chosen_at_promotion():
-    """Same target-at-promotion timing for the LEAVES-the-battlefield half
-    (ltb_targets: True) -- previously this had no promotion mechanism at
-    all (triggers._promotion_targets used to hardcode entry["type"] !=
-    "etb" -> always False for a leaving trigger), a structural gap beyond a
-    missing flag on this one card."""
+    """Same target-at-promotion timing applies to the leaves-the-battlefield
+    trigger half."""
     state = GameState(on_the_play=True)
     cam = Permanent(registry.CARD_DEFS["Sewer-veillance Cam"])
     bear = Permanent(CardDef("Bear", CardType.CREATURE, None, EffectId.FILLER, power=1, toughness=1))
@@ -594,9 +531,8 @@ def test_sewer_veillance_cam_ltb_target_chosen_at_promotion():
 
 
 def test_tolarian_terror_cost_reduction_caster_graveyard_only():
-    """Cost reduction is per the CASTER only. Tolarian Terror {6}{U}: -1 per
-    instant/sorcery in the caster's OWN graveyard; the opponent's graveyard
-    is never counted."""
+    """Tolarian Terror's cost reduces by 1 per instant/sorcery in the
+    caster's own graveyard; the opponent's graveyard doesn't count."""
     state = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
     state.active_idx = 0
     state.players[0].graveyard = [CardDef("A", CardType.INSTANT, {"U": 1}, EffectId.FILLER),
@@ -608,7 +544,7 @@ def test_tolarian_terror_cost_reduction_caster_graveyard_only():
 
 
 def test_deem_inferior_tuck_bottom():
-    """Deem Inferior: the target's OWNER tucks it 2nd-from-top or bottom."""
+    """Deem Inferior: the target's owner tucks it, choosing bottom."""
     state = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
     state.active_idx = 0
     victim = Permanent(CardDef("Threat", CardType.CREATURE, None, EffectId.FILLER, power=3, toughness=3))
@@ -627,8 +563,8 @@ def test_deem_inferior_tuck_bottom():
 
 
 def test_deem_inferior_any_nonland_permanent_artifact_vs_land():
-    """Deem Inferior targets ANY nonland permanent -- here an opponent's ARTIFACT
-    (not a creature) -- and a land is NOT a legal target."""
+    """Deem Inferior can target any nonland permanent, such as an artifact;
+    a land is not a legal target."""
     state = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
     state.active_idx = 0
     art = Permanent(CardDef("Gadget", CardType.ARTIFACT, None, EffectId.FILLER))
@@ -651,7 +587,7 @@ def test_deem_inferior_any_nonland_permanent_artifact_vs_land():
 
 
 def test_delver_transform_to_flyer_and_dies_as_front_face():
-    """G10 Delver of Secrets: upkeep look -> may transform -> 3/2 flyer."""
+    """Delver of Secrets: upkeep look may transform it into a 3/2 flyer."""
     state = GameState(on_the_play=True)
     state.active_idx = 0
     delver = Permanent(registry.CARD_DEFS["Delver of Secrets"])
@@ -668,14 +604,11 @@ def test_delver_transform_to_flyer_and_dies_as_front_face():
     assert permanent_power(state, delver) == 1 and permanent_toughness(state, delver) == 1  # front face
     execute_may_transform(state, True)
     assert delver.flags.get("transformed")
-    # game state IS the back face now: card_def swapped (identity/name), front kept for revert.
     assert delver.card_def.name == "Insectile Aberration"
     assert delver.flags["front_card_def"].name == "Delver of Secrets"
     assert permanent_power(state, delver) == 3 and permanent_toughness(state, delver) == 2  # Insectile Aberration
     assert "flying" in creature_keywords(state, delver)
-    # A DFC reverts to its FRONT face when it leaves the battlefield: dying puts
-    # "Delver of Secrets" in the graveyard (not the back face, and not ceased as a
-    # would-be token from the back name not being in CARD_DEFS).
+    # a DFC reverts to its front face when it leaves the battlefield
     delver.damage_marked = 2
     check_state_based_actions(state)
     assert delver not in state.players[0].battlefield
@@ -683,7 +616,7 @@ def test_delver_transform_to_flyer_and_dies_as_front_face():
 
 
 def test_delver_non_instant_sorcery_no_transform():
-    """Non-instant/sorcery on top: look, but no transform choice ever opens."""
+    """A non-instant/sorcery on top: no transform choice opens."""
     state = GameState(on_the_play=True)
     state.active_idx = 0
     d2 = Permanent(registry.CARD_DEFS["Delver of Secrets"])
@@ -715,8 +648,7 @@ def test_ward_pay_spell_resolves():
 
 
 def test_island_taps_for_blue_mana():
-    """A real Island CardDef, actually tapped for mana -- elsewhere in this
-    file it's only ever used as filler/fodder, never activated itself."""
+    """A basic Island, tapped for mana."""
     state = GameState(on_the_play=True)
     island = Permanent(registry.CARD_DEFS["Island"])
     state.battlefield = [island]
@@ -726,8 +658,7 @@ def test_island_taps_for_blue_mana():
 
 
 def test_seat_of_the_synod_taps_for_blue_mana():
-    """Seat of the Synod {T}: Add {U} -- the same fixed-mana ability shape as
-    a basic Island (EffectId.SEAT_OF_THE_SYNOD: {"mana": ("fixed", "U")})."""
+    """Seat of the Synod: {T}: Add {U}."""
     state = GameState(on_the_play=True)
     seat = Permanent(registry.CARD_DEFS["Seat of the Synod"])
     state.battlefield = [seat]
@@ -737,10 +668,8 @@ def test_seat_of_the_synod_taps_for_blue_mana():
 
 
 def test_seat_of_the_synod_counts_for_affinity_as_an_artifact():
-    """Seat of the Synod is ALSO an artifact land (extra["artifact"]=True) --
-    unlike a plain Island, it counts toward Affinity for artifacts. Here:
-    Thoughtcast's own {4}{U} reduction (module docstring: "counts for
-    affinity/metalcraft")."""
+    """Seat of the Synod is an artifact land, so it counts toward Affinity
+    for artifacts (here, Thoughtcast's cost reduction)."""
     state = GameState(on_the_play=True)
     state.battlefield = [Permanent(registry.CARD_DEFS["Seat of the Synod"])]
     eff = drl_env._effective_cast_cost(state, registry.CARD_DEFS["Thoughtcast"])
@@ -748,9 +677,8 @@ def test_seat_of_the_synod_counts_for_affinity_as_an_artifact():
 
 
 def test_thoughtcast_affinity_reduces_cost_and_draws_two():
-    """Thoughtcast {4}{U}, Affinity for artifacts: the effective cost is
-    reduced by artifacts controlled (mirrors Myr Enforcer's own affinity
-    pattern in test_colorless_cards.py), and resolving it draws two cards."""
+    """Thoughtcast's Affinity for artifacts reduces its cost by artifacts
+    controlled, and resolving it draws two cards."""
     state = GameState(on_the_play=True)
     state.battlefield = [Permanent(registry.CARD_DEFS["Great Furnace"]) for _ in range(3)]
     eff = drl_env._effective_cast_cost(state, registry.CARD_DEFS["Thoughtcast"])
@@ -762,18 +690,12 @@ def test_thoughtcast_affinity_reduces_cost_and_draws_two():
 
 
 def test_cryptic_serpent_cost_reduction_caster_graveyard_only():
-    """Cryptic Serpent: same graveyard_instant_sorcery_count shared reduction
-    function as Tolarian Terror (test_tolarian_terror_cost_reduction_caster_
-    graveyard_only above) applied to a different card -- -{1} per instant/
-    sorcery in the CASTER's own graveyard, opponent's ignored.
+    """Cryptic Serpent's cost reduces by 1 per instant/sorcery in the
+    caster's own graveyard; the opponent's graveyard doesn't count.
 
-    NOTE (correctness, not a test gap): the real Cryptic Serpent (Kaldheim)
-    also has Ward {2}, but EffectId.CRYPTIC_SERPENT's registry entry in
-    blue_cards.py has no "ward" key at all (unlike EffectId.TOLARIAN_TERROR,
-    which does) -- casting._maybe_trigger_ward reads that key directly and
-    is a no-op when it's absent, so Ward currently never fires for this
-    card. Flagged, not fixed, per the standing rules-faithfulness mandate;
-    no test is added for a Ward interaction that doesn't exist yet."""
+    NOTE (correctness, not a test gap): the real Cryptic Serpent also has
+    Ward {2}, but EffectId.CRYPTIC_SERPENT's registry entry has no "ward"
+    key, so Ward never fires for this card here. Flagged, not fixed."""
     state = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
     state.active_idx = 0
     state.players[0].graveyard = [CardDef("A", CardType.INSTANT, {"U": 1}, EffectId.FILLER),
@@ -785,10 +707,7 @@ def test_cryptic_serpent_cost_reduction_caster_graveyard_only():
 
 
 def test_dispel_counters_targeted_instant():
-    """Dispel {U}: cast for real, target a real instant on the stack, and
-    confirm it gets countered (mirrors test_counterspell above; the legality
-    predicate alone -- instant-only -- is already covered by
-    test_dispel_legality_instant_only)."""
+    """Dispel: cast for real and counter a targeted instant on the stack."""
     state = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
     tgt = _stack_spell(state, "An Instant", controller=1)
     state.active_idx = 0
@@ -803,9 +722,7 @@ def test_dispel_counters_targeted_instant():
 
 
 def test_abandon_attachments_decline_no_draw():
-    """Abandon Attachments: DECLINE the optional discard ("you may discard a
-    card") -- "if you do" never fires, so no draw (only the do-discard branch
-    was tested before, in test_abandon_attachments)."""
+    """Abandon Attachments: declining the optional discard means no draw."""
     state = GameState(on_the_play=True)
     aa = CardDef("Abandon Attachments", CardType.INSTANT, {"generic": 1, "U": 1}, EffectId.ABANDON_ATTACHMENTS)
     state.hand = [aa, CardDef("Spare", CardType.LAND, None, EffectId.ISLAND)]
@@ -817,9 +734,8 @@ def test_abandon_attachments_decline_no_draw():
 
 
 def test_murmuring_mystic_cast_from_hand_via_action_table():
-    """Murmuring Mystic's baseline {3}{U} cast, driven for real through the
-    action table's cast/pay-cost/push-to-stack/resolve pipeline (the on_cast
-    test above places the Permanent directly and never pays this cost)."""
+    """Murmuring Mystic's cast, driven through the action table's
+    cast/pay-cost/push-to-stack/resolve pipeline."""
     dl = [("Murmuring Mystic", 4), ("Island", 8)]
     byname = {a[0]: (a[1], a[2]) for a in drl_env.build_action_table(dl, registry.EFFECT_REGISTRY)}
     state = GameState(on_the_play=True)
@@ -841,9 +757,7 @@ def test_murmuring_mystic_cast_from_hand_via_action_table():
 
 
 def test_delver_cast_from_hand_via_action_table():
-    """Delver of Secrets's baseline {U} cast, driven for real through the
-    action table's cast pipeline (the transform tests above construct the
-    Permanent directly and never pay this cost)."""
+    """Delver of Secrets's cast, driven through the action table's cast pipeline."""
     dl = [("Delver of Secrets", 4), ("Island", 8)]
     byname = {a[0]: (a[1], a[2]) for a in drl_env.build_action_table(dl, registry.EFFECT_REGISTRY)}
     state = GameState(on_the_play=True)
@@ -863,11 +777,8 @@ def test_delver_cast_from_hand_via_action_table():
 
 
 def test_sewer_veillance_cam_sac_ability_via_action_table():
-    """Sewer-veillance Cam's {3}{U}, Sacrifice -> draw 2 ability: the sac
-    ability's own mana-cost legality/payment dispatch, driven for real
-    through the action table's generic activated-ability wiring (the
-    existing toggle/sac test calls sewer_cam_sac directly, post-cost, never
-    exercising the {3}{U} legality/payment path itself)."""
+    """Sewer-veillance Cam's {3}{U}, Sacrifice: draw 2 ability, driven
+    through the action table's activated-ability legality/payment path."""
     dl = [("Sewer-veillance Cam", 4), ("Island", 8)]
     byname = {a[0]: (a[1], a[2]) for a in drl_env.build_action_table(dl, registry.EFFECT_REGISTRY)}
     state = GameState(on_the_play=True)
@@ -893,12 +804,8 @@ def test_sewer_veillance_cam_sac_ability_via_action_table():
 
 
 def test_sewer_veillance_cam_etb_decline_no_toggle():
-    """The ETB's own "you may tap or untap target creature" -- declining it
-    specifically (only the LTB half's decline was covered before, in
-    test_sewer_veillance_cam_toggle_and_sac_draw_two). Per
-    sewer_cam_tap_or_untap's own docstring, a decline still resolves the
-    ability doing nothing to a creature (it still reaches the stack with no
-    captured target), rather than skipping the stack outright."""
+    """Declining the ETB's optional toggle still resolves the ability doing
+    nothing, rather than skipping the stack."""
     state = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
     state.active_idx = 0
     opp = Permanent(CardDef("Opp", CardType.CREATURE, None, EffectId.FILLER, power=2, toughness=2))
@@ -916,9 +823,8 @@ def test_sewer_veillance_cam_etb_decline_no_toggle():
 
 
 def test_utrom_monitor_affinity_reduces_cost_and_resolves_flying():
-    """Utrom Monitor {4}{U}, Affinity for artifacts: driven for real (mirrors
-    the Thoughtcast/Myr Enforcer affinity pattern above) -- artifacts
-    controlled reduce the effective cost, and it resolves as a flying 3/3."""
+    """Utrom Monitor's Affinity for artifacts reduces its cost, and it
+    resolves as a flying 3/3."""
     state = GameState(on_the_play=True)
     state.battlefield = [Permanent(registry.CARD_DEFS["Great Furnace"]) for _ in range(3)]
     eff = drl_env._effective_cast_cost(state, registry.CARD_DEFS["Utrom Monitor"])
@@ -930,11 +836,7 @@ def test_utrom_monitor_affinity_reduces_cost_and_resolves_flying():
 
 
 def test_deem_inferior_cost_reduction_by_cards_drawn_this_turn():
-    """Deem Inferior {3}{U} (-{1} per card drawn this turn): the
-    cost_reduction lambda's real effect on the effective cost (targeting/
-    tuck resolve are already covered by test_deem_inferior_tuck_bottom /
-    test_deem_inferior_any_nonland_permanent_artifact_vs_land above -- this
-    only checks the reduction itself)."""
+    """Deem Inferior's cost reduces by 1 per card drawn this turn."""
     state = GameState(on_the_play=True)
     state.cards_drawn_this_turn = 2
     eff = drl_env._effective_cast_cost(state, registry.CARD_DEFS["Deem Inferior"])
@@ -944,8 +846,7 @@ def test_deem_inferior_cost_reduction_by_cards_drawn_this_turn():
 
 
 def test_sleep_escape_illegal_no_sleep_in_graveyard():
-    """_sleep_escape_legal: false when there's no Sleep of the Dead card in
-    the graveyard at all, regardless of how many other cards/targets exist."""
+    """_sleep_escape_legal is false with no Sleep of the Dead in the graveyard."""
     state = GameState(on_the_play=True)
     state.graveyard = [CardInstance(CardDef(f"g{i}", CardType.INSTANT, {"U": 1}, EffectId.FILLER)) for i in range(4)]
     victim = Permanent(CardDef("Victim", CardType.CREATURE, None, EffectId.FILLER, power=1, toughness=1))
@@ -955,8 +856,8 @@ def test_sleep_escape_illegal_no_sleep_in_graveyard():
 
 
 def test_sleep_escape_illegal_fewer_than_three_other_graveyard_cards():
-    """_sleep_escape_legal: false with fewer than 3 OTHER graveyard cards to
-    exile as Escape's additional cost, even with a legal creature target."""
+    """_sleep_escape_legal is false with fewer than 3 other graveyard cards
+    to exile for Escape's additional cost."""
     state = GameState(on_the_play=True)
     sd = CardInstance(registry.CARD_DEFS["Sleep of the Dead"])
     state.graveyard = [sd, CardInstance(CardDef("g1", CardType.INSTANT, {"U": 1}, EffectId.FILLER)),
@@ -968,8 +869,7 @@ def test_sleep_escape_illegal_fewer_than_three_other_graveyard_cards():
 
 
 def test_sleep_escape_illegal_no_creature_target():
-    """_sleep_escape_legal: false with zero legal creature targets, even
-    with a Sleep of the Dead in the graveyard and 3+ other cards to exile."""
+    """_sleep_escape_legal is false with zero legal creature targets."""
     state = GameState(on_the_play=True)
     sd = CardInstance(registry.CARD_DEFS["Sleep of the Dead"])
     state.graveyard = [sd] + [CardInstance(CardDef(f"g{i}", CardType.INSTANT, {"U": 1}, EffectId.FILLER)) for i in range(3)]
@@ -977,13 +877,7 @@ def test_sleep_escape_illegal_no_creature_target():
 
 
 def test_deem_inferior_tuck_removes_an_attacker_from_combat():
-    """506.4 via the tuck exit path: bouncing an attacker to the library
-    removes it from combat, so it can no longer be blocked or deal damage.
-
-    Deem Inferior is the one catalog card that removes a creature from the
-    battlefield with a raw battlefield.remove() rather than routing through
-    state_based's destroy/sacrifice choke points, so it needs its own
-    remove_from_combat call and its own test."""
+    """Tucking an attacking creature into the library removes it from combat."""
     state = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
     state.active_idx = 0
     victim = Permanent(CardDef("Threat", CardType.CREATURE, None, EffectId.FILLER, power=3, toughness=3))

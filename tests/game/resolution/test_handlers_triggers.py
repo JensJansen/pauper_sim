@@ -9,13 +9,9 @@ from game.state import GameState
 
 
 def test_order_triggers_placement_order_is_lifo_at_resolution():
-    # begin_order_triggers: 2+ simultaneous
-    # triggers get a real placement-order choice -- PLACEMENT order, not
-    # resolution order (the stack is LIFO). Driven directly against a
-    # hand-built state, bypassing game.effects.triggers.promote_triggers_
-    # to_stack entirely (this module doesn't import game.effects.triggers
-    # -- see its own docstring), using plain no-op resolve functions since
-    # only the ordering mechanism itself is under test here.
+    # PLACEMENT order, not resolution order (the stack is LIFO). Driven
+    # directly against a hand-built state with plain no-op resolve
+    # functions, since only the ordering mechanism itself is under test.
     resolved_order = []
     entry_a = {"card_def": CardDef("Trigger A", CardType.CREATURE, None, None), "resolve": lambda s, cd: resolved_order.append(cd.name)}
     entry_b = {"card_def": CardDef("Trigger B", CardType.CREATURE, None, None), "resolve": lambda s, cd: resolved_order.append(cd.name)}

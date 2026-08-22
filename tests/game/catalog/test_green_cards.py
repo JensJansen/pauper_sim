@@ -1,6 +1,4 @@
-"""Tests for game.catalog.green_cards. See the module under test for the
-card-implementation rationale (real-rules citations, etc.) each test below
-guards."""
+"""Tests for game.catalog.green_cards."""
 
 import pytest
 
@@ -80,36 +78,27 @@ def _malevolent_rumble_cast():
 
 
 def test_malevolent_rumble_take_creature():
-    """Malevolent Rumble: reveal top 4, may take one permanent card to hand
-    (rest to graveyard, NOT the library bottom -- unlike Ancient Stirrings'
-    own take-one-or-decline shape, verified via Scryfall)."""
+    """Malevolent Rumble: reveal top 4, may take one permanent card to hand; rest goes to the graveyard."""
     state, rumble = _malevolent_rumble_cast()
     assert [p.card_def.name for p in state.battlefield] == ["Eldrazi Spawn"]
     assert state.pending_resolution["kind"] == "malevolent_rumble"
-    # Instants/sorceries aren't "permanent cards" -- ineligible; only the
-    # creature and the land are offered, plus the ever-present decline.
+    # only permanent cards (creature/land) are offered, plus decline
     assert malevolent_rumble_options(state) == ["A Creature", "A Land", "decline"]
     execute_malevolent_rumble_option(state, "A Creature")
     assert state.pending_resolution is None
     assert [c.name for c in state.hand] == ["A Creature"]
-    # Everything revealed but not taken -- including the ineligible ones --
-    # goes to the graveyard, alongside Malevolent Rumble itself.
+    # everything revealed but not taken goes to the graveyard
     assert sorted(c.name for c in state.graveyard) == ["A Land", "An Instant", "Filler 4", "Malevolent Rumble"]
     assert [c.name for c in state.library] == ["Filler 5"]  # never revealed, untouched
 
 
 def test_eldrazi_spawn_token_sac_ability():
-    """The 0/1 Eldrazi Spawn token created by Malevolent Rumble: its own
-    "Sacrifice: Add {C}" ability floats mana with no {T} at all. Forced
-    untagged (taggable=False) -- the float and the sacrifice are the same
-    atomic action (e.g. sacrificing purely to trigger Writhing Chrysalis),
-    so it must never count as avoidable single-pip burn regardless of
-    whether the {C} ends up spent."""
+    """Eldrazi Spawn token: "Sacrifice: Add {C}" floats mana with no {T}, and is never tagged as single-pip burn."""
     state, _rumble = _malevolent_rumble_cast()
     spawn = state.battlefield[0]
     assert state.mana_pool == {}
     activate_eldrazi_spawn_sac(state, spawn)
-    assert state.battlefield == []  # sacrificed, not graveyarded -- a token ceases to exist
+    assert state.battlefield == []  # sacrificed -- token ceases to exist
     assert state.mana_pool == {"C": 1}
     assert state.mana_pool_single_pip == {}  # forced untagged, not the usual 1-symbol tag
 
@@ -128,14 +117,9 @@ def test_malevolent_rumble_decline():
 
 
 def test_bramble_wurm_graveyard_ability():
-    """Bramble Wurm's graveyard ability: exile from graveyard (removed,
-    untracked), gain 5 life -- the one piece of real logic
-    activate_bramble_wurm_gy adds beyond already-self-checked helpers
-    (cast_permanent_from_hand, gain_life itself)."""
+    """Bramble Wurm's graveyard ability: exile from graveyard, gain 5 life."""
     state = GameState(on_the_play=True)
-    # Graveyard holds a real CardInstance (as a live game does), and that
-    # instance is what activate_bramble_wurm_gy now receives -- the exile
-    # cost is an identity removal, not a by-name lookup.
+    # exile is by identity, not by-name lookup
     wurm = CardInstance(CardDef(
         "Bramble Wurm", CardType.CREATURE, {"generic": 6, "G": 1}, EffectId.BRAMBLE_WURM, power=7, toughness=6,
         gy_ability_cost={"generic": 2, "G": 1},
@@ -143,40 +127,31 @@ def test_bramble_wurm_graveyard_ability():
     state.graveyard = [wurm]
     activate_bramble_wurm_gy(state, wurm)
     assert state.graveyard == []  # exiled -- a cost, paid immediately on activation
-    # The life gain is the ability's EFFECT -- now on the stack (faithful
-    # timing), not applied the instant the cost was paid.
+    # life gain is the effect, on the stack -- not applied immediately
     assert len(state.stack) == 1 and state.life_total == 20
     resolve_top_of_stack(state)
     assert state.life_total == 25  # STARTING_LIFE (20) + 5, once the effect resolves
 
 
 def test_sagu_wildling_omen_search_and_redraw():
-    """Sagu Wildling's Omen: cast_roost_seek shuffles ITSELF into the
-    library (not exile, not the graveyard) once its search resolves --
-    real Adventure's own exile doesn't apply to Omen. Redrawing it later
-    puts the same physical card back in hand; cast_sagu_wildling_creature
-    then finds it there BY NAME (a different CardDef object, same display
-    name), removes it, and puts the real creature on the battlefield with
-    its own ETB gain-3-life."""
+    """Sagu Wildling's Omen search shuffles itself into the library; redrawing it lets the creature side be
+    cast, entering with its ETB gain-3 life."""
     state = GameState(on_the_play=True)
     roost_seek = CardDef("Sagu Wildling", CardType.SORCERY, {"G": 1}, EffectId.ROOST_SEEK)
     state.hand = [roost_seek]
     state.library = [CardDef("Forest", CardType.LAND, None, EffectId.FOREST, basic=True)]
     cast_roost_seek(state, roost_seek)
     assert state.hand == []
-    assert state.exile == []  # no exile step at all -- unlike real Adventure
+    assert state.exile == []  # no exile step
     assert state.pending_resolution["kind"] == "search_fetch"
     execute_search_fetch_option(state, "Forest")
     assert [c.name for c in state.hand] == ["Forest"]
-    assert [c.name for c in state.library] == ["Sagu Wildling"]  # shuffled itself in, per "(Also shuffle this card.)"
+    assert [c.name for c in state.library] == ["Sagu Wildling"]  # shuffled back into the library
 
-    # Redraw it (same physical card, ordinary draw) -- the real creature
-    # half is now just a second cast option for that same hand card.
+    # redraw it, then cast the creature side
     state.hand.append(state.library.pop(0))
     cast_sagu_wildling_creature(state, SAGU_WILDLING_CREATURE_CARD_DEF)
-    assert [c.name for c in state.hand] == ["Forest"]  # the redrawn "Sagu Wildling" left hand, "Forest" untouched
-    # The ETB gain-3 is queued now (faithful timing) -- resolve it off the
-    # stack, exactly as game.turn's priority round would.
+    assert [c.name for c in state.hand] == ["Forest"]  # Sagu Wildling left hand
     assert state.life_total == 20
     promote_triggers_to_stack(state)
     resolve_top_of_stack(state)
@@ -186,17 +161,13 @@ def test_sagu_wildling_omen_search_and_redraw():
 
 
 def test_sagu_wildling_omen_full_cast_path():
-    """Full cast PATH (not just the resolve): _omen_cast_execute removes the
-    physical hand card AT CAST (by name -- the creature side is a distinct
-    CardDef), the creature-side def goes on the stack, and resolving it puts
-    the creature on the battlefield. The card must NEVER re-enter hand, and
-    cast_sagu_wildling_creature must be a no-op on the (already empty of it)
-    hand. Mirrors _omen_cast_execute's own post-payment steps."""
+    """Casting Sagu Wildling removes the physical hand card immediately; the creature side resolves onto the
+    battlefield without re-entering hand."""
     state = GameState(on_the_play=True)
     state.hand = [CardDef("Sagu Wildling", CardType.SORCERY, {"G": 1}, EffectId.ROOST_SEEK),
                   CardDef("Forest", CardType.LAND, None, EffectId.FOREST, basic=True)]
     hc = next(c for c in state.hand if c.name == SAGU_WILDLING_CREATURE_CARD_DEF.name)
-    state.hand.remove(hc)  # _omen_cast_execute's cast-time by-name removal
+    state.hand.remove(hc)  # removed from hand at cast
     push_to_stack(state, SAGU_WILDLING_CREATURE_CARD_DEF, cast_sagu_wildling_creature)
     assert [c.name for c in state.hand] == ["Forest"] and len(state.stack) == 1  # Sagu left hand at cast; Forest untouched
     resolve_top_of_stack(state)
@@ -209,12 +180,7 @@ def _ram_through_card():
 
 
 def test_ram_through_plain_kill():
-    """Ram Through ({1}{G} Instant): one-sided fight -- target creature you
-    control deals its power to target creature you don't control, trample
-    overflow to that creature's controller. Two targets locked at cast,
-    resolved via the shared combat damage-marking + state-based death.
-
-    (a) plain: my 3/3 kills the opponent's 2/2, taking nothing back."""
+    """Ram Through: your creature deals its power to an opponent's creature, one-sided (plain kill case)."""
     ram = _ram_through_card()
     state = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
     mine = Permanent(CardDef("My Beater", CardType.CREATURE, {"G": 1}, EffectId.FILLER, power=3, toughness=3))
@@ -236,8 +202,7 @@ def test_ram_through_plain_kill():
 
 
 def test_ram_through_trample_overflow():
-    """(b) trample overflow: Rancor grants trample; excess (power - lethal)
-    hits the opponent PLAYER."""
+    """Ram Through with trample (via Rancor): excess damage over lethal hits the opponent player."""
     ram = _ram_through_card()
     state = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
     trampler = Permanent(CardDef("Trampler", CardType.CREATURE, {"G": 1}, EffectId.FILLER, power=5, toughness=5))
@@ -251,13 +216,13 @@ def test_ram_through_trample_overflow():
     execute_choose_any_target_creature(state, 0, "Trampler", 1)
     execute_choose_any_target_creature(state, 1, "Victim", 1)
     resolve_top_of_stack(state)
-    # Effective power 7 (5 + Rancor's +2): 2 lethal to Victim, 5 tramples through.
+    # power 7 (5+2 Rancor): 2 lethal, 5 tramples through
     assert victim not in state.players[1].battlefield
     assert state.players[1].life_total == 15  # 20 - 5 trampled
 
 
 def test_ram_through_fizzle_target_removed():
-    """(c) fizzle: the target creature leaves before resolution (608.2c)."""
+    """Ram Through fizzles if the target creature leaves before resolution."""
     ram = _ram_through_card()
     state = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
     mine2 = Permanent(CardDef("Mine2", CardType.CREATURE, {"G": 1}, EffectId.FILLER, power=3, toughness=3))
@@ -274,7 +239,7 @@ def test_ram_through_fizzle_target_removed():
 
 
 def test_ram_through_not_castable_solo():
-    """(d) never castable in 1-player (no "creature you don't control")."""
+    """Ram Through isn't castable without an opposing creature to target."""
     solo = GameState(on_the_play=True)
     solo.battlefield = [Permanent(CardDef("Lonely", CardType.CREATURE, {"G": 1}, EffectId.FILLER, power=3, toughness=3))]
     assert not _ram_through_extra_legal(solo)
@@ -285,24 +250,21 @@ def _masked_vandal_card():
 
 
 def _setup_vandal():
-    """Common setup for the Masked Vandal ETB scenarios: a creature in the
-    caster's graveyard, an artifact on the opponent's battlefield, cast the
-    Vandal, and promote its ETB to the stack -- target-at-promotion opens
-    the opponent-permanent TARGET choice FIRST."""
+    """Shared setup for Masked Vandal ETB tests: cast it with a graveyard creature and an opposing artifact
+    available, ETB promoted to the stack."""
     state = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
     state.players[0].graveyard = [state.new_instance(CardDef("Dead Guy", CardType.CREATURE, {"G": 1}, EffectId.FILLER, power=2, toughness=2))]
     art = Permanent(CardDef("Their Relic", CardType.ARTIFACT, {"generic": 1}, EffectId.FILLER))
     state.players[1].battlefield = [art]
     enters_battlefield(state, _masked_vandal_card(), from_zone="hand")
     assert [e["type"] for e in state.trigger_queue] == ["etb"]
-    promote_triggers_to_stack(state)  # target-at-promotion: opens the opponent-permanent TARGET choice FIRST
+    promote_triggers_to_stack(state)  # target chosen at promotion, before the stack effect
     assert state.pending_resolution["kind"] == "choose_opponent_permanent"
     return state, art
 
 
 def test_masked_vandal_etb_take():
-    """(a) take it: lock the target, then (at resolution) exile a creature
-    from GY -> exile the target."""
+    """Masked Vandal ETB: exile a creature from the graveyard to exile the targeted artifact/enchantment."""
     state, opp_artifact = _setup_vandal()
     execute_choose_opponent_permanent_option(state, "Their Relic", 1)  # target locked at promotion
     assert state.pending_resolution is None and len(state.stack) == 1  # the effect is on the stack
@@ -311,14 +273,13 @@ def test_masked_vandal_etb_take():
     vandal_opts = choose_graveyard_card_options(state)
     assert [c.name for c in vandal_opts] == ["Dead Guy"]  # creature cards only
     execute_choose_graveyard_card_option(state, vandal_opts[0])
-    assert state.players[0].graveyard == []  # creature exiled from GY (the "if you do" cost)
+    assert state.players[0].graveyard == []  # creature exiled (the cost)
     assert opp_artifact not in state.players[1].battlefield  # the targeted artifact is exiled
     assert state.pending_resolution is None
 
 
 def test_masked_vandal_etb_decline_graveyard_exile():
-    """(b) decline the "you may": the target was locked, but declining the
-    graveyard exile means nothing happens."""
+    """Masked Vandal ETB: declining the graveyard exile means nothing happens."""
     state, opp_artifact = _setup_vandal()
     execute_choose_opponent_permanent_option(state, "Their Relic", 1)
     resolve_top_of_stack(state)
@@ -329,27 +290,24 @@ def test_masked_vandal_etb_decline_graveyard_exile():
 
 
 def test_masked_vandal_etb_fizzle_target_removed():
-    """(c) fizzle: target locked at promotion, then leaves before resolution
-    -> the creature is still exiled (the cost is paid), but the target exile
-    fizzles (608.2b)."""
+    """Masked Vandal ETB fizzles the target exile if the target leaves first, but the graveyard cost is
+    still paid."""
     state, opp_artifact = _setup_vandal()
     execute_choose_opponent_permanent_option(state, "Their Relic", 1)
     state.players[1].battlefield.remove(opp_artifact)  # target gone before this resolves
     resolve_top_of_stack(state)
     execute_choose_graveyard_card_option(state, choose_graveyard_card_options(state)[0])
-    assert state.players[0].graveyard == []  # the creature was still exiled -- the cost was paid
-    assert opp_artifact not in state.players[1].battlefield  # nothing re-added; the exile fizzled gracefully
+    assert state.players[0].graveyard == []  # cost still paid
+    assert opp_artifact not in state.players[1].battlefield  # exile fizzled
     assert state.pending_resolution is None
 
 
 def test_masked_vandal_etb_no_legal_target():
-    """(d) no legal target (opponent controls no artifact/enchantment): the
-    whole ETB is a no-op -- it isn't even put on the stack (603.3c), nothing
-    offered."""
+    """Masked Vandal ETB is a no-op when the opponent controls no legal target."""
     state = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
     state.players[0].graveyard = [state.new_instance(CardDef("Dead Guy", CardType.CREATURE, {"G": 1}, EffectId.FILLER, power=2, toughness=2))]
     enters_battlefield(state, _masked_vandal_card(), from_zone="hand")
-    promote_triggers_to_stack(state)  # no legal target -> the hook returns early, nothing pushed
+    promote_triggers_to_stack(state)  # no legal target -> nothing pushed to the stack
     assert state.pending_resolution is None and state.stack == [] and len(state.players[0].graveyard) == 1
 
 
@@ -365,12 +323,10 @@ def _cast_generous_ent_and_resolve_etb():
 
 
 def test_generous_ent_etb_creates_food_token():
-    """Generous Ent: hard-cast (Reach + ETB "create a Food token"). (Forestcycling,
-    the only mode before, is unchanged.)"""
+    """Generous Ent hard-cast: has reach, ETB creates a Food token."""
     state = _cast_generous_ent_and_resolve_etb()
     ent_perm = next(p for p in state.battlefield if p.card_def.name == "Generous Ent")
     assert has_keyword(state, ent_perm, "reach")
-    # ETB queued -> resolve -> a Food token is created.
     assert not any(p.card_def.name == "Food" for p in state.battlefield)
     promote_triggers_to_stack(state)
     resolve_top_of_stack(state)
@@ -379,8 +335,7 @@ def test_generous_ent_etb_creates_food_token():
 
 
 def test_food_token_sac_ability():
-    """The Food token's own "{2},{T},Sacrifice: gain 3 life" ability: the
-    gain is the effect, on the stack (the {2} + tap are drl_env's concern)."""
+    """Food token: sacrifice ability queues a 3-life gain onto the stack."""
     state = _cast_generous_ent_and_resolve_etb()
     promote_triggers_to_stack(state)
     resolve_top_of_stack(state)
@@ -400,29 +355,22 @@ def _wall_of_roots():
 
 
 def test_wall_of_roots_no_tap_ability_and_counter_death():
-    """Wall of Roots: no {T} in the real ability's own cost at all (unlike
-    every other mana dork here), and a real -0/-1 counter each use (not a
-    private activation count). Its mana ability IS
-    activate_mana_source (immediate float, no tap-during-payment), so both
-    are exercised through that path."""
+    """Wall of Roots' mana ability costs no {T}; each activation adds a -0/-1 counter, eventually killing it
+    via state-based actions."""
     state = GameState(on_the_play=True)
     wall = _wall_of_roots()
     state.battlefield = [wall]
 
     assert ("Wall of Roots", None) in mana_ability_options(state)
-    activate_mana_source(state, wall)  # float {G} -- no {T} in this ability's cost, so it stays untapped
-    assert wall.tapped is False  # no {T} in this ability's own cost
+    activate_mana_source(state, wall)  # floats {G}, stays untapped
+    assert wall.tapped is False
     assert wall.counters["-0/-1"] == 1
     assert state.mana_pool.get("G", 0) == 1  # produced mana floated into the pool
 
-    # Once each turn -- not offered again this same turn, even though it's
-    # still untapped (mana_extra_available's own used_this_turn gate; there
-    # is no tapped state here to gate on at all).
+    # once per turn -- not offered again until untap_step
     assert ("Wall of Roots", None) not in mana_ability_options(state)
 
-    # 4 more activations, one per (simulated) turn, reach the 5th counter --
-    # lethal against this wall's own 5 toughness, via a genuine counter and
-    # the ordinary state-based-action check.
+    # 4 more activations (1/turn) reach the 5th counter, lethal at 5 toughness
     for _ in range(4):
         untap_step(state)  # resets used_this_turn, re-enabling the ability
         activate_mana_source(state, wall)
@@ -436,8 +384,7 @@ def test_wall_of_roots_no_tap_ability_and_counter_death():
 
 
 def test_nyxborn_hydra_creature_mode():
-    """Nyxborn Hydra, creature mode: 0/1 base (a design choice, not Scryfall
-    data) plus X real "+1/+1" counters."""
+    """Nyxborn Hydra creature mode: 0/1 base plus X +1/+1 counters."""
     state = GameState(on_the_play=True)
     hydra_card = CardDef("Nyxborn Hydra", CardType.CREATURE, {"G": 1}, EffectId.NYXBORN_HYDRA, power=0, toughness=1)
     state.hand = [hydra_card]
@@ -450,9 +397,8 @@ def test_nyxborn_hydra_creature_mode():
 
 
 def test_nyxborn_hydra_bestow_attach_and_falloff():
-    """Nyxborn Hydra, Bestow: GGX, enchant target creature you control --
-    drives the real cast_aura flow (choose target -> stack -> resolve), same
-    pattern casting.py's own Rancor self-check already uses."""
+    """Nyxborn Hydra Bestow: attaches to a target creature, granting +1/+1 per counter, and falls off
+    (becomes a creature again) if the enchanted creature dies."""
     state = GameState(on_the_play=True)
     target_creature = Permanent(CardDef("Target Creature", CardType.CREATURE, None, EffectId.FILLER, power=2, toughness=2))
     hydra_card2 = CardDef("Nyxborn Hydra", CardType.CREATURE, {"G": 1}, EffectId.NYXBORN_HYDRA, power=0, toughness=1)
@@ -460,9 +406,9 @@ def test_nyxborn_hydra_bestow_attach_and_falloff():
     state.hand = [hydra_card2]
 
     cast_nyxborn_hydra_bestow(2)(state, hydra_card2)
-    assert state.pending_resolution["kind"] == "choose_any_target"  # Bestow = cast_aura, now any-target
-    execute_choose_any_target_creature(state, 0, "Target Creature", 1)  # side 0 (this 1-player fixture)
-    assert state.hand == []  # left hand at cast -- sitting on the stack, unresolved
+    assert state.pending_resolution["kind"] == "choose_any_target"  # Bestow uses the aura cast/target flow
+    execute_choose_any_target_creature(state, 0, "Target Creature", 1)
+    assert state.hand == []  # left hand at cast, on the stack
     assert len(state.stack) == 1
     resolve_top_of_stack(state)
     assert state.hand == []
@@ -472,40 +418,28 @@ def test_nyxborn_hydra_bestow_attach_and_falloff():
     assert bestowed.counters["+1/+1"] == 2
     assert bestowed.card_type == CardType.ENCHANTMENT  # NOT a creature while attached
     assert bestowed.type_override == CardType.ENCHANTMENT
-    # The enchanted creature gains +1/+1 PER counter on the Hydra itself --
-    # a dynamic pt_bonus/toughness_bonus (2 counters here), not a fixed
-    # constant like Rancor's own +2.
+    # +1/+1 per counter on the Hydra (dynamic, not fixed)
     assert permanent_power(state, target_creature) == 4  # 2 base + 2
     assert permanent_toughness(state, target_creature) == 4
-    # Correctly excluded from every "another creature"/"target creature"
-    # check while attached -- Dread Return's own sacrifice-3-creatures cost
-    # (real interaction: both cards are in spy_combo.txt together).
+    # excluded from creature counts while attached (it's an Enchantment)
     assert any_creature_on_battlefield(state) is True  # target_creature itself still qualifies
     assert sum(1 for p in state.battlefield if p.card_type == CardType.CREATURE) == 1  # bestowed Hydra doesn't count
 
-    # Fall-off: the enchanted creature dies -- real Bestow rule, the Hydra
-    # stays on the battlefield and becomes a creature again, keeping its own
-    # counters (state_based._destroy_creature's own
-    # "becomes_creature_when_orphaned" branch).
-    target_creature.damage_marked = 4  # lethal against its OWN buffed toughness (2 base + 2 from the Bestow attached to it)
+    # fall-off: enchanted creature dies -> Hydra stays, becomes a creature again
+    target_creature.damage_marked = 4  # lethal against its buffed toughness
     check_state_based_actions(state)
     assert target_creature not in state.battlefield
-    assert bestowed in state.battlefield  # NOT graveyarded/returned to hand like an ordinary orphaned Aura
+    assert bestowed in state.battlefield  # stays on the battlefield, not graveyarded like an ordinary Aura
     assert bestowed.type_override is None
-    assert bestowed.card_type == CardType.CREATURE  # card_def.card_type itself, now that the override is cleared
+    assert bestowed.card_type == CardType.CREATURE
     assert bestowed.flags.get("enchanting") is None
-    assert bestowed.counters["+1/+1"] == 2  # unchanged -- "maintain its own +1/+1s"
-    assert permanent_power(state, bestowed) == 2 and permanent_toughness(state, bestowed) == 3  # 0/1 base + 2, its own pt_bonus no longer applies to anything
+    assert bestowed.counters["+1/+1"] == 2  # counters unchanged
+    assert permanent_power(state, bestowed) == 2 and permanent_toughness(state, bestowed) == 3  # 0/1 base + 2, pt_bonus gone
 
 
 def test_nyxborn_hydra_via_action_table_mode_then_x():
-    """Nyxborn Hydra via the REAL action table (not calling resolve closures
-    directly, unlike the direct-call tests above): "Cast Nyxborn Hydra" ->
-    choose_cast_mode ("Mode 1" = creature, registry-first) -> choose_cast_x
-    ("X=3") -> pay {G}{3} -> resolves as the creature mode with 3 counters.
-    Confirms the decomposed mode-then-X sequencing (drl_env._x_modal_execute)
-    actually reaches the exact resolve closures the direct-call tests above
-    already verified in isolation."""
+    """Nyxborn Hydra via the real action table: mode choice + X choice + payment resolves as the creature
+    with X counters."""
     hydra_dl = [("Nyxborn Hydra", 4), ("Forest", 8)]
     hydra_byname = {a[0]: (a[1], a[2]) for a in drl_env.build_action_table(hydra_dl, registry.EFFECT_REGISTRY)}
     hx_state = GameState(on_the_play=True)
@@ -540,10 +474,7 @@ def test_nyxborn_hydra_via_action_table_mode_then_x():
 
 
 def test_winding_way_via_action_table():
-    """Winding Way via the real action table: "Cast Winding Way" -> choose_
-    cast_mode ("Mode 1" = creature, registry-first, no per-mode cost
-    override) -> pay {1}{G} -> hits the stack normally (no precast_choice)
-    -> resolving reveals top 4, matches creatures to hand."""
+    """Winding Way via the real action table, creature mode: reveals top 4, matches creatures to hand."""
     ww_dl = [("Winding Way", 4), ("Forest", 8)]
     ww_byname = {a[0]: (a[1], a[2]) for a in drl_env.build_action_table(ww_dl, registry.EFFECT_REGISTRY)}
     ww_state = GameState(on_the_play=True)
@@ -568,7 +499,7 @@ def test_winding_way_via_action_table():
         guard += 1
         assert guard < 30
         execute_pool_spend(ww_state, pool_spend_options(ww_state)[0])
-    assert len(ww_state.stack) == 1  # no precast_choice -- Winding Way sits on the stack like an ordinary sorcery
+    assert len(ww_state.stack) == 1  # sits on the stack like an ordinary sorcery
     resolve_top_of_stack(ww_state)
     assert any(c.name == "Winding Way" for c in ww_state.graveyard), "the resolved sorcery must land in its own graveyard"
     assert len(ww_state.hand) == 4 and all(c.card_type == CardType.CREATURE for c in ww_state.hand), (
@@ -577,16 +508,8 @@ def test_winding_way_via_action_table():
 
 
 def test_utopia_sprawl_via_action_table():
-    """Utopia Sprawl via the real action table: exercises BOTH extra_legal
-    (needs a Forest to enchant) and precast_choice (the aura's real target
-    is locked in as part of casting, before the stack) within the decomposed
-    modal path -- "Cast Utopia Sprawl" -> choose_cast_mode ("Mode 1" =
-    green, registry-first) -> pay {G} -> resolve() runs directly as
-    pay_cost's on_complete (precast_choice), which is cast_utopia_sprawl ->
-    cast_aura -> opens ITS OWN choose_any_target for the Forest --
-    pre-existing cast_aura machinery, untouched by this change; stopping
-    once that resolve() hand-off is reached is enough to prove the new
-    mode-choice/cost/precast_choice wiring is correct."""
+    """Utopia Sprawl via the real action table: casting requires a Forest to enchant, and the aura's target
+    choice opens directly from payment (precast_choice), before the stack."""
     us_dl = [("Utopia Sprawl", 4), ("Forest", 8)]
     us_byname = {a[0]: (a[1], a[2]) for a in drl_env.build_action_table(us_dl, registry.EFFECT_REGISTRY)}
     us_state = GameState(on_the_play=True)
@@ -622,9 +545,7 @@ def _drive_etb(state):
 
 
 def test_gingerbread_cabin_enters_tapped_no_food():
-    """Gingerbread Cabin: "enters tapped unless you control 3+ other
-    Forests; when it enters untapped, create a Food token." <3 other
-    Forests -> enters tapped, no Food."""
+    """Gingerbread Cabin: with fewer than 3 other Forests, enters tapped and creates no Food."""
     state = GameState(on_the_play=True)
     state.hand = [CardDef("Gingerbread Cabin", CardType.LAND, None, EffectId.GINGERBREAD_CABIN, subtypes=("Forest",))]
     cabin = play_land_from_hand(state, state.hand[0])
@@ -634,9 +555,7 @@ def test_gingerbread_cabin_enters_tapped_no_food():
 
 
 def test_gingerbread_cabin_enters_untapped_creates_food():
-    """3+ other Forests -> enters untapped, creates a Food. A prior
-    Gingerbread Cabin counts as a Forest too (subtype Forest), so 2 basics +
-    1 Cabin = 3."""
+    """Gingerbread Cabin: with 3+ other Forests (a prior Cabin counts as one), enters untapped and creates a Food."""
     state = GameState(on_the_play=True)
     state.battlefield = [
         Permanent(CardDef("Forest", CardType.LAND, None, EffectId.FOREST, basic=True, subtypes=("Forest",))),
@@ -651,8 +570,7 @@ def test_gingerbread_cabin_enters_untapped_creates_food():
 
 
 def test_pulse_of_murasa_own_graveyard():
-    """Pulse of Murasa: return a creature/land card from your graveyard to
-    hand, gain 6. Only creature/land cards are eligible (not an instant)."""
+    """Pulse of Murasa: return a creature or land card from the graveyard to hand and gain 6 life."""
     state = GameState(on_the_play=True)
     pulse = CardDef("Pulse of Murasa", CardType.INSTANT, {"generic": 2, "G": 1}, EffectId.PULSE_OF_MURASA)
     state.hand = [pulse]
@@ -670,13 +588,12 @@ def test_pulse_of_murasa_own_graveyard():
     resolve_top_of_stack(state)
     assert any(c.name == "A Creature" for c in state.hand)
     assert state.life_total == 16  # +6
-    assert any(c.name == pulse.name for c in state.graveyard)  # the instant itself resolved to the graveyard
+    assert any(c.name == pulse.name for c in state.graveyard)  # Pulse itself resolves to the graveyard
 
 
 def test_pulse_of_murasa_cross_graveyard():
-    """Cross-graveyard (Oracle "from A graveyard ... to its owner's hand"):
-    the caster can return a card from the OPPONENT's graveyard -- it goes to
-    the OPPONENT's (owner's) hand, and the caster still gains the 6."""
+    """Pulse of Murasa can return a card from the opponent's graveyard; it goes to the opponent's hand, but
+    the caster still gains life."""
     state = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
     state.active_idx = 0
     pulse2 = CardDef("Pulse of Murasa", CardType.INSTANT, {"generic": 2, "G": 1}, EffectId.PULSE_OF_MURASA)
@@ -689,14 +606,13 @@ def test_pulse_of_murasa_cross_graveyard():
     assert [c.name for c in beast_opts] == ["Opp Beast"]  # the opponent's graveyard card is a legal target
     execute_choose_graveyard_card_option(state, beast_opts[0])
     resolve_top_of_stack(state)
-    assert opp_beast in state.players[1].hand  # returned to ITS OWNER (the opponent), not the caster
+    assert opp_beast in state.players[1].hand  # returned to its owner, not the caster
     assert state.players[0].life_total == 16  # caster gained 6
     assert state.active_idx == 0
 
 
 def test_priest_of_titania_counts_elves_both_battlefields():
-    """Priest of Titania: {T} adds {G} per Elf on THE battlefield (both
-    sides), incl. Masked Vandal (Changeling) and the opponent's Elves."""
+    """Priest of Titania: adds {G} per Elf on either battlefield, including Changelings."""
     state = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
     state.active_idx = 0
     priest = Permanent(registry.CARD_DEFS["Priest of Titania"])
@@ -707,14 +623,7 @@ def test_priest_of_titania_counts_elves_both_battlefields():
 
 
 def test_wellwisher_gain_life_per_elf():
-    """Wellwisher: {T} gain 1 life per Elf. Also regression-covers the
-    webapp-visualizer bug where the {T} cost was paid (permanent.tapped set)
-    but never logged, so the replay board never showed Wellwisher as
-    tapped -- tap_for_cost (game.effects.shared) routes through set_tapped,
-    which logs a "tap_or_untap" event (with an explicit owner_idx, so the
-    replay viewer can't flip the wrong player's same-named permanent in a
-    mirror match) alongside the flag, same as every other non-mana
-    {T}-cost site."""
+    """Wellwisher: gain 1 life per Elf; the tap cost logs a tap_or_untap event with owner_idx for replay."""
     state = GameState(on_the_play=True, event_log=[])
     well = Permanent(registry.CARD_DEFS["Wellwisher"])
     well.slot = 1
@@ -745,12 +654,8 @@ def test_timberwatch_elf_pump():
 
 
 def test_rancor_castable_when_only_the_opponent_controls_a_creature():
-    """Rancor's real text is plain "Enchant creature" -- either side, no
-    "you control" restriction (unlike Cartouche of Solidarity) -- so it
-    must still be legal to cast with zero creatures of the caster's own,
-    as long as the OPPONENT controls one. any_creature_on_battlefield
-    (caster-only) would wrongly report this as uncastable;
-    any_creature_on_either_battlefield is the correct gate."""
+    """Rancor (enchant any creature, either side) is castable with zero creatures of the caster's own, as
+    long as the opponent controls one."""
     state = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
     theirs = Permanent(CardDef("Theirs", CardType.CREATURE, None, EffectId.FILLER, power=2, toughness=2))
     theirs.slot = 1
@@ -762,18 +667,8 @@ def test_rancor_castable_when_only_the_opponent_controls_a_creature():
 
 
 def test_quirion_ranger_untap_lets_player_choose_which_forest():
-    """"Return a Forest you control to hand: Untap target creature." WHICH
-    Forest pays the cost is a real player choice (602.5g), not an
-    arbitrary auto-pick -- two Forests stop being fungible the instant one
-    of them is worth keeping (e.g. it's enchanted by Utopia Sprawl).
-
-    Also regression-covers the webapp-visualizer bug where this untap
-    (a spell-effect tap/untap of an arbitrary target, not an activation
-    cost) used to log a bare "untap" event with no owner -- ambiguous
-    against replay_engine's dual-battlefield scan whenever the opponent has
-    a same-named/same-slot permanent. Now routed through set_tapped
-    (game.effects.shared), which logs "tap_or_untap" with an explicit
-    owner_idx."""
+    """Quirion Ranger: returning a Forest to pay its cost is a player choice among untapped Forests; the
+    resulting untap logs a tap_or_untap event with owner_idx."""
     state = GameState(on_the_play=True, event_log=[])
     ranger = Permanent(registry.CARD_DEFS["Quirion Ranger"])
     ranger.slot = 1
@@ -803,11 +698,7 @@ def test_quirion_ranger_untap_lets_player_choose_which_forest():
 
 
 def test_quirion_ranger_untapping_a_mana_dork_discounts_its_tag():
-    """Untapping a mana dork that was already tapped for mana this phase is
-    free value (tapping it for {G} before the untap costs nothing), so its
-    tagged pip is discounted (mana.discount_departing_source) -- the tapped
-    creature target in test_quirion_ranger_untap_lets_player_choose_which_
-    forest never produces mana, so it doesn't exercise this path."""
+    """Untapping a mana dork that was tapped for mana this phase discounts its tagged single-pip mana."""
     state = GameState(on_the_play=True)
     ranger = Permanent(registry.CARD_DEFS["Quirion Ranger"])
     ranger.slot = 1
@@ -830,8 +721,7 @@ def test_quirion_ranger_untapping_a_mana_dork_discounts_its_tag():
 
 
 def test_avenging_hunter_etb_initiative_venture():
-    """Avenging Hunter: ETB -> you take the initiative -> a venture is
-    queued and, on resolving, enters Secret Entrance (basic-land search)."""
+    """Avenging Hunter ETB takes the initiative, queuing a venture into Secret Entrance (basic-land search)."""
     state = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
     state.active_idx = state.turn_player_idx = 0
     state.players[0].library = [
@@ -852,8 +742,7 @@ def test_avenging_hunter_etb_initiative_venture():
 
 
 def test_summoning_sickness_mana_dork_gated():
-    """Summoning sickness (302.6): a creature's {T} ability (a mana dork)
-    can't be used the turn it enters, unless it has haste."""
+    """A mana dork's {T} ability can't be used the turn it enters, without haste."""
     state = GameState(on_the_play=True)
     llan = Permanent(registry.CARD_DEFS["Llanowar Elves"])  # summoning_sick=True by construction
     assert tap_summoning_locked(state, llan)  # sick mana dork -> can't tap for {G}
@@ -881,11 +770,7 @@ def test_summoning_sickness_no_tap_exempt():
 # --- REGRESSION: Sagu Wildling's Omen search used to accept ANY land ---
 
 def test_roost_seek_omen_search_only_offers_basic_lands():
-    """REGRESSION: cast_roost_seek's search used to accept any
-    `c.card_type == CardType.LAND`; real oracle text ("search your library
-    for a basic land card") restricts it to BASIC lands only (any of the
-    five, no color restriction). A nonbasic land sitting in the library
-    alongside a basic Forest must NOT be offered -- only the Forest."""
+    """Sagu Wildling's Omen search only offers basic lands, not nonbasic ones."""
     state = GameState(on_the_play=True)
     roost_seek = CardDef("Sagu Wildling", CardType.SORCERY, {"G": 1}, EffectId.ROOST_SEEK)
     state.hand = [roost_seek]
@@ -894,7 +779,7 @@ def test_roost_seek_omen_search_only_offers_basic_lands():
     state.library = [nonbasic, basic_forest]
     cast_roost_seek(state, roost_seek)
     assert state.pending_resolution["kind"] == "search_fetch"
-    assert search_fetch_options(state) == ["Forest"]  # the nonbasic land is correctly excluded
+    assert search_fetch_options(state) == ["Forest"]  # excluded
     execute_search_fetch_option(state, "Forest")
     assert [c.name for c in state.hand] == ["Forest"]
     assert any(c.name == "Nonbasic Land" for c in state.library)  # untouched, never offered
@@ -903,31 +788,21 @@ def test_roost_seek_omen_search_only_offers_basic_lands():
 # --- REGRESSION: Gatecreeper Vine's ETB search used to accept ANY land ---
 
 def test_gatecreeper_vine_etb_only_offers_basic_lands():
-    """REGRESSION: gatecreeper_vine_etb's search used to accept any land;
-    real oracle text ("a basic land card or a Gate card", no Gate-subtype
-    card in this pool) restricts it to basics in practice. A nonbasic land
-    must NOT be offered. Also covers the "optional even when a target
-    exists" half of the missing-coverage item (the search is begun with
-    optional=True, offering a decline, unlike Land Grant/Crop Rotation's
-    mandatory fetches)."""
+    """Gatecreeper Vine's ETB search only offers basic lands, and is optional even when a target exists."""
     state = GameState(on_the_play=True)
     nonbasic = CardDef("Nonbasic Land", CardType.LAND, None, EffectId.FILLER)
     basic_forest = CardDef("Forest", CardType.LAND, None, EffectId.FOREST, basic=True)
     state.library = [nonbasic, basic_forest]
     gatecreeper_vine_etb(state)
     assert state.pending_resolution["kind"] == "search_fetch"
-    assert state.pending_resolution["optional"] is True  # "may search" -- optional even though a basic is available
-    assert search_fetch_options(state) == ["Forest"]  # the nonbasic land is correctly excluded
+    assert state.pending_resolution["optional"] is True  # optional even with a basic available
+    assert search_fetch_options(state) == ["Forest"]  # excluded
     execute_search_fetch_option(state, "Forest")
     assert [c.name for c in state.hand] == ["Forest"]
 
 
 def test_generous_ent_forestcycle():
-    """Generous Ent's OTHER mode: {1}, discard from hand: search library
-    for a Forest specifically (the fixed cost recorded on the card, plus
-    the actual discard+search). Its ETB Food token is covered by
-    test_generous_ent_etb_creates_food_token above -- this is the
-    forestcycle mode alone."""
+    """Generous Ent's forestcycling mode: discard from hand to search library for a Forest."""
     state = GameState(on_the_play=True)
     ent = CardDef(
         "Generous Ent", CardType.CREATURE, {"generic": 5, "G": 1}, EffectId.GENEROUS_ENT,
@@ -943,31 +818,23 @@ def test_generous_ent_forestcycle():
 
 
 def test_nyxborn_hydra_bestow_no_legal_target_enters_as_creature():
-    """Bestow, no_target_fallback (real MTG 702.103e): casting for the
-    bestow cost with GENUINELY ZERO legal creatures to enchant at cast
-    time -- not one that died later, the fizzle-after-cast branch already
-    covered elsewhere -- does not fizzle to the graveyard like an ordinary
-    Aura. It still enters the battlefield, as a creature, with its X
-    +1/+1 counters."""
+    """Bestow with zero legal creatures to enchant at cast time enters as a creature instead of fizzling."""
     state = GameState(on_the_play=True)
     hydra_card = CardDef("Nyxborn Hydra", CardType.CREATURE, {"G": 1}, EffectId.NYXBORN_HYDRA, power=0, toughness=1)
     state.hand = [hydra_card]
-    # No creature anywhere -- begin_choose_any_target auto-completes with
-    # None (empty candidate pool), so this never even opens a pending choice.
+    # no creature anywhere -> auto-completes with no target
     cast_nyxborn_hydra_bestow(2)(state, hydra_card)
     assert state.pending_resolution is None
     assert len(state.stack) == 1
     resolve_top_of_stack(state)
     hydra_permanent = next(p for p in state.battlefield if p.card_def.name == "Nyxborn Hydra")
-    assert hydra_permanent.card_type == CardType.CREATURE  # entered as a creature, NOT an Aura/Enchantment
+    assert hydra_permanent.card_type == CardType.CREATURE  # entered as a creature, not an Enchantment
     assert hydra_permanent.type_override is None
     assert hydra_permanent.counters["+1/+1"] == 2
 
 
 def test_quirion_ranger_untap_illegal_no_forest_to_return():
-    """quirion_ranger_untap_legal: false when there's no Forest to return
-    (the happy path is covered by test_quirion_ranger_untap_lets_player_
-    choose_which_forest above)."""
+    """quirion_ranger_untap_legal is false with no Forest available to return."""
     state = GameState(on_the_play=True)
     ranger = Permanent(registry.CARD_DEFS["Quirion Ranger"])
     state.battlefield = [ranger]  # no Forest anywhere
@@ -975,8 +842,7 @@ def test_quirion_ranger_untap_illegal_no_forest_to_return():
 
 
 def test_quirion_ranger_untap_illegal_already_used_this_turn():
-    """quirion_ranger_untap_legal: false once already used this turn, even
-    with a Forest available."""
+    """quirion_ranger_untap_legal is false once already used this turn."""
     state = GameState(on_the_play=True)
     ranger = Permanent(registry.CARD_DEFS["Quirion Ranger"])
     forest = Permanent(CardDef("Forest", CardType.LAND, None, EffectId.FOREST, basic=True))
@@ -986,9 +852,7 @@ def test_quirion_ranger_untap_illegal_already_used_this_turn():
 
 
 def test_winding_way_land_mode():
-    """Winding Way, land mode (creature mode is covered by
-    test_winding_way_via_action_table above): reveal top 4, lands to hand,
-    the rest to the graveyard alongside Winding Way itself."""
+    """Winding Way, land mode: reveal top 4, lands to hand, rest to the graveyard."""
     state = GameState(on_the_play=True)
     ww = CardDef("Winding Way", CardType.SORCERY, {"generic": 1, "G": 1}, EffectId.WINDING_WAY)
     state.hand = [ww]
@@ -1006,8 +870,8 @@ def test_winding_way_land_mode():
 
 
 def test_lead_the_stampede_cast_and_resolve():
-    """{2}{G}: look at top 5, may reveal any number of creatures to hand,
-    rest to the bottom in any order the model chooses."""
+    """Lead the Stampede: look at top 5, may take any number of creatures to hand, rest to the bottom in
+    chosen order."""
     state = GameState(on_the_play=True)
     lts = CardDef("Lead the Stampede", CardType.SORCERY, {"generic": 2, "G": 1}, EffectId.LEAD_THE_STAMPEDE)
     state.hand = [lts]
@@ -1033,7 +897,7 @@ def test_lead_the_stampede_cast_and_resolve():
     assert select_to_hand_options(state) == ["bottom"]  # front = InstantY, not eligible
     execute_select_to_hand_option(state, "bottom")
 
-    # 3 bottomed (CreatureB, LandX, InstantY) -> ordering phase, one option per distinct name.
+    # 3 bottomed -> ordering phase, one option per name
     assert sorted(select_to_hand_options(state)) == ["CreatureB", "InstantY", "LandX"]
     execute_select_to_hand_option(state, "CreatureB")
     execute_select_to_hand_option(state, "LandX")
@@ -1046,9 +910,7 @@ def test_lead_the_stampede_cast_and_resolve():
 
 
 def test_land_grant_normal_cast_searches_forest():
-    """Land Grant, normal cast: search library for a Forest specifically --
-    a single fixed target name (unlike Roost Seek's real model choice), so
-    this resolves immediately once invoked."""
+    """Land Grant, normal cast: searches library for a Forest and resolves immediately."""
     state = GameState(on_the_play=True)
     land_grant = CardDef("Land Grant", CardType.SORCERY, {"generic": 1, "G": 1}, EffectId.LAND_GRANT)
     state.hand = [land_grant]
@@ -1063,9 +925,7 @@ def test_land_grant_normal_cast_searches_forest():
 
 
 def test_land_grant_alt_cost_free_reveal_hand():
-    """Land Grant's free alt-cost ("reveal your hand" instead of paying):
-    legal only with no land cards in hand; pushes to the stack (unlike the
-    direct-resolve normal cast) since nothing else defers it."""
+    """Land Grant's free alt-cost (reveal hand instead of paying) is legal only with no land cards in hand."""
     state = GameState(on_the_play=True)
     land_grant = CardDef("Land Grant", CardType.SORCERY, {"generic": 1, "G": 1}, EffectId.LAND_GRANT)
     state.hand = [land_grant]
@@ -1074,11 +934,11 @@ def test_land_grant_alt_cost_free_reveal_hand():
 
     other_land = CardDef("Swamp", CardType.LAND, None, EffectId.SWAMP, basic=True)
     state.hand.append(other_land)
-    assert not land_grant_alt_cost_legal(state)  # a land card in hand -> the free alt-cost is no longer legal
+    assert not land_grant_alt_cost_legal(state)  # a land in hand -> alt-cost no longer legal
     state.hand.remove(other_land)
 
     cast_land_grant_alt(state, land_grant)
-    assert state.hand == []  # left hand at cast, sitting on the stack unresolved
+    assert state.hand == []  # left hand at cast, on the stack
     assert len(state.stack) == 1
     resolve_top_of_stack(state)
     assert [c.name for c in state.hand] == ["Forest"]
@@ -1086,27 +946,22 @@ def test_land_grant_alt_cost_free_reveal_hand():
 
 
 def test_crop_rotation_sacrifice_and_unrestricted_land_search():
-    """{G}, sacrifice a land (a real ADDITIONAL COST, chosen and paid before
-    the spell is even fully cast): search library for a land -- put it
-    DIRECTLY onto the battlefield (unlike Gatecreeper Vine/Sagu Wildling/
-    Land Grant, which all restrict to basics and go to hand; Crop
-    Rotation's own real text has no such restriction -- "search your
-    library for a land card")."""
+    """Crop Rotation: sacrifice a land as an additional cost, then search library for any land straight
+    onto the battlefield."""
     state = GameState(on_the_play=True)
     crop = CardDef("Crop Rotation", CardType.INSTANT, {"G": 1}, EffectId.CROP_ROTATION)
     state.hand = [crop]
-    # Named "Forest" (matching registry.CARD_DEFS) so sacrifice_to_graveyard
-    # treats it as a real card, not a token, and moves it to the graveyard.
+    # named to match a real card, not a token
     old_land = Permanent(CardDef("Forest", CardType.LAND, None, EffectId.FOREST, basic=True))
     state.battlefield = [old_land]
     nonbasic = CardDef("Reflecting Pool", CardType.LAND, None, EffectId.FILLER)  # nonbasic -- must still be offered
     state.library = [nonbasic]
 
     cast_crop_rotation(state, crop)
-    assert state.pending_resolution["kind"] == "choose_permanent"  # the sacrifice IS the additional cost, chosen now
+    assert state.pending_resolution["kind"] == "choose_permanent"  # sacrifice is the additional cost, chosen now
     execute_choose_permanent_option(state, "Forest", 1)
     assert old_land not in state.battlefield
-    assert any(c.name == "Forest" for c in state.graveyard)  # sacrificed -- a real card, to the graveyard
+    assert any(c.name == "Forest" for c in state.graveyard)  # sacrificed to the graveyard
     assert state.pending_resolution is None and len(state.stack) == 1  # only the search itself waits on the stack
 
     resolve_top_of_stack(state)
@@ -1115,16 +970,11 @@ def test_crop_rotation_sacrifice_and_unrestricted_land_search():
     execute_search_fetch_option(state, "Reflecting Pool")
     assert state.pending_resolution is None
     assert any(p.card_def.name == "Reflecting Pool" for p in state.battlefield)  # straight onto the battlefield
-    assert all(c.name != "Reflecting Pool" for c in state.hand)  # NOT to hand -- unlike Gatecreeper/Land Grant
+    assert all(c.name != "Reflecting Pool" for c in state.hand)  # not to hand
 
 
 def test_ancient_stirrings_resolve_picks_a_card():
-    """{G}: look at top 5, may take one noncreature colorless card to hand,
-    rest to the bottom in random order. Exercises the real resolve/options/
-    execute trio (only its action-table row existence was checked before),
-    including is_noncreature_colorless's two independent exclusions: a
-    creature (even a colorless-cost one) is never eligible, and neither is
-    a colored noncreature."""
+    """Ancient Stirrings: look at top 5, may take one noncreature colorless card to hand, rest to the bottom."""
     state = GameState(on_the_play=True)
     stirrings = CardDef("Ancient Stirrings", CardType.SORCERY, {"G": 1}, EffectId.ANCIENT_STIRRINGS)
     state.hand = [stirrings]
@@ -1142,16 +992,14 @@ def test_ancient_stirrings_resolve_picks_a_card():
     execute_ancient_stirrings_option(state, "Colorless Artifact")
     assert state.pending_resolution is None
     assert [c.name for c in state.hand] == ["Colorless Artifact"]
-    assert [c.name for c in state.graveyard] == ["Ancient Stirrings"]  # unlike Malevolent Rumble, the rest go to the bottom, not here
+    assert [c.name for c in state.graveyard] == ["Ancient Stirrings"]  # rest go to the bottom, not the graveyard
     assert sorted(c.name for c in state.library) == [
         "Colorless Creature", "Green Creature", "Green Sorcery", "Land Card", "Untouched",
     ]
 
 
 def test_bramble_wurm_etb_and_keywords():
-    """Bramble Wurm: ETB gain 5 life, plus Trample + Reach (its graveyard
-    ability is already thoroughly tested elsewhere -- see
-    test_bramble_wurm_graveyard_ability above)."""
+    """Bramble Wurm: ETB gain 5 life, has Trample and Reach."""
     state = GameState(on_the_play=True)
     wurm = CardDef(
         "Bramble Wurm", CardType.CREATURE, {"generic": 6, "G": 1}, EffectId.BRAMBLE_WURM, power=7, toughness=6,
@@ -1170,10 +1018,7 @@ def test_bramble_wurm_etb_and_keywords():
 
 @pytest.mark.parametrize("card_name", ["Gladecover Scout", "Silhana Ledgewalker"])
 def test_hexproof_creature_only_targetable_by_own_controller(card_name):
-    """Gladecover Scout and Silhana Ledgewalker: vanilla bodies with
-    hexproof -- a real targeting restriction, not just a flavor keyword.
-    (Silhana Ledgewalker's own "can't be blocked except by flying" evasion
-    is already covered via the real action table elsewhere.)"""
+    """Gladecover Scout and Silhana Ledgewalker have hexproof: only their own controller can target them."""
     state = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
     creature = Permanent(registry.CARD_DEFS[card_name])
     state.players[0].battlefield = [creature]
@@ -1183,10 +1028,7 @@ def test_hexproof_creature_only_targetable_by_own_controller(card_name):
 
 
 def test_ancestral_mask_real_cast():
-    """Drives the real cast_ancestral_mask itself (the registry "cast"
-    entry) -- pt_bonus/orphan-to-graveyard behavior is already covered via
-    direct construction in tests/game/effects/test_stats.py and
-    test_state_based.py."""
+    """Ancestral Mask attaches to a targeted creature via the real cast path."""
     state = GameState(on_the_play=True)
     target = Permanent(CardDef("Target Creature", CardType.CREATURE, None, EffectId.FILLER, power=2, toughness=2))
     mask = CardDef("Ancestral Mask", CardType.ENCHANTMENT, {"generic": 2, "G": 1}, EffectId.ANCESTRAL_MASK)
@@ -1202,11 +1044,7 @@ def test_ancestral_mask_real_cast():
 
 
 def test_utopia_sprawl_non_green_mode_via_action_table():
-    """Utopia Sprawl's other 4 color modes (green is covered by
-    test_utopia_sprawl_via_action_table above): choosing "Mode 2" (white --
-    registry cast_modes order: green, white, blue, black, red) all the way
-    through resolution, confirming the chosen color -- not just green -- is
-    what gets recorded on the Aura."""
+    """Utopia Sprawl's non-green color modes: choosing Mode 2 (white) records that color on the Aura."""
     us_dl = [("Utopia Sprawl", 4), ("Forest", 8)]
     us_byname = {a[0]: (a[1], a[2]) for a in drl_env.build_action_table(us_dl, registry.EFFECT_REGISTRY)}
     us_state = GameState(on_the_play=True)
@@ -1238,10 +1076,7 @@ def test_utopia_sprawl_non_green_mode_via_action_table():
 
 
 def test_abundant_growth_real_cast_attaches_and_draws():
-    """Drives the real cast_abundant_growth -> cast_aura -> attach flow
-    (the granted-mana mechanism itself is already covered elsewhere via
-    directly-constructed flags, bypassing casting -- this confirms the ETB
-    draw and the attach actually happen through the real cast)."""
+    """Abundant Growth: real cast attaches to a land and draws a card on ETB."""
     state = GameState(on_the_play=True)
     land = Permanent(CardDef("Some Land", CardType.LAND, None, EffectId.FOREST, basic=True))
     growth = CardDef("Abundant Growth", CardType.ENCHANTMENT, {"G": 1}, EffectId.ABUNDANT_GROWTH)
@@ -1251,7 +1086,7 @@ def test_abundant_growth_real_cast_attaches_and_draws():
     cast_abundant_growth(state, growth)
     assert state.pending_resolution["kind"] == "choose_any_target"
     execute_choose_any_target_creature(state, 0, "Some Land", 1)
-    assert state.hand == []  # left hand at cast, sitting on the stack unresolved
+    assert state.hand == []  # left hand at cast, on the stack
     resolve_top_of_stack(state)
     assert [c.name for c in state.hand] == ["Drawn Card"]  # the ETB draw
     attached = next(p for p in state.battlefield if p.card_def.name == "Abundant Growth")
@@ -1260,9 +1095,8 @@ def test_abundant_growth_real_cast_attaches_and_draws():
 
 
 def test_pulse_of_murasa_fizzle_target_removed():
-    """(fizzle, 608.2b): the chosen graveyard card leaves the graveyard
-    before resolution -- the whole spell does nothing, lifegain included
-    (both non-fizzle branches are covered above)."""
+    """Pulse of Murasa fizzles entirely (including no lifegain) if the chosen graveyard card leaves before
+    resolution."""
     state = GameState(on_the_play=True)
     pulse = CardDef("Pulse of Murasa", CardType.INSTANT, {"generic": 2, "G": 1}, EffectId.PULSE_OF_MURASA)
     state.hand = [pulse]
@@ -1274,15 +1108,13 @@ def test_pulse_of_murasa_fizzle_target_removed():
     execute_choose_graveyard_card_option(state, creature_inst)
     state.graveyard.remove(creature_inst)  # removed in response, before resolution
     resolve_top_of_stack(state)
-    assert state.life_total == 10  # no lifegain -- the whole spell fizzled, not just the return
+    assert state.life_total == 10  # fizzled entirely, no lifegain
     assert all(c.name != "A Creature" for c in state.hand)
-    assert any(c.name == pulse.name for c in state.graveyard)  # Pulse itself still resolves to its own graveyard
+    assert any(c.name == pulse.name for c in state.graveyard)  # Pulse itself still resolves to the graveyard
 
 
 def test_fyndhorn_elves_mana_tap():
-    """Fyndhorn Elves: {T}: Add {G} (a functional twin of Llanowar Elves) --
-    zero direct references before this test. Confirms both the mana output
-    and the same summoning-sickness gating Llanowar Elves gets."""
+    """Fyndhorn Elves: {T}: Add {G}, gated by summoning sickness like Llanowar Elves."""
     state = GameState(on_the_play=True)
     fyndhorn = Permanent(registry.CARD_DEFS["Fyndhorn Elves"])  # summoning_sick=True by construction
     assert tap_summoning_locked(state, fyndhorn)  # sick mana dork -> can't tap for {G} yet
@@ -1295,9 +1127,7 @@ def test_fyndhorn_elves_mana_tap():
 
 
 def test_skeleton_token_menace():
-    """The Skeleton token (EffectId.SKELETON_TOKEN, "Undercity Catacombs
-    Skeleton", registry-only -- not in GREEN_CARD_CATALOG): 4/1 with
-    menace. Zero references before this test."""
+    """Skeleton token: 4/1 with menace."""
     state = GameState(on_the_play=True)
     skeleton = create_token(state, SKELETON_TOKEN_CARD_DEF)
     assert has_keyword(state, skeleton, "menace")

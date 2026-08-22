@@ -1,8 +1,7 @@
-"""Cross-player Aura reads: permanent_power/permanent_toughness/
-enchantment_count read state.players directly (not the active-player-
-proxied state.battlefield) to find enchanting Auras, so a BLOCKER's stats
-(the defender's own creature) are still correct when combat_damage_step
-runs with active_idx on the ATTACKER."""
+"""permanent_power/permanent_toughness/enchantment_count read state.players
+directly (not the active-player-proxied state.battlefield), so a blocker's
+stats stay correct when combat_damage_step runs with active_idx on the
+attacker."""
 from game import registry
 from game.cards import CardDef, CardType, EffectId
 from game.effects.stats import can_be_targeted, has_keyword, permanent_power, permanent_toughness
@@ -17,20 +16,17 @@ def test_cross_player_aura_reads():
     mask_on_defender = Permanent(CardDef("Ancestral Mask", CardType.ENCHANTMENT, {"generic": 2, "G": 1}, EffectId.ANCESTRAL_MASK))
     mask_on_defender.flags["enchanting"] = defenders_creature
     state.players[1].battlefield = [defenders_creature, rancor_on_defender, mask_on_defender]
-    state.active_idx = 0  # the ATTACKER's own perspective -- defender's battlefield is NOT state.battlefield right now
+    state.active_idx = 0  # attacker's perspective -- defender's battlefield isn't state.battlefield
 
-    # power: 1 base + 2 (Rancor) + 2 (Ancestral Mask, 1 OTHER enchantment
-    # -- Rancor -- so +2, not +4). toughness: 1 base + 0 (Rancor, power
-    # only) + 2 (Ancestral Mask, symmetric).
+    # power: 1 base + 2 (Rancor) + 2 (Ancestral Mask, +1 per OTHER
+    # enchantment: Rancor). toughness: 1 base + 0 (Rancor) + 2 (Mask).
     assert permanent_power(state, defenders_creature) == 5
     assert permanent_toughness(state, defenders_creature) == 3
     assert has_keyword(state, defenders_creature, "flying") is False
 
 
 def test_counters_flat_pt_bonus():
-    # Counters: a flat per-permanent bonus, no battlefield scan involved --
-    # "+1/+1" (Nyxborn Hydra) and "-0/-1" (Wall of Roots) both fold straight
-    # into base power/toughness alongside the existing Aura bonus.
+    # counters are a flat per-permanent bonus, folded into base power/toughness
     state = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
 
     hydra = Permanent(CardDef("Some Hydra", CardType.CREATURE, None, EffectId.FILLER, power=0, toughness=1))
@@ -41,15 +37,12 @@ def test_counters_flat_pt_bonus():
     wall = Permanent(CardDef("Some Wall", CardType.CREATURE, None, EffectId.FILLER, power=0, toughness=5))
     wall.counters["-0/-1"] = 5
     assert permanent_power(state, wall) == 0
-    assert permanent_toughness(state, wall) == 0  # 5 counters against toughness 5 -- lethal via the ordinary SBA check, not special-cased here
+    assert permanent_toughness(state, wall) == 0
 
 
 def test_animate_spec_threshold():
-    # _animate_spec: Pinnacle Kill-Ship's own Station -- below its charge
-    # threshold, ordinary card_def stats/keywords apply; at/above it,
-    # animate's own power/toughness/keywords fully override, unrelated to
-    # any counter's own _COUNTER_PT contribution (charge isn't listed there
-    # at all, so it never double-counts as a stat bonus on its own).
+    # below the charge threshold, ordinary card_def stats/keywords apply;
+    # at/above it, animate's power/toughness/keywords fully override
     state = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
     _filler_backup = registry.EFFECT_REGISTRY[EffectId.FILLER]
     registry.EFFECT_REGISTRY[EffectId.FILLER] = {
@@ -68,9 +61,7 @@ def test_animate_spec_threshold():
 
 
 def test_can_be_targeted_hexproof_and_shroud():
-    # can_be_targeted: hexproof blocks OPPONENTS only; shroud blocks everyone;
-    # a vanilla creature is targetable by anyone. Controller = whichever
-    # battlefield the permanent sits on.
+    # hexproof blocks opponents only; shroud blocks everyone
     ct_state = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
     vanilla = Permanent(CardDef("Vanilla", CardType.CREATURE, None, EffectId.FILLER, power=1, toughness=1))
     ct_state.players[0].battlefield = [vanilla]

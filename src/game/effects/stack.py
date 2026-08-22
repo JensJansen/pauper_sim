@@ -1,9 +1,6 @@
 """The priority stack: push, pop-and-resolve, and the one cast-time trigger
-hook. Deliberately dumb -- these functions never inspect what `resolve` does,
-so this module doesn't depend on casting.py (even though cast_aura calls
-push_to_stack). triggers.py sits ABOVE it instead: _trigger_resolve's
-"automatic" branch needs casting.enters_battlefield, which put here would
-recreate a cycle.
+hook. These functions never inspect what `resolve` does, so this module
+doesn't depend on casting.py. triggers.py sits above it instead.
 
 References registry.EFFECT_REGISTRY only inside function bodies -- see
 game/registry.py's docstring for why."""
@@ -13,13 +10,10 @@ from ..cards import CardType
 
 
 def on_cast_trigger(state, card_def):
-    """A "whenever you cast an instant/sorcery" ability (Guttersnipe). Real
-    Magic 603.3: a triggered ability doesn't take effect when it triggers -- it
-    goes on the stack at the next priority point, ABOVE the triggering spell,
-    with a response window. So this only QUEUES it (state.trigger_queue);
-    game.turn's priority round promotes it once the cast is fully done (never
-    mid-cast, or it'd land under a spell not yet pushed). Every cast path
-    (normal / alt_cast / Flashback / Plot) calls this identically."""
+    """A "whenever you cast an instant/sorcery" ability (Guttersnipe).
+    Queues the trigger (state.trigger_queue) rather than running it inline;
+    game.turn's priority round promotes it above the triggering spell once
+    the cast is fully done. Every cast path calls this identically."""
     if card_def.card_type not in (CardType.INSTANT, CardType.SORCERY):
         return
     for permanent in state.battlefield:
@@ -33,81 +27,47 @@ def on_cast_trigger(state, card_def):
 
 
 def push_to_stack(state, card_def, resolve, reserves_hand_card=True, is_spell=True, exiles_on_resolve=False, targets=()):
-    """Defer `resolve(state, card_def)` onto state.stack instead of running it
-    now, giving both players a priority window before it resolves. Pushed only
-    once the spell's cost is fully paid -- never mid-payment (an alt cost that
-    is itself a resolution, e.g. Fireblast's sacrifice-2-Mountains, pushes from
-    that resolution's own on_complete).
+    """Defer `resolve(state, card_def)` onto state.stack, giving both
+    players a priority window before it resolves. Pushed only once the
+    spell's cost is fully paid.
 
-    targets: this entry's DECLARED targets (real Magic: public the instant
-    they're chosen, 601.2c -- stays visible even if one later becomes illegal
-    and the spell fizzles at resolution, so this is never re-derived from
-    target_still_legal). A tuple of tagged descriptors, one per target chosen
-    at cast/activation time (empty for the common non-targeted push -- lands,
-    vanilla creatures, untargeted triggers):
+    targets: this entry's declared targets, a tuple of tagged descriptors
+    (empty for a non-targeted push):
       ("player", seat_idx)              -- capture_any_target's player case
       ("creature", permanent)           -- capture_any_target's permanent case
-                                            (any permanent type, not just
-                                            creatures -- e.g. Cleansing
-                                            Wildfire's land target; the tag
-                                            name is capture_any_target's own)
-      ("graveyard_card", card_instance) -- begin_choose_up_to_graveyard's
-                                            picks (Rooftop Percher)
+      ("graveyard_card", card_instance) -- begin_choose_up_to_graveyard's picks
       ("stack_entry", other_entry)      -- begin_choose_stack_target's pick
-                                            (Counterspell/Dispel/Spell Pierce)
-    Consumed by rl.model.features.build_token_set/_stack_target_map to surface
-    "what is currently being targeted" to the agent -- never read by engine
-    resolution logic itself (each resolve closure already carries its own
-    captured target(s) independently; this is purely an observation-side
-    mirror of the same data).
+    Consumed by rl.model.features.build_token_set to surface "what is
+    currently being targeted" to the agent; never read by resolution logic
+    itself.
 
-    A pushed card stays physically in its origin zone until `resolve` moves it
-    (resolve does its own hand/graveyard/exile removal, not here) -- so a paid-
-    but-unresolved card is still "in hand." Two places must NOT count it as
-    available: drl_env._hand_count_available (cast legality) and
-    resolution.discard_options (instant-speed discard) -- both subtract
+    A pushed card stays in its origin zone until `resolve` moves it, so a
+    paid-but-unresolved card still reads as "in hand" -- drl_env.
+    _hand_count_available and resolution.discard_options both subtract
     same-named stack entries still reserving a hand card.
 
-    reserves_hand_card=False when the card is NOT awaiting removal from the
-    caster's hand: Flashback/reanimate (already out of the graveyard),
-    Plot/Adventure/Madness cast-from-exile (already out of exile), an alt cost
-    that discards eagerly (Fireblast, Crop Rotation), or a promoted trigger.
-    (A promoted trigger's own card is not awaiting removal from hand at all --
-    treating it as reserving a hand slot would miscount it against a second,
-    still-in-hand copy of the same name, leaving that copy zero legal actions.)
+    reserves_hand_card=False when the card isn't awaiting removal from the
+    caster's hand: Flashback/reanimate, Plot/Adventure/Madness cast-from-
+    exile, an eagerly-discarding alt cost (Fireblast, Crop Rotation), or a
+    promoted trigger.
 
-    Records active_idx as the entry's controller: a priority round can flip
-    active_idx before this resolves, but resolve must run against the CASTER's
-    zones (state.py's active_idx proxy) -- resolve_top_of_stack restores it."""
+    Records active_idx as the entry's controller since a priority round can
+    flip active_idx before this resolves; resolve_top_of_stack restores it."""
     state.stack.append({
         "card_def": card_def, "resolve": resolve, "controller": state.active_idx,
         "reserves_hand_card": reserves_hand_card, "is_spell": is_spell,
-        # Flashback (702.34): the spell is EXILED as it leaves the stack, not put
-        # into the graveyard. resolve_top_of_stack does that exile (+ logs it), so
-        # every Flashback push sets this instead of leaving the card untracked.
+        # Flashback (702.34): exiled on resolve, not put into the graveyard.
         "exiles_on_resolve": exiles_on_resolve,
         "targets": tuple(targets),
     })
-    # A normally-cast spell LEAVES its controller's hand the instant it goes on
-    # the stack (real Magic: a cast spell is a stack object, not a hand card),
-    # and NEVER re-enters hand. Removing it HERE -- at cast, not at resolution --
-    # is what prevents it being cast a SECOND time while the first copy still
-    # sits on the stack (the reserved-hand-card double-cast bug). Its resolve's
-    # own "send this card onward" step recognises it as the resolving spell (via
-    # state.resolving_card, set by resolve_top_of_stack) instead of expecting it
-    # in hand. reserves_hand_card=False (flashback/madness/plot/alt-cost) has
-    # already left its origin zone, so there is nothing to remove.
+    # A cast spell leaves hand the instant it goes on the stack and never
+    # re-enters it -- prevents casting a second copy while this one still
+    # sits on the stack. reserves_hand_card=False has already left its
+    # origin zone, so there's nothing to remove here.
     if reserves_hand_card and card_def in state.hand:
         state.hand.remove(card_def)
-    # Only a SPELL is a card that goes on the stack. An activated/triggered
-    # ability (is_spell=False) puts an ability object on the stack while its
-    # source card stays where it is -- NO card changes zones -- so it must not
-    # be logged as a card zone_move (logging one made the replay converter mint
-    # a phantom library copy for every activation: Makeshift Munitions,
-    # Krark-Clan Shaman, Nihil Spellbomb, ...). For a spell, from_zone is "hand"
-    # only when it actually just left hand here; a spell cast from graveyard/
-    # exile (Flashback/Madness/Plot/free alt-cost, reserves_hand_card=False)
-    # already left its origin zone before this push.
+    # Only a spell is a card leaving hand for the stack; an ability
+    # (is_spell=False) leaves its source card where it is -- no zone_move.
     if is_spell:
         state.log_event(
             "zone_move", card=card_def.name, from_zone="hand" if reserves_hand_card else None,
@@ -116,30 +76,22 @@ def push_to_stack(state, card_def, resolve, reserves_hand_card=True, is_spell=Tr
 
 
 def push_ability_to_stack(state, source_card_def, effect):
-    """Put a NON-MANA ability's effect on the stack (real Magic 605: activated/
-    triggered abilities use the stack + a priority window; only mana abilities
-    skip it). `source_card_def` labels the entry; `effect(state)` runs on
-    resolution. Costs and targets are already paid/chosen before this push.
-    reserves_hand_card=False (source is on the battlefield, not a hand card);
-    is_spell=False (an ability isn't a legal Counterspell/Dispel/Spell Pierce
-    target)."""
+    """Put a non-mana ability's effect on the stack (mana abilities alone
+    skip the stack). `source_card_def` labels the entry; `effect(state)`
+    runs on resolution. Costs/targets are already paid/chosen. Never
+    reserves a hand card (source is on the battlefield); is_spell=False
+    (an ability isn't a legal counterspell target)."""
     push_to_stack(state, source_card_def, lambda st, cd: effect(st), reserves_hand_card=False, is_spell=False)
 
 
 def counter_spell(state, entry):
-    """Counter a spell: remove its entry from the stack so it never resolves,
-    and send its card to the right zone. A normally-cast spell
-    (reserves_hand_card) already left its controller's hand at cast
-    (push_to_stack), so this just sends the on-stack card to that controller's
-    graveyard (real Magic: a countered spell goes to its owner's graveyard); the
-    `if cd in controller.hand` guard below is now only defensive.
-    A spell cast from elsewhere (flashback/madness/plot/free-alt,
-    reserves_hand_card=False) has already left its origin zone at cast time,
-    so there's nothing to move -- it simply ceases (a flashback spell would
-    be exiled either way; a self-discarding spell like Crop Rotation is
-    already in the graveyard, which is exactly where a countered spell goes).
-    No-op if the entry has already left the stack (already countered/resolved
-    in response). Returns True iff it actually countered something."""
+    """Counter a spell: remove its entry from the stack so it never
+    resolves, and send its card to its owner's graveyard. A normally-cast
+    spell already left hand at cast, so this just moves the on-stack card
+    to the graveyard (the `if cd in controller.hand` guard is defensive
+    only). A spell cast from elsewhere has already left its origin zone,
+    so there's nothing to move. No-op if the entry already left the stack.
+    Returns True iff it actually countered something."""
     if entry not in state.stack:
         return False
     state.stack.remove(entry)
@@ -154,47 +106,30 @@ def counter_spell(state, entry):
 
 
 def resolve_top_of_stack(state):
-    """Pop and resolve the most recently pushed spell -- LIFO, no
-    reordering action needed (real Magic's own stack order). Called once
-    per "Pass" while state.stack is non-empty (game.turn._run_turn_gen),
-    never automatically -- the model must explicitly let it happen instead
-    of casting something else in response.
+    """Pop and resolve the most recently pushed spell (LIFO). Called once
+    per "Pass" while state.stack is non-empty, never automatically.
 
-    Restores active_idx to this entry's own controller (push_to_stack)
-    before resolving: by the time all players have passed in a row,
-    active_idx may be sitting on whoever passed last, not the original
-    caster -- resolve must run from the
-    controller's own zone perspective regardless."""
+    Restores active_idx to this entry's own controller before resolving,
+    since by the time all players have passed in a row, active_idx may be
+    sitting on whoever passed last."""
     entry = state.stack.pop()
     state.active_idx = entry["controller"]
-    # Only a spell is a card leaving the stack on resolution; an ability
-    # resolving moves no card (same is_spell reasoning as push_to_stack). A
-    # Flashback spell is EXILED as it leaves the stack (702.34), not put into the
-    # graveyard -- log that explicit destination (the exile itself happens below,
-    # after the effect resolves), so the replay shows exile, not the graveyard.
+    # Only a spell is a card leaving the stack; an ability resolving moves no
+    # card. Flashback (702.34) exiles rather than going to the graveyard.
     if entry["is_spell"]:
         if entry.get("exiles_on_resolve"):
             state.log_event("zone_move", card=entry["card_def"].name, from_zone="stack", to_zone="exile", reason="flashback")
         else:
             state.log_event("zone_move", card=entry["card_def"].name, from_zone="stack", reason="resolve")
-    # Mark the spell currently resolving so its resolve's own "send this card
-    # onward" step (discard_from_hand_to_graveyard / cast_permanent_from_hand /
-    # cast_aura) treats it as the resolving spell -- off hand since cast
-    # (push_to_stack) and NEVER to re-enter hand -- rather than expecting it in
-    # hand. Save/restore (not just clear) so a nested resolution, if one ever
-    # happens, can't strand the outer spell's marker.
+    # Mark the resolving spell so its own "send this card onward" step
+    # treats it as such rather than expecting it in hand. Save/restore so a
+    # nested resolution can't strand the outer spell's marker.
     prev_resolving = state.resolving_card
     state.resolving_card = entry["card_def"]
     try:
         entry["resolve"](state, entry["card_def"])
     finally:
         state.resolving_card = prev_resolving
-    # Flashback exile (702.34): the card was removed from the graveyard at cast
-    # and its resolve never re-homes it, so it is now gone from every zone -- it
-    # cannot be flashed back again (out of the graveyard) and stays out of the
-    # graveyard for good. state.exile here is the CASTABLE exile zone (Plot/
-    # Madness/Adventure, stored as (card_def, turn) tuples) -- a flashback card is
-    # NOT castable-from-exile, so it must not be added there; leaving it untracked
-    # is the faithful representation given no plain-exile zone exists. The
-    # stack->exile zone_move logged above is what makes the replay render it as
-    # exiled rather than defaulting it to the graveyard.
+    # Flashback exile: removed from the graveyard at cast and never re-homed
+    # by resolve, so it's now out of every zone -- not added to the castable
+    # exile zone (state.exile), since it can't be flashed back again.

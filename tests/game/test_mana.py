@@ -26,17 +26,15 @@ def _u(*colors):
     ([_u("C")], {"R": 1}, False, "colorless cannot pay a colored pip"),
     ([_u("G"), _u("R"), _u("W")], {"G": 1, "generic": 2}, True, "leftovers cover generic"),
 
-    # -- Hall's condition, on its own: enough units in total, but not enough
-    #    that can make the specific colors demanded --
+    # -- Hall's condition alone: enough units in total, but not enough that
+    #    can make the specific colors demanded --
     ([_u("G", "R"), _u("R")], {"G": 2}, False, "only one unit can make G"),
     ([_u("G", "R"), _u("G", "R")], {"G": 2}, True, "both duals can make G"),
     ([_u("G", "R"), _u("G", "R")], {"G": 1, "R": 1}, True, "the duals split"),
     ([_u("G"), _u("G")], {"G": 1, "R": 1}, False, "nothing can make R"),
 
-    # -- the JOINT case, which neither condition catches alone: each color
-    #    passes on its own and the total passes, but the PAIR is short. This is
-    #    the case a greedy solver gets wrong and the reason the subset sweep
-    #    exists at all.
+    # -- the JOINT case: each color passes alone and the total passes, but
+    #    the PAIR is short -- the case a greedy solver gets wrong.
     ([_u("B", "U"), _u("B", "U"), _u("B", "U"), _u("W")], {"U": 2, "B": 2}, False,
      "{U,B} jointly needs 4 units, only 3 can make either"),
     ([_u("B", "U"), _u("B", "U"), _u("B", "U"), _u("U")], {"U": 2, "B": 2}, True,
@@ -51,20 +49,15 @@ def _u(*colors):
      "nothing can make B"),
 ])
 def test_can_pay_is_exact_in_both_directions(units, cost, expected, why):
-    """can_pay must be EXACT, not merely safe. A false positive lets a payment
-    begin that cannot finish -- an all-False mask and a hard error, since there
-    is no Abandon payment action. A false negative hides a legal cast, which is
-    a rules-faithfulness bug in its own right. The greedy tap-solver that
-    predated float-first was sound but incomplete, i.e. it made the second kind
-    of error; this pins that both are gone."""
+    """can_pay must be EXACT, not merely safe. A false positive lets a
+    payment begin that cannot finish (all-False mask, hard error); a false
+    negative hides a legal cast."""
     assert mana.can_pay(units, cost) is expected, why
 
 
 def test_available_mana_units_counts_pool_and_sources_in_one_currency():
-    """A floating pip and a symbol from an untapped source are interchangeable
-    for affordability -- that equivalence is the whole point of the unit
-    representation, and it is why cast-then-pay needs no separate "pool" and
-    "sources" reasoning anywhere."""
+    """A floating pip and a symbol from an untapped source are
+    interchangeable for affordability."""
     state = GameState(on_the_play=True)
     state.battlefield = [
         Permanent(CardDef("Mountain", CardType.LAND, None, EffectId.MOUNTAIN)),
@@ -74,8 +67,7 @@ def test_available_mana_units_counts_pool_and_sources_in_one_currency():
     assert mana.plan_payment(state, {"R": 1, "B": 1}) is not None, "castable off untapped lands alone"
     assert mana.plan_payment(state, {"R": 2}) is None, "only one red source exists"
 
-    # Tapping one moves it from the source half to the pool half, leaving the
-    # total unchanged -- an invariant the payment gates depend on.
+    # Tapping moves a unit from the source half to the pool half; total unchanged.
     mana.activate_mana_source(state, state.battlefield[0])
     assert sorted("".join(sorted(u)) for u in mana.available_mana_units(state)) == ["B", "R"]
     assert mana.plan_payment(state, {"R": 1, "B": 1}) is not None
@@ -99,18 +91,14 @@ def test_fixed_multi_source_floats_both_symbols_at_once():
         mana.activate_mana_source(state, state.battlefield[0])  # one activation floats BOTH symbols
         assert state.mana_pool == {"B": 1, "R": 1} and state.battlefield[0].tapped
         assert mana.pool_can_pay(state.mana_pool, {"B": 1, "R": 1})
-        # A 2-symbol event -- never single-pip-tagged, regardless of
-        # registry kind (see PlayerState.mana_pool_single_pip's own
-        # docstring: the tag rule is dynamic, len(produced) == 1).
-        assert state.mana_pool_single_pip == {}
+        assert state.mana_pool_single_pip == {}  # a 2-symbol event -- never single-pip-tagged
     finally:
         registry.EFFECT_REGISTRY[EffectId.FILLER] = filler_backup
 
 
 def test_count_source_produces_one_symbol_per_matching_permanent():
-    # Overgrown Battlement (real card, "count" kind -- one G per Defender
-    # you control, itself included): 3 Defenders on the battlefield means
-    # ONE tap of Battlement alone produces 3 G, not just 1.
+    # Overgrown Battlement ("count" kind): 3 Defenders on the battlefield
+    # means ONE tap alone produces 3 G, not just 1.
     state = GameState(on_the_play=True)
     state.battlefield = [
         Permanent(CardDef("Overgrown Battlement", CardType.CREATURE, {"G": 1}, EffectId.OVERGROWN_BATTLEMENT, defender=True)),
@@ -125,17 +113,11 @@ def test_count_source_produces_one_symbol_per_matching_permanent():
     mana.activate_mana_source(state, battlement)  # one activation floats all 3 G into the pool
     assert state.mana_pool == {"G": 3} and battlement.tapped
     assert mana.pool_can_pay(state.mana_pool, {"G": 3}) and not mana.pool_can_pay(state.mana_pool, {"G": 4})
-    # A 3-symbol event -- never single-pip-tagged (see
-    # test_single_pip_tag_on_fixed_source for the ==1 case, including the
-    # edge case where a "count"/"count_all" source happens to resolve to
-    # exactly 1 and IS tagged).
-    assert state.mana_pool_single_pip == {}
+    assert state.mana_pool_single_pip == {}  # a 3-symbol event -- never single-pip-tagged
 
 
 def test_single_pip_tag_on_fixed_source():
-    # A plain land's tap is always a 1-symbol event -> tagged single-pip
-    # (see PlayerState.mana_pool_single_pip's own docstring for the dynamic
-    # len(produced) == 1 tag rule).
+    # A plain land's tap is always a 1-symbol event -> tagged single-pip.
     state = GameState(on_the_play=True)
     state.battlefield = [Permanent(CardDef("Mountain", CardType.LAND, None, EffectId.MOUNTAIN))]
     mana.activate_mana_source(state, state.battlefield[0])
@@ -144,11 +126,8 @@ def test_single_pip_tag_on_fixed_source():
 
 
 def test_spend_one_pip_untagged_first():
-    # game.mana.spend_one_pip's spend-order convention: an UNTAGGED
-    # (multi-pip-event-sourced) pip of a color is always consumed before a
-    # TAGGED (single-pip-event-sourced) one -- see its own docstring for
-    # why (lets a burst source's own excess absorb blame for a burnt
-    # leftover ahead of a genuinely avoidable single-pip tap).
+    # spend_one_pip's spend-order convention: an UNTAGGED pip of a color is
+    # always consumed before a TAGGED one.
     state = GameState(on_the_play=True)
     mana.float_mana(state, ["R", "G"])  # 2-symbol event -- untagged
     mana.float_mana(state, ["R"])       # 1-symbol event -- tagged
@@ -166,8 +145,7 @@ def test_spend_one_pip_untagged_first():
 
 def test_float_mana_taggable_false_forces_no_tag():
     # taggable=False overrides the len==1 rule -- used only by drl_env's
-    # mana-filter output, which must never be tagged despite always
-    # producing exactly 1 symbol (see float_mana's own docstring).
+    # mana-filter output, which must never be tagged.
     state = GameState(on_the_play=True)
     mana.float_mana(state, ["U"], taggable=False)
     assert state.mana_pool == {"U": 1}
@@ -181,8 +159,7 @@ def test_pool_can_pay_edges():
 
 
 def test_begin_pay_cost_empty_cost_completes_immediately():
-    # begin_pay_cost: an empty cost (e.g. Lotus Petal's {} cast cost) completes
-    # immediately -- nothing to spend, no dangling pending.
+    # An empty cost (e.g. Lotus Petal's {} cast cost) completes immediately.
     state = GameState(on_the_play=True)
     resolved = []
     mana.begin_pay_cost(state, {}, on_complete=lambda s: resolved.append(True))
@@ -191,13 +168,9 @@ def test_begin_pay_cost_empty_cost_completes_immediately():
 
 
 def test_utopia_sprawl_automatic_bonus_mana():
-    # Boggles' two mana-fixing Auras need genuinely different treatment:
     # Utopia Sprawl's bonus is automatic (always on top of the land's own
-    # output, no extra choice), Abundant Growth's is a competing ability
-    # (the model picks native or granted each tap) -- see mana_output's
-    # own module comments. Exercised directly against a real Forest, using
-    # a synthetic Aura permanent (a real Utopia Sprawl CardDef, just not
-    # attached via the real cast_aura flow).
+    # output), unlike Abundant Growth's competing ability. Exercised
+    # against a real Forest with a synthetic Aura permanent.
     state = GameState(on_the_play=True)
     forest = Permanent(CardDef("Forest", CardType.LAND, None, EffectId.FOREST))
     utopia_sprawl = Permanent(CardDef("Utopia Sprawl", CardType.ENCHANTMENT, {"G": 1}, EffectId.UTOPIA_SPRAWL))
@@ -209,7 +182,6 @@ def test_utopia_sprawl_automatic_bonus_mana():
     mana.activate_mana_source(state, forest)  # one activation floats native G AND the automatic bonus W
     assert state.mana_pool == {"G": 1, "W": 1} and forest.tapped
     assert state.mana_pool_single_pip == {}  # a 2-symbol event -- never single-pip-tagged
-    # pay a {W} cost by spending the floated W; the unneeded G stays in the pool.
     mana.begin_pay_cost(state, {"W": 1}, on_complete=lambda s: None)
     assert state.pending_resolution is not None
     mana.execute_pool_spend(state, "W")
@@ -219,8 +191,8 @@ def test_utopia_sprawl_automatic_bonus_mana():
 
 
 def test_abundant_growth_competing_granted_ability():
-    # Abundant Growth: Plains gets a genuinely competing "any of {G, W}"
-    # ability -- both its own native W and the grant stay usable.
+    # Abundant Growth: Plains gets a competing "any of {G, W}" ability --
+    # both its native W and the grant stay usable.
     state = GameState(on_the_play=True)
     plains = Permanent(CardDef("Plains", CardType.LAND, None, EffectId.PLAINS))
     abundant_growth = Permanent(CardDef("Abundant Growth", CardType.ENCHANTMENT, {"G": 1}, EffectId.ABUNDANT_GROWTH))
@@ -240,12 +212,10 @@ def test_abundant_growth_competing_granted_ability():
 
 
 def test_abundant_growth_granted_color_only_via_enchanted_permanent():
-    # mana_ability_options must offer the granted color only via the ENCHANTED
-    # Plains, so the caller can activate_mana_source that exact permanent
-    # specifically -- even with an identical-by-name plain Plains also in
-    # play. Same-named sources are normally fully interchangeable in this
-    # engine; a granted-mana Aura is the one case that breaks that, since
-    # only the enchanted copy can actually produce the granted color.
+    # mana_ability_options must offer the granted color only via the
+    # ENCHANTED Plains, even with an identical plain Plains also in play --
+    # same-named sources are normally interchangeable; a granted-mana Aura
+    # is the one case that breaks that.
     state = GameState(on_the_play=True)
     plain_plains = Permanent(CardDef("Plains", CardType.LAND, None, EffectId.PLAINS))
     grant_plains = Permanent(CardDef("Plains", CardType.LAND, None, EffectId.PLAINS))
@@ -266,8 +236,7 @@ def test_abundant_growth_granted_color_only_via_enchanted_permanent():
 
 
 def test_discount_departing_source_ignores_permanent_without_mana_spec():
-    # A permanent whose effect_id has no registry "mana" spec at all is a
-    # silent no-op -- e.g. a plain non-mana creature getting sacrificed.
+    # No registry "mana" spec at all (e.g. a plain non-mana creature) is a no-op.
     state = GameState(on_the_play=True)
     mana.float_mana(state, ["R"])
     creature = Permanent(CardDef("Some Creature", CardType.CREATURE, {"generic": 1}, EffectId.FILLER))
@@ -283,9 +252,8 @@ def test_discount_departing_source_no_op_when_nothing_tagged():
 
 
 def test_discount_departing_source_fixed_color_discounts_tag():
-    # Fireblast's own scenario: a Mountain tapped for {R} earlier, then
-    # sacrificed -- the R it produced was free value regardless of whether
-    # it ends up spent, so the tag (not the mana itself) is excused.
+    # Fireblast's scenario: a Mountain tapped for {R}, then sacrificed --
+    # the tag (not the mana itself) is excused.
     state = GameState(on_the_play=True)
     mountain = Permanent(CardDef("Mountain", CardType.LAND, None, EffectId.MOUNTAIN))
     state.battlefield = [mountain]
@@ -315,8 +283,7 @@ def test_discount_departing_source_flexible_picks_higher_tagged_candidate():
 
 
 def test_discount_departing_source_flexible_tie_break_uses_state_rng():
-    # On a tie, the choice comes from state.rng (the engine's own seeded
-    # RNG, not the stdlib random module) -- reproducible given the same seed.
+    # On a tie, the choice comes from state.rng, reproducible given the same seed.
     filler_backup = registry.EFFECT_REGISTRY[EffectId.FILLER]
     registry.EFFECT_REGISTRY[EffectId.FILLER] = {"mana": ("flexible", {"W", "U"})}
     try:
@@ -335,9 +302,7 @@ def test_discount_departing_source_flexible_tie_break_uses_state_rng():
 
 
 def test_discount_departing_source_out_of_scope_kind_is_a_no_op():
-    # fixed_multi/tron/count/count_all are deliberately out of scope --
-    # even if one happens to be tagged (the count/count_all edge case),
-    # sacrificing/untapping it never discounts anything.
+    # fixed_multi/tron/count/count_all are deliberately out of scope.
     filler_backup = registry.EFFECT_REGISTRY[EffectId.FILLER]
     registry.EFFECT_REGISTRY[EffectId.FILLER] = {"mana": ("fixed_multi", ("B", "R"))}
     try:
@@ -351,9 +316,6 @@ def test_discount_departing_source_out_of_scope_kind_is_a_no_op():
         registry.EFFECT_REGISTRY[EffectId.FILLER] = filler_backup
 
 
-# Mana filters (Conduit Pylons / Barrels of Blasting Jelly) are a two-step
-# pay-then-choose-color action ("Filter X, paying <color>" pays the {1}
-# immediately; the output color is chosen afterward via the shared
-# choose_color mana_subdecision stage) owned by the action layer
-# (drl_env._filter_mana_*), not a mana primitive here -- so their own test
-# lives with that code, not in this module.
+# Mana filters (Conduit Pylons / Barrels of Blasting Jelly) are owned by
+# the action layer (drl_env._filter_mana_*), not a mana primitive here --
+# their own test lives with that code, not in this module.

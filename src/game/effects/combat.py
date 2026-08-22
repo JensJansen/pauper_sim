@@ -9,28 +9,17 @@ from ..cards import CardType
 
 
 def creature_attack_eligible(state, permanent):
-    """Untapped, not a Defender (Wall of Roots/Overgrown Battlement/Saruli
-    Caretaker/Gatecreeper Vine -- real Magic's own rule: a Defender can
-    never attack, full stop, regardless of tapped/summoning-sick status),
-    and not summoning sick unless it has haste (stats.has_haste -- the same
-    canonical check mana.py's tap_summoning_locked uses, covering a flat
-    registry "haste": True spec (Kitchen Imp), an intrinsic/static-granted
-    "haste" keyword (Goblin Tomb Raider), and an until-EOT temp_keywords
-    grant (Rally at the Hornburg, Goblin Bushwhacker)). Checked per creature
-    (drl_env's "Attack: <name>" actions) so a model can declare SOME
-    eligible creatures as attackers and hold others back (as blockers once
-    those exist, or as mana sources).
+    """Untapped, not a Defender (which can never attack regardless of
+    tapped/summoning-sick status), and not summoning sick unless it has
+    haste (stats.has_haste). Checked per creature so a model can declare
+    some eligible creatures as attackers and hold others back.
 
-    Also excludes anything already in state.attackers -- ordinarily
-    redundant with the tapped check above (declare_attacker taps its
-    permanent), but vigilance (Cartouche of Solidarity's own Warrior
-    token) deliberately skips that tap, so without this explicit guard a
-    vigilant creature would stay "eligible" forever within the same
-    combat and could be declared an attacker repeatedly, each declaration
-    appending a duplicate entry to state.attackers and multiplying its
-    power in combat_damage_step's unblocked-damage total. Mirrors the
-    explicit, tapped-independent guard creature_block_eligible already
-    has for the identical reason (blocking never taps anyone either)."""
+    Also excludes anything already in state.attackers: vigilance
+    (Cartouche of Solidarity's Warrior token) skips the declare-time tap,
+    so without this explicit guard a vigilant creature could be declared
+    an attacker repeatedly, multiplying its power in combat_damage_step's
+    unblocked-damage total. Mirrors creature_block_eligible's identical
+    guard."""
     return (
         permanent.card_type == CardType.CREATURE and not permanent.tapped
         and not permanent.card_def.extra.get("defender", False)
@@ -40,46 +29,25 @@ def creature_attack_eligible(state, permanent):
 
 
 def _blocked_by_creatures(blocked_by):
-    """Flatten a blocked_by dict ({attacker: [blockers]}) to the flat set of
-    creatures currently committed as blockers. Gang-blocking (multiple
-    blockers per one attacker) makes blocked_by's VALUES lists, so a
-    membership test can no longer be `in blocked_by.values()` -- each
-    blocker still blocks exactly ONE attacker (no creature blocks twice),
-    so the flat union is the right 'already committed' set."""
+    """Flatten a blocked_by dict ({attacker: [blockers]}) to the flat set
+    of creatures currently committed as blockers. Gang-blocking makes the
+    values lists, so this is a union, not a `.values()` membership test."""
     return {b for blockers in blocked_by.values() for b in blockers}
 
 
 def remove_from_combat(state, permanent):
-    """506.4: a permanent removed from the battlefield stops being an attacking,
-    blocking, blocked and/or unblocked creature, simultaneously. Call this from
-    EVERY battlefield-exit path that can move a creature (death, sacrifice,
-    bounce, exile) -- there is no single zone-change choke point in this engine,
-    so each one calls this itself.
-
-    Not merely tidiness. state.attackers used to keep a killed attacker, and the
-    two halves of drl_env's "Assign Blocker" read different sources:
-    creature_block_eligible iterates state.opponent.attackers (which still had
-    it) while choose_opponent_permanent_options iterates state.opponent.
-    battlefield (which did not). The action stayed legal, its nested attacker
-    choice matched nothing, fizzled with None, recorded no block, and re-opened
-    begin_declare_blockers on an identical state -- a second infinite declare-
-    blockers loop, distinct from the reach/flying one fixed the same day (see
-    can_block below). begin_declare_blockers' own "no attackers" early-out could
-    not stop it either, since that tests the same stale list. Leaving a dead
-    attacker in the list ALSO let it deal combat damage from the graveyard.
+    """506.4: a permanent removed from the battlefield stops being an
+    attacking, blocking, blocked and/or unblocked creature, simultaneously.
+    Call this from every battlefield-exit path that can move a creature
+    (death, sacrifice, bounce, exile) -- there is no single zone-change
+    choke point in this engine.
 
     Idempotent, and safe to call for a permanent that was never in combat.
 
-    Scope note (deliberate, not an oversight): this removes `permanent` itself
-    from combat, which is exactly what 506.4 states. It does NOT drop the
-    blocked_by ENTRY keyed by a removed attacker. Dropping it would free that
-    attacker's already-declared blockers to be offered a second block, and real
-    Magic declares blockers once, simultaneously (509.1) -- a creature never
-    blocks twice. Leaving the entry is also what HEAD already did, so this adds
-    no new deviation. The stale key is separately suspect (menace_block_
-    incomplete and combat_damage_step both iterate blocked_by.items(), so a dead
-    menace attacker could read as permanently under-blocked) -- tracked as its
-    own question rather than silently decided here."""
+    Scope note: this removes `permanent` itself from combat but does not
+    drop the blocked_by entry keyed by a removed attacker -- dropping it
+    would free that attacker's already-declared blockers for a second
+    block, and real Magic declares blockers once, simultaneously (509.1)."""
     for player in state.players:
         if permanent in player.attackers:
             player.attackers.remove(permanent)
@@ -89,26 +57,17 @@ def remove_from_combat(state, permanent):
 
 
 def can_block(state, blocker, attacker):
-    """Whether `blocker` is allowed to block `attacker`. Two real evasion/blocking rules modeled:
-    - An attacker that can only be blocked by flying -- real flying (Kitchen
-      Imp) OR Silhana Ledgewalker's "can't be blocked except by creatures
-      with flying" (which is NOT itself flying) -- may be blocked only by a
-      creature with flying or reach.
-    - Reach lets a non-flying creature block a flier (Bramble Wurm).
-    Menace isn't a per-blocker restriction -- any creature may still commit to
-    block a menace attacker -- so it plays no part here; menace's own "needs
-    2+ blockers" rule is enforced separately, by menace_block_incomplete and
-    enforce_menace below.
+    """Whether `blocker` is allowed to block `attacker`. Two evasion rules
+    modeled: an attacker that can only be blocked by flying (real flying,
+    or Silhana Ledgewalker's "can't be blocked except by creatures with
+    flying") may be blocked only by a creature with flying or reach; reach
+    lets a non-flying creature block a flier. Menace isn't a per-blocker
+    restriction, so it plays no part here -- see menace_block_incomplete
+    and enforce_menace below.
 
-    Shared by creature_block_eligible (below) and drl_env._assign_blocker_
-    execute's own extra_predicate, so the rule lives in one place. That
-    sharing is load-bearing, not tidiness: drl_env used to inline a
-    flying-only copy of this, which disagreed with this function about REACH
-    and produced an "Assign Blocker" action that was legal but could match no
-    attacker -- an infinite, memory-eating declare-blockers loop (fixed
-    2026-08-19; see _assign_blocker_execute's own docstring for the full
-    failure). Any future evasion rule belongs HERE, never re-derived by a
-    caller."""
+    Shared by creature_block_eligible and drl_env._assign_blocker_execute's
+    extra_predicate, so the rule lives in one place -- any future evasion
+    rule belongs here, never re-derived by a caller."""
     attacker_needs_flying_blocker = (
         stats.has_keyword(state, attacker, "flying")
         or stats.has_keyword(state, attacker, "cant_be_blocked_except_by_flying")
@@ -119,28 +78,17 @@ def can_block(state, blocker, attacker):
 
 
 def creature_block_eligible(state, permanent):
-    """A creature untapped, not already committed as a blocker, AND with at
-    least one attacker it's actually allowed to block right now. Reads
-    state.opponent.blocked_by / state.opponent.attackers, NOT the active
-    (defending) player's own: this is only ever called with state.active_idx
-    already flipped to the defender (game.turn._declare_blockers_gen), and
-    PlayerState.blocked_by/attackers are keyed by the ATTACKING player's own
-    permanents (see their own docstrings). Deliberately NOT the same
-    eligibility as creature_attack_eligible: real Magic lets a Defender
-    block and lets a summoning-sick creature block -- neither check belongs
-    here.
+    """A creature untapped, not already committed as a blocker, and with
+    at least one attacker it's actually allowed to block right now. Reads
+    state.opponent.blocked_by/attackers, not the defending player's own,
+    since those are keyed by the attacking player's permanents. Not the
+    same eligibility as creature_attack_eligible: real Magic lets a
+    Defender block and lets a summoning-sick creature block.
 
-    The "has at least one legal target" clause (added with gang-blocking)
-    is what stops a blocker with nothing it can legally block -- every
-    attacker already blocked, or the only unblocked... no: WITH gang-
-    blocking an already-blocked attacker can still take more blockers, so
-    the only genuine no-target case is a non-flying blocker when every
-    attacker has flying -- from being offered as a legal 'Assign Blocker'.
-    That action was a no-op (nested attacker-choice finds no target, auto-
-    completes, re-opens blocking, blocker still uncommitted) that a
-    stochastic policy could loop on until the declare-blockers action cap
-    fired; removing it at the source shrinks the action space and demotes
-    that cap to a pure backstop."""
+    The "has at least one legal target" clause stops a blocker with
+    nothing it can legally block (e.g. a non-flying blocker when every
+    attacker has flying) from being offered as a legal 'Assign Blocker'
+    action that would be a no-op."""
     if not (permanent.card_type == CardType.CREATURE and not permanent.tapped
             and permanent not in _blocked_by_creatures(state.opponent.blocked_by)):
         return False
@@ -148,15 +96,11 @@ def creature_block_eligible(state, permanent):
 
 
 def declare_attacker(state, permanent):
-    """Model chose to attack with this specific creature -- addressed by
-    (name, slot) at the drl_env action-table layer, so the caller has
-    already picked the exact physical copy it means, not an arbitrary
-    same-named match. Tapped here, at declaration, same as real Magic --
-    an attacking creature is unavailable for a mana ability etc. for the
-    rest of combat, not just tapped as a side effect of dealing damage
-    later -- UNLESS it has vigilance (Cartouche of Solidarity's own
-    Warrior token), which is real Magic's entire point of the keyword:
-    attacking doesn't tap it at all."""
+    """Model chose to attack with this specific creature. Tapped here, at
+    declaration, same as real Magic -- an attacking creature is unavailable
+    for the rest of combat, not just as a side effect of dealing damage
+    later -- unless it has vigilance (Cartouche of Solidarity's Warrior
+    token), which doesn't tap on attack at all."""
     if not stats.has_keyword(state, permanent, "vigilance"):
         permanent.tapped = True
     state.attackers.append(permanent)
@@ -164,13 +108,9 @@ def declare_attacker(state, permanent):
 
 
 def declare_attackers_step(state):
-    """game.turn.Phase.DECLARE_ATTACKERS phase-entry reset (rakdos
-    madness / mono red madness / boggles -- gated by combat_enabled, same
-    as combat always was): clears last turn's attackers AND blocks (both
-    reset together -- a fresh combat has neither yet) so the model's own
-    "Attack: <name> (slot k)" actions (drl_env.build_action_table, each
-    one checking creature_attack_eligible and calling declare_attacker)
-    start this turn's declaration fresh, one creature at a time."""
+    """game.turn.Phase.DECLARE_ATTACKERS phase-entry reset: clears last
+    turn's attackers and blocks together, so the model's own "Attack:
+    <name>" actions start this turn's declaration fresh."""
     state.attackers = []
     state.blocked_by = {}
 
@@ -180,33 +120,22 @@ def _is_alive(state, permanent):
 
 
 def _attacker_deal_damage(state, attacker, blockers, amounts, opponent_amount, attacker_facts):
-    """Attacker deals its combat damage across a LIST of `blockers` per the
-    parallel `amounts` list (amounts[i] -> blockers[i]), plus `opponent_amount`
-    trample-spilled to the defending player. state.opponent, from the
-    attacker's own active perspective, IS the defender throughout
-    combat_damage_step.
+    """Attacker deals its combat damage across a list of `blockers` per the
+    parallel `amounts` list, plus `opponent_amount` trample-spilled to the
+    defending player. state.opponent, from the attacker's active
+    perspective, is the defender throughout combat_damage_step.
 
-    "lifelink" (Armadillo Cloak's "whenever enchanted creature deals damage,
-    you gain that much life" -- a TRIGGERED ability, unlike real lifelink:
-    stats.lifelink_count returns however many Cloaks are attached, each an
-    independent trigger for the FULL damage dealt, so two Cloaks means 2x life
-    gained). The attacker's controller is always the currently ACTIVE player
-    throughout combat_damage_step, so gain_life's active-player default is
-    already correct; damage ACTUALLY dealt is assigned-to-blockers +
-    trample-to-player.
+    lifelink (Armadillo Cloak's own triggered ability, unlike real
+    lifelink): stats.lifelink_count returns however many Cloaks are
+    attached, each an independent trigger for the full damage dealt, so
+    two Cloaks means 2x life gained.
 
     attacker_facts: combat_damage_step's pre-fetched {power, toughness,
-    first_strike, trample, lifelink_count} dict for this attacker -- power/
-    trample/lifelink_count read here are ALWAYS the attacker's own; the dict
-    exists to avoid re-scanning state.players for its Auras on every blocked
-    pair (profiled at ~8-10 redundant stats.py scans per pair otherwise)."""
-    # `amounts` is parallel to `blockers`: amounts[i] is the damage assigned to
-    # blockers[i] -- the attacking player's own free choice for a multi-blocked
-    # attacker (any portion to any blocker, not forced lethal), or
-    # _default_damage_assignment's lethal-in-order split for a single blocker
-    # / the auto path. `opponent_amount` is the trample share spilled to the
-    # defending player. Lifelink counts damage ACTUALLY dealt (to blockers +
-    # to the player), which for a full-power assignment is exactly power.
+    first_strike, trample, lifelink_count} dict for this attacker, avoiding
+    a re-scan of state.players' Auras on every blocked pair."""
+    # amounts[i] is damage assigned to blockers[i] -- the attacking
+    # player's own free choice for a multi-blocked attacker, or
+    # _default_damage_assignment's lethal-in-order split otherwise.
     assigned = 0
     for blocker, amount in zip(blockers, amounts):
         if amount <= 0:
@@ -232,25 +161,16 @@ def _attacker_deal_damage(state, attacker, blockers, amounts, opponent_amount, a
 
 def _blocker_deal_damage(state, blocker, attacker, blocker_facts):
     """Blocker deals its combat damage to the attacker it's blocking --
-    never tramples through to a player: trample is an attacking-creature
-    keyword only, nothing in this card pool grants a blocker-side
-    equivalent, and this engine doesn't model one.
+    never tramples through to a player: trample is attacker-only, and this
+    engine doesn't model a blocker-side equivalent.
 
-    "lifelink": unlike the attacker-side case above, the blocker's
-    controller is the DEFENDING player -- players[1 - active_idx]
-    (== state.opponent) from the currently-active attacker's own
-    perspective, not the active player (which would wrongly credit the
-    attacker) -- so this passes gain_life that index explicitly instead of
-    letting it default to the active player. Routing through gain_life (not
-    a raw life_total bump) is what gets this lifegain into the event log
-    like every other life change. Multiplied by stats.lifelink_count the
-    same stacking way as the attacker-side case above (2 Cloaks on a
-    blocker also trigger twice).
+    lifelink: the blocker's controller is the defending player
+    (players[1 - active_idx]), not the active player, so this passes
+    gain_life that index explicitly. Multiplied by stats.lifelink_count the
+    same way as the attacker-side case above.
 
-    blocker_facts: see _attacker_deal_damage's own docstring -- same
-    pre-fetched dict, just the blocker's own this time (no attacker_facts
-    needed here: a blocker never tramples, so nothing about the attacker's
-    own stats is read in this direction)."""
+    blocker_facts: see _attacker_deal_damage's docstring -- same
+    pre-fetched dict, the blocker's own this time."""
     power = blocker_facts["power"]
     attacker.damage_marked += power
     if power > 0 and blocker_facts["deathtouch"]:
@@ -266,42 +186,32 @@ def _blocker_deal_damage(state, blocker, attacker, blocker_facts):
 
 def _lethal_amount(deathtouch, toughness, damage_marked):
     """Combat damage needed to treat a blocker as 'satisfied' for lethal-
-    in-order assignment -- 1 for a deathtouch source (702.2b: any nonzero
-    deathtouch damage counts as lethal), else its own remaining toughness.
-    Shared by the auto path (_default_damage_assignment) and the free
-    multi-blocker assign_combat_damage resolution (blocker_lethal_
-    capacities) so both agree on the same cap -- neither ever over-assigns
-    past it, matching real Magic's own lethal-in-order rule (minimum-lethal
-    is dominant: over-assigning to a blocker never helps the attacker)."""
+    in-order assignment -- 1 for a deathtouch source (702.2b), else its
+    remaining toughness. Shared by the auto path and the free multi-blocker
+    resolution (blocker_lethal_capacities) so both agree on the same cap."""
     return 1 if deathtouch else max(toughness - damage_marked, 0)
 
 
 def _default_damage_assignment(attacker_facts, blockers, facts_by_id):
-    """Auto split of an attacker's combat damage across its (living)
-    blockers -- used for a SINGLE blocker (no choice to make) and as the
-    fallback when no explicit model assignment exists. Lethal-in-order to
-    maximize kills; a trampler's leftover goes to the player, a non-
-    trampler's leftover piles onto the last blocker so all power lands.
-    Returns (amounts parallel to
-    `blockers`, opponent_amount). For a MULTI-blocked attacker the attacking
-    player's OWN freely-chosen split (assign_combat_damage resolution)
-    replaces this -- any portion to any blocker up to its own lethal cap,
-    non-lethal (less than the cap) allowed, never more."""
+    """Auto split of an attacker's combat damage across its living
+    blockers -- used for a single blocker and as the fallback when no
+    explicit model assignment exists. Lethal-in-order to maximize kills; a
+    trampler's leftover goes to the player, a non-trampler's leftover
+    piles onto the last blocker. Returns (amounts parallel to `blockers`,
+    opponent_amount). For a multi-blocked attacker the attacking player's
+    own freely-chosen split (assign_combat_damage resolution) replaces
+    this instead."""
     remaining = attacker_facts["power"]
     amounts = [0] * len(blockers)
     deathtouch = attacker_facts["deathtouch"]
     for i, blocker in enumerate(blockers):
         if remaining <= 0:
             break
-        # 702.2b + 510.1a: when ASSIGNING combat damage, any nonzero damage from
-        # a deathtouch source counts as lethal, so one point per blocker frees
-        # the rest to trample through (or to kill further blockers). Without
-        # this the split over-assigned full toughness and a 5-power deathtouch
-        # trampler blocked by a 4-toughness creature spilled 1 instead of 4.
-        # A SINGLE-blocked attacker never gets an assign_combat_damage
-        # decision (attackers_needing_damage_assignment fires only for 2+
-        # blockers), so the auto split IS the whole decision -- it should be
-        # the attacker-optimal legal one.
+        # 702.2b + 510.1a: any nonzero damage from a deathtouch source
+        # counts as lethal, so one point per blocker frees the rest to
+        # trample through or kill further blockers. A single-blocked
+        # attacker never gets an assign_combat_damage decision, so this
+        # auto split is the whole decision -- it should be attacker-optimal.
         lethal = _lethal_amount(deathtouch, facts_by_id[id(blocker)]["toughness"], blocker.damage_marked)
         assign = min(remaining, lethal)
         amounts[i] = assign
@@ -327,13 +237,11 @@ def _default_damage_assignment(attacker_facts, blockers, facts_by_id):
 
 def blocker_lethal_capacities(state, attacker, blockers):
     """{blocker: the most combat damage this attacker's free multi-blocker
-    assignment (resolution.assign_combat_damage) may ever put on it} -- the
-    same _lethal_amount cap the auto path uses above, just computed live
-    (this runs once per multi-blocked attacker, not once per pair per
-    frame, so no facts_by_id precompute is worth it here). Consumed by
+    assignment may ever put on it} -- the same _lethal_amount cap the auto
+    path uses, computed live (once per multi-blocked attacker). Consumed by
     handlers_combat.begin_assign_combat_damage to stop the agent from
-    overkilling a blocker or trampling a point through before every blocker
-    still in the split has been assigned at least its own lethal share."""
+    overkilling a blocker or trampling through before every blocker in the
+    split has its own lethal share assigned."""
     deathtouch = stats.has_keyword(state, attacker, "deathtouch")
     return {
         b: _lethal_amount(deathtouch, stats.permanent_toughness(state, b), b.damage_marked)
@@ -342,25 +250,16 @@ def blocker_lethal_capacities(state, attacker, blockers):
 
 
 def _damage_assignment_for(attacker, living, attacker_facts, facts_by_id):
-    """The (amounts-parallel-to-living, opponent_amount) split this attacker
-    deals right now: the attacking player's OWN choice if one was recorded
-    (resolution.begin_assign_combat_damage stashes it on
-    attacker.flags['combat_damage_split'] for a 2+-blocked attacker --
-    popped here, consumed once), else the lethal-in-order default (a single
-    blocker, or the model-less path). A model split keyed by blocker maps
-    onto `living`, which can be a STRICT SUBSET of the split's own keys: this
-    engine assigns damage during DECLARE_BLOCKERS but doesn't deal it until
-    COMBAT_DAMAGE, a phase later with a full priority round in between --
-    real Magic's own 510.1/510.2 are one atomic turn-based action with no
-    such gap, so a blocker the split already earmarked damage for can die to
-    an instant in that window before this ever runs. Whatever was earmarked
-    for a since-departed blocker is added to a trampler's own excess (702.19b:
-    damage that can no longer reach a blocker becomes exactly that); a
-    non-trampler simply never deals it, matching 509.1h's "no spill without
-    trample" -- both are how that same amount would already be handled had
-    the blocker never been part of the split to begin with. Without this, the
-    departed blocker's share silently vanished: the attacker dealt less total
-    damage than its own power, with no rules basis for the loss."""
+    """The (amounts-parallel-to-living, opponent_amount) split this
+    attacker deals right now: the attacking player's own recorded choice
+    (attacker.flags['combat_damage_split'], popped here) if any, else the
+    lethal-in-order default. A model split keyed by blocker maps onto
+    `living`, which can be a strict subset of the split's own keys: damage
+    is assigned during DECLARE_BLOCKERS but not dealt until COMBAT_DAMAGE,
+    a phase later, so a blocker the split earmarked damage for can die to
+    an instant in that window. Whatever was earmarked for a since-departed
+    blocker is added to a trampler's own excess (702.19b); a non-trampler
+    simply never deals it (509.1h)."""
     split = attacker.flags.pop("combat_damage_split", None)
     if split is not None:
         amounts_by_blocker, opponent_amount = split
@@ -375,11 +274,9 @@ def _damage_assignment_for(attacker, living, attacker_facts, facts_by_id):
 def attackers_needing_damage_assignment(state):
     """The (attacker, blockers, power, has_trample) tuples for attackers
     blocked by 2+ creatures with nonzero power -- the ones whose controller
-    must freely assign combat damage (resolution.begin_assign_combat_damage,
-    driven by turn._assign_combat_damage_gen). A lone blocker or a 0-power
-    attacker has no choice, so it's skipped and combat_damage_step auto-
-    assigns via _default_damage_assignment. Lives here (not in turn.py) so
-    the power/keyword lookups stay in the effects layer that owns stats."""
+    must freely assign combat damage. A lone blocker or a 0-power attacker
+    has no choice, so it's skipped and combat_damage_step auto-assigns via
+    _default_damage_assignment."""
     out = []
     for attacker in state.attackers:
         blockers = state.blocked_by.get(attacker, [])
@@ -393,52 +290,40 @@ def attackers_needing_damage_assignment(state):
 
 
 def combat_damage_step(state):
-    """game.turn.Phase.COMBAT_DAMAGE. Unblocked attackers (in state.attackers,
-    not in state.blocked_by) deal their total power to the opponent at once; an
-    untracked-stats vanilla contributes 0.
+    """game.turn.Phase.COMBAT_DAMAGE. Unblocked attackers (in
+    state.attackers, not in state.blocked_by) deal their total power to
+    the opponent at once.
 
-    Blocked pairs fight in up to two sub-steps (real Magic first-strike order):
-    first-strikers deal, then an SBA check clears the dead (a first-strike kill
-    never deals back); then the non-first-strikers deal, if both are still
-    alive, and a second SBA check. With no first strike this collapses to one
-    simultaneous exchange.
+    Blocked pairs fight in up to two sub-steps (real Magic first-strike
+    order): first-strikers deal, then an SBA check clears the dead; then
+    the non-first-strikers deal, if both are still alive, and a second SBA
+    check. With no first strike this collapses to one simultaneous
+    exchange.
 
-    lifelink on an unblocked attacker is gained here, batched, each attacker's
-    power x its lifelink_count (2 Cloaks = 2x).
+    lifelink on an unblocked attacker is gained here, batched, each
+    attacker's power x its lifelink_count.
 
     Every combatant's {power, toughness, first_strike, trample, deathtouch,
-    lifelink_count} is fetched ONCE up front and reused (profiled: avoids ~8-10
-    redundant per-pair Aura scans). Safe because nothing here casts or
-    (de)attaches an Aura mid-resolution; damage_marked is read fresh."""
-    # The Initiative (Avenging Hunter): "Whenever one or more creatures a
-    # player controls deal combat damage to you, that player takes the
-    # initiative." This is keyed on combat damage actually being DEALT to the
-    # defending player -- unblocked hits + trample overflow -- tracked
-    # directly below as damage_dealt_to_defender, NOT a net life-total delta:
-    # a net-life check would wrongly miss the transfer whenever life gained
-    # elsewhere in this same step (e.g. a lifelink blocker, whose gain lands
-    # on the defending player -- see _blocker_deal_damage) offsets or exceeds
-    # the damage this step actually dealt them.
+    lifelink_count} is fetched once up front and reused, avoiding redundant
+    per-pair Aura scans. Safe since nothing here casts or (de)attaches an
+    Aura mid-resolution."""
+    # The Initiative: keyed on combat damage actually dealt to the
+    # defending player (unblocked hits + trample overflow), tracked below
+    # as damage_dealt_to_defender -- not a net life-total delta, which
+    # would miss the transfer whenever life gained elsewhere this step
+    # (a lifelink blocker) offsets it.
     defender_idx = 1 - state.active_idx if len(state.players) > 1 else None
     damage_dealt_to_defender = 0
 
-    # BOTH halves derive from state.attackers -- the one authority on what is
-    # still attacking. groups used to be `list(state.blocked_by.items())`, a
-    # second, independent source, and the two disagreed the moment 506.4
-    # removed an attacker from combat (remove_from_combat prunes state.attackers
-    # but deliberately keeps the blocked_by entry, so its declared blockers are
-    # not freed to block twice -- 509.1). That left a group whose attacker was
-    # absent from all_combatants below: KeyError in the first-strike sub-step,
-    # and before that a removed attacker still dealing its combat damage.
-    # Same two-readers-one-rule divergence that caused both declare-blockers
-    # infinite loops; combat state has exactly one source of truth now.
+    # Both halves derive from state.attackers, the one authority on what is
+    # still attacking (not blocked_by.items(), which can retain a stale
+    # entry after 506.4 removes an attacker from combat).
     unblocked = [p for p in state.attackers if p not in state.blocked_by]
     groups = [(a, state.blocked_by[a]) for a in state.attackers if a in state.blocked_by]  # gang-blocking: list-valued
     all_combatants = set(state.attackers) | {b for _a, blockers in groups for b in blockers}
 
     # Scan taken once and reused for every combatant checked below -- see
-    # stats.enchanting_by_target's own docstring for the shared caution
-    # about why this snapshot is safe today.
+    # stats.enchanting_by_target's own docstring for why this is safe.
     enchanting_by_target = stats.enchanting_by_target(state) if all_combatants else {}
 
     def _facts(permanent):
@@ -472,9 +357,8 @@ def combat_damage_step(state):
 
     # First-strike sub-step: first-strikers on each side deal now, then an
     # SBA check clears the dead before the regular sub-step. Gang-blocking:
-    # the attacker splits its damage across its LIVING blockers (the default
-    # lethal-in-order split, or the attacking player's own recorded choice),
-    # and every blocker deals its own power back to the attacker.
+    # the attacker splits damage across its living blockers, and every
+    # blocker deals its own power back to the attacker.
     for attacker, blockers in groups:
         if creature_facts[id(attacker)]["first_strike"]:
             living = [b for b in blockers if _is_alive(state, b)]
@@ -490,15 +374,11 @@ def combat_damage_step(state):
         attacker_alive = _is_alive(state, attacker)
         if not creature_facts[id(attacker)]["first_strike"] and attacker_alive:
             living = [b for b in blockers if _is_alive(state, b)]  # a first-strike attacker's kills are already gone
-            # Unconditional even when living is empty (every blocker died to
-            # first strike): a non-trampler then deals no damage at all
-            # (_default_damage_assignment's blockers=[] path leaves amounts
-            # and opponent_amount both empty/0, so _attacker_deal_damage is a
-            # no-op) -- but a TRAMPLER with no blockers left to assign lethal
-            # to must have its full power go through to the defending player
-            # (702.19b/510.1c), which that same blockers=[] path already
-            # produces correctly (opponent_amount = full power) once this is
-            # actually called instead of skipped.
+            # Unconditional even when living is empty: a non-trampler then
+            # deals no damage (a no-op), but a trampler with no blockers
+            # left must have its full power go through to the defending
+            # player (702.19b/510.1c), which the same blockers=[] path
+            # already produces correctly.
             amounts, opp = _damage_assignment_for(attacker, living, creature_facts[id(attacker)], creature_facts)
             damage_dealt_to_defender += opp
             _attacker_deal_damage(state, attacker, living, amounts, opp, creature_facts[id(attacker)])
@@ -507,17 +387,12 @@ def combat_damage_step(state):
                 _blocker_deal_damage(state, blocker, attacker, creature_facts[id(blocker)])
     state_based.check_state_based_actions(state)
 
-    # The Initiative transfer: if the current holder was the defender and any
-    # of the attacker's creatures actually dealt combat damage to them this
-    # step (damage_dealt_to_defender, tracked above -- unaffected by any life
-    # gained the defender's own blockers this same step), QUEUE the attacking
-    # player's own "you take the initiative" triggered ability (CR 722.2's
-    # second one) -- a real trigger, not an immediate effect: it doesn't
-    # actually flip state.initiative_idx until it resolves off the stack
-    # (game.effects.triggers' "take_initiative" branch), same as any other
-    # triggered ability gets a priority window first. Skipped if the game
-    # already ended -- a dead defender's initiative is moot. Lazy import:
-    # undercity pulls in casting/tokens, and combat sits underneath those.
+    # The Initiative transfer: if the current holder was the defender and
+    # any of the attacker's creatures dealt combat damage to them this
+    # step, queue the attacker's "take the initiative" trigger (CR 722.2's
+    # second one) -- state.initiative_idx only flips once it resolves off
+    # the stack. Skipped if the game already ended. Lazy import: undercity
+    # pulls in casting/tokens, and combat sits underneath those.
     if (defender_idx is not None and state.turn_won is None and state.initiative_idx == defender_idx
             and damage_dealt_to_defender > 0):
         from . import undercity
@@ -525,30 +400,18 @@ def combat_damage_step(state):
 
 
 def menace_block_incomplete(state):
-    """True while some menace attacker has exactly ONE blocker committed -- an
-    ILLEGAL block declaration ("can't be blocked except by two or more
-    creatures", 509.1c: 0 or 2+, never 1). drl_env forbids the defender from
-    finishing ("Done blocking") while this holds -- declaration-time
-    enforcement, not a post-hoc correction. No undo exists (standing engine
-    policy, see todo/no_undo_policy.md): the ONLY way forward once a menace
-    attacker has exactly one committed blocker is to add a second one.
+    """True while some menace attacker has exactly one blocker committed --
+    an illegal block declaration (509.1c: 0 or 2+, never 1). drl_env
+    forbids the defender from finishing ("Done blocking") while this
+    holds -- declaration-time enforcement, not a post-hoc correction. No
+    undo exists (todo/no_undo_policy.md), so the only way forward once a
+    menace attacker has one committed blocker is to add a second.
 
-    If none is available, game.turn._declare_blockers_gen's own
-    zero-legal-actions check abandons the declaration (it drops the pending and
-    returns; enforce_menace below then drops the illegal lone block at combat
-    damage, so the OUTCOME is unchanged). CORRECTION 2026-08-19: this used to
-    say the round was bounded "until the phase's action cap forces
-    completion". THERE IS NO SUCH CAP -- that round is explicitly unbounded and
-    escapes only when ZERO legal actions remain. The distinction is not
-    academic: an action that is legal but non-progressing spins forever there,
-    which is exactly what a flying/reach predicate mismatch did to real
-    training runs (see drl_env._assign_blocker_execute). Detection lives in the
-    training harness instead (rl.training.train.collect_rollout's per-turn decision
-    guard), not as an engine-side cap. Called only during the
+    If none is available, game.turn._declare_blockers_gen's own zero-
+    legal-actions check abandons the declaration; enforce_menace below then
+    drops the illegal lone block at combat damage. Called only during the
     declare-blockers step, where active_idx is the defender, so the
-    attacker's own blocked_by/attackers are reached via state.opponent (the
-    attacking player, from the defender's point of view -- same accessor the
-    block machinery already uses)."""
+    attacker's own blocked_by/attackers are reached via state.opponent."""
     return any(
         len(blockers) == 1 and stats.has_keyword(state, attacker, "menace")
         for attacker, blockers in state.opponent.blocked_by.items()
@@ -558,20 +421,13 @@ def menace_block_incomplete(state):
 def enforce_menace(state):
     """Backstop, not the primary rule: the declaration-time gate
     (menace_block_incomplete) already makes the defender declare 0 or 2+
-    blockers on a menace attacker whenever they CAN, so at combat damage no
-    menace attacker should have exactly one blocker on the common path. Fires
-    in two cases, only the first of which is pathological: (1)
-    game.turn._declare_blockers_gen abandons a partial declaration on its
-    action-cap (a policy that never finishes); (2) -- reachable by a
-    perfectly rational policy, not just a broken one, since there is no
-    Unassign Blocker action to reconsider a commitment (standing engine
-    policy, see todo/no_undo_policy.md) -- the defender has exactly one
-    eligible blocker left and it's already committed to a menace attacker,
-    with no second blocker to add, so declaration
-    stays illegal until the action cap forces it through. Either way, this
-    drops any lone menace-block so the OUTCOME is still faithful (a lone
-    creature can't stop a menace attacker). active_idx is back on the
-    attacker here, so state.blocked_by is the attacker's own."""
+    blockers on a menace attacker whenever they can, so at combat damage no
+    menace attacker should have exactly one blocker on the common path.
+    Fires when a declaration is abandoned (action-cap) or stays illegal
+    (no second blocker available, and no Unassign Blocker action to
+    reconsider a commitment). Either way, drops any lone menace-block so
+    the outcome stays faithful. active_idx is back on the attacker here,
+    so state.blocked_by is the attacker's own."""
     for attacker, blockers in list(state.blocked_by.items()):
         if len(blockers) == 1 and stats.has_keyword(state, attacker, "menace"):
             del state.blocked_by[attacker]
@@ -579,27 +435,20 @@ def enforce_menace(state):
 
 
 def has_unfulfilled_goad(state):
-    """True if the TURN player, during their OWN declare-attackers step,
-    controls a goaded creature that CAN attack but isn't yet declared --
-    goad's "attacks each combat if able" then forbids them ending that step
-    (drl_env._pass_legal gates Pass on this during DECLARE_ATTACKERS).
-    creature_attack_eligible already excludes creatures that can't attack
-    (tapped/summoning-sick) and ones already in state.attackers, so a goaded
-    creature that literally can't attack -- or has been declared -- never
-    blocks the Pass. In 2-player, "attack a player other than you" is
-    automatic (the sole opponent), so no attack-target restriction is needed
-    beyond forcing the declaration.
+    """True if the turn player, during their own declare-attackers step,
+    controls a goaded creature that can attack but isn't yet declared --
+    goad's "attacks each combat if able" forbids ending that step
+    (drl_env._pass_legal gates Pass on this). creature_attack_eligible
+    already excludes creatures that can't attack and ones already
+    declared, so those never block the Pass.
 
     Gated on active_idx == turn_player_idx: the obligation is a turn-based
-    action of the turn player alone. DECLARE_ATTACKERS also hands PRIORITY to
-    the NON-turn player (game.turn._run_priority_round_gen flips active_idx),
-    and state.battlefield proxies to active_idx -- so without this guard, a
-    non-turn player who controls a goaded creature (the turn player goaded it)
-    would have their priority-Pass blocked here while being unable to declare
-    an attacker at all (_attack_legal needs active_idx == turn_player_idx):
-    an all-False action mask, a real crash caught in rl.decision.agent._seat_step. Goad
-    binds a creature's controller on that controller's own combat, never a
-    reactive priority window."""
+    action of the turn player alone. DECLARE_ATTACKERS also hands priority
+    to the non-turn player, so without this guard a non-turn player
+    controlling a goaded creature would have their priority-Pass blocked
+    here while unable to declare an attacker at all (an all-False action
+    mask). Goad binds a creature's controller on that controller's own
+    combat, never a reactive priority window."""
     if state.active_idx != state.turn_player_idx:
         return False
     return any(

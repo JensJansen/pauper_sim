@@ -1,11 +1,10 @@
-"""Multiprocessing plumbing for league rollout collection -- extracted from
-rl.training.train so the game-loop/attribution code (rl.training.train itself) doesn't have to
-carry the ProcessPoolExecutor/pickling-boundary concerns along with it.
-_league_rollout_worker (run in each spawned worker process) and
-collect_rollout_league_parallel (the main-process orchestrator) both build
-on rl.training.train.collect_rollout_league -- the SAME game loop the sequential path
-uses, just re-entered fresh per worker process. Pure reorganization: no
-behavior changed by moving the code here."""
+"""Multiprocessing plumbing for league rollout collection, extracted from
+rl.training.train so the game-loop/attribution code doesn't carry the
+ProcessPoolExecutor/pickling-boundary concerns. _league_rollout_worker (run
+in each spawned worker) and collect_rollout_league_parallel (the
+main-process orchestrator) both build on rl.training.train.collect_rollout_league
+-- the same game loop the sequential path uses, re-entered fresh per
+worker."""
 
 import random
 
@@ -16,21 +15,15 @@ from rl.training.train import RolloutBuffer, collect_rollout_league
 
 def _strip_identities(token_list):
     """Drops each token's Permanent-object identity before it crosses a
-    process boundary -- ppo_update already discards identities entirely
-    (pad_token_batch's own _identities return value, never read again once
-    a transition is buffered; identity only matters live, during
-    collection, for pointer_legal_mask/execute_pointer_choice), so there is
-    nothing to lose, and no need to find out the hard way whether a live
-    Permanent (embedded in a real GameState object graph) is even safely
-    picklable at all."""
+    process boundary -- unused downstream (pad_token_batch discards it once
+    buffered; identity only matters live, during collection), and a live
+    Permanent may not even be picklable."""
     return [(idx, row, None) for idx, row, _identity in token_list]
 
 
 def _buffer_to_entries(buf):
-    """Serialize a RolloutBuffer to plain (picklable) tuples for the process
-    boundary -- identities stripped (see _strip_identities). Shared by the
-    worker for both its training-deck buffer and each salvaged live-opponent
-    buffer (Path A)."""
+    """Serializes a RolloutBuffer to plain (picklable) tuples for the
+    process boundary -- identities stripped (see _strip_identities)."""
     return [
         (_strip_identities(buf.token_lists[i]), buf.scalar[i], buf.mask[i], buf.action[i],
          buf.logp[i], buf.value[i], buf.reward[i], buf.done[i])
@@ -45,11 +38,9 @@ def _extend_buffer_from_entries(buf, entries):
 
 
 def _sanitize_events(game_logs):
-    """Deep-convert event-log values to picklable primitives before they cross a
-    process boundary -- a few log_event fields can hold a card closure/lambda (the
-    same non-serializable case rl.league.league_runner._json_default guards at JSON-write time),
-    which pickle can't ship from an MP worker. Converts an unknown object to its
-    string .name if it has one, else repr(); leaves primitives/containers intact."""
+    """Deep-converts event-log values to picklable primitives -- a few
+    log_event fields can hold a card closure/lambda, which pickle can't
+    ship. Converts an unknown object to its .name if present, else repr()."""
     def conv(v):
         if isinstance(v, (str, int, float, bool)) or v is None:
             return v
@@ -67,25 +58,16 @@ def _league_rollout_worker(training_deck_name, all_state_dicts, all_trunk_hidden
                             mulligan_state_dicts=None, collect_logs=False, checkpoint_rate=0.0, pfsp=True,
                             pfsp_power=None):
     """Runs in a SEPARATE PROCESS (spawned fresh -- Windows only supports
-    the "spawn" start method, no fork, so this re-imports the whole module
-    graph from scratch rather than inheriting any parent-process memory).
-    Must be a module-level function: ProcessPoolExecutor on spawn needs to
-    locate it by import path (rl.training.rollout_parallel._league_rollout_worker),
-    not a closure or lambda.
+    "spawn", so this re-imports the whole module graph). Must be
+    module-level: ProcessPoolExecutor on spawn locates it by import path.
 
-    Rebuilds decklists/vocab/deck_ctxs/fixed_tables locally via
-    build_pool() rather than receiving them from the parent -- fixed_table
-    entries hold legal_fn/execute_fn closures (drl_env.build_action_table's
-    own _attack_execute/_choose_permanent_execute/... each return a nested
-    `def execute(state): ...`), which the standard pickle module cannot
-    serialize at all. Only plain tensors (state_dicts), scalars, and
-    strings actually cross the process boundary; reward_fn is passed BY
-    NAME for the identical reason (rl.rewards's own named instance,
-    deploy_reward_v6, is itself a closure returned by
-    with_dense_mana_burn_penalty(...)). league_root_dir is passed explicitly
-    rather than imported from rl.league.league_runner to avoid a circular import
-    (rl.league.league_runner already imports FROM this module at module scope)."""
-    torch.set_num_threads(1)  # this worker IS the unit of parallelism -- it must not also spawn its own intra-op thread pool and oversubscribe the physical cores every other worker is also competing for
+    Rebuilds decklists/vocab/deck_ctxs/fixed_tables locally via build_pool()
+    rather than receiving them from the parent -- fixed_table entries hold
+    legal_fn/execute_fn closures, which pickle cannot serialize. Only plain
+    tensors, scalars, and strings cross the process boundary; reward_fn is
+    passed by name for the same reason. league_root_dir is passed
+    explicitly to avoid a circular import with rl.league.league_runner."""
+    torch.set_num_threads(1)  # avoid oversubscribing cores: this worker IS the unit of parallelism
     import rl.rewards as rewards_module
     from rl.model.arch import SetTransformer
     from rl.model.deck import DeckNetwork
@@ -95,10 +77,8 @@ def _league_rollout_worker(training_deck_name, all_state_dicts, all_trunk_hidden
     reward_fn = getattr(rewards_module, reward_fn_name)
     decklists, vocab, deck_ctxs, fixed_tables = build_pool()
 
-    # One encoder PER DECK, built fresh as a shape and filled from that deck's
-    # own state_dict -- the encoder is a registered child of DeckNetwork, so
-    # it crosses the process boundary inside all_state_dicts along with the
-    # rest of the net. Nothing extra has to be shipped for it.
+    # One encoder per deck, built fresh as a shape and filled from that
+    # deck's own state_dict (a registered child of DeckNetwork).
     live_nets = {}
     for name, state_dict in all_state_dicts.items():
         encoder = SetTransformer(vocab.size)
@@ -109,16 +89,11 @@ def _league_rollout_worker(training_deck_name, all_state_dicts, all_trunk_hidden
         net.eval()
         live_nets[name] = net
 
-    # Deck names come from all_state_dicts' own keys, NOT list(decklists) (this
-    # worker's fresh build_pool() call always returns the FULL roster, regardless of
-    # any roster= restriction the orchestrating _run_session applied) -- live_nets
-    # above already reflects exactly the (possibly narrowed) roster the orchestrator
-    # built, so mirroring its keys here is what keeps this worker's own opponent
-    # pool scoped the same way, without needing a separate parameter to carry the
-    # restriction across the process boundary redundantly.
-    # pfsp_power MUST cross the process boundary: each worker builds its own
-    # LeaguePool, so a power left at the module default here would silently keep
-    # n_workers-1 of every n_workers games on the old weighting.
+    # Deck names come from all_state_dicts' own keys (the possibly-narrowed
+    # roster the orchestrator built), not this worker's own full build_pool().
+    # pfsp_power must cross the process boundary: each worker builds its own
+    # LeaguePool, so a default left here would silently apply to n_workers-1
+    # of every n_workers games.
     pool_kwargs = {} if pfsp_power is None else {"pfsp_power": pfsp_power}
     pool = LeaguePool(league_root_dir, list(all_state_dicts.keys()), **pool_kwargs)  # read-only here -- this worker never calls register_snapshot
     rng = random.Random(seed)
@@ -138,12 +113,9 @@ def _league_rollout_worker(training_deck_name, all_state_dicts, all_trunk_hidden
         training_deck_name, live_nets, mulligan_nets, deck_ctxs, decklists, pool, reward_fn,
         horizon, n_games, rng, device="cpu", game_logs=worker_logs, checkpoint_rate=checkpoint_rate, pfsp=pfsp,
     )
-    # Serialize each deck's buffer to picklable entries (identities stripped);
-    # mulligan transitions and event logs are already plain data. outcomes is
-    # already plain (str, int-or-None, bool) tuples -- picklable as-is. This
-    # worker's own `pool` above is read-only (per its own comment); outcomes
-    # is how what it observed gets back to the MAIN process's real pool
-    # (collect_rollout_league_parallel aggregates it; _run_session applies it).
+    # Serialize each deck's buffer to picklable entries; mulligan
+    # transitions and event logs are already plain data. `pool` above is
+    # read-only -- outcomes carries what happened back to the main process.
     entries_by_deck = {name: _buffer_to_entries(buf) for name, buf in buffers_by_deck.items()}
     if worker_logs:
         worker_logs = _sanitize_events(worker_logs)  # strip unpicklable closures before crossing the boundary
@@ -156,40 +128,28 @@ def collect_rollout_league_parallel(training_deck_name, live_nets, reward_fn_nam
                                      pfsp_power=None):
     """Orchestrator (runs in the MAIN process): splits n_games across
     n_workers, submits one _league_rollout_worker task per worker via the
-    given (already-created, reused-across-calls) ProcessPoolExecutor --
-    reused rather than created fresh per call so process-spawn/import
-    overhead (re-importing torch/the game engine in every worker) is paid
-    ONCE, not once per collection round. Every deck's live net crosses the
-    boundary (not just training_deck_name's own), since a worker needs the
-    SAME opponent-sampling capability collect_rollout_league already has
-    in-process -- including sampling some OTHER deck's current live net,
-    not just training_deck_name's own or frozen snapshots.
+    given (reused-across-calls) ProcessPoolExecutor, so process-spawn/import
+    overhead is paid once, not once per collection round. Every deck's live
+    net crosses the boundary, not just training_deck_name's own, since a
+    worker needs the same opponent-sampling capability the in-process path
+    has.
 
-    all_trunk_hidden: every live net's trunk widths -- fixed for the whole
-    session (trunk widths never resize), so the caller computes it ONCE
-    (rl.league.league_runner._run_session, right after live_nets is built) instead of
-    this function re-deriving it from live_nets on every one of the
-    n_iterations * len(train_decks) calls it gets per session. Each net's
-    PERCEPTION ENCODER needs no equivalent: it is part of the net, so it ships
-    inside all_state_dicts below and is re-sent every call (it trains, so a
-    once-per-session broadcast would go stale immediately).
+    all_trunk_hidden: every live net's trunk widths, computed once by the
+    caller (rl.league.league_runner._run_session) rather than re-derived
+    here on every call. Each net's encoder ships inside all_state_dicts
+    instead, since it trains and would go stale if only sent once per
+    session.
 
-    checkpoint_rate, pfsp: forwarded to every worker's own pool.sample_opponent
-    call verbatim -- see rl.league.league.LeaguePool.sample_opponent's docstring.
+    checkpoint_rate, pfsp: forwarded to every worker's pool.sample_opponent
+    verbatim.
 
-    Returns (buffers_by_deck, mull_by_deck, games_played, outcomes) -- outcomes
-    merges every worker's own collect_rollout_league outcomes list (see its
-    docstring); the caller applies these to the real pool via record_outcome,
-    since every worker's pool here is a separate-process, read-only replica."""
-    # .cpu() on every tensor: the workers are separate PROCESSES with no CUDA
-    # context of their own, and they play games on CPU regardless of where
-    # training runs. Shipping CUDA tensors across the pickle boundary would
-    # either fail outright or force each worker to open its own CUDA context
-    # just to move them straight back. Measured cost of the copy on a
-    # GPU-resident league: ~10ms per call vs ~0.8ms CPU-to-CPU, i.e. ~5s over
-    # a whole 125-iteration session -- negligible against the update time the
-    # GPU buys back. A no-op when training is already on CPU (.cpu() on a CPU
-    # tensor returns self).
+    Returns (buffers_by_deck, mull_by_deck, games_played, outcomes) --
+    outcomes merges every worker's own outcomes list; the caller applies
+    these to the real pool via record_outcome, since each worker's pool is
+    a separate-process, read-only replica."""
+    # .cpu(): workers are separate processes with no CUDA context, and they
+    # always play on CPU regardless of where training runs. A no-op when
+    # training is already on CPU.
     all_state_dicts = {name: {k: v.cpu() for k, v in net.state_dict().items()}
                        for name, net in live_nets.items()}
 
@@ -207,9 +167,7 @@ def collect_rollout_league_parallel(training_deck_name, live_nets, reward_fn_nam
     ]
     buffers_by_deck = {}   # deck name -> merged RolloutBuffer across workers
     mull_by_deck = {}      # deck name -> merged mulligan transitions across workers
-    outcomes = []          # (opponent_deck_name, snapshot_id_or_None, training_deck_won), merged across workers --
-                            # see collect_rollout_league's own docstring: the caller (_run_session) applies these
-                            # to its ONE authoritative pool object, since every worker's own pool is a read-only replica.
+    outcomes = []          # (opponent_deck_name, snapshot_id_or_None, training_deck_won), merged across workers
     games_played = 0
     for future in futures:
         entries_by_deck, worker_mull_by_deck, worker_logs, played, worker_outcomes = future.result()

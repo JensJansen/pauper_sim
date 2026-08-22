@@ -1,23 +1,19 @@
 """A tiny end-to-end smoke test for the token/attention training pipeline:
-real 2-player games (mono_red_madness mirror, a genuine cross-matchup vs
-rakdos_madness), tiny network dims, few games/iterations -- just enough to
-prove the whole pipeline (rollout collection -> padded/masked batching -> PPO
-update) runs without crashing, hanging, or producing NaN/inf, before any real
-training.
+real 2-player games (mono_red_madness mirror, a cross-matchup vs
+rakdos_madness), tiny network dims, few games/iterations -- proves the
+pipeline (rollout collection -> padded/masked batching -> PPO update) runs
+without crashing, hanging, or producing NaN/inf.
 
-Most tests below build a fresh real-network fixture via _base_fixture() (nets
-get a fresh random init per test); every assertion here is a shape/
-finiteness/"did-something-change" check, not an exact-value one, so a fresh
-fixture per test is safe. test_league_smoke_and_frozen_cache_ppo_update keeps
-the league smoke test and the frozen-cache ppo_update check in ONE function
-because the frozen-cache check reuses the league smoke test's own collected
-buffer -- a real data dependency, not just convenience.
+Most tests build a fresh real-network fixture via _base_fixture(); every
+assertion is a shape/finiteness/"did-something-change" check, so a fresh
+fixture per test is safe. test_league_smoke_and_frozen_cache_ppo_update
+reuses the league smoke test's own collected buffer for its frozen-cache
+check.
 
-A handful of tests don't need a real network at all -- the mana-burn
-credit-attribution tests and the decision-count guard tests only need SOME
-predictable decision each turn, so they use the cheap module-level
-_ScriptedAgent (a scripted mono-Mountain deck: play land, tap once, then
-always Pass) against collect_rollout's real mechanics instead.
+A handful of tests use the cheap _ScriptedAgent (a scripted mono-Mountain
+deck: play land, tap once, then always Pass) instead of a real network,
+since they only need collect_rollout's real mechanics with some
+predictable decision each turn.
 """
 import random as _random
 import shutil
@@ -53,17 +49,11 @@ HORIZON = 20
 
 
 class _ScriptedAgent:
-    """Deterministic decision-only agent for tests that need real
-    collect_rollout mechanics (mulligan handling, land plays, a mana tap,
-    then Pass) but not a trained network's forward passes: keep every
-    mulligan, play the first land in hand, tap the first untapped Mountain
-    once, then always Pass. Shared by the dense-mana-burn credit-attribution
-    tests and the decision-count guard tests below -- none of them care
-    about real policy behavior, only that *something* legal and predictable
-    happens each decision. Takes fixed_table directly (rather than closing
-    over test-local action-index variables) so one class definition works
-    for every caller's own decklist/fixed_table.
-    """
+    """Deterministic decision-only agent for tests needing real
+    collect_rollout mechanics but not a trained network: keep every
+    mulligan, play the first land, tap the first untapped Mountain once,
+    then always Pass. Takes fixed_table directly so one class works for any
+    caller's decklist."""
     def __init__(self, fixed_table):
         self.deck_ctx = (None, fixed_table)
         self.tapped = False
@@ -98,14 +88,13 @@ def _base_fixture():
     deck_ctx_a = (vocab, fixed_table_a)
     deck_ctx_b = (vocab, fixed_table_b)
 
-    # One encoder PER DECK -- passing a single instance to both would put it in
-    # two optimizers, the coupling per-deck encoders exist to remove.
+    # One encoder PER DECK -- sharing one instance would put it in two
+    # optimizers.
     #
-    # Built at SetTransformer's DEFAULT architecture rather than a shrunken
-    # one: this fixture's nets get registered as snapshots below, and
-    # LeaguePool.load_snapshot_agent rebuilds an encoder at the default width
-    # to load them into (see its own assert). A narrow test encoder would save
-    # a trivial amount of time here and make that path untestable.
+    # Built at SetTransformer's DEFAULT architecture, not a shrunken one:
+    # this fixture's nets get registered as snapshots below, and
+    # LeaguePool.load_snapshot_agent rebuilds an encoder at the default
+    # width to load them into.
     def _enc():
         return SetTransformer(vocab.size)
     d = _enc().d_model
@@ -126,9 +115,8 @@ def _base_fixture():
 
 @pytest.mark.slow
 def test_mirror_selfplay_smoke():
-    # Mirror self-play smoke test -- net_a plays itself, BOTH seats pooled
-    # into one bucket ("m"), one update; exercises the "same weights both
-    # seats" path and the pairing-driven collect_rollout + AlwaysKeep pregame.
+    # Mirror self-play: net_a plays itself, both seats pooled into one
+    # bucket ("m"), one update.
     fx = _base_fixture()
     net_a, decklist_a, deck_ctx_a, reward_fn, rng = fx["net_a"], fx["decklist_a"], fx["deck_ctx_a"], fx["reward_fn"], fx["rng"]
     t0 = time.time()
@@ -157,10 +145,8 @@ def test_mirror_selfplay_smoke():
 
 @pytest.mark.slow
 def test_cross_matchup_smoke():
-    # Cross-matchup smoke test -- net_a vs net_b, two independent
-    # buffers/updates, exercises the "different decks/action spaces on each
-    # seat" path (this is what league_runner._run_session's per-deck
-    # ppo_update call relies on for the league's cross-deck games).
+    # Cross-matchup: net_a vs net_b, two independent buffers/updates --
+    # exercises different decks/action spaces on each seat.
     fx = _base_fixture()
     net_a, net_b, reward_fn, rng = fx["net_a"], fx["net_b"], fx["reward_fn"], fx["rng"]
     decklist_a, decklist_b = fx["decklist_a"], fx["decklist_b"]
@@ -183,11 +169,8 @@ def test_cross_matchup_smoke():
 
 @pytest.mark.slow
 def test_game_logs_smoke():
-    # game_logs smoke test -- wiring the game engine's OWN existing
-    # event_log (game/state.py's log_event, already instrumented across
-    # mana.py/turn.py/resolution/*.py/game/effects/*.py) through to
-    # collect_rollout, not any new logging. One entry per game played,
-    # each a real list of structured event dicts.
+    # Wires the game engine's own event_log through to collect_rollout, not
+    # any new logging. One entry per game played.
     fx = _base_fixture()
     net_a, decklist_a, deck_ctx_a, reward_fn, rng = fx["net_a"], fx["decklist_a"], fx["deck_ctx_a"], fx["reward_fn"], fx["rng"]
     agent_a = SeatAgent(net_a, AlwaysKeep(), deck_ctx_a)
@@ -213,19 +196,15 @@ def test_game_logs_smoke():
 
 @pytest.mark.slow
 def test_league_smoke_and_ppo_update_trains_the_encoder():
-    # League smoke test -- collect_rollout_league against a REAL
-    # LeaguePool, exercising all three opponent kinds it must handle:
-    # true mirror (both seats recorded), another deck's live net (training
-    # seat only), and a frozen historical snapshot (training seat only).
-    # sample_opponent is monkeypatched per sub-case rather than left to
-    # chance, so each path is deterministically exercised instead of
-    # hoping enough random games happen to hit all three.
+    # League smoke test against a real LeaguePool, exercising all three
+    # opponent kinds: true mirror (both seats recorded), another deck's live
+    # net (training seat only), a frozen snapshot (training seat only).
+    # sample_opponent is monkeypatched per sub-case so each path is
+    # deterministically exercised.
     #
-    # Then (same buffer, same net): a second ppo_update asserting the ENCODER
-    # trains along with the heads -- the whole point of per-deck encoders, and
-    # the exact opposite of what this used to check. The league's encoder was
-    # a frozen shared stack, so ppo_update precomputed its outputs once and
-    # this asserted it came back byte-for-byte unchanged.
+    # Then (same buffer, same net): a second ppo_update asserting the
+    # encoder trains along with the heads, since it's a registered child of
+    # the net.
     fx = _base_fixture()
     net_a, net_b, opt_a, reward_fn, rng = fx["net_a"], fx["net_b"], fx["opt_a"], fx["reward_fn"], fx["rng"]
     decklist_a, decklist_b = fx["decklist_a"], fx["decklist_b"]
@@ -246,8 +225,7 @@ def test_league_smoke_and_ppo_update_trains_the_encoder():
                                                           pool, reward_fn, HORIZON, n_games=1, rng=rng, device=DEVICE)
         assert played == 1 and len(bufs_self.get("a", RolloutBuffer())) > 0, "true mirror must record a non-empty 'a' bucket"
         assert set(bufs_self) == {"a"}, "a true mirror records ONLY the training bucket (both seats pooled into it)"
-        # 0 entries iff that single game hit a horizon timeout (no winner) -- excluded
-        # entirely rather than recorded as a loss, see collect_rollout_league's own docstring.
+        # 0 entries iff that game hit a horizon timeout (no winner) -- excluded rather than counted as a loss.
         assert len(outcomes_self) <= 1 and all(o == ("a", None, o[2]) for o in outcomes_self), \
             "a mirror's outcome, when present, is keyed by ('a', None, <won>)"
         buf_self = bufs_self["a"]
@@ -295,10 +273,8 @@ def test_league_smoke_and_ppo_update_trains_the_encoder():
     pl, vl, ent, akl, cf, ep, ev, astd = ppo_update(net_a, opt_all, buf_self, DEVICE, n_epochs=2, batch_size=16)
     assert np.isfinite(pl) and np.isfinite(vl) and np.isfinite(ent)
     assert np.isfinite(akl) and np.isfinite(cf) and 1 <= ep <= 2
-    # explained_variance: finite and <= 1 by construction. NOT asserted
-    # positive -- an untrained critic on a smoke-test buffer legitimately
-    # scores below zero (worse than predicting the mean), which is the honest
-    # reading and exactly why this is recorded next to the raw value_loss.
+    # explained_variance: finite, <= 1 by construction. NOT asserted
+    # positive -- an untrained critic can legitimately score below zero.
     assert np.isfinite(ev) and ev <= 1.0
     assert any(not torch.equal(a, b) for a, b in zip(encoder_before, net_a.encoder.parameters())), \
         "the per-deck encoder must actually train -- gradients reach it through the registered child"
@@ -311,11 +287,9 @@ def test_league_smoke_and_ppo_update_trains_the_encoder():
 
 @pytest.mark.slow
 def test_eval_record_false_smoke():
-    # Eval / record=False smoke test -- the ANTI-DRIFT invariant. The SAME
-    # collect_rollout drives eval and training; only `record` differs. With
-    # record=False it must produce NO training buffers (nothing recorded) yet
-    # still yield one event_log per game -- "one loop, faithful logging". Also
-    # exercises greedy=True (the eval default is sampled, but greedy must run).
+    # record=False (eval): the SAME collect_rollout, only `record` differs.
+    # Must produce no training buffers, still yield one event_log per game.
+    # Also exercises greedy=True (the eval default is sampled).
     fx = _base_fixture()
     net_a, decklist_a, deck_ctx_a, reward_fn, rng = fx["net_a"], fx["decklist_a"], fx["deck_ctx_a"], fx["reward_fn"], fx["rng"]
     agent_a = SeatAgent(net_a, AlwaysKeep(), deck_ctx_a)
@@ -333,13 +307,10 @@ def test_eval_record_false_smoke():
 
 
 def test_wants_mana_mistake_gates_on_reward_fn_tag():
-    # _wants_mana_mistake: collect_rollout's own gate for whether to build/
-    # wire the on_mana_burn hook at all. True only once a TRACKED seat's
-    # reward_fn is tagged consumes_mana_mistake=True -- the opt-in-attribute
-    # pattern with_dense_mana_burn_penalty's own charge_single_pip_burn/
-    # mana_burn_winner_only tags use too. Tagged here by hand (no reward_fn
-    # currently in rl.rewards sets this tag) since the gate itself is
-    # generic attribute-checking logic, not specific to any one reward_fn.
+    # collect_rollout's gate for whether to build/wire the on_mana_burn
+    # hook: True only once a tracked seat's reward_fn is tagged
+    # consumes_mana_mistake=True. Tagged by hand here (no reward_fn in
+    # rl.rewards currently sets this tag).
     base = flat_win_loss_reward()
     def tagged(state, done, horizon):
         return base(state, done, horizon)
@@ -351,21 +322,13 @@ def test_wants_mana_mistake_gates_on_reward_fn_tag():
 
 
 def test_on_mana_burn_closure_flags_wasted_tap():
-    # The REAL production on_mana_burn closure (rl.training.train._make_on_mana_burn),
-    # not a hand-rolled stand-in -- exercises the exact deck_ctx indexing,
-    # legal_action_mask call, and mask/fixed_table zip alignment that shipped
-    # with a bug once (a "Tap X" row was mistaken for proof the floated mana
-    # had a use -- see game.turn._tally_mana_mistake's own docstring for the
-    # three-way exemption this hook completes). Only a minimal fake agent
-    # (a real deck_ctx, no network) is needed -- SeatAgent.decide is never
-    # called here.
+    # The real production on_mana_burn closure (_make_on_mana_burn), not a
+    # hand-rolled stand-in. Only a minimal fake agent (a real deck_ctx, no
+    # network) is needed -- SeatAgent.decide is never called here.
     #
-    # Mono-Mountain deck, no spells at all -- same board-control trick as
-    # tests/game/test_turn.py::test_on_mana_burn_hook_wired_through_run_multiplayer_game,
-    # but wired to the REAL closure instead of a hand-rolled lambda: play a
-    # land, tap it once in MAIN1, then always Pass. Nothing is EVER castable
-    # with this deck, so a correct closure must report "no, nothing was
-    # legally castable" (False) for the float to register as a mistake.
+    # Mono-Mountain deck, no spells: play a land, tap it once in MAIN1, then
+    # always Pass. Nothing is ever castable, so a correct closure must
+    # report False (nothing castable) for the float to register as a mistake.
     class _FakeAgent:
         def __init__(self, deck_ctx):
             self.deck_ctx = deck_ctx
@@ -407,22 +370,15 @@ def test_on_mana_burn_closure_flags_wasted_tap():
 
 
 def test_dense_mana_burn_credit_lands_on_the_tap_not_the_pass():
-    # rl.training.train's on_single_pip_burn hook + open_taps bookkeeping: the whole
-    # phase's dense mana-burn charge must land on the Tap action that
-    # produced the float, not on the Pass that happened to be pending when
-    # the phase boundary crossed -- the mis-attribution a 2026-08-10 one-off
-    # probe (since retired) found against the real production reward
-    # (see with_dense_mana_burn_penalty's own docstring: only 1.8% of real
-    # transitions ever carried a nonzero charge, and Tap wasn't preferred
-    # over Pass at all). Scripted mono-Mountain deck (nothing ever castable,
-    # so the tap's own pip is guaranteed to survive to the clear): play a
-    # land, tap it once in MAIN1, then always Pass.
+    # The whole phase's dense mana-burn charge must land on the Tap action
+    # that produced the float, not the Pass pending when the phase boundary
+    # crossed. Scripted mono-Mountain deck (nothing ever castable, so the
+    # tap's pip survives to the clear): play a land, tap it once in MAIN1,
+    # then always Pass.
     #
-    # A real SeatAgent/DeckNetwork isn't needed -- collect_rollout's own
-    # choose_action closure only ever reads ppo_entry's action_idx (against
-    # a REAL fixed_table, for real "Tap"/"Pass" label lookups) and deck_ctx;
-    # everything else a buffer entry stores (tokens/scalar/mask/logp/value)
-    # is inert placeholder data this test never reads back.
+    # A real SeatAgent/DeckNetwork isn't needed -- collect_rollout's
+    # choose_action closure only reads ppo_entry's action_idx and deck_ctx;
+    # everything else a buffer entry stores is inert placeholder data.
     decklist = [("Mountain", 20)]
     token_defs = (game.BLOOD_TOKEN_CARD_DEF, game.ROBOT_TOKEN_CARD_DEF)
     fixed_table = build_fixed_action_table(decklist, token_card_defs=token_defs)
@@ -446,25 +402,19 @@ def test_dense_mana_burn_credit_lands_on_the_tap_not_the_pass():
 
 @pytest.mark.slow
 def test_winner_only_mana_burn_charges_the_winner_and_drops_the_loser():
-    # rl.training.train's deferred_charges + _winner_only_burn_for: with a WINNER-ONLY
-    # reward (rl.rewards.with_dense_mana_burn_penalty(refund_on_loss=True),
-    # i.e. deploy_reward_v6's wrap), a seat's dense burn charges are held for
-    # the whole game and applied at the terminal flush ONLY if it won. A
-    # losing seat's trajectory must come out bit-for-bit identical to one
-    # that never burnt anything at all.
+    # With a WINNER-ONLY reward (refund_on_loss=True), a seat's dense burn
+    # charges are held for the whole game and applied at the terminal flush
+    # only if it won. A losing seat's trajectory must come out bit-for-bit
+    # identical to one that never burnt anything.
     #
-    # That neutrality is the entire point of DEFERRING rather than charging-
-    # then-refunding: PPO trains on GAE advantages, so a charge written at
-    # step t lands in delta_t immediately while a terminal refund only reaches
-    # it discounted by (gamma*gae_lambda)^k -- see with_dense_mana_burn_
-    # penalty's own docstring. A refund-based implementation would leave a
-    # residue here; this asserts there is none.
+    # Deferring rather than charging-then-refunding matters under GAE: a
+    # charge written at step t lands in delta_t immediately, while a
+    # terminal refund reaches it only discounted by (gamma*gae_lambda)^k --
+    # a refund-based implementation would leave a residue here.
     #
-    # Same scripted mono-Mountain setup as test_dense_mana_burn_credit_lands_
-    # on_the_tap_not_the_pass above (nothing castable, so every tapped pip
-    # survives to the phase clear), but with a deck small enough to DECK OUT
-    # within the horizon -- that produces a real winner and a real loser in
-    # ONE game, exercising both branches against the same rollout.
+    # Same scripted mono-Mountain setup as the test above, but with a deck
+    # small enough to deck out within the horizon, producing a real winner
+    # and loser in ONE game.
     decklist = [("Mountain", 8)]
     token_defs = (game.BLOOD_TOKEN_CARD_DEF, game.ROBOT_TOKEN_CARD_DEF)
     fixed_table = build_fixed_action_table(decklist, token_card_defs=token_defs)
@@ -475,8 +425,7 @@ def test_winner_only_mana_burn_charges_the_winner_and_drops_the_loser():
     reward_fn = with_dense_mana_burn_penalty(base, mana_burn_c=3.3, mana_burn_p=4.0,
                                               game_penalty_cap=2.0, refund_on_loss=True)
     agents = [_ScriptedAgent(fixed_table), _ScriptedAgent(fixed_table)]
-    # Both seats recorded, into SEPARATE buckets, so winner and loser can be
-    # told apart afterwards.
+    # Both seats recorded, into separate buckets, so winner and loser can be told apart.
     pairing = _constant_pairing(agents, [decklist, decklist], [reward_fn, reward_fn], ["seat0", "seat1"])
 
     winner = {}
@@ -489,17 +438,15 @@ def test_winner_only_mana_burn_charges_the_winner_and_drops_the_loser():
     lost_buf = bufs[f"seat{1 - winner['idx']}"]
 
     # WINNER: the charge applies, and still lands on the Tap (not the Pass) --
-    # deferring must not disturb the attribution the non-deferred path already
-    # guarantees (test_dense_mana_burn_credit_lands_on_the_tap_not_the_pass).
+    # deferring must not disturb the non-deferred path's attribution.
     won_taps = [won_buf.reward[i] for i in range(len(won_buf)) if won_buf.action[i] == tap_idx]
     won_passes = [won_buf.reward[i] for i in range(len(won_buf)) if won_buf.action[i] == pass_idx]
     assert won_taps, "the winner's scripted tap must have been recorded"
     assert any(r < -1e-9 for r in won_taps), "the winner's Tap must carry the deferred charge once applied"
     assert all(r == 0.0 for r in won_passes), "Pass must never absorb the charge"
 
-    # LOSER: nothing was ever written. Not "smaller", not "refunded to about
-    # zero" -- EXACTLY zero on every single transition, the guarantee a
-    # terminal refund could not have provided.
+    # LOSER: nothing was ever written -- exactly zero on every transition,
+    # not merely "smaller" or "refunded to about zero".
     assert len(lost_buf), "the loser's trajectory must have been recorded at all"
     assert all(r == 0.0 for r in lost_buf.reward), (
         "a losing seat must pay nothing for mana burnt -- every transition exactly 0.0"
@@ -510,17 +457,14 @@ def test_winner_only_mana_burn_charges_the_winner_and_drops_the_loser():
 
 @pytest.mark.slow
 def test_explained_variance_is_zero_not_one_when_returns_are_constant():
-    """The whole reason explained_variance was added (2026-08-13): value_loss
-    is a raw MSE with no scale attached, so a critic predicting a CONSTANT that
-    happens to be right reports a tiny loss and looks excellent. That is the
-    live competing explanation for this project's own flat 0.01 value_loss --
-    gamma/gae_lambda discounting early-game returns to ~0 makes them trivially
-    predictable. A degenerate target must therefore score 0, not 1."""
+    """value_loss is a raw MSE with no scale attached, so a critic
+    predicting a constant that happens to be right reports a tiny loss and
+    looks excellent. A degenerate (zero-variance) target must score 0, not 1."""
     net = DeckNetwork(SetTransformer(vocab_size=5, d_model=8, n_heads=2, n_layers=1, dim_feedforward=16),
                       film_condition_dim=8, non_targeting_n_actions=4)
     buf = RolloutBuffer()
     # Every transition identical, reward 0, done immediately -> zero-variance
-    # returns. A "perfect" critic here has explained nothing.
+    # returns; a "perfect" critic here has explained nothing.
     for _ in range(8):
         buf.add([], np.zeros(SCALAR_FEATURE_DIM, dtype=np.float32),
                 np.ones(4, dtype=bool), 0, 0.0, 0.0, 0.0, True)
@@ -534,17 +478,12 @@ def test_adv_norm_floor_defaults_to_a_true_no_op_and_damps_degenerate_batches():
     """The guard on rl.training.ppo's advantage normalization.
 
     Unguarded, (adv - mean) / (std + 1e-8) rescales EVERY batch to unit
-    variance, including one where nearly every trajectory returned the same
-    outcome -- so critic noise is promoted to a full-scale gradient. Three of
-    four decks spent 58-77% of training in matchups they win <25% of, and
-    flattening PFSP only reaches ~56%, so this is structural rather than
-    incidental.
+    variance, promoting critic noise to a full-scale gradient when the real
+    signal is tiny (e.g. a near-always-lost matchup).
 
-    Two properties, both load-bearing:
-      - floor=0.0 (the default) must reproduce the historical behavior EXACTLY,
-        so shipping the knob changes nothing until it is deliberately set;
-      - a floor above the batch's own spread must SHRINK the advantages rather
-        than normalize them to unit scale.
+    Two properties, both load-bearing: floor=0.0 (default) must reproduce
+    the historical behavior exactly; a floor above the batch's own spread
+    must shrink the advantages rather than normalize to unit scale.
     """
     import numpy as np
 
@@ -562,18 +501,16 @@ def test_adv_norm_floor_defaults_to_a_true_no_op_and_damps_degenerate_batches():
     assert float(guarded.std()) < 0.05, (
         f"a batch with no real signal must stay small, got std={guarded.std():.3f}")
 
-    # ...and the same floor must not disturb a batch that DOES carry signal.
+    # The same floor must not disturb a batch that DOES carry signal.
     assert np.allclose(normalized(healthy, 0.5), normalized(healthy, 0.0), atol=1e-5), (
         "a floor below the batch's own spread must be inert")
 
 
 @pytest.mark.slow
 def test_ppo_update_reports_raw_adv_std():
-    """adv_norm_floor cannot be set responsibly without knowing the actual
-    advantage scale, which nothing ever recorded. It is returned and logged so
-    the value comes from the measured distribution rather than a guess -- the
-    mistake that made PFSP_POWER=2.0 the leading cause of a 60,001-game
-    regression."""
+    """adv_norm_floor can't be set responsibly without knowing the actual
+    advantage scale -- it's returned and logged so the value comes from the
+    measured distribution rather than a guess."""
     fx = _base_fixture()
     agent_a = SeatAgent(fx["net_a"], AlwaysKeep(), fx["deck_ctx_a"])
     pairing = _constant_pairing([agent_a, agent_a], [fx["decklist_a"]] * 2,
@@ -586,21 +523,16 @@ def test_ppo_update_reports_raw_adv_std():
 
 @pytest.mark.slow
 def test_recurrent_state_is_per_seat_and_cleared_between_games():
-    """Two invariants the recurrent policy depends on, both at the seam that
-    enforces them (collect_rollout's own game loop) rather than by calling
-    reset() directly.
+    """Two invariants enforced at the seam (collect_rollout's game loop),
+    not by calling reset() directly.
 
-    PER SEAT. A mirror pairing puts ONE SeatAgent object on BOTH seats
-    (collect_rollout_league: `opp_agent = train_agent` for a true mirror). A
-    single shared hidden state would interleave the two seats' histories, so
-    seat 1 would be conditioning on a state that encodes seat 0's own hand --
-    a hidden-information leak. It would also desync replay, since a mirror
-    records each seat as its own contiguous episode and ppo_update replays
-    every episode from zeros.
+    PER SEAT: a mirror pairing puts ONE SeatAgent on BOTH seats. A shared
+    hidden state would leak seat 0's hand into seat 1's conditioning, and
+    would desync replay (ppo_update replays every episode from zeros).
 
-    CLEARED PER GAME. A SeatAgent is reused across games (LeaguePool caches
-    snapshot agents by path), so without a reset the agent starts a fresh game
-    remembering one it is no longer playing."""
+    CLEARED PER GAME: a SeatAgent is reused across games (LeaguePool caches
+    snapshot agents by path), so without a reset it would start a new game
+    remembering one it's no longer playing."""
     fx = _base_fixture()
     left_over = []
 
@@ -624,35 +556,27 @@ def test_recurrent_state_is_per_seat_and_cleared_between_games():
         "the two seats saw different games and must hold different states -- identical states mean "
         "they are sharing one"
     )
-    # reset() runs at the START of a game, so the agent legitimately still
-    # holds the final game's state here -- which is exactly what the next
-    # game's reset would clear.
+    # reset() runs at the start of a game, so the agent still holds the
+    # final game's state here.
     assert set(agent.hidden) == {0, 1}
     agent.reset()
     assert agent.hidden == {}, "reset must clear every seat, not just the last one written"
 
 
 def test_non_progressing_priority_round_raises_instead_of_hanging(monkeypatch):
-    # A legal-but-non-progressing action spins forever inside a priority round:
-    # `horizon` bounds state.turn_number, and turn_number does not advance
-    # between decisions within one turn, so nothing in the ENGINE stops it (by
-    # design -- capping a priority round would deviate from real Magic, which
-    # sets no limit on how many legal actions a player may take). Left
-    # unguarded that is a silent HANG, not a crash: the buffer grows ~42 KB per
-    # decision at ~400 decisions/s until a collect worker dies pickling its
-    # result, after burning hours of an unattended run looking alive. That
-    # happened for real on 2026-08-19 (a flying/reach predicate mismatch in
-    # blocker assignment, fixed at the source in drl_env._assign_blocker_execute).
+    # A legal-but-non-progressing action spins forever inside a priority
+    # round: `horizon` bounds turn_number, which doesn't advance within one
+    # turn, so nothing in the ENGINE stops it (capping a priority round
+    # would deviate from real Magic). Left unguarded that's a silent hang,
+    # not a crash.
     #
-    # So collect_rollout refuses to spin. This drives the guard directly with a
-    # frozen turn_number -- the defining property of the failure -- rather than
-    # trying to reconstruct a specific engine state that loops, which would
-    # re-break the moment that particular bug's fix changed.
+    # Drives the guard directly with a frozen turn_number -- the defining
+    # property of the failure -- rather than reconstructing a specific
+    # engine state that loops.
     import rl.training.train as train_mod
 
     # A scripted mono-Mountain agent, not a real net -- the guard is purely
-    # turn-number/decision-count based, so it doesn't need real policy
-    # forward passes (see _ScriptedAgent's own docstring).
+    # turn-number/decision-count based.
     decklist = [("Mountain", 20)]
     token_defs = (game.BLOOD_TOKEN_CARD_DEF, game.ROBOT_TOKEN_CARD_DEF)
     fixed_table = build_fixed_action_table(decklist, token_card_defs=token_defs)
@@ -661,8 +585,7 @@ def test_non_progressing_priority_round_raises_instead_of_hanging(monkeypatch):
     pairing = _constant_pairing([agent, agent], [decklist, decklist],
                                 [reward_fn, reward_fn], ["m", "m"])
 
-    # Freeze turn_number: every decision then counts against the SAME turn,
-    # which is exactly what a non-progressing round looks like to the guard.
+    # Freeze turn_number: every decision counts against the same turn.
     monkeypatch.setattr(train_mod, "MAX_DECISIONS_PER_TURN", 25)
     real_run = game.run_multiplayer_game
 
@@ -682,16 +605,14 @@ def test_non_progressing_priority_round_raises_instead_of_hanging(monkeypatch):
 
 
 def test_the_guard_does_not_fire_on_ordinary_games():
-    # The other half: a guard that trips on legitimate play would abort real
-    # training runs. Largest legitimate turn ever measured in this repo is 61
-    # decisions (140 recorded round-robin games); the shipped limit is 5000.
-    # Real games here must complete untouched at the real constant.
+    # A guard that trips on legitimate play would abort real training runs.
+    # Largest legitimate turn ever measured here is 61 decisions; the
+    # shipped limit is 5000.
     from rl.training.train import MAX_DECISIONS_PER_TURN
     assert MAX_DECISIONS_PER_TURN >= 1000, "limit must stay far above any legitimate turn"
 
-    # Same cheap scripted mono-Mountain agent as the test above -- ordinary
-    # play with real turn advancement must never trip the guard, and that
-    # property doesn't depend on a real trained network either.
+    # Same cheap scripted agent -- ordinary play with real turn advancement
+    # must never trip the guard.
     decklist = [("Mountain", 20)]
     token_defs = (game.BLOOD_TOKEN_CARD_DEF, game.ROBOT_TOKEN_CARD_DEF)
     fixed_table = build_fixed_action_table(decklist, token_card_defs=token_defs)
@@ -705,10 +626,9 @@ def test_the_guard_does_not_fire_on_ordinary_games():
 
 
 class _HandRecordingAgent(_ScriptedAgent):
-    """_ScriptedAgent, but stashes the hand it's first asked to judge at
-    the mulligan_decision pending resolution -- used to read back the
-    actual opening hand collect_rollout's stratify wiring dealt this seat,
-    before any cards get played (by game end the hand has changed)."""
+    """_ScriptedAgent that stashes the hand it's first asked to judge at the
+    mulligan_decision pending resolution -- reads back the actual opening
+    hand stratify wiring dealt, before any cards are played."""
 
     def __init__(self, fixed_table):
         super().__init__(fixed_table)
@@ -722,15 +642,11 @@ class _HandRecordingAgent(_ScriptedAgent):
 
 
 def test_collect_rollout_stratify_forces_the_recorded_seats_opening_hand():
-    """collect_rollout's own probability-roll/seat-gate wiring for
-    stratify_0land_pct/stratify_7land_pct (src/rl/training/train.py, added alongside
-    game.state.build_shuffled_library's force_land_count) had no direct
-    test -- only the lower-level game.state.new_multiplayer_game_state(
-    stratify=...) plumbing it calls was covered (tests/game/test_turn.py::
-    test_stratify_forces_opening_land_count). Deterministic (pct=1.0, i.e.
-    always) so this isn't a statistical flake, and only ONE seat is
-    recorded (record_as=["m", None]) so the "exactly one recorded seat"
-    gate actually fires and picks that seat."""
+    """collect_rollout's probability-roll/seat-gate wiring for
+    stratify_0land_pct/stratify_7land_pct had no direct test -- only the
+    lower-level game.state plumbing it calls was covered. Deterministic
+    (pct=1.0) so this isn't a statistical flake, with only one seat
+    recorded so the "exactly one recorded seat" gate actually fires."""
     decklist = [("Mountain", 33), ("Lightning Bolt", 27)]
     token_defs = (game.BLOOD_TOKEN_CARD_DEF, game.ROBOT_TOKEN_CARD_DEF)
     fixed_table = build_fixed_action_table(decklist, token_card_defs=token_defs)
@@ -741,11 +657,9 @@ def test_collect_rollout_stratify_forces_the_recorded_seats_opening_hand():
         other = _ScriptedAgent(fixed_table)
         pairing = _constant_pairing([recorder, other], [decklist, decklist],
                                      [reward_fn, reward_fn], ["m", None])
-        # horizon=1 (not the module HORIZON): only the opening hand matters
-        # here, dealt before any turn begins. A tiny horizon keeps the game
-        # short enough that _ScriptedAgent -- which only handles mulligans,
-        # land plays, and one mana tap -- never has to face a hand-size
-        # cleanup discard it can't script a response to.
+        # horizon=1: only the opening hand matters here. A tiny horizon
+        # keeps the game short enough that _ScriptedAgent (mulligans, land
+        # plays, one mana tap) never has to face a discard it can't script.
         collect_rollout(pairing, 1, horizon=1, rng=_random.Random(0), device=DEVICE,
                          stratify_0land_pct=stratify_0land_pct, stratify_7land_pct=stratify_7land_pct)
         assert recorder.recorded_hand is not None, "the recorded seat's own mulligan decision must have been reached"
@@ -757,12 +671,9 @@ def test_collect_rollout_stratify_forces_the_recorded_seats_opening_hand():
 
 def test_collect_rollout_stratify_defaults_are_a_true_no_op():
     """stratify_0land_pct=0.0, stratify_7land_pct=0.0 (the defaults) must
-    draw from the RNG identically to omitting the params entirely -- the
-    docstring's own promise ("no extra rng draw happens at all when both
-    are 0.0"). Checked by running the SAME seed twice (params omitted vs.
-    explicitly 0.0) and asserting the dealt opening hand for the recorded
-    seat comes out byte-identical -- a stray rng draw in the gate would
-    shift every later shuffle and this would diverge."""
+    draw from the RNG identically to omitting the params -- checked by
+    running the same seed twice and asserting the dealt hand comes out
+    byte-identical."""
     decklist = [("Mountain", 33), ("Lightning Bolt", 27)]
     token_defs = (game.BLOOD_TOKEN_CARD_DEF, game.ROBOT_TOKEN_CARD_DEF)
     fixed_table = build_fixed_action_table(decklist, token_card_defs=token_defs)

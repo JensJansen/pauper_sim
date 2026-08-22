@@ -1,12 +1,7 @@
-"""Who may block -- creature_block_eligible's own rules, including the two it
-deliberately does NOT share with creature_attack_eligible.
-
-Blocking and attacking have different eligibility in real Magic, and this
-engine's creature_block_eligible documents that on purpose: a Defender may
-block, and a summoning-sick creature may block. Both are easy to "tidy up"
-into an attack-eligibility copy, which would silently stop those creatures
-blocking. The evasion rules themselves (flying / reach / Silhana) are covered
-by test_combat.py's test_can_block_evasion_and_reach.
+"""Who may block -- creature_block_eligible's own rules, deliberately
+different from creature_attack_eligible (Defender may block; summoning
+sickness doesn't stop blocking). Evasion rules (flying/reach/Silhana) are
+covered by test_combat.py's test_can_block_evasion_and_reach.
 """
 from game import registry
 from game.cards import CardDef, CardType, EffectId
@@ -29,8 +24,7 @@ def _defending_state():
 
 
 def test_defender_creature_may_block():
-    # 509.1a has no Defender restriction -- Defender only forbids ATTACKING.
-    # creature_attack_eligible excludes it; creature_block_eligible must not.
+    # 509.1a: Defender only forbids attacking, not blocking.
     state, _attacker = _defending_state()
     wall = Permanent(CardDef("Wall of Roots", CardType.CREATURE, None, EffectId.FILLER,
                              power=0, toughness=5, defender=True))
@@ -40,7 +34,6 @@ def test_defender_creature_may_block():
 
 
 def test_summoning_sick_creature_may_block():
-    # Summoning sickness restricts attacking and {T} abilities, never blocking.
     state, _attacker = _defending_state()
     fresh = Permanent(CardDef("Just Cast", CardType.CREATURE, None, EffectId.FILLER, power=2, toughness=2))
     assert fresh.summoning_sick, "fixture assumes a freshly-cast creature"
@@ -59,9 +52,8 @@ def test_tapped_creature_cannot_block():
 
 
 def test_a_creature_already_blocking_cannot_block_again():
-    # One creature blocks exactly one attacker (509.1). Gang-blocking made
-    # blocked_by's values LISTS, so the "already committed" test has to flatten
-    # them -- _blocked_by_creatures. A creature in any of those lists is spent.
+    # 509.1: one creature blocks exactly one attacker. blocked_by values are
+    # lists (gang-blocking); a creature in any of them is already spent.
     state, attacker = _defending_state()
     blocker = Permanent(CardDef("Blocker", CardType.CREATURE, None, EffectId.FILLER, power=2, toughness=2))
     blocker.summoning_sick = False
@@ -81,15 +73,11 @@ def test_non_creature_permanent_is_never_block_eligible():
 
 
 def test_menace_with_only_one_available_blocker_leaves_the_declaration_stuck():
-    # The precondition for turn._declare_blockers_gen's zero-legal-actions
-    # abandon, and a loop-adjacent case: a menace attacker with exactly one
-    # committed blocker makes "Done" illegal (menace_block_incomplete), and if
-    # no other creature is eligible there is nothing legal left to submit.
-    #
-    # The engine must reach "no legal action" -- NOT "an action is legal but
-    # does nothing", which is the infinite-loop shape both 2026-08-19 bugs had.
-    # _declare_blockers_gen abandons the declaration here, and enforce_menace
-    # then drops the illegal lone block at combat damage.
+    # a menace attacker with one committed blocker makes "Done" illegal
+    # (menace_block_incomplete), and with no other eligible creature there is
+    # no legal action left; _declare_blockers_gen must abandon the
+    # declaration rather than spin, and enforce_menace drops the illegal lone
+    # block at combat damage.
     original = registry.EFFECT_REGISTRY[EffectId.FILLER]
     registry.EFFECT_REGISTRY[EffectId.FILLER] = {"keywords": {"menace"}}
     try:
@@ -101,7 +89,5 @@ def test_menace_with_only_one_available_blocker_leaves_the_declaration_stuck():
         state.players[0].blocked_by[attacker] = [lone]
         assert menace_block_incomplete(state), "one blocker on a menace attacker is an illegal declaration"
         assert not creature_block_eligible(state, lone), "the only blocker is already committed"
-        # So: Done is illegal, and no second blocker can be assigned -> zero
-        # legal actions, which is a terminating state, not a spin.
     finally:
         registry.EFFECT_REGISTRY[EffectId.FILLER] = original

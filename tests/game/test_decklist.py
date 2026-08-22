@@ -8,8 +8,7 @@ def test_parses_basic_lines():
 
 
 def test_ignores_header_and_blank_lines_and_merges_nothing():
-    # A header line, blank lines, and a second line for an already-seen
-    # name are all handled without special-casing.
+    # A header line, blanks, and a repeated name are handled without special-casing.
     assert parse_decklist_text("Deck\n4 Forest\n\n3 Forest\n") == [("Forest", 4), ("Forest", 3)]
 
 

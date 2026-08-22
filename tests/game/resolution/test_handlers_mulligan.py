@@ -20,10 +20,9 @@ def _card(name):
 
 
 def test_mulligan_london_style_bottoms_and_logs_draws():
-    # Mulligan (London style): begin_mulligan/execute_mulligan_take loop
-    # twice (redraw to 7 each time, mulligans_taken incrementing), then
-    # execute_mulligan_keep bottoms exactly mulligans_taken (2) cards before
-    # completing.
+    # begin_mulligan/execute_mulligan_take loop twice (redraw to 7 each
+    # time), then execute_mulligan_keep bottoms exactly mulligans_taken (2)
+    # cards before completing.
     events = []
     state = GameState(on_the_play=True, event_log=events)
     state.library = [_card(f"L{i}") for i in range(20)]
@@ -57,8 +56,7 @@ def test_mulligan_london_style_bottoms_and_logs_draws():
     assert len(state.hand) == 5  # 7 - 2 bottomed
     assert [c.name for c in state.library[-2:]] == bottomed  # bottomed, in the order chosen
 
-    # The mulligan handler's own event tags: mulligan_take fires once per
-    # redraw (the two hands actually thrown back), mulligan_bottom once per
+    # mulligan_take fires once per redraw, mulligan_bottom once per
     # bottomed card, in the order chosen.
     takes = [e["cards"] for e in events if e.get("reason") == "mulligan_take"]
     assert len(takes) == 2 and all(len(t) == 7 for t in takes)
@@ -66,7 +64,6 @@ def test_mulligan_london_style_bottoms_and_logs_draws():
 
 
 def test_mulligan_keep_with_zero_mulligans_skips_bottom():
-    # Keeping with 0 mulligans taken never opens a mulligan_bottom at all.
     state = GameState(on_the_play=True)
     state.library = [_card(f"L{i}") for i in range(20)]
     state.draw(7)

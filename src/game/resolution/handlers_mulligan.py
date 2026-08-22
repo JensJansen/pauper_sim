@@ -8,17 +8,13 @@ from ._core import begin_resolution, complete_resolution
 
 def begin_mulligan(state, on_complete):
     """Pregame: this player already has an opening 7-card hand (dealt by
-    state.new_multiplayer_game_state's own eager draw(7)) --
-    decide keep or mulligan (London Mulligan). Driven by
-    game.turn._run_mulligan_gen, once per player, before turn 1 ever starts.
+    state.new_multiplayer_game_state's eager draw(7)) -- decide keep or
+    mulligan (London Mulligan). Driven by game.turn._run_mulligan_gen, once
+    per player, before turn 1 starts.
 
-    No hand-contents event of its own: the opening hand and every redraw are
-    already logged as library->hand "draw" zone_moves by GameState.draw (the
-    single generic draw hook), the mulligan itself by execute_mulligan_take's
-    "mulligan_take" zone_move, and the London bottoming by the per-card
-    "mulligan_bottom" zone_moves. Together those reconstruct exactly what
-    each player saw and did, so a separate "mulligan_hand" event would only
-    duplicate the draw events."""
+    Emits no hand-contents event of its own: draws, mulligan_take, and
+    mulligan_bottom zone_moves already reconstruct exactly what each player
+    saw and did."""
     begin_resolution(state, "mulligan_decision", on_complete)
 
 
@@ -30,9 +26,8 @@ def execute_mulligan_keep(state):
     """Keep the current hand. London Mulligan: put a number of cards equal
     to mulligans already taken this game onto the library bottom, model-
     chosen -- opens a "mulligan_bottom" resolution for exactly that many
-    (capped at hand size, in case someone ever mulligans past 7) before
-    completing; on_complete only runs once the whole keep (bottoming
-    included) is done."""
+    (capped at hand size), completing on_complete only once bottoming is
+    done too."""
     on_complete = state.pending_resolution["on_complete"]
     n = min(state.mulligans_taken, len(state.hand))
     if n <= 0:
@@ -45,9 +40,7 @@ def execute_mulligan_keep(state):
 def execute_mulligan_take(state):
     """Take a mulligan: shuffle the current hand back into the library,
     redraw a fresh 7, increment mulligans_taken, then offer the same
-    keep-or-mulligan decision again -- London Mulligan allows this as many
-    times as the model likes, bounded only by library size like any other
-    draw."""
+    keep-or-mulligan decision again."""
     mulliganed = [c.name for c in state.hand]
     state.library.extend(state.hand)
     state.hand = []
@@ -61,12 +54,9 @@ def execute_mulligan_take(state):
 
 
 def begin_bottom(state, n, on_complete):
-    """Put exactly n cards from hand on the library bottom, model-chosen
-    one at a time, in the order chosen -- London Mulligan's own "any order"
-    (never read back by anything in this engine, so pick order = final
-    order, same fungible-by-name picking as begin_discard). Deliberately
-    not begin_discard itself -- its Madness routing is discard-specific and
-    wrong here."""
+    """Put exactly n cards from hand on the library bottom, model-chosen one
+    at a time, in the order chosen (London Mulligan's "any order," never
+    read back). Not begin_discard: its Madness routing doesn't apply here."""
     begin_resolution(state, "mulligan_bottom", on_complete, remaining=n)
     if not bottom_options(state):
         complete_resolution(state)

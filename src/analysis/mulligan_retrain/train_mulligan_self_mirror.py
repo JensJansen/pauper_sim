@@ -1,43 +1,20 @@
-"""Mulligan-net bootstrap #2: same-strength opponent. train_mulligan_vs_twin.py
-measured a REAL skill gap even in its best-case (same-archetype) pairing --
-logs/cross_league_50k.json's own mirror rows run 65-82.5% in main's favor, and
-twin's own AlwaysKeep-vs-blind matchup pooled to 66.25%. That gap compresses
-the mulligan-quality signal: a 0-land hand facing a genuinely weaker opponent
-can still win 8-33% of the time, nowhere near the 0/8 the original pre-fix
-audit found in real (comparable-skill) league play. The 3000-game cost
-ablation (logs/mulligan_ablation_cost_{default,zero}.json) then showed that
-result was IDENTICAL regardless of the mulligan-count reward penalty --
-ruling that out, and leaving the opponent-strength confound as the strongest
-remaining candidate.
-
-This is the deconfounded version: BOTH seats run the SAME frozen DeckNetwork
-(one deck, loaded once, shared by both SeatAgents) -- literally the same
-weights, so expected in-game skill parity is 50/50 by construction, not
-something to hope holds. Only the pregame decider differs:
+"""Mulligan-net bootstrap #2: same-strength opponent, deconfounded from
+in-game skill. Both seats run the SAME frozen DeckNetwork (one deck, loaded
+once, shared by both SeatAgents), so expected in-game skill parity is 50/50
+by construction. Only the pregame decider differs:
 
     training seat:  <deck>'s frozen live.pt  +  live, training MulliganNet
     opponent seat:  <deck>'s SAME live.pt    +  RandomMulligan
 
-RandomMulligan (not AlwaysKeep) on the opponent side, deliberately: with
-in-game skill now fixed, a DETERMINISTIC opponent policy is no longer needed
-to keep the comparison legible, and a policy that sometimes keeps and
-sometimes mulligans is a less exploitable, more "generic opponent" baseline
-than one with a fixed, predictable quirk (never redraws, ever).
-
-Scope, deliberately narrower than train_mulligan_vs_twin.py: single-archetype
-by construction (deck X only ever faces deck X), so this is NOT a production
-training regime, just the cleanest read on "can REINFORCE learn the basics at
-all once the skill confound is gone". --decks defaults to every deck the
-league has, but stage on ONE deck first (e.g. mono_red_rally, directly
-comparable to the twin-based run and the cost ablation above) before trusting
-a full-roster result.
+Scope, narrower than train_mulligan_vs_twin.py: single-archetype by
+construction (deck X only ever faces deck X), so this is not a production
+training regime -- --decks defaults to every deck the league has, but stage
+on one deck first (e.g. mono_red_rally) before trusting a full-roster result.
 
 Same two phases, same eval/audit machinery as train_mulligan_vs_twin.py
-(shared via _mulligan_common.py): TRAIN (--train-games, default 3000 to match
-the cost ablation), then EVAL -- --eval-games games (default 100) under each
-of RandomMulligan / AlwaysKeep / the just-trained MulliganNet (greedy), all
-against the SAME self-mirror + RandomMulligan opponent, seat-swapped 50/50 for
-on-the-play fairness. Land-count audit on the trained arm only.
+(shared via _mulligan_common.py): TRAIN (--train-games, default 3000), then
+EVAL under each of RandomMulligan / AlwaysKeep / the just-trained MulliganNet
+(greedy), seat-swapped 50/50. Land-count audit on the trained arm only.
 
 Output: checkpoints/<league>/<deck>/<--bootstrap-name>.pt (default
 mulligan_bootstrap_selfmirror.pt) -- never overwrites the real mulligan.pt or
@@ -71,14 +48,12 @@ from repo_paths import CHECKPOINTS_DIR  # noqa: E402
 def _train_mulligan(net, decklist, bucket, deck_ctx, opponent_seed,
                     n_games, update_every, seed, horizon, mulligan_lr):
     """Fresh MulliganNet on net's own encoder, trained by REINFORCE against a
-    SeatAgent wrapping the SAME net object with RandomMulligan as its pregame
-    decider -- one fixed opponent, no roster-cycling needed (unlike the twin
-    script), so _constant_pairing is enough on its own. Main pinned to seat 0
-    throughout training -- see train_mulligan_vs_twin.py's identical
-    reasoning (on_the_play is already an observed scalar and already varies
-    game to game via collect_rollout's own starting_idx, so fixing the seat
-    doesn't bias what the net learns, only a WIN-RATE comparison needs the
-    seat swap, which is the eval phase's job)."""
+    SeatAgent wrapping the SAME net object with RandomMulligan as its
+    pregame decider -- one fixed opponent, so _constant_pairing is enough.
+    Main pinned to seat 0 throughout training; on_the_play already varies
+    game to game via collect_rollout's starting_idx, so fixing the seat
+    doesn't bias what the net learns. The eval phase handles the seat swap
+    needed for a win-rate comparison."""
     mnet = MulliganNet(net.encoder)
     opt = torch.optim.Adam([p for p in mnet.parameters() if p.requires_grad], lr=mulligan_lr)
     main_agent = SeatAgent(net, mnet, deck_ctx)
@@ -112,11 +87,10 @@ def _train_mulligan(net, decklist, bucket, deck_ctx, opponent_seed,
 
 
 def _play_eval_arm(agent, opponent_agent, decklist, n_games, seed, horizon, game_logs=None):
-    """n_games split evenly across both seats (on-the-play fairness -- same
-    reasoning run_cross_league_eval.py's own docstring and
-    train_mulligan_vs_twin.py's identical helper give). record=False,
-    greedy=True throughout. Returns (wins, decided) for agent's side; a
-    horizon timeout (state.winner is None) counts toward neither."""
+    """n_games split evenly across both seats for on-the-play fairness.
+    record=False, greedy=True throughout. Returns (wins, decided) for
+    agent's side; a horizon timeout (state.winner is None) counts toward
+    neither."""
     half = n_games // 2
     tally = {"wins": 0, "decided": 0}
     for main_seat in (0, 1):
@@ -191,11 +165,7 @@ def main():
             ("always_keep", SeatAgent(nets[name], AlwaysKeep(), deck_ctxs[name])),
             ("trained_mulligan", SeatAgent(nets[name], mnet, deck_ctxs[name])),
         ]
-        # A FRESH opponent (own rng, own seed offset) per deck, shared across
-        # that deck's three arms -- reused, not rebuilt per arm, mirroring
-        # train_mulligan_vs_twin.py's twin_agents dict (one frozen opponent
-        # object per deck, read by all three arms) rather than a fresh
-        # RandomMulligan instance per arm-call.
+        # One opponent per deck, shared across that deck's three eval arms.
         opponent_agent = SeatAgent(nets[name], RandomMulligan(random.Random(args.seed + 2000)), deck_ctxs[name])
         deck_result = {"train_win_rate": train_rate, "train_games_decided": train_tally["decided"], "arms": {}}
         for arm_name, agent in arms:

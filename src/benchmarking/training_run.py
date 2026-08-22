@@ -1,16 +1,13 @@
-"""Benchmark: the REAL league training loop under different collection configs.
+"""Benchmark: the real league training loop under different collection configs.
 
-Drives rl.league.league_runner._run_session directly -- the EXACT training sequence
-(all decks, collect + ppo_update, the batch-size schedule, session-end
+Drives rl.league.league_runner._run_session directly -- the exact training
+sequence (all decks, collect + ppo_update, batch-size schedule, session-end
 checkpointing) over a throwaway checkpoint dir, so every number here is a
 true training session's per-iteration cost, not an isolated function
-microbench. Nothing has to be done to get untrained weights: with per-deck
-encoders a league with no live.pt on disk starts from freshly-initialized
-nets, which is exactly the benchmark condition (there used to be a
-fresh_stack=True flag for this, back when the alternative was loading a
-pretrained frozen shared stack).
+microbench. A league with no live.pt on disk starts from freshly-initialized
+nets, which is the benchmark condition.
 
-Each config runs with the SAME seed (identical fresh weights + shuffles) over
+Each config runs with the same seed (identical fresh weights + shuffles) over
 its own throwaway checkpoint dir, so they are comparable. _run_session prints
 its own total time + collect/update split per config; this harness adds a
 cross-config wall-clock summary.
@@ -28,7 +25,7 @@ import shutil
 import time
 from concurrent.futures import ProcessPoolExecutor
 
-import _common as bench  # noqa: F401 -- sets sys.path + chdir so build_pool()'s relative paths resolve like the real script
+import _common as bench  # noqa: F401 -- sets sys.path + chdir for build_pool()'s relative paths
 from rl.league import league_runner
 
 

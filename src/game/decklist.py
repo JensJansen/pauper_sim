@@ -1,10 +1,6 @@
-"""Decklist file parsing: the actual contents of a deck (which cards, how
-many) come from a plain text file (data/*.txt), not a hand-written Python
-list -- see game.registry.CARD_DEFS for where a name's real definition
-(type/cost/effect/extra) lives instead, defined exactly once regardless of
-how many decks play it. Swapping a deck's exact contents (reweight/add/
-remove a card already implemented somewhere) is purely a text-file edit;
-no Python change needed at all.
+"""Parses decklist files (data/*.txt): which cards, how many. Card
+definitions live in game.registry.CARD_DEFS; a decklist supplies only
+names and quantities.
 """
 
 import re
@@ -15,21 +11,12 @@ _LINE_RE = re.compile(r"^\s*(\d+)\s+(.+?)\s*$")
 
 
 def parse_decklist_text(text):
-    """[(name, qty), ...] from lines shaped "<qty> <name>" (data/*.txt's
-    own format). Any line not matching that shape -- blank lines, a
-    leading "Deck"/"Sideboard" header line, comments -- is silently
-    skipped, not an error (monster_tron.txt's own "Deck" header line is
-    handled this way, no special-casing needed). Duplicate lines for the
-    same name aren't merged here -- build_shuffled_library's own
-    accumulate-by-extend loop already sums them correctly, so "4 Forest"
-    on two separate lines just becomes 7 Forests, the same as one "7
-    Forest" line would.
+    """Parses lines shaped "<qty> <name>" into [(name, qty), ...]. Lines
+    that don't match (blank lines, headers, comments) are skipped.
+    Duplicate lines for the same name are not merged.
 
-    Raises ValueError naming every card whose name has no game.CARD_DEFS
-    entry -- fail loud, not a silent skip, since that's either a real typo
-    or a card that genuinely needs engine work first, and either way
-    training silently against a smaller deck than intended would be worse
-    than an upfront error."""
+    Raises ValueError naming every card with no game.CARD_DEFS entry.
+    """
     decklist = []
     unknown = []
     for line in text.splitlines():
@@ -47,8 +34,7 @@ def parse_decklist_text(text):
 
 
 def parse_decklist_file(path):
-    # UTF-8 explicitly: decklists carry accented card names (Lórien Revealed),
-    # and open()'s platform-default encoding is cp1252 on Windows -- which
-    # mojibakes the UTF-8 bytes into a name that misses CARD_DEFS.
+    # Explicit UTF-8: decklists carry accented names (Lórien Revealed) and
+    # the platform-default encoding (cp1252 on Windows) would mojibake them.
     with open(path, encoding="utf-8") as f:
         return parse_decklist_text(f.read())

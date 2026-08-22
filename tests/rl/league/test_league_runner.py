@@ -1,7 +1,6 @@
 """Self-check for rl.league.league_runner's auto-sizing doubling ladder
-(_next_batch_games), which lost its max_batch_size cap 2026-07-31 -- see its
-own docstring for why. Marked slow: importing rl.league.league_runner pulls in torch/rl.*.
-"""
+(_next_batch_games) and other league_runner helpers. Marked slow: importing
+rl.league.league_runner pulls in torch/rl.*."""
 import json
 import os
 import tempfile
@@ -32,8 +31,7 @@ def test_next_batch_games_doubles_from_the_last_real_batch(tmp_path):
 
 @pytest.mark.slow
 def test_next_batch_games_never_overshoots_the_remaining_target():
-    # no separate ceiling anymore (max_batch_size removed) -- the ONLY cap left
-    # is "don't play more than what's left of total_games"
+    # The only cap left is "don't play more than what's left of total_games".
     import tempfile
     with tempfile.TemporaryDirectory() as d:
         with open(f"{d}/progress.json", "w") as f:
@@ -51,17 +49,15 @@ def test_next_batch_games_returns_none_once_target_already_met(tmp_path):
 
 @pytest.mark.slow
 def test_run_eval_labels_each_game_with_its_real_pairing(tmp_path, monkeypatch):
-    """_run_eval's whole point for the round-robin case (--eval, no --matchup)
-    is that game N in a many-pairing log can be ANY pairing -- confirm it
-    returns a (deck_a, deck_b) per game_logs entry, in round-robin order
-    (combinations_with_replacement: AA, AB, BB for a 2-deck roster), and that
-    _write_event_log round-trips it into the JSON as real deck_a/deck_b
-    fields instead of a bare, unlabeled game_index. An empty league_dir (so
-    every deck starts from a fresh, untrained net) + a
-    tmp_path league_dir sidesteps needing a real frozen_stack/live checkpoint
-    (untrained random-init nets play real, complete games -- slow because of
-    that, not because anything here is flaky); a private vocab_path keeps
-    this test from writing to the repo's own real checkpoints/vocab.json."""
+    """_run_eval's round-robin case (--eval, no --matchup): game N in a
+    many-pairing log can be any pairing. Confirms it returns a (deck_a,
+    deck_b) per game_logs entry, in round-robin order
+    (combinations_with_replacement: AA, AB, BB for a 2-deck roster), and
+    that _write_event_log round-trips it into the JSON as real deck_a/deck_b
+    fields. An empty league_dir means every deck starts from a fresh,
+    untrained net (slow because untrained nets still play real, complete
+    games); a private vocab_path keeps this test from writing to the repo's
+    real checkpoints/vocab.json."""
     monkeypatch.chdir(_SRC_DIR)  # league_decks.json/data/*.txt are loaded via "../data/..." (rl.roster's own convention)
     monkeypatch.setattr(
         league_runner, "build_pool",
@@ -91,11 +87,10 @@ def test_run_eval_labels_each_game_with_its_real_pairing(tmp_path, monkeypatch):
 
 @pytest.mark.slow
 def test_run_eval_vs_history_finds_archived_and_active_milestones(tmp_path, monkeypatch):
-    """_run_eval_vs_history is the direct measurement of "does the live net
-    beat its own past selves" -- confirms it (a) returns [] with no history
-    yet, (b) finds the active pool's oldest snapshot once one exists, and (c)
-    finds an ARCHIVED one too once LeaguePool.register_snapshot has evicted
-    past the window (rl.league.league's own archive/, not deletion)."""
+    """_run_eval_vs_history measures "does the live net beat its own past
+    selves": confirms it (a) returns [] with no history yet, (b) finds the
+    active pool's oldest snapshot once one exists, and (c) finds an archived
+    one too once register_snapshot has evicted past the window."""
     monkeypatch.chdir(_SRC_DIR)
     monkeypatch.setattr(
         league_runner, "build_pool",
@@ -132,12 +127,11 @@ def test_run_eval_vs_history_finds_archived_and_active_milestones(tmp_path, monk
 
 @pytest.mark.slow
 def test_run_eval_vs_gauntlet_plays_the_independent_twin_and_handles_missing_deck(tmp_path, monkeypatch):
-    """_run_eval_vs_gauntlet is the EXTERNAL reference check (an independently
-    trained twin league, not this league's own history) -- confirms it (a)
-    returns None when the gauntlet league has no checkpoint for this deck yet
-    (its training hasn't reached it, or it doesn't exist), and (b) actually
-    plays real games against the gauntlet's live net and tallies a real
-    result once one exists."""
+    """_run_eval_vs_gauntlet is the external reference check (an
+    independently trained twin league): confirms it (a) returns None when
+    the gauntlet league has no checkpoint for this deck yet, and (b) plays
+    real games against the gauntlet's live net and tallies a real result
+    once one exists."""
     monkeypatch.chdir(_SRC_DIR)
     monkeypatch.setattr(
         league_runner, "build_pool",
@@ -155,7 +149,7 @@ def test_run_eval_vs_gauntlet_plays_the_independent_twin_and_handles_missing_dec
         deck_name, live_net, mulligan_net, deck_ctxs[deck_name], decklists[deck_name],
         gauntlet_dir, horizon=20,
     ) is None
-    # gauntlet_league_dir=None entirely (the common case -- most leagues have no gauntlet) must also return None.
+    # gauntlet_league_dir=None (most leagues) must also return None.
     assert league_runner._run_eval_vs_gauntlet(
         deck_name, live_net, mulligan_net, deck_ctxs[deck_name], decklists[deck_name],
         None, horizon=20,
@@ -179,9 +173,8 @@ def test_run_eval_vs_gauntlet_plays_the_independent_twin_and_handles_missing_dec
 @pytest.mark.slow
 def test_run_eval_vs_heuristic_plays_real_games(tmp_path, monkeypatch):
     """_run_eval_vs_heuristic is the gauntlet's tier-1 (hand-authored,
-    non-learned) member -- confirms it actually plays real games between a
-    live net and rl.decision.heuristic_agent.HeuristicAgent and returns a real tally, using the
-    deck the owner scoped it to (mono_red_rally)."""
+    non-learned) member -- confirms it plays real games between a live net
+    and HeuristicAgent and returns a real tally, using mono_red_rally."""
     monkeypatch.chdir(_SRC_DIR)
     monkeypatch.setattr(
         league_runner, "build_pool",
@@ -201,7 +194,7 @@ def test_run_eval_vs_heuristic_plays_real_games(tmp_path, monkeypatch):
     assert result["live_wins"] + result["heuristic_wins"] + result["no_winner"] == 3
 
 
-# --- Wave 1 instrumentation (2026-08-13) ---
+# --- eval instrumentation ---
 
 
 @pytest.mark.slow
@@ -220,16 +213,9 @@ def test_paired_eval_balances_the_play_exactly_not_just_on_average():
 
 @pytest.mark.slow
 def test_a_checkpoint_carries_its_own_encoder(tmp_path):
-    """The property that replaced the stack_id guard.
-
-    Cross-population comparison used to be silently meaningless whenever the
-    two sides had been trained against different frozen shared stacks -- one
-    population's per-deck weights would be loaded onto the OTHER's encoder and
-    the resulting win rate measured nothing (24,579 games/deck of vs_gauntlet
-    were confounded exactly that way, which is what stack_id.txt existed to
-    catch). Per-deck encoders make it unrepresentable instead of guarded: the
-    encoder ships inside the checkpoint, so a loaded net can only ever be
-    paired with its own perception.
+    """Each checkpoint carries its own encoder, so a loaded net can only ever
+    be paired with its own perception -- cross-population comparison is
+    valid by construction, not by a guard.
 
     Pinned by round-tripping a net whose encoder has been deliberately moved
     away from its initialization -- a loader that rebuilt a fresh encoder
@@ -250,8 +236,8 @@ def test_a_checkpoint_carries_its_own_encoder(tmp_path):
 
 @pytest.mark.slow
 def test_unknown_ppo_hyperparameter_is_a_hard_error():
-    """A typo'd hyperparameter that silently does nothing is precisely how two
-    anti-plateau schedules went un-executed for 40,104 iterations."""
+    """A typo'd hyperparameter that silently does nothing must fail loudly,
+    not run un-executed for thousands of iterations."""
     with pytest.raises(AssertionError, match="unknown ppo hyperparameter"):
         league_runner._run_session(1, 1, 1, None, 1, league_dir=str(tempfile.mkdtemp()),
                                     roster=["elves"], ppo_hparams={"learning_rate": 1e-4})

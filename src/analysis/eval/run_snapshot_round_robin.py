@@ -1,34 +1,23 @@
-"""Is this league's strategy space TRANSITIVE or CYCLIC?
+"""Is this league's strategy space transitive or cyclic?
 
-The working diagnosis for the plateau was self-play cycling: the population
-chasing itself in a circle, each policy beating the last while none of them get
-stronger. That story requires an INTRANSITIVE strategy space -- some genuine
-rock-paper-scissors among the policies. A single win-rate trace can never show
-it -- cycling is demonstrated in the literature by payoff-matrix
-structure, never by a single curve. A
-round robin among a deck's OWN historical snapshots can.
+For each deck: pick K snapshots spanning the run, play all K(K-1)/2 pairs,
+and ask three questions of the resulting matrix.
 
-For each deck: pick K snapshots spanning the run, play all K(K-1)/2 pairs, and
-ask three questions of the resulting matrix.
+  1. 3-CYCLES. Any triple where A beats B beats C beats A? Reported both raw
+     and restricted to triples whose three pairs are all significantly off
+     50% -- the raw count alone is mostly noise (coin-flip pairs produce
+     spurious cycles at a steady rate).
+  2. ELO FIT + RESIDUAL. A one-dimensional strength model (Bradley-Terry, fit
+     by minorization-maximization) can represent any transitive ordering and
+     no cyclic one, so its residual is the intransitivity measurement.
+     Printed next to the residual pure sampling noise alone would produce;
+     at or below that floor, the transitive model fits as well as anything could.
+  3. MONOTONICITY IN AGE. Does Elo rise with snapshot number? A flat rating
+     curve on a transitive matrix means the deck is sitting still; a rising
+     one means it genuinely improved.
 
-  1. 3-CYCLES. Any triple where A beats B beats C beats A? Reported twice --
-     raw, and restricted to triples whose three pairs are ALL significantly off
-     50%. The raw count is nearly meaningless on its own: with 100 games a pair
-     the SE is 5pp, so coin-flip pairs produce spurious cycles at a steady rate.
-     Only the significant count is evidence.
-  2. ELO FIT + RESIDUAL. A one-dimensional strength model (Bradley-Terry, fit by
-     MM -- no learning rate, always converges) can represent any transitive
-     ordering and NO cyclic one. So how badly it misfits IS the intransitivity
-     measurement. The residual is printed next to the residual that pure
-     sampling noise alone would produce; at or below that floor means the
-     transitive model fits as well as anything could.
-  3. MONOTONICITY IN AGE. Does Elo actually rise with snapshot number? A
-     transitive matrix with a FLAT rating curve is the "sitting still" finding;
-     a transitive matrix with a rising one would mean the deck genuinely
-     improved and the fixed-reference evals are the thing at fault.
-
-Every pair is played with the SIDES SWAPPED, half the games each way, so seat
-assignment cancels rather than being averaged over and hoped about.
+Every pair is played with sides swapped, half the games each way, so seat
+assignment cancels rather than being averaged over.
 
 Evaluation-only: loads frozen snapshots, trains nothing, writes no checkpoint.
 
@@ -39,7 +28,7 @@ Usage:
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))  # src/, for `repo_paths` / `rl.*` -- these live two levels up now that this script sits in analysis/eval/
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))  # src/
 import argparse
 import itertools
 import json
@@ -58,12 +47,11 @@ def _fit_bradley_terry(labels, pair_wins, iters=500, prior=1.0):
     """Bradley-Terry strengths by minorization-maximization, returned as Elo.
 
     MM update: p_i <- W_i / sum_j (n_ij / (p_i + p_j)). No learning rate, no
-    divergence, monotone in likelihood -- which is why it is used here instead
-    of gradient ascent on the same objective.
+    divergence, monotone in likelihood.
 
-    `prior` adds that many games split evenly to every pair, which keeps a
+    `prior` adds that many games split evenly to every pair, keeping a
     snapshot that went 0-for-everything (or won everything) from driving its
-    rating to +/-infinity. With 100 games a pair it moves nothing measurable.
+    rating to +/-infinity.
     """
     p = {label: 1.0 for label in labels}
     wins, n = {}, {}
@@ -78,7 +66,7 @@ def _fit_bradley_terry(labels, pair_wins, iters=500, prior=1.0):
             den = sum(n[(i, j)] / (p[i] + p[j]) for j in labels if (i, j) in n)
             new[i] = num / den if den else p[i]
         geo = math.exp(sum(math.log(v) for v in new.values()) / len(new))
-        p = {k: v / geo for k, v in new.items()}  # BT is scale-invariant; anchor it
+        p = {k: v / geo for k, v in new.items()}  # anchor scale-invariant BT
     return {k: 400 * math.log10(v) for k, v in p.items()}
 
 
@@ -101,7 +89,7 @@ def _analyze(labels, pair_wins):
         rev = all(r < 0.5 for r, _ in rs)
         if fwd or rev:
             raw += 1
-            # 2 sigma off 50% on ALL THREE legs, else the "cycle" is coin flips
+            # significant only if all three legs are 2 sigma off 50%
             if all(abs(r - 0.5) > 2 * math.sqrt(0.25 / n) for r, n in rs):
                 sig += 1
 
@@ -110,8 +98,7 @@ def _analyze(labels, pair_wins):
         obs = w / n
         pred = 1 / (1 + 10 ** ((elo[b] - elo[a]) / 400))
         resid.append(abs(obs - pred))
-        # E|deviation| for a normal is sigma*sqrt(2/pi): the residual a PERFECT
-        # model would still show from sampling n games.
+        # residual a perfect model would still show from sampling n games
         floor.append(math.sqrt(pred * (1 - pred) / n) * math.sqrt(2 / math.pi))
     return elo, raw, sig, sum(resid) / len(resid), sum(floor) / len(floor)
 
