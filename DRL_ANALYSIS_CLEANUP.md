@@ -60,11 +60,6 @@ into subdirectories by actual cohesion (not guessed from file names).
 
 ## Needs owner input (flagged, not touched)
 
-- [ ] **`analysis/mulligan_retrain/`** (`train_mulligan_self_mirror.py`,
-      `train_mulligan_vs_twin.py`, `_mulligan_common.py`) — actively
-      touched, mid an open mulligan-net investigation. Not dead, but the two
-      scripts share real duplicated `_play_eval_arm` logic that could be
-      factored into `_mulligan_common.py` once the investigation settles.
 - [ ] **GPU path still unvalidated end-to-end.** Now that real configs
       default to `cuda`, only a per-`ppo_update`-call microbenchmark
       (`analysis/eval/bench_gpu_vs_cpu.py`) has ever confirmed correctness —
@@ -122,6 +117,40 @@ cohesive package split by MTG action category, imported broadly outside RL
       rename rationale.
 - [x] Full test suite green: 962 passed (834 fast + 128 slow) after the
       reorg.
+
+## Done — mulligan-retrain merge + config-driven training (2026-08-22, third pass)
+
+Resolves the "Needs owner input" item flagged in the second pass above
+(duplicated `_play_eval_arm`/`_train_mulligan` logic between the two
+mulligan scripts), plus a matching gap in `run_league.py`'s own config
+files (several retyped `run_default.json`'s run-mechanics fields instead of
+sharing them, guarded only by drift-checking tests).
+
+- [x] `train_mulligan_self_mirror.py` + `train_mulligan_vs_twin.py` merged
+      into one `train_mulligan.py` (`--opponent-mode twin|self-mirror`) —
+      the ~90%-duplicated `_train_mulligan`/`_play_eval_arm` loop is now one
+      implementation, parameterized over a `pairing_factory` closure per
+      mode. Fixes a real behavior gap in the process: self-mirror mode never
+      tracked the `probe_trajectory` P(mulligan) readout vs_twin mode always
+      did; the merged script tracks it in both modes now.
+- [x] `train_mulligan.py` gained `--config` (JSON, flag > config > hardcoded
+      default) — previously CLI-flags-only, no way to save/rerun an exact
+      invocation. New `config_loader.py` (stdlib-only, `src/`) holds the
+      loader, with a top-level `"extends"` key for one config to inherit
+      another's fields instead of retyping them; `run_league.py` now uses
+      the same shared loader instead of its own copy.
+      `training_configs/mulligan_bootstrap_default.json` is the first
+      checked-in example.
+- [x] `training_configs/league_main.json`, `run_gauntlet_twin.json`,
+      `run_bench.json` rewritten to `"extends": "run_default.json"` instead
+      of retyping its run-mechanics fields — the two tests that existed
+      purely to catch that drift (`test_run_league.py`) now assert the
+      files structurally can't duplicate them, rather than that two copies
+      happen to still match.
+- [x] Full test suite green after the merge (unit tests for both the config
+      loader and `train_mulligan.py`'s option resolution, plus real smoke
+      runs of both opponent modes and `--config` against existing
+      checkpoints).
 
 ## Next
 

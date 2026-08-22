@@ -211,31 +211,18 @@ def test_trunk_width_is_read_off_an_existing_checkpoint_not_the_config():
     assert trunk_hidden_from_deck_checkpoint(str(CHECKPOINTS_DIR / "nope" / "live.pt")) is None
 
 
-def test_config_loader_resolves_extends(tmp_path):
-    """run_league._load_config's whole reason to exist: an extending file's
-    own keys win over its base's, and a path of None (no config given at
-    all) reads as {} rather than erroring."""
-    from run_league import _load_config
-
-    (tmp_path / "base.json").write_text(json.dumps({"a": 1, "b": 2}))
-    (tmp_path / "child.json").write_text(json.dumps({"extends": "base.json", "b": 3, "c": 4}))
-
-    assert _load_config(str(tmp_path / "child.json")) == {"a": 1, "b": 3, "c": 4}
-    assert _load_config(None) == {}
-
-
 def test_main_league_inherits_mechanics_instead_of_duplicating_them():
     """league_main.json used to retype every run_default.json mechanics
     field (games_per_iteration, checkpoint_opponent_rate, pfsp_power, ...);
     it now extends the file instead, so the two structurally cannot drift
     apart the way a manual copy could."""
     from repo_paths import REPO_ROOT
-    from run_league import _load_config
+    from config_loader import load_config
     cfgs = REPO_ROOT / "training_configs"
     raw_main = json.loads((cfgs / "league_main.json").read_text())
     _assert_extends_not_duplicates(raw_main, "league_main.json", "run_default.json")
 
-    resolved = _load_config(str(cfgs / "league_main.json"))
+    resolved = load_config(str(cfgs / "league_main.json"))
     default = json.loads((cfgs / "run_default.json").read_text())
     for k in MECHANICS:
         assert resolved[k] == default[k]
@@ -254,14 +241,14 @@ def test_the_gauntlet_twin_inherits_mechanics_and_points_back_at_the_main_league
     and gauntlet_league_name are set locally, and must point at each other,
     which is what makes each side report vs_gauntlet against the other."""
     from repo_paths import REPO_ROOT
-    from run_league import _load_config
+    from config_loader import load_config
     cfgs = REPO_ROOT / "training_configs"
     raw_twin = json.loads((cfgs / "run_gauntlet_twin.json").read_text())
     _assert_extends_not_duplicates(raw_twin, "run_gauntlet_twin.json", "run_default.json")
     assert "roster" not in raw_twin, "roster should be inherited via extends, not retyped"
 
-    default = _load_config(str(cfgs / "run_default.json"))
-    twin = _load_config(str(cfgs / "run_gauntlet_twin.json"))
+    default = load_config(str(cfgs / "run_default.json"))
+    twin = load_config(str(cfgs / "run_gauntlet_twin.json"))
 
     assert twin["roster"] == default["roster"], "a twin must play the same decks"
     assert twin["league_name"] != default["league_name"], "the twin must be a SEPARATE population"
@@ -277,8 +264,8 @@ def test_bench_config_nulls_out_inherited_gauntlet_fields():
     explicit null/[] actually overrides the base's value rather than the merge
     treating an absent-vs-null key the same way."""
     from repo_paths import REPO_ROOT
-    from run_league import _load_config
+    from config_loader import load_config
     cfgs = REPO_ROOT / "training_configs"
-    resolved = _load_config(str(cfgs / "run_bench.json"))
+    resolved = load_config(str(cfgs / "run_bench.json"))
     assert resolved["gauntlet_league_name"] is None
     assert resolved["heuristic_decks"] == []

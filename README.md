@@ -149,8 +149,10 @@ src/
                            rl/league/league_runner.py.
   run_rollback.py          Promote a historical snapshot back to live.pt. Root-level
                            run_* scripts mutate checkpoints; analysis/ only reads them.
-  analysis/                Read-only inspection tools, grouped by concern. Run them
-                           from src/, e.g.
+  analysis/                Read-only inspection tools, grouped by concern (except
+                           mulligan_retrain/train_mulligan.py, which writes a new
+                           mulligan_bootstrap*.pt per deck -- never live.pt/mulligan.pt
+                           themselves). Run them from src/, e.g.
                            `python analysis/eval/report_metrics.py ../checkpoints/<league>`
                            — each adds src/ to sys.path itself.
     eval/                    Play games / summarize logs; never trains anything.
@@ -168,12 +170,16 @@ src/
       bench_gpu_vs_cpu.py      CPU-vs-GPU A/B timing for rl.training.ppo.ppo_update.
     mulligan_retrain/        An open investigation: rebuilding the mulligan model
                              against a frozen main policy.
-      train_mulligan_self_mirror.py / train_mulligan_vs_twin.py
-                               Two ablations (same-net mirror vs. an independently-
-                               trained twin's roster) probing the same collapse-to-
-                               always-keep failure mode.
-      _mulligan_common.py      Shared net-loading/land-audit/probe-hand helpers both
-                               scripts use.
+      train_mulligan.py        One script, --opponent-mode twin | self-mirror: twin
+                               trains against an independently-trained twin league's
+                               roster, self-mirror against the SAME frozen net with
+                               RandomMulligan as its pregame decider — two ablations
+                               probing the same collapse-to-always-keep failure mode.
+                               Config-file driven (--config, same "extends" pattern
+                               and flag > config > default precedence as
+                               run_league.py — see config_loader.py and
+                               training_configs/mulligan_bootstrap_default.json).
+      _mulligan_common.py      Shared net-loading/land-audit/probe-hand helpers.
   benchmarking/            training_run.py (benchmarks the real league loop under
                            different collection configs) + _common.py (path/stdout
                            bootstrap it imports for its side effect).

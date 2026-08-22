@@ -1,6 +1,6 @@
-"""Shared helpers for the mulligan-net retrain scripts (train_mulligan_vs_twin.py,
-train_mulligan_self_mirror.py): net loading, land-count audit, and the
-probe-hand trajectory tracker. Not a script itself; each caller does its own
+"""Shared helpers for train_mulligan.py (the mulligan-net retrain script,
+opponent-mode twin or self-mirror): net loading, land-count audit, and the
+probe-hand trajectory tracker. Not a script itself; the caller does its own
 sys.path insert before importing this.
 """
 import os
