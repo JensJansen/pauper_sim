@@ -47,6 +47,7 @@ functions.
 """
 import json
 from concurrent.futures import ProcessPoolExecutor
+from pathlib import Path
 
 import torch  # needed for _resolve_device's CUDA check
 
@@ -57,6 +58,24 @@ from rl.league.league_runner import (
     EVAL_EVERY_SESSIONS, EVAL_GAMES, TRUNK_HIDDEN, advance_progress,
     _load_progress, _next_batch_games, _run_eval, _run_session, _save_progress, _write_event_log,
 )
+
+
+def _load_config(path):
+    """Loads one training_configs/*.json, resolving an optional top-level
+    "extends": "<sibling-file>.json" as a base layer merged underneath this
+    file's own keys -- so a value shared with another config (most commonly
+    run_default.json's run-mechanics) is inherited instead of retyped, and
+    can never silently drift out of sync the way a manual copy can. Resolved
+    relative to the extending file's own directory, and recursively (a base
+    may itself extend another base)."""
+    if not path:
+        return {}
+    path = Path(path)
+    cfg = json.load(open(path))
+    base_name = cfg.pop("extends", None)
+    if base_name is None:
+        return cfg
+    return {**_load_config(path.parent / base_name), **cfg}
 
 
 def _resolve_device(name):
@@ -80,8 +99,8 @@ def main():
 
     # Missing configs read as {}, so every .get() below falls through to
     # its own hardcoded default.
-    run_cfg = json.load(open(args.run_config)) if args.run_config else {}
-    league_cfg = json.load(open(args.league_config)) if args.league_config else {}
+    run_cfg = _load_config(args.run_config)
+    league_cfg = _load_config(args.league_config)
 
     train_deck = not args.train_mulligan_only
     train_mulligan = not args.train_deck_only

@@ -106,10 +106,12 @@ def build_arg_parser(description=None):
                          help="JSON of run-mechanics defaults shared across leagues (n_workers, snapshot_every_games, "
                               "checkpoint_opponent_rate, pfsp) -- see training_configs/run_default.json. Any "
                               "individual value can still be overridden by passing its own flag explicitly for one "
-                              "invocation.")
+                              "invocation. A league config can inherit these instead of retyping them via its own "
+                              "top-level \"extends\": \"run_default.json\" -- see training_configs/league_main.json.")
     parser.add_argument("--league-config", type=str, default=None, metavar="PATH",
                          help="JSON describing one league (league_name, roster, total_games, "
                               "optional gauntlet_league_name, optional heuristic_decks) -- see "
                               "training_configs/league_*.json. Drives automatic batch sizing whenever "
-                              "--n-iterations is not given.")
+                              "--n-iterations is not given. May itself \"extend\" a run-mechanics config (see "
+                              "--run-config) so both flags can point at the same self-sufficient file.")
     return parser
