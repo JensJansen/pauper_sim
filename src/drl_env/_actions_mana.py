@@ -221,7 +221,7 @@ def mana_extra_choose_target_safe(state, target):
     itself a mana source (Overgrown Battlement, Wall of Roots, Lotus Petal).
     Tapping Overgrown Battlement with several defenders out trades several green
     pips for one, which is a real loss and can strand a payment. Shared with
-    rl.action_bridge, which masks the target choice with this same predicate so
+    rl.decision.action_bridge, which masks the target choice with this same predicate so
     the two can never disagree about which creatures are on offer."""
     return game.payment_survives(state, game.units_after(
         state, tapped=[target], produced=[game.COLORS]))

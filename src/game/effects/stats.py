@@ -88,7 +88,7 @@ def enchanting_by_target(state):
     _enchanting_auras' own per-permanent scan once per permanent checked.
     Shared by every caller that reads MANY permanents' auras from the SAME
     state in one pass: combat.combat_damage_step, state_based.
-    check_state_based_actions, rl.features.build_token_set.
+    check_state_based_actions, rl.model.features.build_token_set.
 
     CAUTION -- each caller takes this snapshot once and reuses it for every
     permanent it checks in that one call. Safe today because no Aura in this

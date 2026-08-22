@@ -294,7 +294,7 @@ def cleanup_step(state):
     until the following turn's first priority round -- making the buff look
     like it lasted into the opponent's whole turn even though the actual
     game state (stats.permanent_power/toughness, read live everywhere else,
-    e.g. combat and rl.features) was already correct the instant cleanup ran.
+    e.g. combat and rl.model.features) was already correct the instant cleanup ran.
     Safe to call here: damage_marked is already zeroed above (in the same
     loop, before this runs), so no creature can newly die from a shrinking
     temp_toughness -- this call only ever logs, never destroys, at this

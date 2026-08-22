@@ -6,7 +6,7 @@ build_action_table turns a decklist + game.EFFECT_REGISTRY into a flat action
 table the token pipeline drives: for each action, a human-readable label, a
 legal(state) predicate, and an execute(state) that applies it to the engine.
 A deck built entirely from already-implemented cards needs zero new code here.
-Also provides the per-seat helpers the training loop (rl.train) reuses
+Also provides the per-seat helpers the training loop (rl.training.train) reuses
 (_for_player, _lost, _hand_count_available, ...). Reward functions (rl.rewards's
 contract) are injected separately by that loop, never here.
 

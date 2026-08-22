@@ -1,6 +1,6 @@
 """Benchmark: the REAL league training loop under different collection configs.
 
-Drives rl.league_runner._run_session directly -- the EXACT training sequence
+Drives rl.league.league_runner._run_session directly -- the EXACT training sequence
 (all decks, collect + ppo_update, the batch-size schedule, session-end
 checkpointing) over a throwaway checkpoint dir, so every number here is a
 true training session's per-iteration cost, not an isolated function
@@ -29,7 +29,7 @@ import time
 from concurrent.futures import ProcessPoolExecutor
 
 import _common as bench  # noqa: F401 -- sets sys.path + chdir so build_pool()'s relative paths resolve like the real script
-from rl import league_runner
+from rl.league import league_runner
 
 
 def _parse_config(name):

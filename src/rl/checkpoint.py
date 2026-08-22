@@ -1,16 +1,16 @@
 """Centralizes checkpoint save/load for the distinct on-disk schemas that used
 to be hand-rolled (build net, torch.load, load_state_dict, optional
-optimizer-migration guard) at every call site across rl/league.py and
-rl/league_runner.py.
+optimizer-migration guard) at every call site across rl/league/league.py and
+rl/league/league_runner.py.
 
 Two schemas, two helper pairs (deliberately NOT unified into one signature
 -- the shapes are genuinely different):
 
   - deck checkpoint (save/load_deck_checkpoint): one file per net,
-    {"net": state_dict[, "optimizer": state_dict]} -- rl.league_runner's
+    {"net": state_dict[, "optimizer": state_dict]} -- rl.league.league_runner's
     per-deck live.pt (DeckNetwork+Adam) and mulligan.pt (MulliganNet+Adam)
     share this exact shape.
-  - snapshot (save/load_snapshot): rl.league.LeaguePool's frozen historical
+  - snapshot (save/load_snapshot): rl.league.league.LeaguePool's frozen historical
     opponent, {"state_dict":, "trunk_hidden":, optional "mulligan_state_dict":,
     optional "mulligan_hidden":}.
 
@@ -155,9 +155,9 @@ def save_snapshot(path, net, mulligan_net=None):
     """Writes net's frozen weights (plus its trunk_hidden shape, needed to
     reconstruct a same-shaped DeckNetwork on load) and, if given,
     mulligan_net's frozen weights (plus its hidden width) to path --
-    rl.league.LeaguePool.register_snapshot's own schema. mulligan_net=None
+    rl.league.league.LeaguePool.register_snapshot's own schema. mulligan_net=None
     writes a deck-only snapshot; load_snapshot's caller falls back to
-    AlwaysKeep for one (see rl.league.LeaguePool.load_snapshot_agent)."""
+    AlwaysKeep for one (see rl.league.league.LeaguePool.load_snapshot_agent)."""
     trunk_hidden = tuple(layer.out_features for layer in net.trunk_layers)
     # CPU for the same reason save_deck_checkpoint is (see _to_cpu): snapshots
     # are registered mid-session straight off the live nets, so on a
@@ -177,7 +177,7 @@ def load_snapshot(path):
     mulligan_state_dict/mulligan_hidden) -- unlike load_deck_checkpoint, does
     NOT build the net itself: the caller needs trunk_hidden to construct a
     DeckNetwork of the right shape BEFORE state_dict can be loaded into it
-    (see rl.league.LeaguePool.load_snapshot_agent)."""
+    (see rl.league.league.LeaguePool.load_snapshot_agent)."""
     return torch.load(path, weights_only=True, map_location="cpu")  # device-agnostic, see load_deck_checkpoint
 
 

@@ -487,7 +487,7 @@ def test_aura_targeting_exact_slot_addressing():
     # off the stack (that's the whole point of this redesign).
     # Aura now targets any creature on EITHER battlefield (real "Enchant
     # creature"), hexproof-aware -- the creature half rides the identity
-    # pointer scheme (rl.action_bridge), so we drive it via the same
+    # pointer scheme (rl.decision.action_bridge), so we drive it via the same
     # execute the pointer path calls, not a "Choose target:" fixed action.
     assert state.pending_resolution["kind"] == "choose_any_target"
     assert set(game.choose_any_target_creature_options(state)) == {(0, "Slippery Bogle", 1), (0, "Slippery Bogle", 2)}
@@ -566,7 +566,7 @@ def test_saruli_caretaker_two_stage_mana_subdecision():
     # state.mana_subdecision's own docstring): its extra cost -- tap ANOTHER
     # untapped creature -- is a COST CHOICE (602.5g), decided first ("Tap
     # Saruli Caretaker", gate-free, opens the mana_subdecision), then the
-    # tap-TARGET (pointer-routed in real play, rl.action_bridge -- exercised
+    # tap-TARGET (pointer-routed in real play, rl.decision.action_bridge -- exercised
     # there; here the resulting state transition is driven directly via
     # game.execute_mana_subdecision_target, same call the pointer dispatch
     # makes), THEN the color (shared "Produce <color>" buttons, gated via
@@ -605,7 +605,7 @@ def test_saruli_caretaker_two_stage_mana_subdecision():
     # own logic (tap_legal itself doesn't check mana_subdecision at all).
     assert not legal_action_mask(state, saruli_actions)[tap_idx]
 
-    game.execute_mana_subdecision_target(state, bogle_1)  # same call rl.action_bridge's pointer dispatch makes -- exercised end to end there
+    game.execute_mana_subdecision_target(state, bogle_1)  # same call rl.decision.action_bridge's pointer dispatch makes -- exercised end to end there
     assert state.mana_subdecision["stage"] == "choose_color" and state.mana_subdecision["target"] is bogle_1
     assert not bogle_1.tapped, "the target isn't tapped until the color is actually chosen (execute_mana_subdecision_color's own order)"
 
@@ -955,7 +955,7 @@ def test_mana_subdecision_does_not_hijack_the_other_seat():
 
     Live consequence, 2026-08-16: the DEFENDER opened a Saruli Caretaker
     subdecision and never completed it; the ATTACKER was then asked to assign
-    combat damage, rl.action_bridge built the pointer mask for the defender's
+    combat damage, rl.decision.action_bridge built the pointer mask for the defender's
     tap-target choice instead of the attacker's blockers, nothing matched, and
     the all-False mask crashed an 11-deck training run twice.
 
@@ -997,7 +997,7 @@ def test_mana_subdecision_does_not_hijack_the_other_seat():
 
     # And the other seat's own action legality is evaluated normally rather
     # than being suppressed by someone else's exclusive priority.
-    from rl.action_bridge import any_pointer_legal
+    from rl.decision.action_bridge import any_pointer_legal
     state.active_idx = 0
     assert any_pointer_legal(state) is False, (
         "with no pending of its own, seat 0 has no pointer decision -- and must NOT "

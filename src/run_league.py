@@ -1,7 +1,7 @@
 """League driver: one continuous training loop, with no separate "Stage 1"/
 "Stage 2" curriculum. Every deck in the roster (data/league_decks.json)
 trains every round, against an opponent RESAMPLED each game from a
-LeaguePool (rl.league) -- historical snapshots of every deck plus everyone's
+LeaguePool (rl.league.league) -- historical snapshots of every deck plus everyone's
 current live weights, picked uniformly. No separate stages are needed:
 early on, with few decks and no snapshots yet, most games are naturally
 close to mirror play; cross-deck and cross-snapshot exposure grows
@@ -9,13 +9,13 @@ organically as the pool fills in, without a hardcoded phase boundary.
 
 Every deck owns its whole network, perception encoder included, and trains it
 end to end -- there is no pretrain phase and no shared stack (removed
-2026-08-17; see rl.deck's module docstring). A deck with no checkpoint yet
+2026-08-17; see rl.model.deck's module docstring). A deck with no checkpoint yet
 starts from a freshly-initialized net, so nothing has to be prepared first.
 Each deck's own live net/optimizer persists in checkpoints/league/
 <deck_name>/live.pt; historical opponents live alongside as
 snapshot_<id>.pt (LeaguePool's own concern).
 
-Parallel rollout collection (rl.rollout_parallel.collect_rollout_league_parallel)
+Parallel rollout collection (rl.training.rollout_parallel.collect_rollout_league_parallel)
 is used whenever n_workers > 1 -- benchmarked at ~3.2-3.5x wall-clock
 speedup at 6-8 worker processes on this machine (6 physical cores),
 plateauing beyond that (hyperthreaded/logical cores past the physical
@@ -26,12 +26,12 @@ is paid once, not once per collection round.
 
 --matchup DECK_A DECK_B --games N [--log PATH]: bypasses league opponent
 sampling entirely -- runs N games as a DIRECT, fixed pairing between two
-named decks (rl.train._constant_pairing + collect_rollout, each net its own
+named decks (rl.training.train._constant_pairing + collect_rollout, each net its own
 independent ppo_update call), still updating and checkpointing both decks'
 live nets normally. --log PATH captures the
 game engine's own existing event log (game/state.py's GameState.
 log_event, already instrumented across mana.py/turn.py/resolution/*.py/
-game/effects/*.py -- see rl.train.collect_rollout's own docstring) for
+game/effects/*.py -- see rl.training.train.collect_rollout's own docstring) for
 every game played, written as one JSON file. Logging is threaded through
 both the sequential and parallel worker paths (event dicts are picklable).
 
@@ -52,7 +52,7 @@ Usage:
       Fixed A-vs-B pairing, no league opponent sampling, no auto-sizing.
 
 This script is a thin CLI wrapper: every reusable piece (session driving,
-eval-mode functions, checkpoint/progress helpers) lives in rl.league_runner
+eval-mode functions, checkpoint/progress helpers) lives in rl.league.league_runner
 -- benchmarking/training_run.py imports that directly rather than importing
 this 954-line-turned-~140-line CLI script for its side-effect-free functions.
 """
@@ -62,9 +62,9 @@ from concurrent.futures import ProcessPoolExecutor
 import torch  # _resolve_device: validate --device before any net is built
 
 from repo_paths import CHECKPOINTS_DIR
-from rl.league import PFSP_POWER
+from rl.league.league import PFSP_POWER
 from rl.league_cli_spec import build_arg_parser
-from rl.league_runner import (
+from rl.league.league_runner import (
     EVAL_EVERY_SESSIONS, EVAL_GAMES, TRUNK_HIDDEN, advance_progress,
     _load_progress, _next_batch_games, _run_eval, _run_session, _save_progress, _write_event_log,
 )
@@ -208,8 +208,8 @@ def main():
         snapshot_every = 20
 
     # cumulative_games_per_deck (progress.json, 0 for a brand-new or
-    # config-less league): the horizon rl.train.batch_size_for_iteration and
-    # rl.train.ent_coef_schedule ramp against -- see both docstrings for why
+    # config-less league): the horizon rl.training.train.batch_size_for_iteration and
+    # rl.training.train.ent_coef_schedule ramp against -- see both docstrings for why
     # this replaced the old session-LOCAL iteration/n_iterations tracking
     # (a real run is many separate process invocations; the old version
     # reset both ramps back to their start value at the beginning of every

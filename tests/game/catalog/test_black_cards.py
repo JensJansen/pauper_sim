@@ -602,7 +602,7 @@ def test_refurbished_familiar_cross_player_discard_routing():
     card" is the OPPONENT's own choice, not the caster's. The ETB flips
     active_idx to the opponent for the forced discard and restores it after --
     which is exactly what makes the training harness (keyed on
-    state.active_idx, see rl.train.collect_rollout) query the OPPONENT's own
+    state.active_idx, see rl.training.train.collect_rollout) query the OPPONENT's own
     net, never the active player deciding on their behalf."""
     rf = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
     rf.turn_player_idx = 0

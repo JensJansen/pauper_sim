@@ -100,7 +100,7 @@ SORCERY_SPEED_PHASES = {Phase.MAIN1, Phase.MAIN2}
 def _tally_mana_mistake(state, idx, player, burnt):
     """DENSE, narrower reward-facing signal for PlayerState.mana_mistake_burn
     (meant to be drained by a reward_fn tagged consumes_mana_mistake=True --
-    none currently is; see rl.train._wants_mana_mistake) -- called once per
+    none currently is; see rl.training.train._wants_mana_mistake) -- called once per
     non-empty pool clear from _empty_mana_pools, only counting a burn as a
     genuine mistake once THREE exemptions have all failed: nothing was paid
     toward a cast/ability this phase (cost_paid_this_phase), no trigger was
@@ -168,7 +168,7 @@ def _empty_mana_pools(state):
     EVERY player, every call -- see that attribute's own docstring
     (GameState.__init__) for why this is unconditional (0 when nothing was
     floating) rather than gated like on_mana_burn above, and why it exists
-    at all (rl.train's credit-assignment fix for with_dense_mana_burn_
+    at all (rl.training.train's credit-assignment fix for with_dense_mana_burn_
     penalty's own mis-attribution -- the reward for it currently landing on
     whatever action is pending at a seat's next decision, not the Tap
     actions that actually caused it)."""
@@ -387,7 +387,7 @@ def _declare_blockers_gen(state):
     choice: capping it would be a real deviation from Magic's own rules
     (nothing limits how many legal actions a player may take in one priority
     round), so the engine stays faithful and DETECTION lives in the training
-    harness instead -- rl.train.collect_rollout raises if one turn exceeds a
+    harness instead -- rl.training.train.collect_rollout raises if one turn exceeds a
     generous decision budget, turning a silent multi-hour hang into a loud,
     bounded failure. Owner decision, 2026-08-19.
 
@@ -586,7 +586,7 @@ def _run_priority_round_gen(state):
 def _run_turn_gen(state, combat_enabled=False):
     """Generator form of one full turn -- the single implementation shared
     by run_turn's synchronous choose_action loop below and the token
-    training pipeline's own per-seat driver (rl.train). Iterates FULL_PHASES or
+    training pipeline's own per-seat driver (rl.training.train). Iterates FULL_PHASES or
     MINIMAL_PHASES depending on combat_enabled; for each phase, runs that
     phase's own turn-based automatic effect (if any), then a real
     priority round -- except Untap (never any priority at all, rule 4).
@@ -714,7 +714,7 @@ def _run_turn_gen(state, combat_enabled=False):
                 # distinct "cleanup" phase -- see state.in_cleanup's own
                 # docstring for why: a second real Phase member would
                 # change len(Phase) and silently break every existing
-                # checkpoint's rl.deck.SCALAR_FEATURE_DIM / rl.agent's own
+                # checkpoint's rl.model.deck.SCALAR_FEATURE_DIM / rl.decision.agent's own
                 # phase one-hot). Because state.phase doesn't change here,
                 # the generic "phase changed -> sweep" call at the top of
                 # this loop never fires for this boundary on its own --

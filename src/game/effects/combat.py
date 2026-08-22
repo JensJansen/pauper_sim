@@ -543,7 +543,7 @@ def menace_block_incomplete(state):
     academic: an action that is legal but non-progressing spins forever there,
     which is exactly what a flying/reach predicate mismatch did to real
     training runs (see drl_env._assign_blocker_execute). Detection lives in the
-    training harness instead (rl.train.collect_rollout's per-turn decision
+    training harness instead (rl.training.train.collect_rollout's per-turn decision
     guard), not as an engine-side cap. Called only during the
     declare-blockers step, where active_idx is the defender, so the
     attacker's own blocked_by/attackers are reached via state.opponent (the
@@ -597,7 +597,7 @@ def has_unfulfilled_goad(state):
     non-turn player who controls a goaded creature (the turn player goaded it)
     would have their priority-Pass blocked here while being unable to declare
     an attacker at all (_attack_legal needs active_idx == turn_player_idx):
-    an all-False action mask, a real crash caught in rl.agent._seat_step. Goad
+    an all-False action mask, a real crash caught in rl.decision.agent._seat_step. Goad
     binds a creature's controller on that controller's own combat, never a
     reactive priority window."""
     if state.active_idx != state.turn_player_idx:

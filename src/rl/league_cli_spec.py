@@ -3,8 +3,8 @@
 build_arg_parser() (moved here verbatim from run_league.py) only calls
 argparse.ArgumentParser()/add_argument() -- it never touches torch or rl.*
 -- so it lives in its own module that imports nothing but argparse/stdlib,
-independent of run_league.py itself, which imports rl.arch/rl.deck/
-rl.league/rl.agent/rl.train/rl.mulligan and, through them, torch -- a
+independent of run_league.py itself, which imports rl.model.arch/rl.model.deck/
+rl.league.league/rl.decision.agent/rl.training.train/rl.model.mulligan and, through them, torch -- a
 multi-second cost this module avoids paying just to read the flag spec.
 
 This module used to also hold LEAGUE_MODES/LEAGUE_GLOBAL, hand-authored
@@ -47,7 +47,7 @@ def build_arg_parser(description=None):
                               "Collection is always CPU across n_workers processes regardless -- it is "
                               "single-game-at-a-time inference, which a GPU cannot help with -- so this moves "
                               "only the gradient work, which is ~86%% of session wall time. Measured on this "
-                              "repo's own checkpoints (analysis/bench_gpu_vs_cpu.py): cuda runs ppo_update "
+                              "repo's own checkpoints (analysis/eval/bench_gpu_vs_cpu.py): cuda runs ppo_update "
                               "1.6-2.25x faster with epochs_run identical on both arms, the gap widening with "
                               "buffer size. Checkpoints are always written on CPU, so a league can move between "
                               "devices between sessions with no conversion.")
@@ -74,7 +74,7 @@ def build_arg_parser(description=None):
                               "(sequential collection only).")
     parser.add_argument("--checkpoint-opponent-rate", type=float, default=None,
                          help="Probability that a sampled opponent is a frozen historical snapshot rather than that "
-                              "deck's current live net, independent of how many snapshots exist (rl.league.LeaguePool."
+                              "deck's current live net, independent of how many snapshots exist (rl.league.league.LeaguePool."
                               "sample_opponent). Default 0.0 (run config): every game is real-model-vs-real-model, no "
                               "checkpoint opponents at all -- deliberately off during early training, when the "
                               "snapshot pool is mostly barely-trained early copies. The one run-config value expected "
@@ -83,7 +83,7 @@ def build_arg_parser(description=None):
     parser.add_argument("--pfsp", action=argparse.BooleanOptionalAction, default=None,
                          help="Weight opponent sampling (both the deck choice and, within a deck, the snapshot "
                               "choice) toward whoever is CURRENTLY beating the training deck most often, instead of "
-                              "uniform (rl.league.LeaguePool.sample_opponent's pfsp param; see its own docstring for "
+                              "uniform (rl.league.league.LeaguePool.sample_opponent's pfsp param; see its own docstring for "
                               "the weighting formula and the anti-starvation floor). --pfsp / --no-pfsp; default "
                               "True (run config, or hardcoded if no config) -- safe to leave on: a never-yet-played "
                               "opponent gets a neutral prior, so this is statistically uniform until real win/loss "
@@ -95,13 +95,13 @@ def build_arg_parser(description=None):
                               "all, matching the pre-config-file interface).")
     parser.add_argument("--gauntlet-league-name", type=str, default=None,
                          help="An INDEPENDENTLY-trained twin league (checkpoints/<name>/) to periodically measure "
-                              "this league's live nets against (rl.league_runner._run_eval_vs_gauntlet) -- a genuinely "
+                              "this league's live nets against (rl.league.league_runner._run_eval_vs_gauntlet) -- a genuinely "
                               "external reference, unlike this league's own historical snapshots. Optional; most "
                               "leagues won't have one. Prefer --league-config's own gauntlet_league_name field (see "
                               "training_configs/run_gauntlet.json's _note); this flag is the lower-level override.")
     parser.add_argument("--heuristic-decks", type=str, default=None, metavar="A,B,...",
-                         help="Deck(s) to ALSO periodically measure against rl.heuristic_agent.HeuristicAgent -- the "
-                              "gauntlet's hand-authored, non-learned tier-1 member (rl.league_runner._run_eval_vs_heuristic). "
+                         help="Deck(s) to ALSO periodically measure against rl.decision.heuristic_agent.HeuristicAgent -- the "
+                              "gauntlet's hand-authored, non-learned tier-1 member (rl.league.league_runner._run_eval_vs_heuristic). "
                               "Default: none (most decks don't have an owner-authored heuristic opponent). Prefer "
                               "--league-config's own heuristic_decks field; this flag is the lower-level override.")
     parser.add_argument("--roster", type=str, default=None, metavar="A,B,...",

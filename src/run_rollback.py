@@ -36,9 +36,9 @@ import os
 import shutil
 
 from repo_paths import CHECKPOINTS_DIR
-from rl.mulligan import MulliganNet
-from rl.pool import build_pool
-from rl.league_runner import build_deck_net, league_roster
+from rl.model.mulligan import MulliganNet
+from rl.roster import build_pool
+from rl.league.league_runner import build_deck_net, league_roster
 from rl import checkpoint as ckpt_io
 
 BACKUP_SUFFIX = ".before_rollback"

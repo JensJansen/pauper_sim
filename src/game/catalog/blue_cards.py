@@ -504,7 +504,7 @@ BLUE_EFFECT_REGISTRY = {
             "precast_choice": True,  # target spell chosen at cast (from the current stack)
         },
         # No "pending_kinds" entry: choose_stack_target is POINTER-addressed
-        # (rl.action_bridge), not a by-name fixed action, so it needs no
+        # (rl.decision.action_bridge), not a by-name fixed action, so it needs no
         # per-deck action-table declaration -- see begin_choose_stack_target's
         # own docstring for why (the countered spell is very often the
         # opponent's, which a by-name row could never represent).

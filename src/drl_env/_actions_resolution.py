@@ -59,7 +59,7 @@ _tuck_position_legal._pending_gate = frozenset({"tuck_position"})
 # choose_graveyard_card and choose_stack_target both learned this the hard
 # way (Relic of Progenitus/Mesmeric Fiend reach the opponent's graveyard/
 # hand; a spell to counter is very often the opponent's) and were migrated
-# to POINTER addressing instead (rl.action_bridge) -- pointer scoring reads
+# to POINTER addressing instead (rl.decision.action_bridge) -- pointer scoring reads
 # live token identity, never a per-deck name table, so it needs no such
 # guarantee. A future kind belongs in this set ONLY if it can never read
 # anything but the acting player's own zones; otherwise it must be a pointer
@@ -102,7 +102,7 @@ def _choose_name_options(state):
         return game.throne_reveal_options(state)
     # choose_graveyard_card, choose_stack_target, and choose_permanent
     # (which now also covers every generic sacrifice) are deliberately
-    # absent: all are POINTER targets (rl.action_bridge), not by-name fixed
+    # absent: all are POINTER targets (rl.decision.action_bridge), not by-name fixed
     # actions -- the chosen card/stack-entry/permanent is picked by pointing
     # at its token, so an opponent's cards are reachable (and a battlefield
     # permanent is addressed exactly, not by a fungible name) without a
@@ -256,7 +256,7 @@ def _dispose_execute(state):
 
 
 # NOTE: nothing in this action table references pregame mulligan decisions --
-# the MulliganNet (rl.mulligan) owns the pregame phase instead (see the
+# the MulliganNet (rl.model.mulligan) owns the pregame phase instead (see the
 # pregame-mulligan note further down, near the universal decision rows). The
 # engine's own mulligan (game.execute_mulligan_keep/take, game.turn.
 # run_mulligan_phase) is unaffected.
@@ -478,7 +478,7 @@ def _target_any_self_legal(state):
     legal, if rarely wise). Only offered when the pending choose_any_target
     allows players (a "target creature"-only choice sets allow_players=False
     and this stays masked). The creature half of the same choice rides the
-    identity pointer scheme (rl.action_bridge), not a fixed action."""
+    identity pointer scheme (rl.decision.action_bridge), not a fixed action."""
     pending = state.pending_resolution
     return pending is not None and pending["kind"] == "choose_any_target" and pending["allow_players"]
 

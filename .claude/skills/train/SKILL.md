@@ -74,14 +74,14 @@ before starting.
   incompatible. If any run aborts with a `vocab_size` / roster-mismatch assert, that
   is the signal to do a `fresh start`.
 - **Feature-dim check (catches new cards even before they join the pool, or a change
-  to `rl/features.py` itself).** Adding a card with a NEW keyword/type grows
+  to `rl/model/features.py` itself).** Adding a card with a NEW keyword/type grows
   `STATIC_FEATURE_DIM`; a code change to the per-token dynamic layout (e.g. the
   own-hand-tokenization + `cost_reduction_delta` feature added 2026-08) grows
   `DYNAMIC_FEATURE_DIM` instead — either way `TOKEN_FEATURE_DIM` → the per-card
   feature vector → each encoder's `input_proj.weight` changes shape, but
   `vocab_size` stays unchanged, so the vocab assert does NOT catch it and the league
   crashes on the first checkpoint LOAD with `size mismatch for input_proj.weight`.
-  If a league run aborts that way, either the catalog changed or `rl/features.py`'s
+  If a league run aborts that way, either the catalog changed or `rl/model/features.py`'s
   own feature dim did → a `fresh start` is required. Note this now surfaces when
   RESUMING an existing league (its `live.pt` files carry the stale shapes), not at
   startup against a single frozen-stack file.
@@ -94,7 +94,7 @@ Wipe **the resolved league_dir** for this invocation (per the config preconditio
 `checkpoints/league/` here without checking. Keep `checkpoints/archive_2deck/` — an
 unrelated top-level directory from an old experiment, NOT the same thing as the
 per-deck `<league_dir>/<deck>/archive/` this wipe DOES need to clear (evicted-snapshot
-history `rl.league.LeaguePool` now keeps instead of deleting — stale archived selves
+history `rl.league.league.LeaguePool` now keeps instead of deleting — stale archived selves
 left behind after a wipe would make a post-reset `vs_history` check compare the fresh
 policy against pre-reset history, which is meaningless). Also wipe each deck's
 `opponent_stats.json` — the PFSP win/loss tallies `LeaguePool` persists there; leaving it
@@ -247,14 +247,14 @@ reporting:
 - the double round-robin snapshot logs written by §5 step 4
   (`logs/<league_name>_double_round_robin_<per_deck_cumulative>games.json`) -- manual,
   triggered once per escalation step by this skill, for the replay viewer;
-- `<league_dir>/metrics.jsonl` -- automatic, appended by `rl.league_runner`'s own
+- `<league_dir>/metrics.jsonl` -- automatic, appended by `rl.league.league_runner`'s own
   `_run_session` on EVERY iteration of every session this skill ran (not just at
   escalation boundaries): per-iteration policy/value loss and entropy, and (once any
   deck has been through a snapshot cycle) a `vs_history` win-rate-vs-its-own-archived-
   past-self check at the end of each session -- plus, only when the resolved config
   carries a `gauntlet_league_name` (or `--gauntlet-league-name` was passed), a
   `vs_gauntlet` win-rate-vs-an-independently-trained-twin-league check on the same
-  cadence, once that twin has a checkpoint for the deck. Run `python analysis/report_metrics.py
+  cadence, once that twin has a checkpoint for the deck. Run `python analysis/eval/report_metrics.py
   <league_dir>` for a plain-text summary of it -- mention this to the owner rather than
   re-deriving trends from stdout scrollback by hand.
 

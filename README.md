@@ -120,63 +120,99 @@ src/
                              the table-builder touches every category above).
     _seat.py                 Per-seat helpers (_for_player, _lost).
 
-  rl/                      The token/attention DRL system:
-    features.py              CardVocab (stable card->index) + static per-token feature
-                             vectors + build_token_set.
-    arch.py                  SetTransformer (embeddings + self-attention + two PMA
-                             pooling heads) and FiLM — the perception encoder.
-    deck.py                  DeckNetwork: one deck's own encoder + trunk + critic +
-                             pointer-net action head, trained end to end.
-    mulligan.py              Per-deck pregame mulligan model + its REINFORCE trainer.
-    agent.py                 SeatAgent: per-seat decision dispatch (pregame ->
-                             mulligan model, everything else -> DeckNetwork).
-                             HeuristicAgent: the gauntlet's hand-authored, non-learned
-                             opponent (see README's Gauntlet section).
-    action_bridge.py         Maps the network's combined (fixed + pointer) action space
-                             back to real engine calls.
-    train.py                 Rollout collection game loop (collect_rollout) + league
-                             opponent-pairing orchestration; the RolloutBuffer type
-                             rl.ppo/rl.rollout_parallel build on.
-    ppo.py                   GAE + the PPO update itself (ppo_update). Per-deck encoders
-                             train with the rest of the net, so its forward is
-                             recomputed every minibatch of every epoch -- no shared,
-                             frozen-encoder cache (that existed only for the pretrain
-                             phase, removed 2026-08-17).
-    rollout_parallel.py      ProcessPoolExecutor multiprocessing plumbing for league
-                             collection (collect_rollout_league_parallel + its worker).
-    pool.py                  Builds the shared vocab + per-deck action tables from the
-                             league roster (data/league_decks.json).
-    league.py                LeaguePool: historical opponent snapshots, PFSP-weighted
-                             sampling, eviction/archival, disk persistence.
-    league_runner.py         run_league.py's reusable core: _run_session, the eval-mode
-                             functions (_run_eval/_run_eval_vs_history/_vs_gauntlet/
-                             _vs_heuristic), checkpoint/progress helpers, shared/frozen-
-                             stack loaders. Imported directly by benchmarking/
-                             training_run.py instead of importing run_league.py itself.
-    rewards.py               Reward functions (win/loss with a speed tiebreaker).
+  rl/                      The token/attention DRL system, grouped by what actually
+                           depends on what (verified from real import edges, not
+                           guessed from names) rather than left flat:
+    model/                   Network/observation shape -- what the net IS.
+      features.py              CardVocab (stable card->index) + static per-token
+                               feature vectors + build_token_set.
+      arch.py                  SetTransformer (embeddings + self-attention + two PMA
+                               pooling heads) and FiLM — the perception encoder.
+      deck.py                  DeckNetwork: one deck's own encoder + trunk + critic +
+                               pointer-net action head, trained end to end.
+      mulligan.py              Per-deck pregame mulligan model + its REINFORCE trainer.
+    decision/                 Turning an observation into a chosen action.
+      action_bridge.py         Maps the network's combined (fixed + pointer) action
+                               space back to real engine calls.
+      agent.py                 SeatAgent: per-seat decision dispatch (pregame ->
+                               mulligan model, everything else -> DeckNetwork).
+      heuristic_agent.py       HeuristicAgent: the gauntlet's hand-authored,
+                               non-learned opponent (see README's Gauntlet section).
+    training/                 The rollout loop and PPO update math.
+      train.py                 Rollout collection game loop (collect_rollout) + league
+                               opponent-pairing orchestration; the RolloutBuffer type
+                               ppo.py/rollout_parallel.py build on.
+      ppo.py                   GAE + the PPO update itself (ppo_update). Per-deck
+                               encoders train with the rest of the net, so its forward
+                               is recomputed every minibatch of every epoch -- no
+                               shared, frozen-encoder cache (that existed only for the
+                               pretrain phase, removed 2026-08-17).
+      rollout_parallel.py      ProcessPoolExecutor multiprocessing plumbing for league
+                               collection (collect_rollout_league_parallel + its
+                               worker).
+    league/                   Opponent pool + session orchestration.
+      league.py                LeaguePool: historical opponent snapshots, PFSP-
+                               weighted sampling, eviction/archival, disk persistence.
+      league_runner.py         run_league.py's reusable core: _run_session, the
+                               eval-mode functions (_run_eval/_run_eval_vs_history/
+                               _vs_gauntlet/_vs_heuristic), checkpoint/progress
+                               helpers, shared/frozen-stack loaders. Imported directly
+                               by benchmarking/training_run.py instead of importing
+                               run_league.py itself.
+    roster.py                Builds the shared vocab + per-deck action tables from the
+                             league roster (data/league_decks.json) -- named apart
+                             from league/ (opponent-pool management) on purpose: this
+                             is roster-wide SETUP, unrelated to LeaguePool despite the
+                             pre-2026-08-22 name (pool.py) suggesting otherwise.
+    rewards.py               The win/loss reward + dense mana-burn shaping
+                             (deploy_reward_v6) that league play actually trains
+                             against -- see its own module docstring.
+    checkpoint.py            Save/load for a deck's live net+optimizer and frozen
+                             league snapshots; the one place device placement
+                             (CPU-only on disk) is handled.
+    league_cli_spec.py       run_league.py's own CLI surface, torch-free (see its own
+                             docstring for why it's a separate module).
 
   run_league.py            Thin CLI wrapper (arg resolution + main()) around
-                           rl/league_runner.py.
+                           rl/league/league_runner.py.
   run_rollback.py          Promote a historical snapshot back to live.pt (the archive
                            already holds every snapshot; this is how to USE it).
                            The only run_* at this level that does NOT write state is
                            none -- that is the split: root mutates checkpoints,
                            analysis/ only reads them.
-  analysis/                Read-only inspection tools. Run them from src/, e.g.
-                           `python analysis/report_metrics.py ../checkpoints/<league>`
+  analysis/                Read-only inspection tools, grouped by concern. Run them
+                           from src/, e.g.
+                           `python analysis/eval/report_metrics.py ../checkpoints/<league>`
                            -- each adds src/ to sys.path itself.
-    report_metrics.py      Plain-text summary of a league's metrics.jsonl -- per-record
-                           trends first, then pooled stats with IMPROVING/FLAT/
-                           REGRESSING/PAST PEAK verdicts and CIs.
-    run_anchor_eval.py     Absolute scale: checkpoints vs a fully UNTRAINED
-                           DeckNetwork, encoder included (a floor, saturates fast).
-    run_snapshot_round_robin.py
-                           Round robin among a deck's own snapshots -- 3-cycle count,
-                           Bradley-Terry Elo + residual vs noise floor, monotonicity.
-                           Showed 3 of 4 decks REGRESSING; the acceptance test for any
-                           training change.
-    run_cross_league_eval.py
-                           Live weights of one league vs another, per deck.
+    eval/                    Play games / summarize logs; never trains anything.
+      report_metrics.py       Plain-text summary of a league's metrics.jsonl --
+                               per-record trends first, then pooled stats with
+                               IMPROVING/FLAT/REGRESSING/PAST PEAK verdicts and CIs.
+      run_anchor_eval.py      Absolute scale: checkpoints vs a fully UNTRAINED
+                               DeckNetwork, encoder included (a floor, saturates fast).
+      run_snapshot_round_robin.py
+                               Round robin among a deck's own snapshots -- 3-cycle
+                               count, Bradley-Terry Elo + residual vs noise floor,
+                               monotonicity. Showed 3 of 4 decks REGRESSING; the
+                               acceptance test for any training change.
+      run_cross_league_eval.py
+                               Live weights of one league vs another, per deck, plus
+                               mana-burn comparison and budget-matched vintage support.
+      bench_gpu_vs_cpu.py      CPU-vs-GPU A/B timing for rl.training.ppo.ppo_update,
+                               run inside a real league session (see the "Training
+                               pipeline" section below for the numbers it produced).
+    mulligan_retrain/        An open investigation (started 2026-08-20, still active):
+                             rebuilding the mulligan model against a frozen main
+                             policy, since the pre-rework mulligan.pt format is no
+                             longer loadable. Not one-off forensics like the deleted
+                             analyze_*.py scripts below -- revisit whether these
+                             belong here once the investigation closes.
+      train_mulligan_self_mirror.py / train_mulligan_vs_twin.py
+                               Two deliberately different ablations (same-net mirror
+                               vs. an independently-trained twin's roster) probing the
+                               same collapse-to-always-keep failure mode.
+      _mulligan_common.py      Shared net-loading/land-audit/probe-hand helpers both
+                               scripts use.
                            (The per-question forensics scripts -- analyze_*.py for burn
                            saturation, hoarding, land patterns, decision entropy and
                            target fizzles, check_credit_assignment.py, and the _shared.py
@@ -356,7 +392,7 @@ can create (its behavioral signature — `choose_any_target` reads as removal,
 >
 > This is deliberately the **cheap** end — presence/absence, auto-derived. The
 > richer version is a hand-authored semantic vector per card (effect class,
-> magnitude, what it targets); `rl/features.py` marks it as the upgrade path.
+> magnitude, what it targets); `rl/model/features.py` marks it as the upgrade path.
 
 The dynamic half: a `cost_reduction_delta` (own-hand tokens only, how much
 cheaper this card currently is than its printed cost, e.g. affinity/Tolarian
@@ -369,7 +405,7 @@ whether it *is* an attached Aura, per-kind counter counts, whether currently
 targeted by a spell/ability on the stack (mine or the opponent's, including a
 spell targeting another spell), zone, and a mine/theirs side flag.
 
-The second is a **scalar vector** (`rl/agent.py`'s `_scalar_features`) of
+The second is a **scalar vector** (`rl/decision/agent.py`'s `_scalar_features`) of
 non-tokenized globals: turn number, lands-played, mulligans taken, whose
 turn it is, each player's floating mana pool (by color), phase, life
 totals, each player's library size, the opponent's hand size, and whether
@@ -383,7 +419,7 @@ included here (redundant with counting its own hand tokens above).
 Every deck has its own network, encoder included — nothing is shared between
 decks but the card *index* mapping:
 
-- **`SetTransformer` (`rl/arch.py`)** — embeds + projects tokens,
+- **`SetTransformer` (`rl/model/arch.py`)** — embeds + projects tokens,
   runs a joint self-attention encoder over *both* sides' tokens (so a token
   can attend across the mine/theirs boundary), then pools with two
   independent learned-query heads: a "mine" summary (trunk input) and a
@@ -407,7 +443,7 @@ decks but the card *index* mapping:
   because `ppo_update` replays every episode from a zero state — a state
   surviving a game boundary would make the update recompute hidden states that
   never occurred.
-- **`DeckNetwork` (per-deck, `rl/deck.py`)** — a small trunk + critic +
+- **`DeckNetwork` (per-deck, `rl/model/deck.py`)** — a small trunk + critic +
   a **pointer-network action head**. The action space is the union of a
   **fixed table** of non-targeting actions (play land, cast X, pass, mana
   payments, mulligans, …) and a **pointer-scored** set of targeting actions
@@ -415,11 +451,11 @@ decks but the card *index* mapping:
   post-attention token representations. Both halves feed **one combined
   softmax**, so a masked-categorical sample over the true legal set is
   correct.
-- **Pregame mulligan model (per-deck, `rl/mulligan.py`)** — a separate small
+- **Pregame mulligan model (per-deck, `rl/model/mulligan.py`)** — a separate small
   head owning every pregame keep/mulligan/bottom decision. It reads the SAME
   structured, self-attended hand representation the main policy sees at every
   in-game decision — its own deck's `SetTransformer` run over
-  `rl.features.build_token_set`'s full per-card token set (mana production,
+  `rl.model.features.build_token_set`'s full per-card token set (mana production,
   card type, …), not a bare card-identity lookup (a 2026-08-20 fix: the
   original mean-pooled-embedding version carried no card-type signal at all
   and, confirmed by a log audit, kept 0-land hands half the time). It holds
@@ -427,19 +463,19 @@ decks but the card *index* mapping:
   own forward pass in `torch.no_grad()`, so its REINFORCE optimizer never
   steps the encoder PPO owns (one near-bandit sample per game should not be
   steering a 117k-param perception encoder that ~100 in-game decisions per
-  game are also steering). A `SeatAgent` (`rl/agent.py`) routes pregame
+  game are also steering). A `SeatAgent` (`rl/decision/agent.py`) routes pregame
   decisions to it and everything else to the `DeckNetwork`. It trains by its
   own REINFORCE with a direct whole-game reward, decoupled from the main PPO
   update — a mulligan is a near-bandit: one pregame choice, the game's outcome
   as its number.
 
-Training is **PPO self-play** (`rl/train.py`'s rollout game loop, `rl/ppo.py`'s
+Training is **PPO self-play** (`rl/training/train.py`'s rollout game loop, `rl/training/ppo.py`'s
 update math). Mirror matches pool both seats into one buffer/update;
 cross-matchups give each net its own buffer, both learning from every game.
-Rollout collection parallelizes across worker processes (`rl/rollout_parallel.py`,
+Rollout collection parallelizes across worker processes (`rl/training/rollout_parallel.py`,
 ~3.2–3.5× on 6 physical cores).
 
-The **league** (`rl/league.py`, `rl/league_runner.py`) keeps a rolling window of
+The **league** (`rl/league/league.py`, `rl/league/league_runner.py`) keeps a rolling window of
 historical snapshots per deck. Each game resamples an opponent two-level: pick
 a deck (including the training deck itself, for mirror play), then pick one of
 its snapshots (or its current live weights). No hardcoded Stage-1/Stage-2
@@ -527,7 +563,7 @@ Key flags:
   always live; the one value meant to be changed deliberately mid-training).
 - `--pfsp` / `--no-pfsp` — PFSP-weight opponent sampling toward whoever's
   currently beating the training deck most, instead of uniform (default True;
-  see the **Continuous league training** section above and `rl.league.
+  see the **Continuous league training** section above and `rl.league.league.
   LeaguePool.sample_opponent`'s own docstring).
 - `--gauntlet-league-name` — an independently-trained twin league
   (`checkpoints/<name>/`) to periodically measure this league's live nets
@@ -539,7 +575,7 @@ game per worker; a smaller value used to silently starve some worker processes
 of any work at all), overridable via the run-config's `games_per_iteration`.
 That override exists because the default of 6 means every `ppo_update` spends
 its whole trust region on **six games of evidence**. The old `--max-batch-size`
-auto-sizing cap is likewise no longer a parameter — see `rl/league_runner.py`'s
+auto-sizing cap is likewise no longer a parameter — see `rl/league/league_runner.py`'s
 (`_next_batch_games`) and `run_league.py`'s (`main()`) own comments at each
 removal site for why.
 
@@ -548,11 +584,11 @@ never actually executed** — see the warning under **Instrumentation**.
 
 Optimizer/PPO knobs (`lr`, `mulligan_lr`, `gamma`, `gae_lambda`, `target_kl`,
 `n_epochs`, `adv_norm_floor`, `ent_coef`) come from
-`rl.league_runner.PPO_DEFAULTS` and are overridable per league via a run-config
+`rl.league.league_runner.PPO_DEFAULTS` and are overridable per league via a run-config
 `"ppo"` object; an unknown key is a hard error rather than a silent no-op. Eval
 budget (`eval_games`, `eval_every_sessions`) is config-driven the same way.
 
-`ent_coef` defaults to `None`, meaning "use `rl.train.ent_coef_schedule`'s
+`ent_coef` defaults to `None`, meaning "use `rl.training.train.ent_coef_schedule`'s
 0.02 → 0.005 anneal"; a float pins it constant for the whole run instead.
 Setting it to 0.05 was run as a controlled single-variable A/B
 (config since deleted with the rest of the concluded arms) and
@@ -606,7 +642,7 @@ currently-active run config (`run_default.json`, `league_main.json`,
 The older "no GPU crossover at this size" finding is **superseded**. It was
 measured when the model was ~200–250K params, before per-deck encoders, the
 GRU, and the growth of `TOKEN_FEATURE_DIM` to 151. Re-measured 2026-08-19 on
-real training buffers (`analysis/bench_gpu_vs_cpu.py`, which times both
+real training buffers (`analysis/eval/bench_gpu_vs_cpu.py`, which times both
 devices on the *same* buffer from identical starting weights inside a real
 session): CUDA runs `ppo_update` **1.6–2.25× faster**, the gap widening with
 buffer size, with `epochs_run` identical on both arms. Updates are ~86% of
@@ -658,7 +694,7 @@ appends to `checkpoints/<league>/metrics.jsonl`, one JSON line per record:
 - `kind: "mulligan"` — per deck per iteration REINFORCE loss/n.
 - `kind: "vs_history"` — once per session per deck (league mode only): the
   live net played against its own oldest still-active snapshot and, once one
-  exists, its oldest **archived** snapshot (`rl.league`'s eviction archive,
+  exists, its oldest **archived** snapshot (`rl.league.league`'s eviction archive,
   see above) — a direct win-rate-vs-past-self measurement, not an inference
   from loss curves. Skipped (empty) automatically until a deck has been
   through at least one snapshot cycle, so it costs nothing during a run's
@@ -678,7 +714,7 @@ the one game loop) also gets one `game_over` event appended to its own
 to the log stream at all, only reconstructible by replaying `life_change`
 deltas by hand.
 
-`python analysis/report_metrics.py <league_dir> [--window N]` prints a plain-text
+`python analysis/eval/report_metrics.py <league_dir> [--window N]` prints a plain-text
 summary read from `metrics.jsonl` — stdlib only, no plotting dependency. It
 leads with the **per-record sequence** for every win-rate series and only then
 pools, because pooling is what hides a decline: `dmir_terror` vs
@@ -720,7 +756,7 @@ reference points, outside that history entirely:
   risk PFSP and `vs_history` can't rule out) is far more likely to show up
   against a genuinely independent opponent than against anything drawn from
   the league's own history. Wired via a config's `gauntlet_league_name` field
-  (`rl.league_runner._run_eval_vs_gauntlet`, once per session per deck, only
+  (`rl.league.league_runner._run_eval_vs_gauntlet`, once per session per deck, only
   once the twin population has a checkpoint for that deck).
 
   These two checkpoint trees swapped roles on 2026-08-05: `4_deck_subleague_test`
@@ -760,15 +796,15 @@ reference points, outside that history entirely:
   than genuinely plateaued — traced to a hard 1,600-game opponent-memory
   ceiling, PFSP over-concentrating on one structurally-unwinnable matchup, and
   PPO exploration entropy collapsing to a floor by ~250 games/deck and never
-  recovering. All three fixed (`rl/league.py`'s `DEFAULT_MAX_SNAPSHOTS_PER_DECK`
-  and `PFSP_POWER`; `rl/ppo.py`'s `target_kl` and `rl/train.py`'s
+  recovering. All three fixed (`rl/league/league.py`'s `DEFAULT_MAX_SNAPSHOTS_PER_DECK`
+  and `PFSP_POWER`; `rl/training/ppo.py`'s `target_kl` and `rl/training/train.py`'s
   `ent_coef_schedule`), plus the dense mana-burn reward reverted (see the
   rewards section above) and a substantially larger pretrain budget before the
   refreeze (that phase no longer exists). `4_deck_subleague_test` restarted
   from zero under all of it at
   once; `4_deck_subleague_gauntlet` was left untouched as the (now
   representation-mismatched, see above) stale reference.
-- **Tier 1 — `rl.agent.HeuristicAgent`**: a hand-authored, non-learned
+- **Tier 1 — `rl.decision.agent.HeuristicAgent`**: a hand-authored, non-learned
   opponent, reusing the exact same legal-action machinery a trained
   `SeatAgent` does (`_build_decision`, `_executor_for`) but scoring among
   legal choices by fixed, general MTG principles instead of a policy: play a
@@ -785,7 +821,7 @@ reference points, outside that history entirely:
   `AlwaysKeep`.
 
 Both report into `metrics.jsonl` (`kind: "vs_gauntlet"` / `"vs_heuristic"`,
-picked up by `analysis/report_metrics.py` the same way as everything else) and cost
+picked up by `analysis/eval/report_metrics.py` the same way as everything else) and cost
 nothing when unconfigured — most leagues won't set `gauntlet_league_name` or
 `heuristic_decks` at all.
 
@@ -816,11 +852,11 @@ wired only through `--matchup` mode.)
   `mana_burnt_this_turn` feed no reward — they remain raw diagnostics for
   logging/viz (`mana_burnt_this_turn_single_pip`, a filtered subset of the
   latter, does feed reward — see dense mana-burn shaping below). The
-  **mulligan model** trains on its own reward (`rl/mulligan.py`):
+  **mulligan model** trains on its own reward (`rl/model/mulligan.py`):
   WIN_REWARD if the seat won, 0 otherwise — no per-mulligan-count penalty
   (removed 2026-08-21) — on transitions accumulated across several league
   iterations per REINFORCE update since 2026-08-06 — see
-  `rl.league_runner._run_session`'s `MULLIGAN_UPDATE_EVERY`.
+  `rl.league.league_runner._run_session`'s `MULLIGAN_UPDATE_EVERY`.
 
   Five earlier reward generations (2026-08-06 through 2026-08-12) explored
   this terminal-band shape and the mana-burn shaping below before
@@ -879,7 +915,7 @@ wired only through `--matchup` mode.)
   10,003-games/deck run, `dmir_terror`'s own losses averaged `0.321` total
   penalty across 14 passive games vs. `0.598` across 64 active ones — nearly
   2× worse for trying. Implementation is a **DEFERRAL, not a terminal
-  refund** (`rl/train.py`'s `deferred_charges`): charges are computed and
+  refund** (`rl/training/train.py`'s `deferred_charges`): charges are computed and
   attributed per-Tap as they happen, but held for the whole game and applied
   at the terminal flush only if that seat won; on a loss they are simply
   never written, leaving the trajectory bit-for-bit identical to one that
@@ -928,7 +964,7 @@ Three were removed/derived, three were kept as-is:
   bigger buffer to update on — without adding real collection parallelism
   once every worker already has work).
 - **PPO minibatch ramp (`--batch-size-start`/`-cap`/`-steps`) — removed,
-  hardcoded** (32 → 2048 over 6 steps, `rl.train.batch_size_for_iteration`'s
+  hardcoded** (32 → 2048 over 6 steps, `rl.training.train.batch_size_for_iteration`'s
   own defaults). The *schedule* is a real, citable technique (Smith et al.
   2017 — grow batch size instead of decaying the learning rate), but the
   code's own prior comment on these flags admitted nobody had ever actually
@@ -938,11 +974,11 @@ Three were removed/derived, three were kept as-is:
   against cumulative games/deck since 2026-08-06 (`progress.json`), not the
   session-local iteration count it used to reset against at the start of
   every separate `run_league.py` invocation — see the function's own
-  docstring. The PPO entropy coefficient (`rl.train.ent_coef_schedule`, also
+  docstring. The PPO entropy coefficient (`rl.training.train.ent_coef_schedule`, also
   added 2026-08-06) follows the identical cumulative-games shape, annealing
   0.02 → 0.005 instead of a single fixed `ent_coef=0.01` for a run's whole
   life — see `TRAINING_IMPROVEMENT_OPTIONS.md` section 4 for the entropy-
-  collapse data that motivated it, and `rl.ppo.ppo_update`'s own `target_kl`
+  collapse data that motivated it, and `rl.training.ppo.ppo_update`'s own `target_kl`
   parameter (a per-epoch trust-region early stop, also new) for the other
   half of that fix.
 - **`--max-batch-size` — removed entirely, no replacement cap.** Its job was
@@ -959,7 +995,7 @@ Three were removed/derived, three were kept as-is:
 Kept as real, per-run decisions — not derivable from anything else:
 `--total-games` (the actual training-size target), `--n-workers` (hardware-
 dependent), `--checkpoint-opponent-rate` (deliberately owner-controlled —
-see `rl/league.py`'s own design writeup), `--games`/`--seed` (direct user
+see `rl/league/league.py`'s own design writeup), `--games`/`--seed` (direct user
 choices for matchup/eval), `--n-iterations` (a documented debug escape
 hatch). `--snapshot-every`/`snapshot_every_games` (~200 games between
 snapshots) has a real but looser rationale and was left alone.
@@ -1038,7 +1074,7 @@ viewing).
   local-machine privacy concern left to gate this behind, unlike the
   training-launch surface `app_public.py` still never exposes.
 - Each game in the list is labeled from its own
-  `deck_a`/`deck_b` fields (`rl.league_runner`'s `_write_event_log` stamps
+  `deck_a`/`deck_b` fields (`rl.league.league_runner`'s `_write_event_log` stamps
   every game with which pairing it actually was) as `"deck A vs deck B (game
   N)"` — the `(game N)` disambiguates repeat games of the same pairing (a
   double round-robin plays each one twice) — rather than an unlabeled
@@ -1082,13 +1118,13 @@ viewing).
   candidates by the network's post-mask probability, the chosen one
   highlighted, with the value estimate below; the other half just shows "no
   decision data." Opt-in instrumentation, off by
-  default: `rl/agent.py`'s `_seat_step` (main policy) and
-  `rl/mulligan.py`'s `decide()` (both mulligan branches) log a
+  default: `rl/decision/agent.py`'s `_seat_step` (main policy) and
+  `rl/model/mulligan.py`'s `decide()` (both mulligan branches) log a
   `decision_weights` event only when `state.event_log is not None` (i.e.
   `--log` eval/matchup runs, never blanket-on during ordinary self-play
   collection) and only for a real (non-forced, >1-legal-option) decision —
   reads values already computed in that decision's own forward pass, so no
-  extra inference call and no effect on sampling. `rl/action_bridge.py`'s
+  extra inference call and no effect on sampling. `rl/decision/action_bridge.py`'s
   `pointer_kind(state)` names which targeting category (if any) governs a
   pointer candidate, mirroring `pointer_legal_mask`'s own dispatch.
   `replay_engine.py`'s handler formats each candidate (`fixed_label`
@@ -1098,7 +1134,7 @@ viewing).
   bakes a string, matching every other event kind in this file.
 - **Every mulligan-round draw, reject, and bottom-card pick is its own step**
   (owner directive), not netted into one "opening hands" summary — each is a
-  genuinely separate decision (its own `rl/mulligan.py` forward pass), exactly
+  genuinely separate decision (its own `rl/model/mulligan.py` forward pass), exactly
   the kind of moment this viewer exists to make visible, and each gets its own
   top-5 panel from the decision-weights logging above.
 - **Library count is a simplified approximation** (owner-authorized): assume a

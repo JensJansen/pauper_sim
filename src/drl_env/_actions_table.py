@@ -276,7 +276,7 @@ def build_action_table(decklist, registry, token_card_defs=(),
     # pretrain run hit "all-False action mask for pending kind 'order_triggers'"
     # the first time a transformed Delver's upkeep trigger needed ordering
     # against another simultaneous trigger. Discovered the same way
-    # rl.features.CardVocab already discovers back faces: scan each front
+    # rl.model.features.CardVocab already discovers back faces: scan each front
     # face's own registry "transform" spec.
     back_face_defs = [
         spec["card_def"] for name in distinct_names
@@ -351,7 +351,7 @@ def build_action_table(decklist, registry, token_card_defs=(),
     # target. ONE gate-free "Tap <name>" row per source name (same shape as
     # an ordinary mana ability, mana_source_names above); its execute opens
     # a mana_subdecision (game.begin_mana_subdecision) -- choose which
-    # creature to tap (pointer-routed, rl.action_bridge, no fixed-table row
+    # creature to tap (pointer-routed, rl.decision.action_bridge, no fixed-table row
     # needed), THEN choose a color (the shared "Produce <color>" buttons
     # below) -- matching real sequencing (602.5g cost paid before the
     # ability's own color-choice effect resolves) while staying gate-free
@@ -651,8 +651,8 @@ def build_action_table(decklist, registry, token_card_defs=(),
     # token was the only eligible option, softlocking the game.
     # extra_choosable_names: card names that can be a "Choose: X" option despite
     # not being in THIS deck (nor its tokens) -- e.g. an opponent's graveyard
-    # cards. The league (rl.pool) passes none: choose_graveyard_card is a
-    # POINTER target (rl.action_bridge), so an opponent's graveyard is reached
+    # cards. The league (rl.roster) passes none: choose_graveyard_card is a
+    # POINTER target (rl.decision.action_bridge), so an opponent's graveyard is reached
     # by pointing at its token, not a whole-league "Choose: X" row per card
     # name. Kept as a general knob, used by
     # scripts/migrate_pointer_graveyard.py to reconstruct the pre-pointer
@@ -904,12 +904,12 @@ def build_action_table(decklist, registry, token_card_defs=(),
     # same payment_survives gate.
     # NOTE: the pregame mulligan actions ("Keep hand" / "Mulligan") and the
     # "mulligan_bottom" branch of the generic "Choose: X" action have no rows in
-    # this table. The per-deck MulliganNet (rl.mulligan) owns every pregame
-    # decision -- rl.agent.SeatAgent intercepts the pregame pending kinds before
+    # this table. The per-deck MulliganNet (rl.model.mulligan) owns every pregame
+    # decision -- rl.decision.agent.SeatAgent intercepts the pregame pending kinds before
     # the main net's forward -- so the main policy's action space contains ZERO
     # pregame actions and a game can never fall back to a fixed-table mulligan.
     # The engine's own mulligan handlers (game.execute_mulligan_keep/
-    # execute_mulligan_take) are called directly by rl.agent, not through this
+    # execute_mulligan_take) are called directly by rl.decision.agent, not through this
     # table.
     # Refurbished Familiar already makes the OPPONENT discard from their own hand
     # (the "Choose: X" hand-name rows are their own, so those self-serve) -- but
@@ -951,7 +951,7 @@ def build_action_table(decklist, registry, token_card_defs=(),
     actions.append(("Target: opponent", _target_opponent_legal, _target_opponent_execute))
     # The player half of an "any target" choice (Lightning Bolt etc.) -- same
     # shape/reasoning as the choose_target_player pair above. The creature half
-    # (either battlefield) rides the identity pointer scheme (rl.action_bridge),
+    # (either battlefield) rides the identity pointer scheme (rl.decision.action_bridge),
     # not fixed actions. Universal because a Chain Lightning COPIER -- the
     # affected player, i.e. the opponent -- may choose a new target for the copy.
     actions.append(("Target any: yourself", _target_any_self_legal, _target_any_self_execute))
@@ -1041,7 +1041,7 @@ def _validate_choose_name_coverage(state, actions):
             f"A by-name pending kind can only ever be answered from names in the DECIDING PLAYER's own deck "
             f"(build_action_table's choosable_names) -- {pending['kind']!r} can apparently produce a candidate "
             f"outside that (most likely another player's card), which means it must be POINTER-addressed "
-            f"(see rl.action_bridge; choose_graveyard_card and choose_stack_target are the established pattern), "
+            f"(see rl.decision.action_bridge; choose_graveyard_card and choose_stack_target are the established pattern), "
             f"not left in _CHOOSE_NAME_PENDING_KINDS."
         )
 
@@ -1140,7 +1140,7 @@ def legal_action_mask(state, actions):
 
     Mask is built as a plain list and converted to a numpy array ONCE at
     the end -- indexed numpy writes in a tight Python loop carry real
-    per-call overhead, the same lesson rl.arch.pad_token_batch's own
+    per-call overhead, the same lesson rl.model.arch.pad_token_batch's own
     docstring already applies to token tensors."""
     _actions_combat._battlefield_lookup_cache = None
     _actions_mana._mana_ability_options_cache = None

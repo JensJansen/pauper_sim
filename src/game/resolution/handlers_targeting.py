@@ -141,7 +141,7 @@ def choose_any_target_creature_options(state):
     """The (side, name, slot) creature half of a choose_any_target -- every
     matching creature on EITHER battlefield. Split out from the player half
     so the action layer can route creatures through the identity pointer
-    scheme (rl.action_bridge) and players through fixed actions."""
+    scheme (rl.decision.action_bridge) and players through fixed actions."""
     predicate = state.pending_resolution["predicate"]
     return sorted(
         (side, p.card_def.name, p.slot)
@@ -251,7 +251,7 @@ def begin_choose_stack_target(state, predicate, on_complete):
     """Choose a SPELL on the stack (Counterspell: any; Dispel: instant; Spell
     Pierce: noncreature) to counter. `predicate(entry)` further narrows the
     spell entries (entries are the stack's own {"card_def","is_spell",...}
-    dicts). POINTER-addressed (rl.action_bridge), not by name: the spell
+    dicts). POINTER-addressed (rl.decision.action_bridge), not by name: the spell
     being countered is very often the OPPONENT's, so no per-deck "Choose: X"
     row could ever represent it. Options are the matching stack ENTRIES
     themselves, by object identity, so two simultaneous same-named spells
@@ -267,7 +267,7 @@ def begin_choose_stack_target(state, predicate, on_complete):
 def choose_stack_target_options(state):
     """The matching stack entries themselves (objects), NOT names -- see
     begin_choose_stack_target's own docstring for why. No dedup, no sort:
-    rl.action_bridge masks/executes by object identity (id()-keyed, since a
+    rl.decision.action_bridge masks/executes by object identity (id()-keyed, since a
     stack entry is an unhashable dict), not by name."""
     predicate = state.pending_resolution["predicate"]
     return [e for e in state.stack if e.get("is_spell") and predicate(e)]

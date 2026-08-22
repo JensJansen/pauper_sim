@@ -26,9 +26,9 @@ import json
 
 import pytest
 
-from rl.league_runner import (_load_progress, _next_batch_games, _save_progress, advance_progress,
+from rl.league.league_runner import (_load_progress, _next_batch_games, _save_progress, advance_progress,
                               checkpoint_progress, should_snapshot)
-from rl.train import batch_size_for_iteration, ent_coef_schedule
+from rl.training.train import batch_size_for_iteration, ent_coef_schedule
 
 # The training-mechanics keys that any config running the same league (main or
 # its gauntlet twin) must reproduce exactly from run_default.json -- deck
@@ -165,7 +165,7 @@ def test_the_minibatch_ramp_is_measured_in_episodes_and_does_fire():
     would be read as 32 EPISODES, which at ~25-50 episodes per buffer collapses
     every update to one full-batch minibatch. PPO_DEFAULTS' unknown-key assert
     catches that instead, which only works while the OLD names are absent."""
-    from rl.league_runner import PPO_DEFAULTS
+    from rl.league.league_runner import PPO_DEFAULTS
     assert "batch_size_start" not in PPO_DEFAULTS and "batch_size_cap" not in PPO_DEFAULTS, (
         "the old transition-level keys must stay gone so a stale config fails loudly"
     )
@@ -218,9 +218,9 @@ def test_ent_coef_defaults_to_the_anneal():
     Only this default value is pinned here -- the schedule actually moving
     across sessions is covered end-to-end by
     test_the_schedules_now_actually_move_across_sessions, and the resolution
-    of hp["ent_coef"] itself lives in _run_session (rl.league_runner), not
+    of hp["ent_coef"] itself lives in _run_session (rl.league.league_runner), not
     reproduced here."""
-    from rl.league_runner import PPO_DEFAULTS
+    from rl.league.league_runner import PPO_DEFAULTS
     assert PPO_DEFAULTS["ent_coef"] is None, "the anneal must stay the default"
 
 
@@ -240,7 +240,7 @@ def test_the_adopted_lr_matches_the_arm_that_justified_it():
     here instead of read back from it. The companion assertion that
     run_pretrain.py kept its own untested 3e-4 went with that script when
     per-deck encoders removed the pretrain phase entirely."""
-    from rl.league_runner import PPO_DEFAULTS
+    from rl.league.league_runner import PPO_DEFAULTS
     assert PPO_DEFAULTS["lr"] == 0.0002
 
 
@@ -266,7 +266,7 @@ def test_trunk_width_is_read_off_an_existing_checkpoint_not_the_config():
     that the inference actually reads the tensors, using the real 20,016-game
     baseline as the fixture."""
     from rl.checkpoint import trunk_hidden_from_deck_checkpoint
-    from rl.league_runner import TRUNK_HIDDEN
+    from rl.league.league_runner import TRUNK_HIDDEN
     from repo_paths import CHECKPOINTS_DIR
 
     baseline = CHECKPOINTS_DIR / "4_deck_subleague_test" / "elves" / "live.pt"

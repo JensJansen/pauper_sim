@@ -29,7 +29,7 @@ def begin_choose_cast_copy(state, name, on_complete):
     same-named card here). That is why this is a distinct kind rather than a
     reuse of choose_graveyard_card, whose optional-decline machinery would be
     permanently-illegal noise; it also keeps this a POINTER-only pending that
-    adds ZERO fixed action rows (see rl.action_bridge), so no deck's action-space
+    adds ZERO fixed action rows (see rl.decision.action_bridge), so no deck's action-space
     width changes.
 
     This used to also carry a `reserved_cost` -- the cost on_complete was about
@@ -50,7 +50,7 @@ def begin_choose_cast_copy(state, name, on_complete):
 def choose_cast_copy_options(state):
     """The matching graveyard INSTANCES themselves (objects), not names -- the
     whole point is telling same-named copies apart. No dedup, no sort:
-    rl.action_bridge masks/executes by object identity, and the observation
+    rl.decision.action_bridge masks/executes by object identity, and the observation
     token for each instance carries that same object (plus a
     targeted_by_mine/targeted_by_theirs bit -- which is what makes "cast the
     copy they're pointing at" a LEARNABLE choice rather than an invisible

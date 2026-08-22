@@ -179,7 +179,7 @@ def _assign_damage_to_opponent_legal(state):
     and therefore every trained DeckNetwork's action-output layer shape --
     doesn't change. Physically deleting the row instead would shrink
     len(fixed_table) and break loading any existing checkpoint (shape
-    mismatch on non_targeting_head / prev_action_embed, see rl.deck)."""
+    mismatch on non_targeting_head / prev_action_embed, see rl.model.deck)."""
     return False
 
 

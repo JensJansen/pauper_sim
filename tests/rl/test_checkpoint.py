@@ -14,9 +14,9 @@ import pytest
 import torch
 
 from rl import checkpoint as ckpt_io
-from rl.arch import SetTransformer
-from rl.deck import DeckNetwork
-from rl.mulligan import MulliganNet
+from rl.model.arch import SetTransformer
+from rl.model.deck import DeckNetwork
+from rl.model.mulligan import MulliganNet
 
 
 def _tiny_encoder():
@@ -157,7 +157,7 @@ def test_the_encoder_is_a_registered_child_of_its_deck_net():
 
 @pytest.mark.slow
 def test_freezing_one_net_leaves_another_nets_encoder_alone():
-    """rl.league.LeaguePool.load_snapshot_agent sweeps requires_grad=False over
+    """rl.league.league.LeaguePool.load_snapshot_agent sweeps requires_grad=False over
     net.parameters(), and that sweep now DOES reach the encoder -- which is
     correct, because the encoder belongs to that frozen snapshot alone. What
     must not happen is one net's freeze reaching another's perception, the

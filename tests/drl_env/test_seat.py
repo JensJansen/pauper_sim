@@ -1,4 +1,4 @@
-"""Tests for drl_env._seat: _lost, used directly by rl.train's own reward
+"""Tests for drl_env._seat: _lost, used directly by rl.training.train's own reward
 attribution."""
 
 from drl_env._seat import _lost

@@ -17,7 +17,7 @@ def test_with_dense_mana_burn_penalty_telescopes():
     # with_dense_mana_burn_penalty: reward_fn is a plain passthrough of
     # base_reward_fn -- the actual Hill-curve charge lives in the returned
     # closure's own charge_single_pip_burn(player) attribute instead, called
-    # by rl.train's on_single_pip_burn hook at the moment of an actual burn
+    # by rl.training.train's on_single_pip_burn hook at the moment of an actual burn
     # rather than at an arbitrary later reward_fn call (see this module's
     # own docstring on with_dense_mana_burn_penalty for why). Reads
     # PlayerState.mana_burnt_this_turn_single_pip (NEVER drained by this --
@@ -32,7 +32,7 @@ def test_with_dense_mana_burn_penalty_telescopes():
     wrapped = with_dense_mana_burn_penalty(base, mana_burn_c=3.3, mana_burn_p=4.0)
 
     # reward_fn itself is a pure passthrough now, regardless of burn state --
-    # the dense charge is applied elsewhere (rl.train.collect_rollout's
+    # the dense charge is applied elsewhere (rl.training.train.collect_rollout's
     # buffer patch), never through this return value.
     assert wrapped(s, done=False, horizon=99) == 0.25
     assert base_calls == [(False, 99)]  # base_reward_fn really was called, with the same args
@@ -134,7 +134,7 @@ def test_with_dense_mana_burn_penalty_game_cap():
 def test_flat_win_loss_reward_bands():
     # flat_win_loss_reward: flat +1/-1, NO discard penalty of any kind on
     # either band, terminal only. Scored per seat off state.active_idx (this
-    # module's own contract: rl.train._reward_for flips it), so "did this
+    # module's own contract: rl.training.train._reward_for flips it), so "did this
     # seat win" is state.winner == state.active_idx.
     rf = flat_win_loss_reward()
     s = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
@@ -165,7 +165,7 @@ def _effective_episode_score(reward_fn, s):
     single_pip_burn (if any) would take for the active seat's CURRENT
     mana_burnt_this_turn_single_pip -- reconstructs the single EFFECTIVE
     number a real episode's return would sum to now that with_dense_mana_
-    burn_penalty applies its charge via rl.train's on_single_pip_burn hook
+    burn_penalty applies its charge via rl.training.train's on_single_pip_burn hook
     (a buffer patch on earlier transitions) rather than through reward_fn's
     own return value."""
     terminal = reward_fn(s, done=True, horizon=99)
@@ -194,9 +194,9 @@ def _turns_to_saturate(reward_fn, pips_per_turn, cap=1.5):
 
 
 def test_deploy_reward_v6_is_winner_only():
-    # The opt-in flag rl.train._winner_only_burn_for reads -- deploy_reward_v6
+    # The opt-in flag rl.training.train._winner_only_burn_for reads -- deploy_reward_v6
     # is built with refund_on_loss=True, so a losing seat's dense mana-burn
-    # charges must never be applied (see rl.train's deferred_charges).
+    # charges must never be applied (see rl.training.train's deferred_charges).
     assert getattr(deploy_reward_v6, "mana_burn_winner_only", False) is True
 
 

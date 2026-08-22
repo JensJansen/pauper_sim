@@ -55,7 +55,7 @@ def push_to_stack(state, card_def, resolve, reserves_hand_card=True, is_spell=Tr
                                             picks (Rooftop Percher)
       ("stack_entry", other_entry)      -- begin_choose_stack_target's pick
                                             (Counterspell/Dispel/Spell Pierce)
-    Consumed by rl.features.build_token_set/_stack_target_map to surface
+    Consumed by rl.model.features.build_token_set/_stack_target_map to surface
     "what is currently being targeted" to the agent -- never read by engine
     resolution logic itself (each resolve closure already carries its own
     captured target(s) independently; this is purely an observation-side

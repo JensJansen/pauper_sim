@@ -222,7 +222,7 @@ def begin_pay_cost(state, cost, on_complete):
     it exists so that if a payment ever DOES strand, the bug report can say
     whether plan_payment was wrong to allow the announcement or whether supply
     was consumed afterwards -- two different bugs that look identical from
-    `remaining` alone (see rl.agent._raise_all_false).
+    `remaining` alone (see rl.decision.agent._raise_all_false).
 
     A cost already fully covered before any spend (e.g. Lotus Petal's empty {}
     cast cost) completes immediately -- the same check execute_pool_spend runs

@@ -551,7 +551,7 @@ def test_mana_mistake_burn_three_way_exemption():
     # The hook receives the RIGHT player_idx even when it's the non-active
     # player's pool being cleared, and state.mana_pool (the active-player
     # proxy) still resolves correctly if the hook flips active_idx itself
-    # (the real rl.train hook does this via drl_env._for_player).
+    # (the real rl.training.train hook does this via drl_env._for_player).
     seen = []
     def hook(s, idx):
         seen.append((idx, dict(s.players[idx].mana_pool)))

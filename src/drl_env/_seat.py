@@ -1,5 +1,5 @@
 """Two-player reward + seat-perspective helpers for the DRL policy
-(_for_player, _lost) -- read by rl.rewards / rl.train, kept apart from the
+(_for_player, _lost) -- read by rl.rewards / rl.training.train, kept apart from the
 action-table engine they don't depend on."""
 
 import game

@@ -92,7 +92,7 @@ def choose_graveyard_card_options(state):
     """The matching graveyard cards themselves (objects), NOT names -- so two
     same-named copies are DISTINCT choices (a real graveyard holds CardInstances;
     the deferred Mesmeric-Fiend hand-reveal path holds CardDefs). No dedup, no
-    sort: rl.action_bridge masks/executes by object identity (the token carries
+    sort: rl.decision.action_bridge masks/executes by object identity (the token carries
     the same object), not by name."""
     pending = state.pending_resolution
     return [c for c in pending["graveyard"] if pending["predicate"](c)]

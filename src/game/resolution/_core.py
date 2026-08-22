@@ -28,7 +28,7 @@ def _loggable(value):
     directly -- e.g. execute_discard_option's own discarded_cards list
     (appends the real card, never just its name, since _discard_one and
     the madness trigger queue both need the actual object) -- and a
-    CardDef isn't JSON-serializable, which rl.league_runner's own event-log
+    CardDef isn't JSON-serializable, which rl.league.league_runner's own event-log
     write (_write_event_log) requires. Converts a CardDef (or a list of them) to its own .name;
     every other args shape already used elsewhere (strings, (name, slot)
     tuples, bools, ints, None, plain lists of those) passes through

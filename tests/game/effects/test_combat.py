@@ -455,7 +455,7 @@ def test_goad_forces_declaration_and_excludes_non_turn_player():
     # goaded creature under the non-turn player must NOT block their priority-
     # Pass -- they cannot declare an attacker at all (_attack_legal needs
     # active_idx == turn_player_idx), so blocking it would leave an all-False
-    # action mask (the rl.agent._seat_step crash this guards against).
+    # action mask (the rl.decision.agent._seat_step crash this guards against).
     # turn_player_idx stays 0.
     nonturn_goaded = Permanent(CardDef("NonturnGoaded", CardType.CREATURE, None, EffectId.FILLER, power=2, toughness=2))
     nonturn_goaded.summoning_sick = False
@@ -533,7 +533,7 @@ def test_free_damage_assignment_skips_blockers_that_already_left():
     round that game.turn gives both players right after blocks.
 
     That was a hard crash, not a rules nicety. A dead blocker is not in
-    build_token_set (which walks the battlefield), so rl.action_bridge's
+    build_token_set (which walks the battlefield), so rl.decision.action_bridge's
     pointer mask -- an identity match against the pending's blocker list --
     could not address it, and with no trample option either the whole action
     mask came back all-False. Hit on turn 79 of an 11-deck league game,

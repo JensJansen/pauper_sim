@@ -5,7 +5,7 @@ Contract: any callable
     reward_fn(state: game.GameState, done: bool, horizon: int) -> float
 
 Called once per environment step with the state *after* that step's action
-was applied. rl.train._reward_for flips state.active_idx to the seat being
+was applied. rl.training.train._reward_for flips state.active_idx to the seat being
 scored (via drl_env._for_player) before calling this, so a reward_fn always
 reads its own seat's zones/counters and compares state.winner to itself,
 whether the call is terminal or not. A sparse reward function returns 0.0
@@ -68,7 +68,7 @@ def flat_win_loss_reward():
 
 def _charge_single_pip_burn(player, mana_burn_c, mana_burn_p, game_penalty_cap, mana_burn_weight=1.0):
     """The marginal Hill-curve-with-cap charge for player.mana_burnt_this_
-    turn_single_pip, AS IT STANDS RIGHT NOW -- called from rl.train's
+    turn_single_pip, AS IT STANDS RIGHT NOW -- called from rl.training.train's
     on_single_pip_burn hook, which fires from inside game.turn.
     _empty_mana_pools AFTER that counter has already been incremented for
     the clear this call is for, so "current" below already reflects this
@@ -149,7 +149,7 @@ def with_dense_mana_burn_penalty(base_reward_fn, mana_burn_c=3.3, mana_burn_p=4.
 
     ATTRIBUTION: reward_fn below is a plain passthrough of base_reward_fn.
     The actual charge is computed by _charge_single_pip_burn above and
-    applied by rl.train.collect_rollout's own on_single_pip_burn hook
+    applied by rl.training.train.collect_rollout's own on_single_pip_burn hook
     (exposed here as reward_fn.charge_single_pip_burn, an opt-in-attribute
     pattern) -- called SYNCHRONOUSLY from inside game.turn.
     _empty_mana_pools, at the exact moment of the burn, so it can charge the
@@ -181,7 +181,7 @@ def with_dense_mana_burn_penalty(base_reward_fn, mana_burn_c=3.3, mana_burn_p=4.
     (mana_burnt_this_turn_single_pip is always tallied by
     _empty_mana_pools regardless of reward_fn) -- it DOES need the separate
     on_single_pip_burn hook for ATTRIBUTION, gated the same way
-    consumes_mana_mistake gates on_mana_burn: rl.train.collect_rollout
+    consumes_mana_mistake gates on_mana_burn: rl.training.train.collect_rollout
     wires on_single_pip_burn in only when at least one tracked seat's
     reward_fn exposes a charge_single_pip_burn attribute.
 
@@ -189,7 +189,7 @@ def with_dense_mana_burn_penalty(base_reward_fn, mana_burn_c=3.3, mana_burn_p=4.
     penalty applies ONLY to a seat that WON its game; a seat that lost (or
     timed out with no winner) pays exactly nothing for whatever it burnt.
     Tags the returned closure with a `mana_burn_winner_only = True`
-    attribute, read by rl.train.collect_rollout (_wants_winner_only_burn).
+    attribute, read by rl.training.train.collect_rollout (_wants_winner_only_burn).
 
     Why: charging this penalty on a LOSS made losing PASSIVELY score
     strictly better than losing while trying. A seat that never taps mana
@@ -203,7 +203,7 @@ def with_dense_mana_burn_penalty(base_reward_fn, mana_burn_c=3.3, mana_burn_p=4.
     ordering, just with a smaller gap -- the asymmetry is removed by
     construction only when the loss band carries no burn term at all.
 
-    IMPLEMENTATION IS NOT A TERMINAL REFUND -- rl.train.collect_rollout
+    IMPLEMENTATION IS NOT A TERMINAL REFUND -- rl.training.train.collect_rollout
     DEFERS the per-Tap writes instead, holding each (buffer_index, share)
     until the game ends and applying them only on a win (see its own
     deferred_charges comment). A lump-sum refund at the terminal transition

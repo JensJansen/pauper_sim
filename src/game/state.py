@@ -383,7 +383,7 @@ class PlayerState:
 
         # DENSE reward mailbox -- meant to be drained (read then zeroed) on
         # every transition by a reward_fn tagged consumes_mana_mistake=True
-        # (none currently is; see rl.train._wants_mana_mistake). A narrower
+        # (none currently is; see rl.training.train._wants_mana_mistake). A narrower
         # subset of
         # mana_burnt_total above: game.turn._empty_mana_pools only adds to
         # this one once cost_paid_this_phase, triggers_fired_this_phase, AND
@@ -541,7 +541,7 @@ class GameState:
         # None (the default -- every plain rules-engine/test caller) means
         # "don't know, don't tally a mistake." Stamped onto state directly by
         # game.turn.run_multiplayer_game's own on_mana_burn param (the DRL
-        # layer wires one in via rl.train.collect_rollout) -- not threaded
+        # layer wires one in via rl.training.train.collect_rollout) -- not threaded
         # through game_coroutine/_run_turn_gen's own signatures, since
         # nothing in that call chain besides _empty_mana_pools needs it.
         self.on_mana_burn = None
@@ -553,13 +553,13 @@ class GameState:
         # with_dense_mana_burn_penalty: that wrapper's own math is dense and
         # correctly telescoping, but reward_fn is only ever called at a
         # seat's OWN next decision, which can land many actions after the
-        # taps that actually produced the float (see rl.train.collect_
+        # taps that actually produced the float (see rl.training.train.collect_
         # rollout's pending-reward bookkeeping) -- in practice the whole
         # charge was landing on whatever action happened to be pending at
         # that moment (almost always that seat's own end-of-phase Pass, not
         # the Tap actions that caused it). This hook fires synchronously,
         # inside the SAME engine call that computes single_pip_burnt, so a
-        # consumer (rl.train's on_single_pip_burn) can charge it against
+        # consumer (rl.training.train's on_single_pip_burn) can charge it against
         # the actual recent Tap actions directly instead. Fired
         # unconditionally (not just when something burnt) so a consumer's
         # own per-seat bookkeeping resets cleanly every phase boundary, not
@@ -636,7 +636,7 @@ class GameState:
         # pay_unless) must be able to open its own multi-step choice
         # WITHOUT clobbering whatever's already pending. While this is set,
         # it takes exclusive priority over everything else (drl_env.
-        # legal_action_mask/rl.action_bridge's own dispatch) -- mirrors how
+        # legal_action_mask/rl.decision.action_bridge's own dispatch) -- mirrors how
         # activating a mana ability is atomic from everyone else's view in
         # real Magic; once the choice completes, control returns to
         # whatever pending_resolution already held, completely untouched.
@@ -679,7 +679,7 @@ class GameState:
         # True, so nothing can float new mana during cleanup at all. Kept as
         # a dedicated flag rather than a Phase.CLEANUP enum value (which
         # would change len(game.turn.Phase) and silently break every
-        # existing checkpoint's rl.deck.SCALAR_FEATURE_DIM / rl.agent's own
+        # existing checkpoint's rl.model.deck.SCALAR_FEATURE_DIM / rl.decision.agent's own
         # phase one-hot) and rather than gating on pending_resolution["kind"]
         # == "discard" (that kind is shared with unrelated non-cleanup
         # effects -- Faithless Looting, Grab the Prize -- where mana
@@ -871,8 +871,8 @@ class GameState:
             return
         # Sanitize field values AT THE SOURCE so no event ever carries a raw
         # engine object -- a CardDef, or a card-effect closure/lambda -- which
-        # would break the JSON write (rl.league_runner._json_default) or an MP worker's
-        # pickle (rl.rollout_parallel._sanitize_events). Those two remain only as backstops.
+        # would break the JSON write (rl.league.league_runner._json_default) or an MP worker's
+        # pickle (rl.training.rollout_parallel._sanitize_events). Those two remain only as backstops.
         # Runs only when logging is ON (the early-return above), so the default
         # training path pays nothing. Primitives pass through; an object becomes
         # its string .name if it has one, else a short repr; containers recurse.
@@ -901,7 +901,7 @@ def build_shuffled_library(decklist, rng, force_land_count=None):
     stays the single shared name->CardDef lookup (game.registry).
 
     force_land_count=None (default): plain uniform shuffle, unchanged.
-    force_land_count=N: a TRAINING-ONLY knob (see rl.train.collect_rollout's
+    force_land_count=N: a TRAINING-ONLY knob (see rl.training.train.collect_rollout's
     stratify_0land_pct) that lands exactly N lands in the top 7 -- still a
     real, legal 60-card library built from this exact decklist, just drawn
     from the slice of shuffles where the opening hand has N lands instead
