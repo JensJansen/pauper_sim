@@ -107,13 +107,15 @@ def _graveyard_instance(state, name):
     `ValueError: list.remove(x): x not in list`. Resolving it HERE, once, is
     what lets every downstream removal/capture be a true identity operation.
 
-    Picks the first same-named instance. MTG 400.7 makes same-named graveyard
-    cards interchangeable for "a card with this name leaves the graveyard", so
-    any one is legal today. Real Magic does let the PLAYER choose which copy,
-    and that choice becomes observable when another object references one
-    specific copy (a Rooftop Percher target locked on copy A while copy B is
-    the one flashed back). Routing that choice through the pointer head is a
-    deliberate OPEN ITEM for the owner, not settled here."""
+    Picks the first same-named instance -- correct only when at most one copy
+    exists. MTG 400.7 makes same-named graveyard cards interchangeable for "a
+    card with this name leaves the graveyard" when there's truly no way to
+    tell them apart, but real Magic still lets the PLAYER choose which copy
+    when it's observable (a Rooftop Percher target locked on copy A while
+    copy B is the one flashed back) -- that choice is handled one level up,
+    by this function's sole caller, _with_chosen_copy, which opens a real
+    pointer-addressed choose_cast_copy pending whenever 2+ copies exist and
+    only calls into here for the no-choice-to-make case (0 or 1 copy)."""
     inst = next((c for c in state.graveyard if c.name == name), None)
     if inst is None:
         # Fail loudly with context, not a bare StopIteration -- same precedent

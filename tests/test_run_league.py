@@ -36,7 +36,7 @@ from rl.train import batch_size_for_iteration, ent_coef_schedule
 # exempt. Shared by test_main_league_mechanics_match_the_validated_config and
 # test_the_gauntlet_twin_is_mechanically_identical_to_the_league_it_measures.
 MECHANICS = ["snapshot_every_games", "n_workers", "games_per_iteration",
-             "pfsp_power", "checkpoint_opponent_rate", "pfsp"]
+             "pfsp_power", "checkpoint_opponent_rate", "pfsp", "device"]
 
 
 def _assert_mechanics_match(cfg, cfg_name, default):

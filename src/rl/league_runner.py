@@ -899,7 +899,7 @@ def _run_eval(eval_decks, games_per_pairing, greedy, seed, game_logs, matchup=No
     (deck_a, deck_b) pairing list aligned 1:1 with game_logs, or None when
     game_logs is None) -- the roster falls back to the full roster when called
     with None (the caller logs it into the event log's meta so a log written
-    without an explicit --decks still records which decks it actually used);
+    without an explicit --roster still records which decks it actually used);
     the pairing list is what lets _write_event_log stamp each game with which
     matchup it actually was, rather than a bare, unlabeled game_index."""
     import itertools

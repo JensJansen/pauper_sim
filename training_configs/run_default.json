@@ -7,6 +7,7 @@
   "pfsp_power": 0.5,
   "checkpoint_opponent_rate": 0.15,
   "pfsp": true,
+  "device": "cuda",
   "_identity_note": "The 4-deck sub-league is the experiment vehicle for the 2026-08 plateau investigation. Regrown from scratch after the 2026-08-17 per-deck-encoder change and trained to 10,008 games/deck on 2026-08-18; the twin at gauntlet_league_name was then grown to 5,016 games/deck against it, so vs_gauntlet is live in BOTH directions now rather than the no-op it was while the twin did not exist. Note this league's own metrics.jsonl carries no vs_gauntlet records for that first 10,008 games: the twin had no live.pt yet, which is the documented None case, not a failure.",
   "league_name": "4_deck_subleague_test",
   "roster": [

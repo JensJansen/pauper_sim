@@ -43,7 +43,7 @@ def test_collect_rollout_league_parallel_smoke():
         t0 = time.time()
         with ThreadPoolExecutor(max_workers=1) as executor:
             buffers_by_deck, _mull_by_deck, games_played, outcomes = collect_rollout_league_parallel(
-                "mono_red_madness", live_nets, "action_count_win_reward_200_floor02", tmp_dir, HORIZON,
+                "mono_red_madness", live_nets, "deploy_reward_v6", tmp_dir, HORIZON,
                 n_games=1, executor=executor, n_workers=1, all_trunk_hidden=all_trunk_hidden,
             )
     finally:

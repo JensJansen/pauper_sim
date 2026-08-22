@@ -224,7 +224,7 @@ def test_seat_step_logs_decision_weights_end_to_end_in_a_real_game():
     full top-K + real-Permanent/stack-entry identity resolution path, not
     just fabricated inputs. A real game has plenty of forced (sole-legal)
     decisions too; those must never appear as decision_weights events."""
-    from rl.rewards import action_count_win_reward_200_floor02
+    from rl.rewards import flat_win_loss_reward
     from rl.train import _constant_pairing, collect_rollout
 
     decklist = game.parse_decklist_file("../data/mono_red_madness.txt")
@@ -236,7 +236,7 @@ def test_seat_step_logs_decision_weights_end_to_end_in_a_real_game():
     net = DeckNetwork(shared, film_condition_dim=16, non_targeting_n_actions=len(fixed_table), trunk_hidden=(16, 16))
     agent = SeatAgent(net, AlwaysKeep(), deck_ctx)
     pairing = _constant_pairing([agent, agent], [decklist, decklist],
-                                 [action_count_win_reward_200_floor02] * 2, ["m", "m"])
+                                 [flat_win_loss_reward()] * 2, ["m", "m"])
 
     game_logs = []
     collect_rollout(pairing, 1, horizon=20, rng=random.Random(0), device="cpu", game_logs=game_logs)
@@ -275,13 +275,13 @@ def test_heuristic_agent_plays_real_mono_red_rally_mirror_games_without_crashing
     exercised for real here, not just imported successfully. No crash across
     5 real games is the bar; behavioral quality isn't asserted (the owner's
     own rules are approximate by design)."""
-    from rl.rewards import action_count_win_reward_200_floor02
+    from rl.rewards import flat_win_loss_reward
     from rl.train import _constant_pairing, collect_rollout
 
     decklist, deck_ctx = _mono_red_rally_deck_ctx()
     agent = HeuristicAgent(deck_ctx)
     pairing = _constant_pairing([agent, agent], [decklist, decklist],
-                                 [action_count_win_reward_200_floor02] * 2, [None, None])
+                                 [flat_win_loss_reward()] * 2, [None, None])
 
     game_logs = []
     _bufs, _mull, played = collect_rollout(pairing, 5, horizon=120, rng=random.Random(0), device="cpu",
@@ -305,7 +305,7 @@ def test_heuristic_agent_plays_real_mono_red_rally_vs_trained_policy_without_cra
     game (mixed dispatch through collect_rollout's own pairing contract),
     the actual gauntlet-mechanism use case (a trained policy vs. the
     heuristic reference), not just heuristic-vs-heuristic."""
-    from rl.rewards import action_count_win_reward_200_floor02
+    from rl.rewards import flat_win_loss_reward
     from rl.train import _constant_pairing, collect_rollout
 
     decklist, deck_ctx = _mono_red_rally_deck_ctx()
@@ -315,7 +315,7 @@ def test_heuristic_agent_plays_real_mono_red_rally_vs_trained_policy_without_cra
     trained_agent = SeatAgent(net, AlwaysKeep(), deck_ctx)
     heuristic_agent = HeuristicAgent(deck_ctx)
     pairing = _constant_pairing([trained_agent, heuristic_agent], [decklist, decklist],
-                                 [action_count_win_reward_200_floor02] * 2, [None, None])
+                                 [flat_win_loss_reward()] * 2, [None, None])
 
     game_logs = []
     _bufs, _mull, played = collect_rollout(pairing, 5, horizon=120, rng=random.Random(0), device="cpu",

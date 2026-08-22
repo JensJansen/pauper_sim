@@ -26,8 +26,9 @@ is paid once, not once per collection round.
 
 --matchup DECK_A DECK_B --games N [--log PATH]: bypasses league opponent
 sampling entirely -- runs N games as a DIRECT, fixed pairing between two
-named decks (train_selfplay's cross-matchup path), still updating and
-checkpointing both decks' live nets normally. --log PATH captures the
+named decks (rl.train._constant_pairing + collect_rollout, each net its own
+independent ppo_update call), still updating and checkpointing both decks'
+live nets normally. --log PATH captures the
 game engine's own existing event log (game/state.py's GameState.
 log_event, already instrumented across mana.py/turn.py/resolution/*.py/
 game/effects/*.py -- see rl.train.collect_rollout's own docstring) for
@@ -37,7 +38,7 @@ both the sequential and parallel worker paths (event dicts are picklable).
 Usage:
   python run_league.py --run-config PATH --league-config PATH
       Normal training: run-mechanics defaults (training_configs/run_default.json) + one league's identity
-      (training_configs/league_*.json: league_name, roster, optional train_decks, total_games).
+      (training_configs/league_*.json: league_name, roster, total_games).
       No game count given -- it's computed automatically from the league's own progress.json (doubles each
       batch, 1/2/4/8/..., stopping once total_games is reached). Either config's
       individual values, or --league-name/--roster/--n-workers/etc. directly, still override for one call.
@@ -103,11 +104,12 @@ def main():
     train_mulligan = not args.train_deck_only
     assert train_deck or train_mulligan, "cannot freeze BOTH layers (--train-deck-only + --train-mulligan-only)"
 
-    # Deck identity: explicit flag > --league-config > (roster itself, for
-    # train_decks -- omitting it from the config means "train everyone in
-    # the roster," _run_session's own existing default).
+    # Deck identity: explicit flag > --league-config. Every deck in the
+    # roster trains every round (_run_session's own default for train_decks
+    # is the full roster) except under --matchup, which _run_session itself
+    # narrows to the two named decks.
     roster = args.roster.split(",") if args.roster else league_cfg.get("roster")
-    train_decks = args.decks.split(",") if args.decks else league_cfg.get("train_decks", roster)
+    train_decks = roster
     matchup = tuple(args.matchup) if args.matchup else None
     game_logs = [] if args.log else None
     league_name = args.league_name or league_cfg.get("league_name")
@@ -120,9 +122,9 @@ def main():
         resolved_decks, game_pairings = _run_eval(train_decks, args.games, not args.sampled, args.seed, game_logs,
                                                     matchup=matchup, league_dir=league_dir)
         if args.log:
-            # "decks" logs the RESOLVED roster _run_eval actually played, not the raw
-            # --decks arg -- train_decks is None whenever --decks was omitted (the
-            # common case), which is not the same as "no decks played."
+            # "decks" logs the RESOLVED roster _run_eval actually played -- train_decks
+            # is None whenever neither --roster nor a --league-config roster was given,
+            # which is not the same as "no decks played."
             _write_event_log(args.log, game_logs, {"mode": "eval", "matchup": list(matchup) if matchup else None,
                                                    "decks": resolved_decks, "greedy": not args.sampled, "games_logged": len(game_logs)},
                               game_pairings=game_pairings)

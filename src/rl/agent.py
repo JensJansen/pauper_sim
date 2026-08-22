@@ -150,148 +150,18 @@ def _hand_cost_reduction_deltas(state, seat_idx):
 _Decision = namedtuple("_Decision", "tokens scalar full_mask identities fixed_table n_fixed n_legal sole_action")
 
 
-def _raise_all_false(state, seat, deck_vocab=None):
-    # DIAGNOSTIC (temporary): an all-False mask means the engine reached a
-    # decision state the action space can't represent AT ALL -- a real gap.
-    # masked_fill(-1e8) then Categorical would otherwise sample UNIFORMLY over
-    # every (illegal) position and crash downstream (execute_pointer_choice)
-    # with a misleading error. Surface the true culprit precisely instead.
+def _raise_all_false(state, seat):
+    """An all-False mask means the engine reached a decision state the action
+    space can't represent -- a real gap. masked_fill(-1e8) then Categorical
+    would otherwise sample UNIFORMLY over every (illegal) position and crash
+    downstream (execute_pointer_choice) with a misleading error; raise with
+    the actual pending kind and board context up front instead."""
     pend = state.pending_resolution
-    print("  *** ALL-FALSE MASK ***", flush=True)
-    print(f"    pending_kind={pend['kind'] if pend else None} phase={state.phase} seat={seat} "
-          f"turn={state.turn_number} active_idx={state.active_idx} turn_player={state.turn_player_idx}", flush=True)
-    if pend:
-        print(f"    pending keys={list(pend.keys())}", flush=True)
-        for k in ("remaining", "ordered", "kept", "disposed"):
-            if k in pend:
-                v = pend[k]
-                print(f"    pending[{k}]={[getattr(c, 'name', c) for c in v] if isinstance(v, list) else v}", flush=True)
-    # A live mana_subdecision SHORT-CIRCUITS any_pointer_legal -- it returns
-    # `stage == "choose_target"` and never looks at pending_resolution at all,
-    # so any other stage forces the whole pointer half of the mask to False no
-    # matter what the pending wants. That is correct only while the FIXED color
-    # actions cover the decision; if can_produce rejects every color at the same
-    # moment, both halves are empty and this fires. Invisible from the pending
-    # alone, so print it (2026-08-16: two assign_combat_damage all-Falses whose
-    # blockers were all alive, i.e. NOT the 510.1a case turn.py now filters).
-    sub = state.mana_subdecision
-    if sub is None:
-        print("    mana_subdecision=None", flush=True)
-    else:
-        src, tgt = sub.get("source"), sub.get("target")
-        print(f"    mana_subdecision stage={sub.get('stage')!r} "
-              f"source={(src.card_def.name, src.slot, 'T' if src.tapped else 'U') if src is not None else None} "
-              f"target={(tgt.card_def.name, tgt.slot) if tgt is not None else None} "
-              f"keys={list(sub.keys())}", flush=True)
-        cp = sub.get("can_produce")
-        if cp is not None:
-            producible = []
-            for color in ("W", "U", "B", "R", "G"):
-                try:
-                    if cp(state, color):
-                        producible.append(color)
-                except Exception as exc:
-                    producible.append(f"{color}:<{type(exc).__name__}>")
-            print(f"    mana_subdecision can_produce -> {producible or 'NOTHING (this is the all-False)'}", flush=True)
-    # The pending's own targets, and whether each is still reachable: a blocker
-    # that is alive but NOT in build_token_set cannot be addressed by the
-    # pointer head even though it is a legal choice.
-    if pend and "blockers" in pend:
-        from rl.features import build_token_set
-        try:
-            ids = {id(i) for _v, _r, i in build_token_set(state, seat, deck_vocab, include_rows=False) if i is not None}
-        except Exception as exc:
-            ids = f"<{type(exc).__name__}>"
-        for b in pend["blockers"]:
-            on_bf = any(b in p.battlefield for p in state.players)
-            tok = (id(b) in ids) if isinstance(ids, set) else ids
-            print(f"    blocker {b.card_def.name}#{b.slot} on_battlefield={on_bf} tokenized={tok}", flush=True)
-    # A STRANDED PAYMENT is not a generic "the action space can't represent this
-    # state" -- it is specifically a LEGALITY-MASK BUG, and it is the one
-    # all-False shape whose cause is invisible from the pending alone. There is
-    # no "Abandon payment" action, so a payment the agent cannot finish is
-    # unescapable by construction; game.mana's STRANDING INVARIANT says this is
-    # unreachable, so reaching it means one of exactly two things is wrong:
-    #
-    #   (a) plan_payment said yes when it should have said no, so the cast was
-    #       never legal -- a bug in available_mana_units (a source counted that
-    #       shouldn't be, or counted as producing more than it can) or in
-    #       can_pay (the feasibility test itself);
-    #   (b) plan_payment was right, and something consumed supply AFTER the
-    #       announcement that its own gate should have refused -- a missing or
-    #       wrong payment_survives check on some mid-payment action.
-    #
-    # `announced` (stashed by begin_pay_cost) vs `remaining` separates them: if
-    # the units below cannot cover `announced` either, it is (a); if they could
-    # have then but cannot now, it is (b). Everything printed here is the
-    # SOLVER'S OWN VIEW, not just the board -- the board alone shows what is
-    # there, and the bug is in the model of what is there.
-    if pend and pend["kind"] == "pay_cost":
-        units = game.available_mana_units(state)
-        announced = pend.get("announced")
-        print("    --- STRANDED PAYMENT (legality-mask bug) ---", flush=True)
-        print(f"    announced_cost={announced} remaining_cost={pend['remaining']}", flush=True)
-        print(f"    solver units ({len(units)}) = {sorted(''.join(sorted(u)) for u in units)}", flush=True)
-        print(f"    can_pay(units, remaining)={game.can_pay(units, pend['remaining'])}"
-              f"  can_pay(units, announced)="
-              f"{game.can_pay(units, announced) if announced is not None else '<not recorded>'}", flush=True)
-        if announced is not None:
-            print("    => cause is (a) plan_payment/available_mana_units/can_pay was wrong at announce time"
-                  if not game.can_pay(units, announced)
-                  else "    => cause is (b) supply was consumed after announcement by an action whose"
-                       " payment_survives gate is missing or wrong", flush=True)
-        # Why each candidate source is or is not in that unit list. This is what
-        # localises (a): compare the board against the model of the board.
-        for p in state.battlefield:
-            spec = game.EFFECT_REGISTRY.get(p.card_def.effect_id, {})
-            if "mana" not in spec and "filter_mana" not in spec and "mana_extra_choose" not in spec:
-                continue
-            contributed = game.source_mana_units(state, p)
-            if contributed:
-                reason = f"IN as {[''.join(sorted(u)) for u in contributed]}"
-            elif p.tapped:
-                reason = "OUT: tapped"
-            elif game.tap_summoning_locked(state, p):
-                reason = "OUT: summoning-locked"
-            elif spec.get("mana_extra_choose") is not None:
-                reason = "OUT: mana_extra_choose (excluded by design -- its cost taps another source)"
-            elif spec.get("mana_extra_available") is not None:
-                reason = "OUT: mana_extra_available() false (already used this turn?)"
-            elif "mana" not in spec:
-                reason = "OUT: filter only, produces no mana of its own"
-            else:
-                reason = "OUT: no reason found -- SUSPECT, this is a source_mana_units bug"
-            print(f"      {p.card_def.name}#{p.slot}: {reason}", flush=True)
-    print(f"    mana_pool(active)={dict(state.mana_pool)}", flush=True)
-    for idx, player in enumerate(state.players):
-        print(f"    seat{idx} pool={dict(player.mana_pool)} life={player.life_total}", flush=True)
-        sources = []
-        for p in player.battlefield:
-            spec = game.EFFECT_REGISTRY.get(p.card_def.effect_id, {})
-            if "mana" in spec:
-                try:
-                    out = game.mana_output(p, state) if not p.tapped else []
-                except Exception as exc:  # a source whose output needs state it can't read here
-                    out = f"<{type(exc).__name__}>"
-                sources.append(f"{p.card_def.name}#{p.slot}{'(T)' if p.tapped else ''}->{out}")
-            elif "filter_mana" in spec or "mana_extra_choose" in spec:
-                # Pool->pool converters (filter_mana) have no mana_output at all
-                # -- that helper only understands a "mana" spec, so calling it
-                # here unconditionally would throw ValueError and blind this
-                # exact dump to a filter's real state. Report whether it's spent
-                # for the turn instead -- the one fact that actually matters for
-                # "why can't this pay {G}".
-                used = p.flags.get("used_this_turn", p.tapped)
-                sources.append(f"{p.card_def.name}#{p.slot}{'(used)' if used else '(available)'}")
-        print(f"    seat{idx} mana sources={sources}", flush=True)
-    if pend and pend["kind"] == "pay_cost":
-        raise RuntimeError(
-            f"STRANDED PAYMENT: owed {pend['remaining']} (announced {pend.get('announced')}) with no legal "
-            f"way to pay it. game.mana's STRANDING INVARIANT says this is unreachable, so either "
-            f"plan_payment allowed a cast it should not have, or a mid-payment action consumed supply "
-            f"without a payment_survives gate -- see the dump above for which."
-        )
-    raise RuntimeError(f"all-False action mask for pending kind {pend['kind'] if pend else None!r}")
+    raise RuntimeError(
+        f"all-False action mask for pending kind {pend['kind'] if pend else None!r} "
+        f"(phase={state.phase} seat={seat} turn={state.turn_number} "
+        f"active_idx={state.active_idx} turn_player={state.turn_player_idx})"
+    )
 
 
 def _executor_for(state, action_idx, fixed_table, identities):
@@ -340,7 +210,7 @@ def _build_decision(state, seat, deck_ctx, horizon):
 
     legal = np.flatnonzero(full_mask)
     if legal.size == 0:
-        _raise_all_false(state, seat, vocab)
+        _raise_all_false(state, seat)
     sole = int(legal[0]) if legal.size == 1 else None
     if sole is not None:
         return _Decision(None, None, full_mask, identities, fixed_table, len(fixed_table), int(legal.size), sole)
@@ -543,9 +413,9 @@ class MulliganZeroLands:
     post-mulligan redraw that's still 0 lands mulligans again too, same
     London cap as every other decider. Trains nothing -- an opponent-side
     floor meant to remove the ONE hand-quality mistake that is never in
-    question (see CLAUDE.md: "0-land hands are objectively incorrect in
-    every scenario"), so a game the opponent loses reflects OUR mulligan
-    net's decision quality rather than the opponent also having tanked its
+    question (0-land hands are objectively incorrect in every scenario), so
+    a game the opponent loses reflects OUR mulligan net's decision quality
+    rather than the opponent also having tanked its
     own game on a hand nobody would keep. Bottom-card choice (reachable
     here, unlike AlwaysKeep -- a 0-land mulligan can land on a nonzero-land
     hand with mulligans_taken>0, opening a bottom) is uniform-random, same

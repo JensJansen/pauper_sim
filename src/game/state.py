@@ -212,9 +212,10 @@ class PlayerState:
         # card's own resolve function.
         self.trigger_queue = []
 
-        # Phase-scoped mistake-detection flags for the dense mana-burn
-        # penalty (rl.rewards.with_mana_mistake_penalty) -- both read then
-        # reset every phase boundary by game.turn._empty_mana_pools.
+        # Phase-scoped mistake-detection flags for a dense mana-burn
+        # reward-shaping consumer (a reward_fn that tags itself
+        # consumes_mana_mistake=True -- none currently does) -- both read
+        # then reset every phase boundary by game.turn._empty_mana_pools.
         # cost_paid_this_phase: a real cast/ability payment happened
         # (game.mana.execute_pool_spend). triggers_fired_this_phase: a
         # trigger was promoted to the stack from this player's own queue
@@ -380,8 +381,10 @@ class PlayerState:
         # game is underway, same lifecycle as mana_burnt_total.
         self.mana_burnt_total_single_pip = 0
 
-        # DENSE reward mailbox -- rl.rewards.with_mana_mistake_penalty drains
-        # it (reads then zeroes) on every transition. A narrower subset of
+        # DENSE reward mailbox -- meant to be drained (read then zeroed) on
+        # every transition by a reward_fn tagged consumes_mana_mistake=True
+        # (none currently is; see rl.train._wants_mana_mistake). A narrower
+        # subset of
         # mana_burnt_total above: game.turn._empty_mana_pools only adds to
         # this one once cost_paid_this_phase, triggers_fired_this_phase, AND
         # "was anything legally castable with the floating pool" (the

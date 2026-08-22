@@ -30,23 +30,23 @@ def ppo_update(net, optimizer, buf, device, n_epochs=4, batch_size=64, gamma=0.9
                 clip_range=0.2, ent_coef=0.01, vf_coef=0.5, max_grad_norm=0.5, target_kl=0.03,
                 adv_norm_floor=0.0):
     # ent_coef default 0.01: with no entropy bonus the main policy collapses
-    # onto a narrow low-branching behavior (pass, shrink its own board) -- the
-    # action-space-minimization pathology; see rl.rewards.deploy_reward_v2's own
-    # comment. Still the relevant risk under deploy_reward_v6 (what league
-    # training uses as of 2026-08-12), which has no efficiency scaling either:
-    # its flat_win_loss_reward base is a flat +1/-1, so nothing in the terminal
+    # onto a narrow low-branching behavior (pass, shrink its own board) -- an
+    # action-space-minimization pathology an earlier, efficiency-scored
+    # reward generation hit directly (removed 2026-08-22; see git history).
+    # Still the relevant risk under deploy_reward_v6 (what league training
+    # uses as of 2026-08-12), which has no efficiency scaling either: its
+    # flat_win_loss_reward base is a flat +1/-1, so nothing in the terminal
     # reward rewards taking FEWER actions, and this bonus stays the thing
-    # bounding pointless ones. v5/v6 were themselves a response to a related
-    # but distinct failure -- passivity that the LOSS band made cheaper than
-    # trying, which an entropy bonus alone could not have fixed. The
-    # mulligan model has its own ENTROPY_COEF; this is the DeckNetwork policy's.
-    # 0.01 is this function's own fallback for callers that don't schedule it
-    # (pretrain's train_selfplay path) -- league training instead computes a
-    # per-session value via rl.train.ent_coef_schedule and passes it in
-    # explicitly; see that function's docstring for why a FIXED coefficient
-    # was found to let entropy collapse to a floor by ~250 games/deck and
-    # never recover for the following 30,000+ (TRAINING_IMPROVEMENT_OPTIONS.md
-    # section 4).
+    # bounding pointless ones. deploy_reward_v6 was itself a response to a
+    # related but distinct failure -- passivity that the LOSS band made
+    # cheaper than trying, which an entropy bonus alone could not have fixed.
+    # The mulligan model has its own ENTROPY_COEF; this is the DeckNetwork
+    # policy's. 0.01 is this function's own fallback for callers that don't
+    # schedule it -- league training instead computes a per-session value via
+    # rl.train.ent_coef_schedule and passes it in explicitly; see that
+    # function's docstring for why a FIXED coefficient was found to let
+    # entropy collapse to a floor by ~250 games/deck and never recover for
+    # the following 30,000+.
     #
     # target_kl (2026-08-06 addition): a real, non-optional trust-region
     # backstop independent of ent_coef -- 4 fixed epochs over a small

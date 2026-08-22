@@ -6,6 +6,7 @@
   "pfsp_power": 0.5,
   "checkpoint_opponent_rate": 0.15,
   "pfsp": true,
+  "device": "cuda",
   "league_name": "4_deck_bench",
   "roster": [
     "rakdos_madness",

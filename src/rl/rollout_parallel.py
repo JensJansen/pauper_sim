@@ -80,9 +80,9 @@ def _league_rollout_worker(training_deck_name, all_state_dicts, all_trunk_hidden
     `def execute(state): ...`), which the standard pickle module cannot
     serialize at all. Only plain tensors (state_dicts), scalars, and
     strings actually cross the process boundary; reward_fn is passed BY
-    NAME for the identical reason (rl.rewards's own named instances, e.g.
-    action_count_win_reward_200_floor02, are themselves closures returned
-    by action_count_win_reward(...)). league_root_dir is passed explicitly
+    NAME for the identical reason (rl.rewards's own named instance,
+    deploy_reward_v6, is itself a closure returned by
+    with_dense_mana_burn_penalty(...)). league_root_dir is passed explicitly
     rather than imported from rl.league_runner to avoid a circular import
     (rl.league_runner already imports FROM this module at module scope)."""
     torch.set_num_threads(1)  # this worker IS the unit of parallelism -- it must not also spawn its own intra-op thread pool and oversubscribe the physical cores every other worker is also competing for

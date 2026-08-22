@@ -272,7 +272,7 @@ def _train_mulligan(main_net, main_decklist, main_bucket, deck_ctx,
 def _play_eval_arm(agent, main_decklist, twin_agents, twin_decklists, twin_names,
                    n_games, seed, horizon, game_logs=None):
     """n_games split evenly across both seats (on-the-play fairness -- same
-    reasoning cross_league_round_robin.py's own docstring gives for its
+    reasoning run_cross_league_eval.py's own docstring gives for its
     identical split) and round-robin across twin's roster. record=False,
     greedy=True throughout (this measures the policy's best play, not an
     exploration sample -- matching every other eval in this repo). Returns

@@ -908,8 +908,9 @@ def build_action_table(decklist, registry, token_card_defs=(),
     # decision -- rl.agent.SeatAgent intercepts the pregame pending kinds before
     # the main net's forward -- so the main policy's action space contains ZERO
     # pregame actions and a game can never fall back to a fixed-table mulligan.
-    # The _mulligan_*_legal/_execute helpers remain exported for the engine's own
-    # use, not wired into any table.
+    # The engine's own mulligan handlers (game.execute_mulligan_keep/
+    # execute_mulligan_take) are called directly by rl.agent, not through this
+    # table.
     # Refurbished Familiar already makes the OPPONENT discard from their own hand
     # (the "Choose: X" hand-name rows are their own, so those self-serve) -- but
     # the decline row is a constant button, so it is universal per the block above.

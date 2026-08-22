@@ -17,5 +17,6 @@
   ],
   "games_per_iteration": 24,
   "pfsp_power": 0.5,
+  "device": "cuda",
   "gauntlet_league_name": "4_deck_subleague_test"
 }

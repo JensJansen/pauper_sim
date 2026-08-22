@@ -41,7 +41,6 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))  # src/, for `repo_paths` / `rl.*` -- these live one level up now that this script sits in analysis/
 import argparse
 import math
-import random
 import time
 
 import torch
@@ -53,7 +52,7 @@ from rl.league import LeaguePool
 from rl.pool import build_pool
 from analysis.report_metrics import wilson as _wilson  # same helper, one definition -- both live in analysis/ now
 from rl.league_runner import (HORIZON, build_deck_net, league_roster, load_vintage_agent,
-                              _play_eval_games)
+                              _play_paired_eval_games)
 
 
 
@@ -121,9 +120,9 @@ def main():
                 # Fresh rng per cell off the same base seed: every (deck, vintage,
                 # mode) cell sees the SAME shuffle sequence, so differences between
                 # rows are policy, not deck order.
-                res = _play_eval_games(agent, anchor, decklists[deck], args.games, HORIZON,
-                                       random.Random(args.seed), "anchor_wins",
-                                       greedy=(mode == "greedy"))
+                res = _play_paired_eval_games(agent, anchor, decklists[deck], args.games, HORIZON,
+                                              args.seed, "anchor_wins",
+                                              greedy=(mode == "greedy"))
                 pct, lo, hi = _wilson(res["live_wins"], res["games"])
                 rows[(deck, vintage, mode)] = (res["live_wins"], res["games"])
                 line += f"{100 * pct:>12.1f}%{f'[{100 * lo:.1f}, {100 * hi:.1f}]':>16}"

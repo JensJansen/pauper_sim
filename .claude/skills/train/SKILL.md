@@ -284,7 +284,8 @@ Never claim a run succeeded without having seen its "done" line and exit 0 in th
   penalty by construction, pip by pip, rather than by whole-phase exclusion -- an earlier
   unconditional version was tried and reverted in 2026-08 over an archetype-biased
   regression, then a whole-phase-exclusion fix, then this per-pip version (see
-  `rl/rewards.py`'s own comment on `deploy_reward_v2` for the full history) -- if a
+  `rl/rewards.py`'s own comment on `deploy_reward_v6`, and git history for the
+  removed earlier reward generations, for the full history) -- if a
   future session finds it unwired, that's a deliberate regression to check the reasoning
   on, not the norm.
 - Each session checkpoints at its end and resumes on the next run, so escalating across

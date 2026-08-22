@@ -55,17 +55,13 @@ def build_arg_parser(description=None):
                          help="Fixed A-vs-B pairing instead of league opponent sampling (snapshotting off, no "
                               "auto-sizing). Trains both decks with their real mulligan models via the unified loop.")
     parser.add_argument("--games", type=int, default=50, help="Total games (per deck round) for --matchup mode.")
-    parser.add_argument("--decks", type=str, default=None, metavar="A,B,...",
-                         help="Train only this comma-separated subset of the roster; the rest stay loaded as FROZEN "
-                              "opponents (onboarding a new deck / targeted retraining). Falls back to --league-config's "
-                              "own train_decks, then to the full roster (train everyone in it).")
     parser.add_argument("--train-deck-only", action="store_true",
                          help="Train the per-deck policies only; freeze the mulligan models.")
     parser.add_argument("--train-mulligan-only", action="store_true",
                          help="Train the mulligan models only; freeze the per-deck policies (a clean bandit vs fixed skill).")
     parser.add_argument("--eval", action="store_true",
                          help="Eval / log-generation: play games with NO training over the current live agents "
-                              "(round-robin with mirrors over --decks, or one A-vs-B pairing with --matchup). "
+                              "(round-robin with mirrors over the roster, or one A-vs-B pairing with --matchup). "
                               "--games games per pairing.")
     parser.add_argument("--sampled", action="store_true",
                          help="Eval: sample from the policy instead of argmaxing (default: greedy/argmax, so logged "
@@ -109,10 +105,10 @@ def build_arg_parser(description=None):
                               "Default: none (most decks don't have an owner-authored heuristic opponent). Prefer "
                               "--league-config's own heuristic_decks field; this flag is the lower-level override.")
     parser.add_argument("--roster", type=str, default=None, metavar="A,B,...",
-                         help="Restrict the ENTIRE opponent pool (not just which decks train -- see --decks) to "
-                              "this comma-separated subset: a true isolated sub-league where no deck outside the "
-                              "set is ever loaded, trained, or sampled as an opponent. Reuses the full roster's "
-                              "vocab/shared stack unchanged. Prefer --league-config; this is the lower-level override.")
+                         help="Restrict the ENTIRE opponent pool to this comma-separated subset: a true isolated "
+                              "sub-league where no deck outside the set is ever loaded, trained, or sampled as an "
+                              "opponent. Reuses the full roster's vocab/shared stack unchanged. Prefer "
+                              "--league-config; this is the lower-level override.")
     parser.add_argument("--total-games", type=int, default=None,
                          help="Games/deck this league trains to in total -- drives auto-sizing and the stop "
                               "condition. Default: --league-config's own total_games.")
@@ -122,7 +118,7 @@ def build_arg_parser(description=None):
                               "individual value can still be overridden by passing its own flag explicitly for one "
                               "invocation.")
     parser.add_argument("--league-config", type=str, default=None, metavar="PATH",
-                         help="JSON describing one league (league_name, roster, optional train_decks, total_games, "
+                         help="JSON describing one league (league_name, roster, total_games, "
                               "optional gauntlet_league_name, optional heuristic_decks) -- see "
                               "training_configs/league_*.json. Drives automatic batch sizing whenever "
                               "--n-iterations is not given.")

@@ -492,8 +492,9 @@ def test_rule_500_4_mana_pool_clears_at_every_phase_boundary():
 
 def test_mana_mistake_burn_three_way_exemption():
     # _empty_mana_pools's dense reward-facing tally (PlayerState.
-    # mana_mistake_burn, rl.rewards.with_mana_mistake_penalty): only counts a
-    # burn once cost_paid_this_phase, triggers_fired_this_phase, AND the
+    # mana_mistake_burn, meant for a reward_fn tagged consumes_mana_mistake=
+    # True -- none currently is): only counts a burn once
+    # cost_paid_this_phase, triggers_fired_this_phase, AND the
     # on_mana_burn hook (if any) have all failed to justify it. Called
     # directly (not driven through a real turn) since this is pure
     # conditional bookkeeping over already-set flags -- see

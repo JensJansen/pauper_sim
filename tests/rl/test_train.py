@@ -38,7 +38,7 @@ from rl.deck import DeckNetwork, SCALAR_FEATURE_DIM
 from rl.features import CardVocab
 from rl.league import LeaguePool
 from rl.ppo import ppo_update
-from rl.rewards import action_count_win_reward_200_floor02, with_dense_mana_burn_penalty, with_mana_mistake_penalty
+from rl.rewards import flat_win_loss_reward, with_dense_mana_burn_penalty
 from rl.train import (
     RolloutBuffer,
     _constant_pairing,
@@ -46,7 +46,6 @@ from rl.train import (
     _wants_mana_mistake,
     collect_rollout,
     collect_rollout_league,
-    train_selfplay,
 )
 
 DEVICE = "cpu"
@@ -120,7 +119,7 @@ def _base_fixture():
         "deck_ctx_a": deck_ctx_a, "deck_ctx_b": deck_ctx_b,
         "fixed_table_a": fixed_table_a, "fixed_table_b": fixed_table_b,
         "net_a": net_a, "net_b": net_b, "opt_a": opt_a, "opt_b": opt_b,
-        "reward_fn": action_count_win_reward_200_floor02,
+        "reward_fn": flat_win_loss_reward(),
         "rng": _random.Random(0),
     }
 
@@ -160,15 +159,23 @@ def test_mirror_selfplay_smoke():
 def test_cross_matchup_smoke():
     # Cross-matchup smoke test -- net_a vs net_b, two independent
     # buffers/updates, exercises the "different decks/action spaces on each
-    # seat" path (this is what the league's cross-deck games rely on).
+    # seat" path (this is what league_runner._run_session's per-deck
+    # ppo_update call relies on for the league's cross-deck games).
     fx = _base_fixture()
+    net_a, net_b, reward_fn, rng = fx["net_a"], fx["net_b"], fx["reward_fn"], fx["rng"]
+    decklist_a, decklist_b = fx["decklist_a"], fx["decklist_b"]
+    deck_ctx_a, deck_ctx_b = fx["deck_ctx_a"], fx["deck_ctx_b"]
     t0 = time.time()
-    train_selfplay(
-        fx["net_a"], fx["deck_ctx_a"], fx["decklist_a"], fx["reward_fn"],
-        fx["net_b"], fx["deck_ctx_b"], fx["decklist_b"], fx["reward_fn"],
-        fx["opt_a"], fx["opt_b"], HORIZON, n_iterations=2, games_per_iteration=2, rng=fx["rng"], device=DEVICE,
-    )
-    for net in (fx["net_a"], fx["net_b"]):
+    agent_a = SeatAgent(net_a, AlwaysKeep(), deck_ctx_a)
+    agent_b = SeatAgent(net_b, AlwaysKeep(), deck_ctx_b)
+    pairing = _constant_pairing([agent_a, agent_b], [decklist_a, decklist_b],
+                                [reward_fn, reward_fn], ["a", "b"])
+    buffers_by_deck, _mull, games_played = collect_rollout(pairing, 2, HORIZON, rng, device=DEVICE)
+    assert games_played == 2
+    assert set(buffers_by_deck) == {"a", "b"}, "a cross-matchup keeps each seat's own bucket, never pooled"
+    ppo_update(net_a, fx["opt_a"], buffers_by_deck["a"], DEVICE, n_epochs=2, batch_size=16)
+    ppo_update(net_b, fx["opt_b"], buffers_by_deck["b"], DEVICE, n_epochs=2, batch_size=16)
+    for net in (net_a, net_b):
         for p in net.parameters():
             assert torch.isfinite(p).all(), "a parameter went non-finite after the cross-matchup PPO update"
     print(f"rl.train cross-matchup smoke test: OK ({time.time() - t0:.1f}s)")
@@ -328,12 +335,15 @@ def test_eval_record_false_smoke():
 def test_wants_mana_mistake_gates_on_reward_fn_tag():
     # _wants_mana_mistake: collect_rollout's own gate for whether to build/
     # wire the on_mana_burn hook at all. True only once a TRACKED seat's
-    # reward_fn is one with_mana_mistake_penalty actually tagged (see its own
-    # consumes_mana_mistake attribute) -- lets pretraining's
-    # action_count_win_reward_* (never tagged) skip the extra
-    # legal_action_mask sweep entirely.
-    base = action_count_win_reward_200_floor02
-    tagged = with_mana_mistake_penalty(base)
+    # reward_fn is tagged consumes_mana_mistake=True -- the opt-in-attribute
+    # pattern with_dense_mana_burn_penalty's own charge_single_pip_burn/
+    # mana_burn_winner_only tags use too. Tagged here by hand (no reward_fn
+    # currently in rl.rewards sets this tag) since the gate itself is
+    # generic attribute-checking logic, not specific to any one reward_fn.
+    base = flat_win_loss_reward()
+    def tagged(state, done, horizon):
+        return base(state, done, horizon)
+    tagged.consumes_mana_mistake = True
     assert not _wants_mana_mistake([base, base], ["m", "m"]), "neither reward_fn is tagged"
     assert _wants_mana_mistake([tagged, base], ["m", None]), "seat 0 is tracked AND tagged"
     assert not _wants_mana_mistake([tagged, base], [None, "m"]), "the tagged seat isn't tracked; the tracked seat isn't tagged"
@@ -438,7 +448,7 @@ def test_dense_mana_burn_credit_lands_on_the_tap_not_the_pass():
 def test_winner_only_mana_burn_charges_the_winner_and_drops_the_loser():
     # rl.train's deferred_charges + _winner_only_burn_for: with a WINNER-ONLY
     # reward (rl.rewards.with_dense_mana_burn_penalty(refund_on_loss=True),
-    # i.e. deploy_reward_v5/v6's wrap), a seat's dense burn charges are held for
+    # i.e. deploy_reward_v6's wrap), a seat's dense burn charges are held for
     # the whole game and applied at the terminal flush ONLY if it won. A
     # losing seat's trajectory must come out bit-for-bit identical to one
     # that never burnt anything at all.
@@ -724,7 +734,7 @@ def test_collect_rollout_stratify_forces_the_recorded_seats_opening_hand():
     decklist = [("Mountain", 33), ("Lightning Bolt", 27)]
     token_defs = (game.BLOOD_TOKEN_CARD_DEF, game.ROBOT_TOKEN_CARD_DEF)
     fixed_table = build_fixed_action_table(decklist, token_card_defs=token_defs)
-    reward_fn = action_count_win_reward_200_floor02
+    reward_fn = flat_win_loss_reward()
 
     def _dealt_land_count(stratify_0land_pct, stratify_7land_pct):
         recorder = _HandRecordingAgent(fixed_table)
@@ -756,7 +766,7 @@ def test_collect_rollout_stratify_defaults_are_a_true_no_op():
     decklist = [("Mountain", 33), ("Lightning Bolt", 27)]
     token_defs = (game.BLOOD_TOKEN_CARD_DEF, game.ROBOT_TOKEN_CARD_DEF)
     fixed_table = build_fixed_action_table(decklist, token_card_defs=token_defs)
-    reward_fn = action_count_win_reward_200_floor02
+    reward_fn = flat_win_loss_reward()
 
     def _run(**stratify_kwargs):
         recorder = _HandRecordingAgent(fixed_table)

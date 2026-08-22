@@ -5,19 +5,15 @@ the ProcessPoolExecutor multiprocessing plumbing for league collection lives
 in rl.rollout_parallel; both build on the game loop (collect_rollout) and
 buffer type (RolloutBuffer) defined here.
 
-One orchestration primitive, train_selfplay, covers both training regimes
-this architecture needs:
-- Mirror self-play (net_a is net_b, same object/weights): both seats'
-  transitions get pooled into ONE buffer and ONE ppo_update call -- true
-  single-policy self-play, not two independently-updated copies of the same
-  weights drifting apart mid-iteration. Used for the league's mirror games.
-  Each seat's trajectory is still its own contiguous episode in that shared
-  buffer, and each seat keeps its own recurrent state (rl.agent.SeatAgent
-  keys hidden state by seat) -- the two seats are one POLICY, never one
-  history.
-- Cross-matchup (net_a is not net_b): each net keeps its own buffer and gets
-  its own independent ppo_update call, both learning from every game. Used
-  for the league's cross-deck games.
+League training's own orchestration (rl.league_runner._run_session) drives
+collect_rollout through _make_league_pairing/collect_rollout_league below,
+which resamples an opponent from rl.league.LeaguePool every game rather than
+running a fixed pairing for N iterations -- mirror self-play (both seats
+pooled into one buffer, one ppo_update call) and cross-deck matchups both
+fall out of what LeaguePool happens to sample, not a separate code path.
+Each seat's trajectory is still its own contiguous episode, and each seat
+keeps its own recurrent state (rl.agent.SeatAgent keys hidden state by
+seat) -- two seats sharing a net are one POLICY, never one history.
 
 Recurrent policy (2026-08-17): the per-game GRU state lives on the SeatAgent
 and is cleared once per game by the loop below. That reset is load-bearing,
@@ -32,14 +28,12 @@ of whatever reward_fn already decides, which would silently diverge from the
 game loop's own semantics for any reward function that isn't already
 win/loss-gated."""
 
-import numpy as np
 import torch
 
 import drl_env
 import game
 from rl import mulligan as mulligan_mod
 from rl.agent import SeatAgent, AlwaysKeep
-from rl.ppo import ppo_update
 
 
 # Decisions one seat may take within a SINGLE turn before collect_rollout
@@ -92,7 +86,6 @@ def _non_progressing_report(state, seat, n_decisions):
             for a, bs in (opp.blocked_by or {}).items()}))
     except Exception as exc:  # noqa: BLE001
         lines.append(f"  (combat detail unavailable: {type(exc).__name__}: {exc})")
-    lines.append("  Reproduce/identify with analysis/soak_priority_loop.py.")
     return "\n".join(lines)
 
 
@@ -130,14 +123,15 @@ class RolloutBuffer:
 def _reward_for(state, seat, reward_fn, horizon, done):
     """Per-seat reward, computed seat-relative (drl_env._for_player flips
     state.active_idx to `seat`, so the reward_fn reads that seat's own zones/
-    counters and compares state.winner to it). NO external loser gate: the
-    reward_fn itself decides win vs loss vs no-winner -- deploy_reward needs the
-    LOSER to reach its own (nonzero) loss band, not be forced to 0. A reward_fn
-    that wants "loser -> 0" self-contains that check itself
-    (rl.rewards.action_count_win_reward), so this stays correct for both."""
-    if done:
-        return drl_env._for_player(state, seat, lambda s: reward_fn(s, True, horizon))
-    return reward_fn(state, False, horizon)
+    counters and compares state.winner to it) on EVERY call, terminal or not
+    -- a reward_fn is free to be dense (with_dense_mana_burn_penalty) and
+    every reward_fn currently in rl.rewards short-circuits to 0.0 before
+    `done`, so this flip has been a no-op on the non-terminal path in
+    practice, but the contract doesn't get to assume that of a future one.
+    NO external loser gate: the reward_fn itself decides win vs loss vs
+    no-winner, so a reward_fn that wants "loser -> 0" self-contains that
+    check itself."""
+    return drl_env._for_player(state, seat, lambda s: reward_fn(s, done, horizon))
 
 
 # The per-seat DECISION primitives (_seat_step, _build_decision,
@@ -183,12 +177,14 @@ def _make_on_mana_burn(agents, record, record_as):
 
 def _wants_mana_mistake(reward_fns, record_as):
     """True when at least one TRACKED seat's reward_fn would actually drain
-    PlayerState.mana_mistake_burn (rl.rewards.with_mana_mistake_penalty tags
-    its own returned closure -- see consumes_mana_mistake there). Lets
+    PlayerState.mana_mistake_burn -- a reward_fn opts in by tagging its own
+    returned closure with consumes_mana_mistake=True, the same
+    opt-in-attribute pattern with_dense_mana_burn_penalty's own
+    charge_single_pip_burn/mana_burn_winner_only tags use. Lets
     collect_rollout skip building/wiring the on_mana_burn hook -- and the
     legal_action_mask sweep it costs per un-exempted phase boundary -- for a
-    pairing where nothing would ever read the signal, e.g. pretraining's
-    action_count_win_reward_*."""
+    pairing where nothing would ever read the signal (no reward_fn currently
+    in rl.rewards sets this tag)."""
     return any(
         record_as[s] is not None and getattr(reward_fns[s], "consumes_mana_mistake", False)
         for s in (0, 1)
@@ -208,8 +204,8 @@ def _wants_single_pip_burn_hook(charge_fns, record_as):
     """True when at least one TRACKED seat's reward_fn exposes
     charge_single_pip_burn -- lets collect_rollout skip building/wiring the
     on_single_pip_burn hook for a pairing that never uses with_dense_mana_
-    burn_penalty (e.g. pretraining's action_count_win_reward_*), same
-    reasoning _wants_mana_mistake gives for the older on_mana_burn hook."""
+    burn_penalty, same reasoning _wants_mana_mistake gives for the older
+    on_mana_burn hook."""
     return any(charge_fns[s] is not None and record_as[s] is not None for s in (0, 1))
 
 
@@ -731,37 +727,3 @@ def ent_coef_schedule(cumulative_games, start=0.02, floor=0.005, horizon_games=5
     return start + (floor - start) * progress
 
 
-def train_selfplay(net_a, deck_ctx_a, decklist_a, reward_fn_a, net_b, deck_ctx_b, decklist_b, reward_fn_b,
-                    optimizer_a, optimizer_b, horizon, n_iterations, games_per_iteration,
-                    rng, device="cpu", game_logs=None):
-    """Runs n_iterations rounds of collect_rollout (games_per_iteration real
-    games each) + ppo_update. See this module's own docstring for when
-    net_a is net_b (mirror self-play, one pooled update) vs. not (cross-matchup,
-    two independent updates). optimizer_a/optimizer_b: one optimizer each,
-    over that net's own parameters (encoder included -- see rl.deck).
-    Returns nothing -- both nets and both optimizers are updated in place. game_logs: forwarded straight to collect_rollout (see its
-    own docstring) -- one entry appended per game, across every iteration."""
-    mirror = net_a is net_b
-    # AlwaysKeep pregame: train_selfplay trains only the main policy (pretrain /
-    # a plain matchup), never a mulligan model. A mirror pools BOTH seats into
-    # bucket "a" (single-policy self-play); a cross-matchup keeps "a"/"b".
-    agent_a = SeatAgent(net_a, AlwaysKeep(), deck_ctx_a)
-    agent_b = agent_a if mirror else SeatAgent(net_b, AlwaysKeep(), deck_ctx_b)
-    record_as = ["a", "a"] if mirror else ["a", "b"]
-    pairing = _constant_pairing([agent_a, agent_b], [decklist_a, decklist_b],
-                                [reward_fn_a, reward_fn_b], record_as)
-    for iteration in range(n_iterations):
-        buffers_by_deck, _mull, games_played = collect_rollout(
-            pairing, games_per_iteration, horizon, rng, device=device, game_logs=game_logs)
-        buf_a = buffers_by_deck.get("a", RolloutBuffer())
-        buf_b = buffers_by_deck.get("b", RolloutBuffer())
-        stats_a = ppo_update(net_a, optimizer_a, buf_a, device) if len(buf_a) else (0.0, 0.0, 0.0, 0.0, 0.0, 0, 0.0, 0.0)
-        if mirror:
-            stats_b = stats_a
-        else:
-            stats_b = ppo_update(net_b, optimizer_b, buf_b, device) if len(buf_b) else (0.0, 0.0, 0.0, 0.0, 0.0, 0, 0.0, 0.0)
-        mean_r_a = float(np.mean(buf_a.reward)) if len(buf_a) else 0.0
-        mean_r_b = float(np.mean(buf_b.reward)) if len(buf_b) else 0.0
-        print(f"  iter {iteration}: games={games_played} buf=({len(buf_a)},{len(buf_b)}) "
-              f"mean_reward=({mean_r_a:.3f},{mean_r_b:.3f}) "
-              f"policy_loss=({stats_a[0]:.4f},{stats_b[0]:.4f}) value_loss=({stats_a[1]:.4f},{stats_b[1]:.4f})")

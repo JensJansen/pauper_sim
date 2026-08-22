@@ -113,7 +113,7 @@ def _train_mulligan(net, decklist, bucket, deck_ctx, opponent_seed,
 
 def _play_eval_arm(agent, opponent_agent, decklist, n_games, seed, horizon, game_logs=None):
     """n_games split evenly across both seats (on-the-play fairness -- same
-    reasoning cross_league_round_robin.py's own docstring and
+    reasoning run_cross_league_eval.py's own docstring and
     train_mulligan_vs_twin.py's identical helper give). record=False,
     greedy=True throughout. Returns (wins, decided) for agent's side; a
     horizon timeout (state.winner is None) counts toward neither."""

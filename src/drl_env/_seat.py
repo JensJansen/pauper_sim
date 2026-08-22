@@ -19,11 +19,11 @@ def _lost(state, seat_idx):
 def _for_player(state, player_idx, fn):
     """Runs fn(state) with state.active_idx temporarily set to player_idx,
     then restores it -- lets existing active-player-proxied logic
-    (rewards.resource_quality_components, game.permanent_power's own
-    aura-enchanting search, mana.py's Tron-awareness via state.battlefield,
-    ...) be reused for a NON-active player (here: whichever seat's
-    OPPONENT this observation is being built for) instead of a second,
-    parallel implementation of any of it. Safe even though state.stack/
+    (rl.rewards' reward_fns, game.permanent_power's own aura-enchanting
+    search, mana.py's Tron-awareness via state.battlefield, ...) be reused
+    for a NON-active player (here: whichever seat's OPPONENT this
+    observation is being built for) instead of a second, parallel
+    implementation of any of it. Safe even though state.stack/
     pending_resolution are shared, not per-player -- this is only ever
     called between turns (never during a resolution), and every property
     this flip actually affects (hand/battlefield/graveyard/library/

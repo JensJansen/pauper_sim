@@ -99,7 +99,8 @@ SORCERY_SPEED_PHASES = {Phase.MAIN1, Phase.MAIN2}
 
 def _tally_mana_mistake(state, idx, player, burnt):
     """DENSE, narrower reward-facing signal for PlayerState.mana_mistake_burn
-    (rl.rewards.with_mana_mistake_penalty drains it) -- called once per
+    (meant to be drained by a reward_fn tagged consumes_mana_mistake=True --
+    none currently is; see rl.train._wants_mana_mistake) -- called once per
     non-empty pool clear from _empty_mana_pools, only counting a burn as a
     genuine mistake once THREE exemptions have all failed: nothing was paid
     toward a cast/ability this phase (cost_paid_this_phase), no trigger was

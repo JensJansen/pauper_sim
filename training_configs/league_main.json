@@ -23,6 +23,7 @@
   "pfsp_power": 0.5,
   "checkpoint_opponent_rate": 0.15,
   "pfsp": true,
+  "device": "cuda",
   "gauntlet_league_name": "4_deck_subleague_test",
   "heuristic_decks": [
     "mono_red_rally"
