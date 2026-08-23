@@ -341,7 +341,7 @@ invocation needed.
 
 ```
 cd src
-python run_training_pipeline.py --config ../training_configs/league_main.json [--fresh]
+python run_training_pipeline.py --config ../training_configs/main_league.json [--fresh]
 ```
 
 `run_league.py` itself remains for `--matchup` training and one-off debug
@@ -369,7 +369,7 @@ Key flags:
 - `--snapshot-every` — iterations between registering a snapshot of every
   deck and checkpointing live nets (default 20).
 - `--total-games` (with `--league-config`, e.g.
-  `../training_configs/league_main.json`) — auto-sizing target: instead of
+  `../training_configs/main_league.json`) — auto-sizing target: instead of
   `--n-iterations`, doubles the batch size each invocation until this many
   games/deck have been played.
 - `--checkpoint-opponent-rate` — probability a sampled opponent is a frozen
@@ -377,7 +377,7 @@ Key flags:
 - `--pfsp` / `--no-pfsp` — PFSP-weight opponent sampling instead of uniform
   (default True).
 
-`training_league_name`/`checks_cadence_pct`/`checks_games`
+`training_league_name`/`checks_cadence_pct`/`checks_games`/`stratify_0land_pct`
 are config-only fields (no `run_league.py` flag) — they're read by
 `run_training_pipeline.py`, not `run_league.py` itself. See **Validation
 checks** below.
@@ -461,9 +461,13 @@ Five checks today:
   when unconfigured, or skipped (logged, not fatal) until the training
   league has a checkpoint for a given deck.
 - **`mulligan_audit`** — % of hands kept vs. mulliganed by land count (0-7),
-  from the SAME games the two round-robin checks above just played
-  (primary-controlled seats only, even in a cross-league game) -- not a
-  separate batch of its own.
+  from two sources: (1) the SAME games the two round-robin checks above just
+  played (primary-controlled seats only, even in a cross-league game) -- not
+  a separate batch of its own; and (2) a sculpted-hand probe that loads each
+  deck's current live + mulligan weights and queries fixed, seeded synthetic
+  hands covering every land count 0-7 on demand, filling in the buckets
+  natural self-play rarely or never draws. Both report keep/mulligan rate
+  plus an entropy figure for the decision.
 - **`vs_history`** — each deck's current live net vs. its own frozen old
   self (the oldest still-active snapshot, and once one exists, the oldest
   **archived** snapshot). The one check immune to the "everyone is

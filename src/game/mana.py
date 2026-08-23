@@ -198,18 +198,48 @@ def begin_pay_cost(state, cost, on_complete):
         complete_resolution(state)
 
 
-def tappable_for_mana(state, permanent):
-    """Can `permanent` be tapped for mana RIGHT NOW? Untapped, not
-    summoning-locked (302.6), and its extra availability condition (Wall
-    of Roots' once-per-turn) satisfied.
+def mana_tap_gate_open(state, permanent):
+    """Is `permanent` free of the tap/summoning-sickness half of mana-source
+    availability RIGHT NOW? Untapped -- UNLESS mana_no_tap (e.g. Wall of
+    Roots: no {T} in the ability's own cost, so its OWN tapped state never
+    gates it, same exception tap_summoning_locked already carries for the
+    identical reason) -- and not summoning-locked (302.6).
 
-    The one place these gates live -- both mana_ability_options and
-    source_mana_units call it, so they can't disagree about what's usable.
-    Excludes mana_extra_choose (Saruli Caretaker), whose activation needs
-    a choice enumerated atomically alongside it."""
-    if permanent.tapped or tap_summoning_locked(state, permanent):
-        return False
+    THE ONE PLACE this specific condition lives, full stop -- not "the one
+    place for plain mana sources, duplicated elsewhere for Saruli-shaped
+    ones." Until 2026-08-23 this exact check was copy-pasted here AND in
+    drl_env._actions_mana._find_mana_extra_source (Saruli Caretaker's own
+    source lookup, which can't call tappable_for_mana below because that
+    function deliberately excludes mana_extra_choose sources for an
+    unrelated reason -- see its docstring). The copies drifted: this one
+    gained the mana_no_tap exception, the other didn't, and mid-payment
+    that mismatch stranded a real cast of Lotleth Giant when Saruli tapped
+    Wall of Roots as its cost (an all-False mask, a hard crash in
+    production league training) -- fixing tappable_for_mana ALONE had
+    already made the promise, but nothing enforced the duplicate honoring
+    it. A shared function makes that class of drift impossible rather than
+    merely fixed once: there is now nowhere else this condition could be
+    re-typed out of sync. Do not inline this check anywhere else -- import
+    and call this."""
     entry = registry.EFFECT_REGISTRY.get(permanent.card_def.effect_id, {})
+    no_tap = entry.get("mana_no_tap", False)
+    return not ((permanent.tapped and not no_tap) or tap_summoning_locked(state, permanent))
+
+
+def tappable_for_mana(state, permanent):
+    """Can `permanent` be tapped for mana RIGHT NOW? mana_tap_gate_open,
+    plus its extra availability condition (Wall of Roots' once-per-turn,
+    tracked independently via permanent.flags, not permanent.tapped)
+    satisfied.
+
+    Both mana_ability_options and source_mana_units call this, so they
+    can't disagree about what's usable. Excludes mana_extra_choose (Saruli
+    Caretaker), whose activation needs a choice enumerated atomically
+    alongside it -- see mana_tap_gate_open for where THAT source instead
+    gets its tap/sickness check from."""
+    entry = registry.EFFECT_REGISTRY.get(permanent.card_def.effect_id, {})
+    if not mana_tap_gate_open(state, permanent):
+        return False
     if entry.get("mana_extra_choose") is not None:
         return False
     extra = entry.get("mana_extra_available")

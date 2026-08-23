@@ -351,6 +351,13 @@ def collect_rollout(pairing, n_games, horizon, rng, device="cpu", record=True, g
                 on_single_pip_burn=on_single_pip_burn if wants_single_pip_hook else None,
                 stratify=stratify,
             )
+            # TRAINING-ONLY bookkeeping stamped onto state (like on_mana_burn
+            # above), read by collect_rollout_league's on_game_end so a
+            # stratified game's outcome can be excluded from PFSP's
+            # opponent-difficulty signal without widening on_game_end's own
+            # call signature (analysis.mulligan_retrain.train_mulligan.py's
+            # two other on_game_end implementers must keep working as-is).
+            state.mulligan_stratified = stratify is not None
             # The engine's own win-check sets state.winner/state.turn_won
             # with no log_event of its own -- log it here (the same choke
             # point every other state change uses) so a consumer of
@@ -399,7 +406,7 @@ def collect_rollout(pairing, n_games, horizon, rng, device="cpu", record=True, g
 
 def collect_rollout_league(training_deck_name, live_nets, mulligan_nets, deck_ctxs, decklists_by_name,
                             pool, reward_fn, horizon, n_games, rng, device="cpu", record=True, game_logs=None,
-                            checkpoint_rate=0.0, pfsp=True):
+                            checkpoint_rate=0.0, pfsp=True, stratify_0land_pct=0.0):
     """League collection: builds a pairing that resamples the opponent from
     `pool` before every game, then runs collect_rollout. Returns
     (buffers_by_deck, mull_by_deck, games_played, outcomes) keyed by deck
@@ -407,17 +414,27 @@ def collect_rollout_league(training_deck_name, live_nets, mulligan_nets, deck_ct
     another deck's current live net) that deck's own bucket. A frozen-
     snapshot opponent is off-policy and records nothing.
 
-    outcomes: one (opponent_deck_name, snapshot_id_or_None, training_deck_won)
-    tuple per game that reached a winner, for the caller to feed into
-    pool.record_outcome -- a horizon-timeout game is excluded rather than
-    counted as a loss. Neither this function nor its parallel-worker twin
-    write to `pool` themselves; only the one authoritative pool object
-    (rl.league.league_runner._run_session) gets updated, after collection.
+    outcomes: one (opponent_deck_name, snapshot_id_or_None, training_deck_won,
+    was_stratified) tuple per game that reached a winner, for the caller to
+    feed into pool.record_outcome -- a horizon-timeout game is excluded
+    rather than counted as a loss. was_stratified (from
+    state.mulligan_stratified, see collect_rollout) is True iff this game's
+    training seat had its opening hand forced -- the caller (
+    rl.league.league_runner._run_session) must skip record_outcome for
+    those, or a forced-bad-hand loss permanently biases PFSP's
+    opponent-difficulty estimate for whatever opponent happened to be
+    sampled, unrelated to that opponent's real difficulty. Neither this
+    function nor its parallel-worker twin write to `pool` themselves; only
+    the one authoritative pool object (rl.league.league_runner._run_session)
+    gets updated, after collection.
 
     live_nets / mulligan_nets / deck_ctxs / decklists_by_name: dicts keyed
     by deck name over the whole roster. mulligan_nets=None -> every seat
     uses AlwaysKeep. checkpoint_rate, pfsp: forwarded to
-    _make_league_pairing/pool.sample_opponent verbatim."""
+    _make_league_pairing/pool.sample_opponent verbatim. stratify_0land_pct:
+    forwarded to collect_rollout verbatim -- only ever takes effect when the
+    opponent this game is a frozen snapshot (the one case where exactly one
+    seat is recorded), see collect_rollout's own docstring."""
     choice_sink = {}
     outcomes = []
     pairing = _make_league_pairing(training_deck_name, live_nets, mulligan_nets, deck_ctxs,
@@ -433,10 +450,11 @@ def collect_rollout_league(training_deck_name, live_nets, mulligan_nets, deck_ct
         snap_id = None
         if snapshot_path is not None:
             snap_id = next((sid for sid, path in pool.snapshots[opp_name] if path == snapshot_path), None)
-        outcomes.append((opp_name, snap_id, state.winner == training_seat))
+        outcomes.append((opp_name, snap_id, state.winner == training_seat, state.mulligan_stratified))
 
     buffers_by_deck, mull_by_deck, played = collect_rollout(
-        pairing, n_games, horizon, rng, device=device, record=record, game_logs=game_logs, on_game_end=on_game_end)
+        pairing, n_games, horizon, rng, device=device, record=record, game_logs=game_logs, on_game_end=on_game_end,
+        stratify_0land_pct=stratify_0land_pct)
     return buffers_by_deck, mull_by_deck, played, outcomes
 
 

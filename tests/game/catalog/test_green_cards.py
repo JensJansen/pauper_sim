@@ -383,6 +383,31 @@ def test_wall_of_roots_no_tap_ability_and_counter_death():
     assert any(c.name == wall.card_def.name for c in state.graveyard)
 
 
+def test_wall_of_roots_mana_still_available_when_tapped_by_something_else():
+    """REGRESSION (2026-08-23, a real production-training crash): Wall of
+    Roots' mana ability has no {T} in its cost, so being tapped for an
+    UNRELATED reason (e.g. Saruli Caretaker's "tap another creature"
+    additional cost) must not disable its own once-per-turn mana ability --
+    game.mana.tappable_for_mana had a blanket `if permanent.tapped: return
+    False` with no mana_no_tap exception (unlike tap_summoning_locked,
+    right above it in the same file, which already carried that exact
+    exception), silently hiding a still-legal mana source and stranding an
+    in-flight payment that needed it (all-False action mask, a hard
+    crash)."""
+    state = GameState(on_the_play=True)
+    wall = _wall_of_roots()
+    wall.tapped = True  # tapped by something else entirely, mana ability untouched
+    state.battlefield = [wall]
+
+    assert ("Wall of Roots", None) in mana_ability_options(state)
+    activate_mana_source(state, wall)  # still floats {G} despite already being tapped
+    assert state.mana_pool.get("G", 0) == 1
+    assert wall.counters["-0/-1"] == 1
+
+    # once per turn still holds, independent of tapped state
+    assert ("Wall of Roots", None) not in mana_ability_options(state)
+
+
 def test_nyxborn_hydra_creature_mode():
     """Nyxborn Hydra creature mode: 0/1 base plus X +1/+1 counters."""
     state = GameState(on_the_play=True)

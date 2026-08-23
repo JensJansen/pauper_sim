@@ -166,6 +166,39 @@ def test_a_checkpoint_carries_its_own_encoder(tmp_path):
 
 
 @pytest.mark.slow
+def test_run_session_skips_record_outcome_for_a_stratified_game(tmp_path, monkeypatch):
+    """_run_session must never call pool.record_outcome for a game whose
+    training seat had its opening hand forced (stratify_0land_pct) -- see
+    collect_rollout_league's own docstring / rl.league.league.LeaguePool
+    .record_outcome's docstring for why: it would permanently bias PFSP's
+    difficulty estimate for whichever opponent happened to be sampled,
+    unrelated to real skill.
+
+    Single-deck roster with a snapshot of itself pre-registered on disk (so
+    LeaguePool.__init__'s directory scan finds it) and checkpoint_rate=1.0
+    makes every game this session a frozen-snapshot-opponent game -- the
+    only case with exactly one recorded seat, the one case stratify can fire
+    in at all (see collect_rollout's own "len(recorded_seats) == 1" gate).
+    stratify_0land_pct=1.0 then makes every one of those actually
+    stratified. So record_outcome must be called ZERO times."""
+    from rl.league.league import LeaguePool
+
+    decklists, vocab, deck_ctxs, fixed_tables = _real_build_pool()
+    trunk_hidden = (8, 8)  # small on purpose -- this test only needs a real, checkpoint-loadable shape, not a trained one
+    seed_net = league_runner.build_deck_net(vocab.size, len(fixed_tables["elves"]), trunk_hidden)
+    seed_pool = LeaguePool(str(tmp_path), ["elves"])
+    seed_pool.register_snapshot("elves", seed_net)  # gives checkpoint_rate=1.0 a real snapshot to sample
+
+    calls = []
+    monkeypatch.setattr(LeaguePool, "record_outcome", lambda self, *a, **k: calls.append((a, k)))
+
+    league_runner._run_session(1, 6, 1, None, 1, league_dir=str(tmp_path), seed=0, roster=["elves"],
+                                checkpoint_rate=1.0, stratify_0land_pct=1.0, trunk_hidden=trunk_hidden)
+    assert not calls, ("every game this session is a stratified frozen-snapshot game -- "
+                        f"record_outcome must never fire, but was called with {calls}")
+
+
+@pytest.mark.slow
 def test_unknown_ppo_hyperparameter_is_a_hard_error():
     """A typo'd hyperparameter that silently does nothing must fail loudly,
     not run un-executed for thousands of iterations."""

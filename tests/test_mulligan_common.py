@@ -4,7 +4,15 @@ validation.mulligan_audit depends on. Backward compatibility (no
 deck_by_game_seat) is pinned too, since train_mulligan.py still relies on
 that flat shape unchanged.
 """
-from analysis.mulligan_retrain._mulligan_common import audit_land_counts
+import pytest
+
+import game as game_module
+from analysis.mulligan_retrain._mulligan_common import (
+    _binary_entropy_bits, audit_land_counts, build_probe_hands_sampled, probe_land_count_stats,
+)
+from rl.model.arch import SetTransformer
+from rl.model.features import CardVocab
+from rl.model.mulligan import MulliganNet
 
 LAND = "Forest"
 SPELL = "Llanowar Elves"
@@ -27,7 +35,8 @@ def _game(seat, hand_lands, chosen, p_keep, winner=None):
 def test_unbucketed_matches_the_pre_extension_flat_shape():
     games = [_game(0, 2, chosen=0, p_keep=0.8, winner=0)]  # kept, 2 lands, seat 0 wins
     result = audit_land_counts(games)
-    assert result == {2: {"kept": 1, "mulliganed": 0, "keep_probs": [0.8], "wins": 1, "losses": 0}}
+    assert result == {2: {"kept": 1, "mulliganed": 0, "keep_probs": [0.8],
+                          "entropy_bits": [pytest.approx(0.7219280948873623)], "wins": 1, "losses": 0}}
 
 
 def test_mulliganed_hand_is_never_scored_for_win_loss():
@@ -76,4 +85,50 @@ def test_mulligan_bottom_removes_a_card_from_the_reconstructed_hand():
         {"kind": "game_over", "winner": 0},
     ]
     result = audit_land_counts([events])
-    assert result == {1: {"kept": 1, "mulliganed": 0, "keep_probs": [0.5], "wins": 1, "losses": 0}}
+    assert result == {1: {"kept": 1, "mulliganed": 0, "keep_probs": [0.5],
+                          "entropy_bits": [pytest.approx(1.0)], "wins": 1, "losses": 0}}
+
+
+def test_binary_entropy_bits_extremes_and_midpoint():
+    assert _binary_entropy_bits(0.5) == pytest.approx(1.0)
+    assert _binary_entropy_bits(0.0) == pytest.approx(0.0)
+    assert _binary_entropy_bits(1.0) == pytest.approx(0.0)
+
+
+@pytest.mark.slow
+def test_build_probe_hands_sampled_is_deterministic_and_respects_land_count():
+    decklist = game_module.parse_decklist_file("../data/mono_blue_terror.txt")
+    vocab = CardVocab([decklist])
+    land_indices = {vocab.index(n) for n, *_ in decklist if game_module.CARD_DEFS[n].card_type.name == "LAND"}
+
+    probes_a = build_probe_hands_sampled(decklist, vocab, land_counts=[0, 3, 7], n_variants=3, seed=0)
+    probes_b = build_probe_hands_sampled(decklist, vocab, land_counts=[0, 3, 7], n_variants=3, seed=0)
+
+    assert set(probes_a) == {0, 3, 7}
+    for lc, hands in probes_a.items():
+        assert len(hands) == 3
+        for tokens in hands:
+            n_lands = sum(1 for row in tokens if row[0] in land_indices)
+            assert n_lands == lc
+    # seeded -> identical hands every call, same as build_probe_hands' fixed-target rationale
+    assert [[t[0] for t in hand] for hands in probes_a.values() for hand in hands] == \
+           [[t[0] for t in hand] for hands in probes_b.values() for hand in hands]
+
+
+@pytest.mark.slow
+def test_probe_land_count_stats_shape():
+    torch = pytest.importorskip("torch")
+    decklist = game_module.parse_decklist_file("../data/mono_blue_terror.txt")
+    vocab = CardVocab([decklist])
+    shared = SetTransformer(vocab.size, d_model=16, n_heads=2, n_layers=1, dim_feedforward=32)
+    net = MulliganNet(shared, hidden=16)
+
+    probes = build_probe_hands_sampled(decklist, vocab, land_counts=[0, 7], n_variants=2, seed=0)
+    stats = probe_land_count_stats(net, probes)
+
+    assert set(stats) == {0, 7}
+    for lc, s in stats.items():
+        assert s["n"] == 2
+        assert 0.0 <= s["p_mulligan_mean"] <= 1.0
+        assert 0.0 <= s["entropy_bits_mean"] <= 1.0
+        assert s["p_mulligan_spread"] >= 0.0

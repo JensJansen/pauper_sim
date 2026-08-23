@@ -110,14 +110,38 @@ _Decision = namedtuple("_Decision", "tokens scalar full_mask identities fixed_ta
 
 def _raise_all_false(state, seat):
     """An all-False mask means the engine reached a decision state the action
-    space can't represent. Raises with the pending kind and board context
-    instead of letting Categorical sample uniformly over illegal positions
-    and crash downstream with a misleading error."""
+    space can't represent. Raises with the pending kind, board context, AND
+    (2026-08-23, after a production crash that took real effort to trace
+    from "pay_cost" alone) the full pending_resolution dict, hand,
+    battlefield, and mana pool -- a mid-payment strand (the most likely
+    cause per game.mana's STRANDING INVARIANT) is otherwise nearly
+    impossible to pin to a specific card from the pending kind by itself.
+    Non-fields (on_complete callables etc.) are dropped from the dumped
+    pending dict since they aren't printable/useful; card objects are
+    reduced to names, matching game.resolution._core._loggable's own
+    convention, instead of letting Categorical sample uniformly over
+    illegal positions and crash downstream with a misleading error."""
     pend = state.pending_resolution
+    pend_dump = {k: v for k, v in pend.items() if k != "on_complete"} if pend else None
+    hand = [c.name for c in state.hand]
+    battlefield = [(p.card_def.name, p.tapped, dict(p.flags), p.summoning_sick) for p in state.battlefield]
+    # WHAT THE ENGINE CURRENTLY BELIEVES is available, not just raw board
+    # state -- a second all-False crash (2026-08-23) needed this to
+    # distinguish "genuinely nothing left to pay with" (plan_payment
+    # overestimated at cast time -- a DIFFERENT bug than the mid-payment
+    # strand this function was first built to catch) from "something's
+    # available but the mask still says no" (a real mid-payment-strand bug,
+    # this function's original purpose).
     raise RuntimeError(
         f"all-False action mask for pending kind {pend['kind'] if pend else None!r} "
         f"(phase={state.phase} seat={seat} turn={state.turn_number} "
-        f"active_idx={state.active_idx} turn_player={state.turn_player_idx})"
+        f"active_idx={state.active_idx} turn_player={state.turn_player_idx})\n"
+        f"  pending_resolution={pend_dump!r}\n"
+        f"  mana_pool={dict(state.mana_pool)!r}\n"
+        f"  hand={hand!r}\n"
+        f"  battlefield(name,tapped,flags,summoning_sick)={battlefield!r}\n"
+        f"  mana_ability_options={game.mana_ability_options(state)!r}\n"
+        f"  available_mana_units={game.available_mana_units(state)!r}"
     )
 
 

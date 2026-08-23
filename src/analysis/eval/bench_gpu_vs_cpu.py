@@ -193,8 +193,8 @@ def main():
     league_runner.ppo_update = _patched  # league_runner did `from rl.training.ppo import ppo_update`
     import run_league
     sys.argv = ["run_league.py", "--n-iterations", str(args.iterations),
-                "--run-config", "../training_configs/run_bench.json",
-                "--league-config", "../training_configs/run_bench.json"]
+                "--run-config", "../training_configs/benchmarking_league.json",
+                "--league-config", "../training_configs/benchmarking_league.json"]
     t0 = time.time()
     run_league.main()
     wall = time.time() - t0

@@ -106,6 +106,7 @@ from .mana import (
     float_mana,
     mana_ability_options,
     mana_output,
+    mana_tap_gate_open,
     mid_cast,
     payment_in_progress,
     payment_survives,
@@ -116,6 +117,7 @@ from .mana import (
     source_mana_units,
     spend_one_pip,
     tap_summoning_locked,
+    tappable_for_mana,
     units_after,
 )
 from .registry import CARD_DEFS, EFFECT_REGISTRY, ENTERS_TAPPED_EFFECTS, derive_pending_kinds

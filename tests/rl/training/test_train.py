@@ -226,8 +226,8 @@ def test_league_smoke_and_ppo_update_trains_the_encoder():
         assert played == 1 and len(bufs_self.get("a", RolloutBuffer())) > 0, "true mirror must record a non-empty 'a' bucket"
         assert set(bufs_self) == {"a"}, "a true mirror records ONLY the training bucket (both seats pooled into it)"
         # 0 entries iff that game hit a horizon timeout (no winner) -- excluded rather than counted as a loss.
-        assert len(outcomes_self) <= 1 and all(o == ("a", None, o[2]) for o in outcomes_self), \
-            "a mirror's outcome, when present, is keyed by ('a', None, <won>)"
+        assert len(outcomes_self) <= 1 and all(o == ("a", None, o[2], False) for o in outcomes_self), \
+            "a mirror's outcome, when present, is keyed by ('a', None, <won>, <stratified=False, no stratify_0land_pct given>)"
         buf_self = bufs_self["a"]
 
         pool.sample_opponent = lambda training_deck_name, rng, checkpoint_rate=0.0, pfsp=True: ("b", None)  # another deck's live net
@@ -237,8 +237,8 @@ def test_league_smoke_and_ppo_update_trains_the_encoder():
         # A LIVE-net opponent's transitions are salvaged under its own deck name ('b').
         assert "b" in bufs_cross and len(bufs_cross["b"]) > 0, "a live-net opponent must salvage its own bucket 'b'"
         assert all(np.isfinite(v) for v in bufs_cross["b"].value) and all(np.isfinite(r) for r in bufs_cross["b"].reward)
-        assert len(outcomes_cross) <= 1 and all(o == ("b", None, o[2]) for o in outcomes_cross), \
-            "a live cross-deck outcome, when present, is keyed by ('b', None, <won>)"
+        assert len(outcomes_cross) <= 1 and all(o == ("b", None, o[2], False) for o in outcomes_cross), \
+            "a live cross-deck outcome, when present, is keyed by ('b', None, <won>, <stratified=False, no stratify_0land_pct given>)"
 
         pool.sample_opponent = lambda training_deck_name, rng, checkpoint_rate=0.0, pfsp=True: ("a", snapshot_path)  # frozen snapshot of self
         bufs_snap, _mull, played, outcomes_snap = collect_rollout_league("a", live_nets, None, ctxs_by_name, decklists_by_name,
@@ -247,8 +247,9 @@ def test_league_smoke_and_ppo_update_trains_the_encoder():
         assert set(bufs_snap) == {"a"}, "a frozen snapshot opponent is off-policy -- only the training bucket, nothing salvaged"
         assert snapshot_path in pool._net_cache, "load_snapshot_net must have populated the cache"
         snap_id = pool.snapshots["a"][0][0]
-        assert len(outcomes_snap) <= 1 and all(o == ("a", snap_id, o[2]) for o in outcomes_snap), \
-            "a frozen-snapshot outcome, when present, must resolve the snapshot PATH back to its id, keyed by ('a', <id>, <won>)"
+        assert len(outcomes_snap) <= 1 and all(o == ("a", snap_id, o[2], False) for o in outcomes_snap), \
+            "a frozen-snapshot outcome, when present, must resolve the snapshot PATH back to its id, " \
+            "keyed by ('a', <id>, <won>, <stratified=False, no stratify_0land_pct given>)"
 
         for buf in (bufs_self["a"], bufs_cross["a"], bufs_snap["a"]):
             assert all(np.isfinite(v) for v in buf.value)
@@ -690,3 +691,51 @@ def test_collect_rollout_stratify_defaults_are_a_true_no_op():
     omitted = _run()
     explicit_zero = _run(stratify_0land_pct=0.0, stratify_7land_pct=0.0)
     assert omitted == explicit_zero, "explicit 0.0/0.0 must deal byte-identical hands to omitting the params"
+
+
+@pytest.mark.slow
+def test_collect_rollout_league_stratifies_only_a_frozen_opponent_game():
+    """stratify_0land_pct threaded into collect_rollout_league (train.py's
+    own on_game_end reading state.mulligan_stratified back into the 4th
+    outcome-tuple element) must only ever come back True when the opponent
+    that game was a frozen snapshot -- the one case with exactly one
+    recorded seat (collect_rollout's own "len(recorded_seats) == 1" gate). A
+    mirror or a live cross-deck opponent both record two seats, so the gate
+    must keep blocking stratify even at stratify_0land_pct=1.0 -- this is
+    the "never the opposition" guarantee league_runner._run_session's
+    record_outcome-skip depends on, tested at this layer."""
+    fx = _base_fixture()
+    net_a, net_b, reward_fn, rng = fx["net_a"], fx["net_b"], fx["reward_fn"], fx["rng"]
+    decklist_a, decklist_b = fx["decklist_a"], fx["decklist_b"]
+    ctxs_by_name = {"a": fx["deck_ctx_a"], "b": fx["deck_ctx_b"]}
+    decklists_by_name = {"a": decklist_a, "b": decklist_b}
+    live_nets = {"a": net_a, "b": net_b}
+    # A bigger horizon than this module's own HORIZON=20 -- untrained nets
+    # playing real 60-card decks routinely need more than 20 turns to reach
+    # a winner, and this test needs at least one real outcome per case to
+    # mean anything (unlike the other collect_rollout_league tests above,
+    # which explicitly tolerate zero). Matches league_runner.HORIZON, the
+    # real production horizon.
+    horizon = 120
+    tmp_dir = tempfile.mkdtemp()
+    try:
+        pool = LeaguePool(tmp_dir, ["a", "b"], max_snapshots_per_deck=3)
+        pool.register_snapshot("a", net_a)
+        snapshot_path = pool.snapshots["a"][0][1]
+
+        def _stratified_flags(sample_opponent_result, n_games=8):
+            pool.sample_opponent = lambda training_deck_name, rng, checkpoint_rate=0.0, pfsp=True: sample_opponent_result
+            _bufs, _mull, _played, outcomes = collect_rollout_league(
+                "a", live_nets, None, ctxs_by_name, decklists_by_name, pool, reward_fn,
+                horizon, n_games=n_games, rng=rng, device=DEVICE, stratify_0land_pct=1.0)
+            assert outcomes, f"at least one of {n_games} games must reach a winner for this assertion to mean anything"
+            return [stratified for *_, stratified in outcomes]
+
+        assert all(_stratified_flags(("a", snapshot_path))), \
+            "a frozen-snapshot opponent (only the training seat recorded) must be stratified every time at pct=1.0"
+        assert not any(_stratified_flags(("a", None))), \
+            "a true mirror (both seats recorded) must never be stratified, even at pct=1.0"
+        assert not any(_stratified_flags(("b", None))), \
+            "a live cross-deck opponent (both seats recorded) must never be stratified, even at pct=1.0"
+    finally:
+        shutil.rmtree(tmp_dir)

@@ -34,9 +34,19 @@ def test_collect_rollout_league_parallel_smoke():
     try:
         t0 = time.time()
         with ThreadPoolExecutor(max_workers=1) as executor:
+            # stratify_0land_pct=1.0: a single-deck roster always resolves
+            # to a self-mirror (checkpoint_rate defaults to 0.0 -- never a
+            # snapshot), so this can't actually force the hand (both seats
+            # get recorded, collect_rollout's own guard blocks it) -- but it
+            # DOES prove the kwarg crosses the executor.submit(...) /
+            # _league_rollout_worker(...) process boundary without raising
+            # (a positional/keyword mismatch there would surface as a
+            # TypeError from collect_rollout's own "stratify_0land_pct > 0.0"
+            # comparison, unconditionally, before the guard is even reached).
             buffers_by_deck, _mull_by_deck, games_played, outcomes = collect_rollout_league_parallel(
                 "mono_red_madness", live_nets, "deploy_reward_v6", tmp_dir, HORIZON,
                 n_games=1, executor=executor, n_workers=1, all_trunk_hidden=all_trunk_hidden,
+                stratify_0land_pct=1.0,
             )
     finally:
         shutil.rmtree(tmp_dir)
@@ -50,7 +60,12 @@ def test_collect_rollout_league_parallel_smoke():
     # 0 entries iff that single game hit a horizon timeout (no winner) --
     # excluded rather than recorded as a loss.
     assert len(outcomes) <= 1 and all(o[2] in (True, False) for o in outcomes), (
-        "the worker's own outcome (opponent, snapshot_id, won), when present, must cross the process boundary "
-        "intact -- this is what feeds PFSP's record_outcome back in the MAIN process, not the worker's own read-only pool"
+        "the worker's own outcome (opponent, snapshot_id, won, was_stratified), when present, must cross the "
+        "process boundary intact -- this is what feeds PFSP's record_outcome back in the MAIN process, not the "
+        "worker's own read-only pool"
+    )
+    assert all(o[3] is False for o in outcomes), (
+        "a single-deck roster is always a self-mirror (both seats recorded) -- stratify_0land_pct=1.0 above must "
+        "still never fire here, proving the boundary crossing didn't accidentally also cross the seat-count guard"
     )
     print(f"rl.training.rollout_parallel collect_rollout_league_parallel smoke test: OK ({time.time() - t0:.1f}s)")

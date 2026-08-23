@@ -13,7 +13,7 @@ reused for every chunk, same reuse rationale run_league.py's own docstring
 describes. A validation check that raises is logged and skipped -- see
 validation.run_all -- training itself is never aborted by a bad check.
 
-Config (--config, e.g. training_configs/league_main.json): the same schema
+Config (--config, e.g. training_configs/main_league.json): the same schema
 run_league.py reads (run-mechanics + league identity, "extends"-composable
 via config_loader), plus training_league_name (was gauntlet_league_name),
 checks_cadence_pct (default 5), checks_games (default 50).
@@ -21,7 +21,7 @@ checks_cadence_pct (default 5), checks_games (default 50).
 directly -- this script is league training only.
 
 Usage:
-  python run_training_pipeline.py --config training_configs/league_main.json [--fresh]
+  python run_training_pipeline.py --config training_configs/main_league.json [--fresh]
 """
 import argparse
 import shutil
@@ -41,7 +41,7 @@ def _build_arg_parser():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--config", required=True, metavar="PATH",
                     help="A league config (run_league.py's own schema, extends-composable) -- see "
-                         "training_configs/league_main.json. Everything about this run is config-driven; "
+                         "training_configs/main_league.json. Everything about this run is config-driven; "
                          "there is deliberately no other flag besides --fresh.")
     ap.add_argument("--fresh", action="store_true",
                     help="Wipe this league's entire checkpoint tree (live.pt/mulligan.pt/snapshots/archive/"
@@ -66,6 +66,17 @@ def _resolve_options(cfg):
     n_workers = cfg.get("n_workers", 6)
     games_per_iteration = cfg.get("games_per_iteration") or max(1, n_workers)
     checks_cadence_pct = cfg.get("checks_cadence_pct", 5)
+    checkpoint_rate = cfg.get("checkpoint_opponent_rate", 0.0)
+    stratify_0land_pct = cfg.get("stratify_0land_pct", 0.0)
+    if stratify_0land_pct > 0 and checkpoint_rate <= 0:
+        # stratify only ever fires against a frozen-snapshot opponent (see
+        # collect_rollout_league's own docstring) -- sample_opponent
+        # (rl.league.league) can only return one when rng.random() <
+        # checkpoint_rate, so at checkpoint_rate<=0 that branch is dead and
+        # this config's stratify_0land_pct would silently never activate.
+        print(f"Warning: stratify_0land_pct={stratify_0land_pct} is set but checkpoint_opponent_rate is "
+              f"{checkpoint_rate} -- stratify only fires against a frozen-snapshot opponent, so it will "
+              f"never activate at this rate.")
 
     return {
         "league_name": league_name,
@@ -77,7 +88,8 @@ def _resolve_options(cfg):
         "n_workers": n_workers,
         "games_per_iteration": games_per_iteration,
         "snapshot_every": max(1, cfg.get("snapshot_every_games", 200) // games_per_iteration),
-        "checkpoint_rate": cfg.get("checkpoint_opponent_rate", 0.0),
+        "checkpoint_rate": checkpoint_rate,
+        "stratify_0land_pct": stratify_0land_pct,
         "pfsp": cfg.get("pfsp", True),
         "pfsp_power": cfg.get("pfsp_power", PFSP_POWER),
         "device": cfg.get("device", "cpu"),
@@ -131,7 +143,8 @@ def main():
                         opts["n_workers"], league_dir=str(league_dir), seed=opts["seed"], roster=opts["roster"],
                         pfsp=opts["pfsp"], checkpoint_rate=opts["checkpoint_rate"],
                         cumulative_games=progress["cumulative_games_per_deck"], ppo_hparams=opts["ppo_hparams"],
-                        pfsp_power=opts["pfsp_power"], trunk_hidden=opts["trunk_hidden"], device=device)
+                        pfsp_power=opts["pfsp_power"], trunk_hidden=opts["trunk_hidden"], device=device,
+                        stratify_0land_pct=opts["stratify_0land_pct"])
 
             # auto_sizing=False: fixed cadence-sized chunks, not the doubling
             # ladder -- last_batch_size is meaningless here and left untouched.

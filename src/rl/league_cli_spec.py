@@ -94,10 +94,10 @@ def build_arg_parser(description=None):
                               "condition. Default: --league-config's own total_games.")
     parser.add_argument("--run-config", type=str, default=None, metavar="PATH",
                          help="JSON of run-mechanics defaults shared across leagues (n_workers, snapshot_every_games, "
-                              "checkpoint_opponent_rate, pfsp) -- see training_configs/run_default.json. Any "
+                              "checkpoint_opponent_rate, pfsp) -- see training_configs/baseline_settings.json. Any "
                               "individual value can still be overridden by passing its own flag explicitly for one "
                               "invocation. A league config can inherit these instead of retyping them via its own "
-                              "top-level \"extends\": \"run_default.json\" -- see training_configs/league_main.json.")
+                              "top-level \"extends\": \"baseline_settings.json\" -- see training_configs/main_league.json.")
     parser.add_argument("--league-config", type=str, default=None, metavar="PATH",
                          help="JSON describing one league (league_name, roster, total_games) -- see "
                               "training_configs/league_*.json. Drives automatic batch sizing whenever "

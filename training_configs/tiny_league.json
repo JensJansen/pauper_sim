@@ -1,0 +1,11 @@
+{
+  "_note": "Small 2-deck league (checkpoints/tiny-league/), a smaller, more legible testing structure than the 4-deck sub-league. Run mechanics are inherited from baseline_settings.json via \"extends\"; only league_name/roster/total_games/training_league_name/checkpoint_opponent_rate/stratify_0land_pct differ. training_league_name is null (no twin comparison for this run).",
+  "_stratify_note": "2026-08-23: forced-0-land-hand mulligan experiment for this league only, restarted from scratch under league_name tiny-league (previously 2_deck_elves_dmir_terror, wiped -- that run's mulligan nets had collapsed to always-keep with no stratification wired in). checkpoint_opponent_rate raised 0.15 -> 0.30 (more frozen-snapshot opponents, since stratify can only fire when the opponent is frozen -- see rl.training.train.collect_rollout's own docstring). stratify_0land_pct=0.33 chosen so the two rates compound to ~1/10 games (0.30 * 0.33 ~= 0.099): stratify only rolls its own die on the checkpoint_opponent_rate-gated slice, not on every game. Now live: run_training_pipeline.py/_resolve_options and rl.league.league_runner thread stratify_0land_pct through, and a stratified game's outcome is excluded from pool.record_outcome so it can't bias PFSP's difficulty estimate for whichever snapshot got stratified.",
+  "extends": "baseline_settings.json",
+  "league_name": "tiny-league",
+  "roster": ["elves", "dmir_terror"],
+  "total_games": 20000,
+  "training_league_name": null,
+  "checkpoint_opponent_rate": 0.30,
+  "stratify_0land_pct": 0.33
+}

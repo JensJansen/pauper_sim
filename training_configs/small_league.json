@@ -1,0 +1,14 @@
+{
+  "_note": "The 4-deck sub-league: the experiment vehicle for the 2026-08 plateau investigation (see project memory / WORK_CHECKLIST.md), NOT a generic default. Split out of what used to be run_default.json 2026-08-23, once that file's dual role (shared run-mechanics AND this concrete league's identity) made its own name stop describing what it actually was. Run mechanics are inherited from baseline_settings.json via \"extends\", not retyped. small_league_training_league.json extends THIS file's identity (league_name/roster/total_games) for the paired training-league population -- see its own _note.",
+  "_identity_note": "Regrown from scratch after the 2026-08-17 per-deck-encoder change and trained to 10,008 games/deck on 2026-08-18; the twin at training_league_name was then grown to 5,016 games/deck against it. Note this league's own metrics.jsonl carries no primary_vs_training_round_robin records for that first 10,008 games: the twin had no live.pt yet.",
+  "extends": "baseline_settings.json",
+  "league_name": "4_deck_subleague_test",
+  "roster": [
+    "rakdos_madness",
+    "dmir_terror",
+    "elves",
+    "mono_red_rally"
+  ],
+  "total_games": 600000,
+  "training_league_name": "4_deck_subleague_gauntlet"
+}

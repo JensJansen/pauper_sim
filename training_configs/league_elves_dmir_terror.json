@@ -1,8 +1,0 @@
-{
-  "_note": "Small 2-deck league (checkpoints/2_deck_elves_dmir_terror/), started from scratch 2026-08-22 as a smaller, more legible testing structure than the 4-deck sub-league -- both decks begin with a freshly-initialized DeckNetwork and MulliganNet (no live.pt/mulligan.pt exists yet under this league_name). Run mechanics are inherited from run_default.json via \"extends\"; only league_name/roster/total_games/training_league_name differ. training_league_name is null (no twin comparison for this run).",
-  "extends": "run_default.json",
-  "league_name": "2_deck_elves_dmir_terror",
-  "roster": ["elves", "dmir_terror"],
-  "total_games": 20000,
-  "training_league_name": null
-}

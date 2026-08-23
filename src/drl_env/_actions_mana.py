@@ -95,15 +95,21 @@ def _mana_ability_legal(name, color):
 
 
 def _find_mana_source(state, name, color):
-    """The untapped, available permanent named `name` that can produce
-    `color` now (`color` narrows to the flexible/granted source that can
-    make it, e.g. an Abundant Growth land). Mirrors mana_ability_options'
-    per-permanent gates (tap-lock, extra cost)."""
+    """The available permanent named `name` that can produce `color` now
+    (`color` narrows to the flexible/granted source that can make it, e.g.
+    an Abundant Growth land). Every per-permanent gate (tapped -- with the
+    mana_no_tap exception, e.g. Wall of Roots; tap-lock; extra-cost
+    availability) is delegated to game.tappable_for_mana, the ONE place
+    those gates live -- this function used to re-implement them inline,
+    which had silently drifted out of sync with it (missing the
+    mana_no_tap exception fixed there 2026-08-23: mana_ability_options
+    correctly listed a tapped Wall of Roots as available, but THIS
+    function's own duplicate tapped-check still excluded it, so the
+    actual per-action legal-action mask stayed wrong even after that fix
+    -- a mid-payment strand, an all-False mask, a hard crash). Never
+    re-duplicate these gates here again."""
     for p in state.battlefield:
-        if p.card_def.name != name or p.tapped or game.tap_summoning_locked(state, p):
-            continue
-        extra = game.EFFECT_REGISTRY.get(p.card_def.effect_id, {}).get("mana_extra_available")
-        if extra is not None and not extra(state, p):
+        if p.card_def.name != name or not game.tappable_for_mana(state, p):
             continue
         try:
             game.mana_output(p, state, color)  # raises if this p can't produce `color`
@@ -142,9 +148,18 @@ def _find_mana_extra_source(state, name):
     a mana_extra_choose source (Saruli Caretaker), the color isn't chosen
     until the second stage of its mana_subdecision, so there's no color to
     check yet. See _mana_subdecision_color_legal for where that check
-    lives instead."""
+    lives instead.
+
+    Can't delegate to game.tappable_for_mana like _find_mana_source does:
+    that function deliberately EXCLUDES mana_extra_choose sources (this
+    function's whole subject). It CAN and does delegate the tapped/
+    summoning-lock half to game.mana_tap_gate_open, the same shared
+    function tappable_for_mana itself calls -- so this can no longer drift
+    out of sync with it the way the old hand-copied version of this same
+    condition once did (see mana_tap_gate_open's own docstring for that
+    incident)."""
     for p in state.battlefield:
-        if p.card_def.name != name or p.tapped or game.tap_summoning_locked(state, p):
+        if p.card_def.name != name or not game.mana_tap_gate_open(state, p):
             continue
         extra = game.EFFECT_REGISTRY.get(p.card_def.effect_id, {}).get("mana_extra_available")
         if extra is not None and not extra(state, p):

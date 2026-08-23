@@ -343,6 +343,116 @@ def test_stranded_payment_filter_regression():
 
 
 @pytest.mark.slow
+def test_wall_of_roots_tapped_by_other_means_still_a_legal_mana_action():
+    # DUPLICATED-GATE regression (2026-08-23, a real production-training
+    # crash): Wall of Roots' mana ability has no {T} in its own cost, so
+    # game.tappable_for_mana correctly exempts it from the blanket
+    # "must be untapped" rule -- but drl_env._actions_mana._find_mana_source
+    # used to re-implement that same tapped/summoning-lock gate INLINE
+    # instead of calling tappable_for_mana, and had silently drifted out of
+    # sync (missing the mana_no_tap exception): game.mana_ability_options
+    # correctly listed a tapped Wall of Roots as available, but the actual
+    # per-action legal_action_mask entry ("Tap Wall of Roots") stayed
+    # illegal regardless -- an in-flight payment relying on it got stranded
+    # (an all-False mask, a hard crash) even though the engine's own
+    # "what's available" view said it should have worked.
+    spy_decklist = game.parse_decklist_file("../data/spy_combo.txt")
+    spy_table = drl_env.build_action_table(spy_decklist, game.EFFECT_REGISTRY)
+    tap_idx = next(i for i, (n, _l, _e) in enumerate(spy_table) if n == "Tap Wall of Roots")
+    st = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
+    st.phase = game.turn.Phase.MAIN1
+    wall = Permanent(game.CARD_DEFS["Wall of Roots"])
+    wall.tapped = True  # tapped by something else entirely (e.g. Saruli Caretaker's cost)
+    st.battlefield = [wall]
+    assert ("Wall of Roots", None) in game.mana_ability_options(st), (
+        "sanity check: the engine's own availability view must already say this is usable"
+    )
+    assert drl_env.legal_action_mask(st, spy_table)[tap_idx], (
+        "a tapped-by-something-else Wall of Roots, not yet used this turn, must still be a legal mana action"
+    )
+    spy_table[tap_idx][2](st)
+    assert st.mana_pool.get("G", 0) == 1, "activating it must actually float the G"
+
+
+@pytest.mark.slow
+def test_lotleth_giant_cast_survives_saruli_tapping_wall_of_roots():
+    # END-TO-END REPRODUCTION of the reported bug: casting Lotleth Giant
+    # ({6}{B}) in the actual Balustrade Spy deck, where Saruli Caretaker taps
+    # Wall of Roots as its additional cost mid-payment. Wall of Roots' own
+    # mana ability has no {T} in ITS OWN cost (mana_no_tap), so being tapped
+    # by Saruli's unrelated cost must not disable it -- pre-fix, this exact
+    # sequence left remaining={'generic': 1} owed with Wall of Roots as the
+    # only source left on the board, and "Tap Wall of Roots" came back
+    # illegal anyway: an all-False action mask, a hard crash, even though
+    # plan_payment had already promised this cast was payable.
+    spy_decklist = game.parse_decklist_file("../data/spy_combo.txt")
+    spy_table = drl_env.build_action_table(spy_decklist, game.EFFECT_REGISTRY)
+
+    def idx(name):
+        return next(i for i, (n, _l, _e) in enumerate(spy_table) if n == name)
+
+    st = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
+    st.phase = game.turn.Phase.MAIN1
+    forests = [Permanent(game.CARD_DEFS["Forest"]) for _ in range(5)]
+    swamp = Permanent(game.CARD_DEFS["Swamp"])
+    wall = Permanent(game.CARD_DEFS["Wall of Roots"])
+    saruli = Permanent(game.CARD_DEFS["Saruli Caretaker"])
+    saruli.summoning_sick = False  # Saruli's own cost is "{T}, tap another creature" -- it needs this (302.6)
+    for i, p in enumerate(forests + [swamp, wall, saruli]):
+        p.slot = i
+    st.battlefield = forests + [swamp, wall, saruli]
+    st.hand = [game.CARD_DEFS["Lotleth Giant"]]
+
+    cast_idx = idx("Cast Lotleth Giant")
+    assert drl_env.legal_action_mask(st, spy_table)[cast_idx], "5 Forest + Swamp + Wall of Roots must already cover {6}{B}"
+    spy_table[cast_idx][2](st)
+    assert st.pending_resolution["kind"] == "pay_cost"
+    assert st.pending_resolution["remaining"] == {"generic": 6, "B": 1}
+
+    # Pay six of the seven pips off the lands, leaving exactly {generic: 1} --
+    # tight enough that Wall of Roots' own ability is the only thing left.
+    forest_idx, swamp_idx = idx("Tap Forest"), idx("Tap Swamp")
+    for _ in range(5):
+        spy_table[forest_idx][2](st)
+    spy_table[swamp_idx][2](st)
+    assert st.mana_pool == {"G": 5, "B": 1}
+    while st.mana_pool:
+        game.execute_pool_spend(st, game.pool_spend_options(st)[0])
+    assert st.pending_resolution["remaining"].get("generic") == 1, "one generic pip must remain owed"
+
+    # Saruli taps Wall of Roots (the only other untapped creature) as its
+    # additional cost -- a normal, legal mid-payment choice.
+    saruli_tap_idx = idx("Tap Saruli Caretaker")
+    assert drl_env.legal_action_mask(st, spy_table)[saruli_tap_idx]
+    spy_table[saruli_tap_idx][2](st)
+    assert st.mana_subdecision["stage"] == "choose_target"
+    game.execute_mana_subdecision_target(st, wall)  # same call the pointer dispatch makes
+    assert st.mana_subdecision["stage"] == "choose_color"
+    produce_idx = idx("Produce W")
+    assert drl_env.legal_action_mask(st, spy_table)[produce_idx]
+    spy_table[produce_idx][2](st)
+    assert wall.tapped, "Saruli's cost must have tapped Wall of Roots"
+
+    # The regression: Wall of Roots' own no-tap ability must STILL be a
+    # legal action, even though Wall is now tapped for an unrelated reason,
+    # and it's the only way left to pay the last owed pip.
+    wall_tap_idx = idx("Tap Wall of Roots")
+    assert drl_env.legal_action_mask(st, spy_table)[wall_tap_idx], (
+        "Wall of Roots' own mana ability must stay legal after being tapped by Saruli's cost -- "
+        "otherwise the payment strands with an all-False mask"
+    )
+    spy_table[wall_tap_idx][2](st)
+    assert "G" in st.mana_pool
+
+    while st.pending_resolution is not None:
+        game.execute_pool_spend(st, game.pool_spend_options(st)[0])
+    assert st.pending_resolution is None, "the cast must fully pay off, not strand"
+    game.resolve_top_of_stack(st)
+    assert any(p.card_def.name == "Lotleth Giant" for p in st.battlefield), \
+        "Lotleth Giant must actually resolve onto the battlefield"
+
+
+@pytest.mark.slow
 def test_choose_cast_copy_own_graveyard_matching():
     # choose_cast_copy: which same-named graveyard copy is being cast (MTG
     # 601.2a). Pointer-only -- assert first that it adds zero fixed action

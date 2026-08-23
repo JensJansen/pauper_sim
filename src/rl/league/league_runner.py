@@ -211,7 +211,7 @@ def _run_session(n_iterations, games_per_iteration, snapshot_every, executor, n_
                   train_deck=True, train_mulligan=True, train_decks=None,
                   matchup=None, game_logs=None, checkpoint_rate=0.0, roster=None, pfsp=True,
                   cumulative_games=0, ppo_hparams=None,
-                  pfsp_power=PFSP_POWER, trunk_hidden=TRUNK_HIDDEN, device="cpu"):
+                  pfsp_power=PFSP_POWER, trunk_hidden=TRUNK_HIDDEN, device="cpu", stratify_0land_pct=0.0):
     # device: where the nets live, and where ppo_update's gradient work runs.
     # Only the update moves -- collection always runs on CPU (inference over
     # one game state at a time in worker processes), so eval paths and
@@ -361,7 +361,8 @@ def _run_session(n_iterations, games_per_iteration, snapshot_every, executor, n_
     if train_set != set(deck_names):
         mode.append(f"train_decks={train_decks}")
     print(f"League session {session}: n_iterations={n_iterations} games_per_iteration={games_per_iteration} "
-          f"snapshot_every={snapshot_every} checkpoint_rate={checkpoint_rate} decks={deck_names} n_workers={n_workers}"
+          f"snapshot_every={snapshot_every} checkpoint_rate={checkpoint_rate} decks={deck_names} n_workers={n_workers} "
+          f"stratify_0land_pct={stratify_0land_pct}"
           f"{' [' + ', '.join(mode) + ']' if mode else ''}")
     # One session_start header per session makes metrics.jsonl
     # self-describing: which reward/roster/config produced a stretch of
@@ -372,7 +373,7 @@ def _run_session(n_iterations, games_per_iteration, snapshot_every, executor, n_
                    n_iterations=n_iterations, games_per_iteration=games_per_iteration,
                    snapshot_every=snapshot_every, checkpoint_rate=checkpoint_rate,
                    pfsp=pfsp, n_workers=n_workers, horizon=horizon,
-                   pfsp_power=pfsp_power, **hp)
+                   pfsp_power=pfsp_power, stratify_0land_pct=stratify_0land_pct, **hp)
     t0 = time.time()
     total_games = 0
     collect_time_total = 0.0
@@ -425,19 +426,29 @@ def _run_session(n_iterations, games_per_iteration, snapshot_every, executor, n_
                     name, live_nets, reward_fn_name, league_dir, horizon, games_per_iteration,
                     executor, n_workers, all_trunk_hidden,
                     mulligan_state_dicts, game_logs=game_logs, checkpoint_rate=checkpoint_rate, pfsp=pfsp,
-                    pfsp_power=pfsp_power,
+                    pfsp_power=pfsp_power, stratify_0land_pct=stratify_0land_pct,
                 )
             else:
                 buffers_by_deck, mull_by_deck, played, outcomes = collect_rollout_league(
                     name, cpu_nets, cpu_mulligan_nets, deck_ctxs, decklists, pool, reward_fn,
                     horizon, games_per_iteration, rng, device="cpu", game_logs=game_logs,
-                    checkpoint_rate=checkpoint_rate, pfsp=pfsp,
+                    checkpoint_rate=checkpoint_rate, pfsp=pfsp, stratify_0land_pct=stratify_0land_pct,
                 )
             if matchup is None:
                 # Feed every game's real outcome into the one authoritative
                 # pool so PFSP weighting updates within the session, not
-                # just across process invocations.
-                for opp_name, snap_id, won in outcomes:
+                # just across process invocations. A stratified game's
+                # outcome is skipped here on purpose: its training seat's
+                # opening hand was forced (see collect_rollout's
+                # stratify_0land_pct), so a loss there reflects the rigged
+                # hand, not the sampled opponent's real difficulty -- feeding
+                # it to record_outcome would permanently bias that
+                # opponent's PFSP weight for reasons unrelated to skill. The
+                # game still counts toward `played`/checkpoint cadence above;
+                # only this pool-difficulty signal is skipped.
+                for opp_name, snap_id, won, stratified in outcomes:
+                    if stratified:
+                        continue
                     pool.record_outcome(name, ("deck", opp_name), won)
                     if snap_id is not None:
                         pool.record_outcome(name, ("snapshot", opp_name, snap_id), won)

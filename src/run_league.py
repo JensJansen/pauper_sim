@@ -26,7 +26,7 @@ worker paths (event dicts are picklable).
 
 Usage:
   python run_league.py --run-config PATH --league-config PATH
-      Normal training: run-mechanics defaults (training_configs/run_default.json) + one league's identity
+      Normal training: run-mechanics defaults (training_configs/baseline_settings.json) + one league's identity
       (training_configs/league_*.json: league_name, roster, total_games).
       No game count given -- it's computed automatically from the league's own progress.json (doubles each
       batch, 1/2/4/8/..., stopping once total_games is reached). Either config's
@@ -83,6 +83,14 @@ def main():
     # its own hardcoded default.
     run_cfg = load_config(args.run_config)
     league_cfg = load_config(args.league_config)
+
+    # stratify_0land_pct is a run_training_pipeline.py-only field (see
+    # README's "config-only fields" note) -- this script has no flag or
+    # .get() for it, so a config carrying it would otherwise silently train
+    # without the feature the config author asked for.
+    if "stratify_0land_pct" in run_cfg or "stratify_0land_pct" in league_cfg:
+        print("Warning: stratify_0land_pct is set in the loaded config but run_league.py does not read it "
+              "(it's a run_training_pipeline.py-only field) -- it will have no effect on this run.")
 
     train_deck = not args.train_mulligan_only
     train_mulligan = not args.train_deck_only

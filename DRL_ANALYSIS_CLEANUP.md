@@ -249,6 +249,49 @@ and the check that measured against it are removed.
       rows, the `vs_heuristic` check writeup, and every `heuristic_decks`
       mention.
 
+## Done — training_configs/ cleanup + rename (2026-08-23, sixth pass)
+
+`training_configs/*.json` had accumulated three problems: a dead tombstone,
+one file whose name lied about what it did, and two files driving one
+population that only needed one. Final names picked with the owner,
+file by file.
+
+- [x] Deleted **`run_gauntlet.json`** — an inert `{"_retired": true}`
+      tombstone from a 2026-08-05 league rename, referencing a
+      `SWAP_EXPERIMENT.md` that no longer exists in the repo. Nothing loads a
+      config by guessing its filename, so it protected against nothing a
+      real invocation could hit.
+- [x] Split **`run_default.json`** (secretly two things: the shared
+      run-mechanics base every other config `extends`, AND the concrete,
+      actively-training 4-deck plateau-investigation league) into
+      **`baseline_settings.json`** (mechanics only, no league identity) and
+      **`small_league.json`** (extends `baseline_settings.json`, carries
+      `league_name`/`roster`/`total_games`/`training_league_name`) — the
+      first real use of `config_loader.py`'s recursive `extends`.
+- [x] Folded **`run_gauntlet_pod.json`** (one-time creation config, extends-free,
+      `total_games` hardcoded to 10000) into **`run_gauntlet_twin.json`**
+      (the ongoing `extends`-based pointer to the same population) — two
+      files to drive one population was needless once the ongoing file's own
+      `extends` already inherited everything the one-time file duplicated.
+      Merged result renamed **`small_league_training_league.json`**.
+- [x] Renamed **`run_bench.json`** → **`benchmarking_league.json`**,
+      **`league_main.json`** → **`main_league.json`**,
+      **`league_elves_dmir_terror.json`** → **`tiny_league.json`** — all
+      re-pointed at the new base files (`baseline_settings.json` for the
+      latter two; `small_league.json` for `benchmarking_league.json`, which
+      also inherits roster/total_games, not just mechanics).
+- [x] Deleted **`mulligan_bootstrap_default.json`** — only ever checked in to
+      prove `train_mulligan.py --config` worked end to end, never loaded by
+      any hardcoded path. `train_mulligan.py`'s docstring/help text updated
+      to drop the now-dead example.
+- [x] All resolved-config output (`config_loader.load_config`) verified
+      byte-for-byte identical to before the rename/split. Updated every
+      code/doc/test reference (`run_league.py`, `league_cli_spec.py`,
+      `run_training_pipeline.py`, `bench_gpu_vs_cpu.py`, README.md,
+      `tests/test_run_league.py`).
+- [x] `tests/test_run_league.py` green (17 passed) plus
+      `test_run_training_pipeline.py`/`test_train_mulligan.py` (29 total).
+
 ## Next
 
 The DRL (`rl/`, `drl_env/`) and analysis (`analysis/`, `benchmarking/`)

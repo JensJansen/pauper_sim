@@ -33,19 +33,16 @@ Two phases, one script, either mode:
      a land-count/keep-rate/confidence breakdown reconstructed from the
      event log.
 
-Config file (--config, e.g. training_configs/mulligan_bootstrap_default.json):
-JSON of any flag below by its long name with dashes -> underscores
-(opponent_mode, league, twin, train_games, ...); a config may itself
-"extend" another (see config_loader.load_config, shared with run_league.py).
-Flag > config > hardcoded default, same precedence as run_league.py.
+Config file (--config): JSON of any flag below by its long name with dashes
+-> underscores (opponent_mode, league, twin, train_games, ...); a config may
+itself "extend" another (see config_loader.load_config, shared with
+run_league.py). Flag > config > hardcoded default, same precedence as
+run_league.py.
 
 Output: checkpoints/<league>/<deck>/<--bootstrap-name>.pt (default
 mulligan_bootstrap.pt for twin mode, mulligan_bootstrap_selfmirror.pt for
 self-mirror) -- a new filename, never overwrites the real mulligan.pt.
 Review the eval numbers before promoting it.
-
-    python -u analysis/mulligan_retrain/train_mulligan.py --opponent-mode twin \\
-        --config ../training_configs/mulligan_bootstrap_default.json
 
     python -u analysis/mulligan_retrain/train_mulligan.py --opponent-mode self-mirror \\
         --decks mono_red_rally --train-games 3000 \\
@@ -217,9 +214,8 @@ def _play_eval_arm(agent, main_decklist, pairing_factory, n_games, seed, horizon
 def _build_arg_parser():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--config", default=None, metavar="PATH",
-                    help="JSON of any flag below by its long name (dashes -> underscores) -- see "
-                         "training_configs/mulligan_bootstrap_default.json. May itself \"extend\" another "
-                         "config (config_loader.load_config, shared with run_league.py). "
+                    help="JSON of any flag below by its long name (dashes -> underscores). May itself "
+                         "\"extend\" another config (config_loader.load_config, shared with run_league.py). "
                          "Flag > config > hardcoded default.")
     ap.add_argument("--opponent-mode", choices=["twin", "self-mirror"], default=None,
                     help="twin: opponent is an independently-trained twin league's roster (see --twin). "

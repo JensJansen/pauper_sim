@@ -12,7 +12,7 @@ from rl.league.league_runner import (_load_progress, _next_batch_games, _save_pr
                               checkpoint_progress, should_snapshot)
 from rl.training.train import batch_size_for_iteration, ent_coef_schedule
 
-# Training-mechanics keys a league config should inherit from run_default.json
+# Training-mechanics keys a league config should inherit from baseline_settings.json
 # via its own top-level "extends" rather than retype -- retyping them is
 # exactly the duplicate-source-of-truth that silently drifted once already
 # (see test_the_training_league_inherits_mechanics_and_points_back_at_the_main_league).
@@ -138,7 +138,7 @@ def test_snapshot_cadence_survives_short_sessions():
     iteration index -- otherwise an escalation ladder of short sessions
     (1, 2, 4, ... iterations) never reaches snapshot_every within any one of
     them. Replays that ladder."""
-    gpi, snapshot_every = 24, 8  # run_default.json: 200 // 24 -> every 192 games/deck
+    gpi, snapshot_every = 24, 8  # baseline_settings.json: 200 // 24 -> every 192 games/deck
     cumulative, snapshots = 0, 0
     for n_iterations in (1, 2, 4, 8, 16, 32):
         for iteration in range(n_iterations):
@@ -184,7 +184,7 @@ def test_the_adopted_lr_matches_the_arm_that_justified_it():
 
 
 # If a new A/B config is started, reinstate a test pinning that its arm moves
-# exactly one knob off run_default.json (no accidental confounds).
+# exactly one knob off baseline_settings.json (no accidental confounds).
 
 
 def test_trunk_width_is_read_off_an_existing_checkpoint_not_the_config():
@@ -210,18 +210,18 @@ def test_trunk_width_is_read_off_an_existing_checkpoint_not_the_config():
 
 
 def test_main_league_inherits_mechanics_instead_of_duplicating_them():
-    """league_main.json used to retype every run_default.json mechanics
+    """main_league.json used to retype every baseline_settings.json mechanics
     field (games_per_iteration, checkpoint_opponent_rate, pfsp_power, ...);
     it now extends the file instead, so the two structurally cannot drift
     apart the way a manual copy could."""
     from repo_paths import REPO_ROOT
     from config_loader import load_config
     cfgs = REPO_ROOT / "training_configs"
-    raw_main = json.loads((cfgs / "league_main.json").read_text())
-    _assert_extends_not_duplicates(raw_main, "league_main.json", "run_default.json")
+    raw_main = json.loads((cfgs / "main_league.json").read_text())
+    _assert_extends_not_duplicates(raw_main, "main_league.json", "baseline_settings.json")
 
-    resolved = load_config(str(cfgs / "league_main.json"))
-    default = json.loads((cfgs / "run_default.json").read_text())
+    resolved = load_config(str(cfgs / "main_league.json"))
+    default = json.loads((cfgs / "baseline_settings.json").read_text())
     for k in MECHANICS:
         assert resolved[k] == default[k]
 
@@ -233,21 +233,21 @@ def test_main_league_inherits_mechanics_instead_of_duplicating_them():
 def test_the_training_league_inherits_mechanics_and_points_back_at_the_main_league():
     """A training-league population exists to differ from the main (primary)
     league in nothing but its nondeterministic training trajectory.
-    Extending run_default.json instead of retyping its fields (mechanics AND
-    roster -- it plays the same decks) makes a mechanical difference
-    structurally impossible rather than something a test has to keep
-    re-catching. Only league_name and training_league_name are set locally,
-    and must point at each other, which is what makes each side report
-    validation.round_robin_training against the other."""
+    Extending small_league.json instead of retyping its fields
+    (mechanics AND roster -- it plays the same decks) makes a mechanical
+    difference structurally impossible rather than something a test has to
+    keep re-catching. Only league_name and training_league_name are set
+    locally, and must point at each other, which is what makes each side
+    report validation.round_robin_training against the other."""
     from repo_paths import REPO_ROOT
     from config_loader import load_config
     cfgs = REPO_ROOT / "training_configs"
-    raw_twin = json.loads((cfgs / "run_gauntlet_twin.json").read_text())
-    _assert_extends_not_duplicates(raw_twin, "run_gauntlet_twin.json", "run_default.json")
+    raw_twin = json.loads((cfgs / "small_league_training_league.json").read_text())
+    _assert_extends_not_duplicates(raw_twin, "small_league_training_league.json", "small_league.json")
     assert "roster" not in raw_twin, "roster should be inherited via extends, not retyped"
 
-    default = load_config(str(cfgs / "run_default.json"))
-    twin = load_config(str(cfgs / "run_gauntlet_twin.json"))
+    default = load_config(str(cfgs / "small_league.json"))
+    twin = load_config(str(cfgs / "small_league_training_league.json"))
 
     assert twin["roster"] == default["roster"], "a training league must play the same decks"
     assert twin["league_name"] != default["league_name"], "the training league must be a SEPARATE population"
@@ -256,8 +256,8 @@ def test_the_training_league_inherits_mechanics_and_points_back_at_the_main_leag
 
 
 def test_bench_config_nulls_out_inherited_training_league_fields():
-    """run_bench.json extends run_default.json, which sets training_league_name
-    -- explicitly nulled out in run_bench.json so a benchmark timing run
+    """benchmarking_league.json extends small_league.json, which sets training_league_name
+    -- explicitly nulled out in benchmarking_league.json so a benchmark timing run
     doesn't inherit round_robin_training's wall-time, which it exists
     specifically to exclude. Pins that an extending file's explicit null
     actually overrides the base's value rather than the merge treating an
@@ -265,5 +265,5 @@ def test_bench_config_nulls_out_inherited_training_league_fields():
     from repo_paths import REPO_ROOT
     from config_loader import load_config
     cfgs = REPO_ROOT / "training_configs"
-    resolved = load_config(str(cfgs / "run_bench.json"))
+    resolved = load_config(str(cfgs / "benchmarking_league.json"))
     assert resolved["training_league_name"] is None

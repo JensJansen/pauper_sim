@@ -101,7 +101,12 @@ class LeaguePool:
     def record_outcome(self, training_deck_name, opponent_key, won):
         """Updates training_deck_name's running (wins, games) tally against
         opponent_key. Called once per real training game, never a separate
-        eval pass."""
+        eval pass -- except a game whose training seat had its opening hand
+        forced (rl.training.train's stratify_0land_pct): league_runner._run_session
+        deliberately skips calling this for those, so a forced-bad-hand loss
+        never inflates opponent_key's PFSP difficulty weight. Such a game
+        still counts toward total games played elsewhere -- only this
+        difficulty signal is skipped."""
         stats = self.opponent_stats.setdefault(training_deck_name, {})
         wins, games = stats.get(opponent_key, (0, 0))
         stats[opponent_key] = (wins + int(won), games + 1)

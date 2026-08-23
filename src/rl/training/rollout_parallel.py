@@ -56,7 +56,7 @@ def _sanitize_events(game_logs):
 def _league_rollout_worker(training_deck_name, all_state_dicts, all_trunk_hidden,
                             reward_fn_name, league_root_dir, horizon, n_games, seed,
                             mulligan_state_dicts=None, collect_logs=False, checkpoint_rate=0.0, pfsp=True,
-                            pfsp_power=None):
+                            pfsp_power=None, stratify_0land_pct=0.0):
     """Runs in a SEPARATE PROCESS (spawned fresh -- Windows only supports
     "spawn", so this re-imports the whole module graph). Must be
     module-level: ProcessPoolExecutor on spawn locates it by import path.
@@ -112,6 +112,7 @@ def _league_rollout_worker(training_deck_name, all_state_dicts, all_trunk_hidden
     buffers_by_deck, mull_by_deck, played, outcomes = collect_rollout_league(
         training_deck_name, live_nets, mulligan_nets, deck_ctxs, decklists, pool, reward_fn,
         horizon, n_games, rng, device="cpu", game_logs=worker_logs, checkpoint_rate=checkpoint_rate, pfsp=pfsp,
+        stratify_0land_pct=stratify_0land_pct,
     )
     # Serialize each deck's buffer to picklable entries; mulligan
     # transitions and event logs are already plain data. `pool` above is
@@ -125,7 +126,7 @@ def _league_rollout_worker(training_deck_name, all_state_dicts, all_trunk_hidden
 def collect_rollout_league_parallel(training_deck_name, live_nets, reward_fn_name, league_root_dir, horizon, n_games,
                                      executor, n_workers, all_trunk_hidden,
                                      mulligan_state_dicts=None, game_logs=None, checkpoint_rate=0.0, pfsp=True,
-                                     pfsp_power=None):
+                                     pfsp_power=None, stratify_0land_pct=0.0):
     """Orchestrator (runs in the MAIN process): splits n_games across
     n_workers, submits one _league_rollout_worker task per worker via the
     given (reused-across-calls) ProcessPoolExecutor, so process-spawn/import
@@ -140,8 +141,9 @@ def collect_rollout_league_parallel(training_deck_name, live_nets, reward_fn_nam
     instead, since it trains and would go stale if only sent once per
     session.
 
-    checkpoint_rate, pfsp: forwarded to every worker's pool.sample_opponent
-    verbatim.
+    checkpoint_rate, pfsp, stratify_0land_pct: forwarded to every worker's
+    collect_rollout_league call verbatim (checkpoint_rate/pfsp on to
+    pool.sample_opponent; stratify_0land_pct on to collect_rollout).
 
     Returns (buffers_by_deck, mull_by_deck, games_played, outcomes) --
     outcomes merges every worker's own outcomes list; the caller applies
@@ -159,15 +161,21 @@ def collect_rollout_league_parallel(training_deck_name, live_nets, reward_fn_nam
 
     collect_logs = game_logs is not None
     futures = [
+        # Trailing args passed by keyword (not positionally, unlike the
+        # leading required ones above): _league_rollout_worker declares them
+        # keyword-with-defaults, so a purely-positional tail is one
+        # accidental reorder away from silently shifting a later float into
+        # an earlier one's slot -- see stratify_0land_pct's own history.
         executor.submit(_league_rollout_worker, training_deck_name, all_state_dicts, all_trunk_hidden,
-                         reward_fn_name, league_root_dir, horizon, chunk,
-                         random.randrange(2 ** 31), mulligan_state_dicts, collect_logs, checkpoint_rate, pfsp,
-                         pfsp_power)
+                         reward_fn_name, league_root_dir, horizon, chunk, random.randrange(2 ** 31),
+                         mulligan_state_dicts=mulligan_state_dicts, collect_logs=collect_logs,
+                         checkpoint_rate=checkpoint_rate, pfsp=pfsp, pfsp_power=pfsp_power,
+                         stratify_0land_pct=stratify_0land_pct)
         for chunk in chunks if chunk > 0
     ]
     buffers_by_deck = {}   # deck name -> merged RolloutBuffer across workers
     mull_by_deck = {}      # deck name -> merged mulligan transitions across workers
-    outcomes = []          # (opponent_deck_name, snapshot_id_or_None, training_deck_won), merged across workers
+    outcomes = []          # (opponent_deck_name, snapshot_id_or_None, training_deck_won, was_stratified), merged across workers
     games_played = 0
     for future in futures:
         entries_by_deck, worker_mull_by_deck, worker_logs, played, worker_outcomes = future.result()

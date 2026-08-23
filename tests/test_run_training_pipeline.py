@@ -27,6 +27,7 @@ def test_resolve_options_defaults():
     assert opts["games_per_iteration"] == 6  # max(1, n_workers) when not overridden
     assert opts["snapshot_every"] == 33  # max(1, 200 // 6)
     assert opts["checkpoint_rate"] == 0.0
+    assert opts["stratify_0land_pct"] == 0.0
     assert opts["pfsp"] is True
     assert opts["device"] == "cpu"
     assert opts["roster"] is None
@@ -36,7 +37,7 @@ def test_resolve_options_defaults():
 
 def test_resolve_options_reads_config_overrides():
     cfg = {"league_name": "x", "total_games": 1000, "n_workers": 4, "games_per_iteration": 10,
-           "snapshot_every_games": 100, "checkpoint_opponent_rate": 0.2, "pfsp": False,
+           "snapshot_every_games": 100, "checkpoint_opponent_rate": 0.2, "stratify_0land_pct": 0.33, "pfsp": False,
            "device": "cuda", "training_league_name": "y",
            "roster": ["a", "b", "c"], "checks_cadence_pct": 10, "checks_games": 25, "seed": 7}
     opts = pipeline._resolve_options(cfg)
@@ -44,6 +45,7 @@ def test_resolve_options_reads_config_overrides():
     assert opts["games_per_iteration"] == 10
     assert opts["snapshot_every"] == 10  # max(1, 100 // 10)
     assert opts["checkpoint_rate"] == 0.2
+    assert opts["stratify_0land_pct"] == 0.33
     assert opts["pfsp"] is False
     assert opts["device"] == "cuda"
     assert opts["training_league_name"] == "y"

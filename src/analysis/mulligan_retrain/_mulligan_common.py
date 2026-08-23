@@ -3,7 +3,9 @@ opponent-mode twin or self-mirror): net loading, land-count audit, and the
 probe-hand trajectory tracker. Not a script itself; the caller does its own
 sys.path insert before importing this.
 """
+import math
 import os
+import random
 
 import torch
 
@@ -34,6 +36,16 @@ def load_frozen_nets(league_dir, deck_names, vocab, fixed_tables):
 
 
 _UNBUCKETED = object()  # sentinel key used internally when deck_by_game_seat is None
+
+
+def _binary_entropy_bits(p):
+    """Shannon entropy of a Bernoulli(p) keep/mulligan choice, in bits (0 at
+    p=0 or 1, max 1.0 at p=0.5 -- a flat, collapse-agnostic scale for
+    tracking a policy sharpening toward "always keep" over a training
+    run). 0*log2(0) := 0 by convention."""
+    def term(x):
+        return -x * math.log2(x) if x > 0 else 0.0
+    return term(p) + term(1 - p)
 
 
 def audit_land_counts(game_logs, deck_by_game_seat=None):
@@ -82,7 +94,9 @@ def audit_land_counts(game_logs, deck_by_game_seat=None):
         last_by_seat = {}  # seat -> (deck_name, land_count)
         for deck_name, seat, lc, chosen, p_keep in decisions:
             by_lc = by_deck.setdefault(deck_name, {})
-            d = by_lc.setdefault(lc, {"kept": 0, "mulliganed": 0, "keep_probs": [], "wins": 0, "losses": 0})
+            d = by_lc.setdefault(lc, {"kept": 0, "mulliganed": 0, "keep_probs": [], "entropy_bits": [],
+                                       "wins": 0, "losses": 0})
+            d["entropy_bits"].append(_binary_entropy_bits(p_keep))  # every decision, kept or not
             if chosen == 0:
                 d["kept"] += 1
                 d["keep_probs"].append(p_keep)
@@ -98,6 +112,16 @@ def audit_land_counts(game_logs, deck_by_game_seat=None):
     return by_deck
 
 
+def _hand_tokens(card_names, vocab):
+    """One 7-card hand -> the build_token_set tokens decide()/update() would
+    see for it (pregame: every zone but this hand is empty)."""
+    p0, p1 = PlayerState(on_the_play=True), PlayerState(on_the_play=False)
+    p0.hand = [game.CARD_DEFS[n] for n in card_names]
+    state = GameState(on_the_play=True, players=[p0, p1], event_log=None)
+    state.active_idx = 0
+    return build_token_set(state, 0, vocab)
+
+
 def build_probe_hands(decklist, vocab):
     """A small, fixed set of synthetic opening hands for one deck -- every
     land count 0 through 7, built from real cards in that deck's own list
@@ -107,7 +131,9 @@ def build_probe_hands(decklist, vocab):
 
     Fixed rather than sampled: evaluated at the same hands every time
     training pauses to check in, so a change in P(mulligan) reflects the net
-    moving, not a different hand being asked about."""
+    moving, not a different hand being asked about. See
+    build_probe_hands_sampled for a multi-hand-per-count variant that
+    reflects true deck composition -- this one just wants a stable target."""
     names = sorted({n for n, *_ in decklist})
     lands = [n for n in names if game.CARD_DEFS[n].card_type.name == "LAND"]
     nonlands = [n for n in names if game.CARD_DEFS[n].card_type.name != "LAND"]
@@ -116,14 +142,58 @@ def build_probe_hands(decklist, vocab):
     def take(pool, k):
         return [pool[i % len(pool)] for i in range(k)]
 
-    def hand_tokens(card_names):
-        p0, p1 = PlayerState(on_the_play=True), PlayerState(on_the_play=False)
-        p0.hand = [game.CARD_DEFS[n] for n in card_names]
-        state = GameState(on_the_play=True, players=[p0, p1], event_log=None)
-        state.active_idx = 0
-        return build_token_set(state, 0, vocab)
+    return {f"{n}_land": _hand_tokens(take(lands, n) + take(nonlands, 7 - n), vocab) for n in range(8)}
 
-    return {f"{n}_land": hand_tokens(take(lands, n) + take(nonlands, 7 - n)) for n in range(8)}
+
+def build_probe_hands_sampled(decklist, vocab, land_counts=range(8), n_variants=6, seed=0):
+    """n_variants distinct synthetic hands per land count in land_counts,
+    each sampled without replacement from the real card multiplicities in
+    decklist (an actual possible 7-card draw), unlike build_probe_hands'
+    single deterministic hand per count. Seeded rather than random, so the
+    same call always returns the same hands -- comparable across cadence
+    points during a run -- while averaging out any one hand's idiosyncrasy
+    and reaching land counts (6, 7; often 0 too) natural self-play rarely or
+    never draws. Returns {land_count: [tokens, ...]}."""
+    rng = random.Random(seed)
+    lands = [n for n, c, *_ in decklist for _ in range(c) if game.CARD_DEFS[n].card_type.name == "LAND"]
+    spells = [n for n, c, *_ in decklist for _ in range(c) if game.CARD_DEFS[n].card_type.name != "LAND"]
+    assert lands and spells, "a deck with no lands or no spells can't build these probes"
+    out = {}
+    for lc in land_counts:
+        hands = []
+        for _ in range(n_variants):
+            hand = rng.sample(lands, lc) + rng.sample(spells, 7 - lc)
+            rng.shuffle(hand)
+            hands.append(_hand_tokens(hand, vocab))
+        out[lc] = hands
+    return out
+
+
+def probe_land_count_stats(net, probes_by_lc, scalars=(0.0, 1.0)):
+    """{land_count: {p_mulligan_mean, p_mulligan_spread, entropy_bits_mean,
+    n}} for hands built by build_probe_hands_sampled -- the sculpted-hand
+    counterpart to audit_land_counts' natural-game numbers: exact land
+    counts on demand instead of whatever self-play happened to draw. `net`
+    is the MulliganNet (matches probe_p_mulligan). Read-only, safe to call
+    mid-training."""
+    sc = torch.tensor([list(scalars)], dtype=torch.float32)
+    out = {}
+    with torch.inference_mode():
+        for lc, hands in probes_by_lc.items():
+            ps = []
+            for tokens in hands:
+                vocab_idx, features, key_padding_mask, _identities = pad_token_batch([tokens])
+                side_flag = features[:, :, -1]
+                mine_summary, _token_reps = net.encode(vocab_idx, features, key_padding_mask, side_flag)
+                logits, _value = net.decision(mine_summary, sc)
+                ps.append(torch.softmax(logits, dim=-1)[0, 1].item())
+            out[lc] = {
+                "p_mulligan_mean": sum(ps) / len(ps),
+                "p_mulligan_spread": max(ps) - min(ps),
+                "entropy_bits_mean": sum(_binary_entropy_bits(p) for p in ps) / len(ps),
+                "n": len(ps),
+            }
+    return out
 
 
 def probe_p_mulligan(net, probes, scalars=(0.0, 1.0)):
@@ -151,7 +221,9 @@ def print_land_audit(by_lc):
     for lc in sorted(by_lc):
         d = by_lc[lc]
         avg_p = sum(d["keep_probs"]) / len(d["keep_probs"]) if d["keep_probs"] else float("nan")
+        avg_ent = sum(d["entropy_bits"]) / len(d["entropy_bits"]) if d["entropy_bits"] else float("nan")
         wl = d["wins"] + d["losses"]
         wr = d["wins"] / wl if wl else float("nan")
         print(f"      lands={lc}: kept={d['kept']:3d} mulliganed={d['mulliganed']:3d} "
-              f"avg_P(keep|kept)={avg_p:.3f} win_rate_after_keep={wr:.3f} (n={wl})")
+              f"avg_P(keep|kept)={avg_p:.3f} avg_entropy_bits={avg_ent:.3f} "
+              f"win_rate_after_keep={wr:.3f} (n={wl})")

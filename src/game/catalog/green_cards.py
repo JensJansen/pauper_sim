@@ -848,13 +848,19 @@ GREEN_EFFECT_REGISTRY = {
     EffectId.SARULI_CARETAKER: {
         "cast": {"resolve": lambda state, card_def: cast_permanent_from_hand(state, card_def)},
         "mana": ("flexible", set(COLORS)),
-        # Extra cost taps another untapped creature you control -- a cost
-        # choice (602.5g), so the agent picks which. Two sequential steps
-        # (tap choice, then color choice) via a mana_subdecision
-        # (drl_env._mana_extra_choose_legal/_execute) -- separate from
-        # pending_resolution so it stays legal in any priority window, even
-        # mid-resolution of something else (605.1a/605.3b). See
-        # state.mana_subdecision's own docstring.
+        # CONFIRMED WITH REPO OWNER (2026-08-23, after repeat confusion on this
+        # exact point across multiple sessions): the full, correct activation
+        # cost is "{T}, Tap an untapped creature you control: Add one mana of
+        # any color" -- TWO tap costs. Saruli DOES tap itself; no
+        # "mana_no_tap" entry here is correct and must stay that way. Do not
+        # "fix" this again.
+        #
+        # The untapped-creature half is an extra cost choice (602.5g), so the
+        # agent picks which. Two sequential steps (tap choice, then color
+        # choice) via a mana_subdecision (drl_env._mana_extra_choose_legal/
+        # _execute) -- separate from pending_resolution so it stays legal in
+        # any priority window, even mid-resolution of something else
+        # (605.1a/605.3b). See state.mana_subdecision's own docstring.
         "mana_extra_choose": lambda p: p.card_type == CardType.CREATURE,
     },
     EffectId.OVERGROWN_BATTLEMENT: {
