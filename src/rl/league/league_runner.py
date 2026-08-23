@@ -1,8 +1,10 @@
 """run_league.py's reusable core: session driving (_run_session), eval-mode
-functions (_run_eval and the vs_history/vs_gauntlet/vs_heuristic checks),
-checkpoint/progress helpers, and the per-deck network builder. Extracted so
-other callers (e.g. benchmarking/training_run.py) can import these
-side-effect-free functions without importing the run_league.py CLI script."""
+functions (_run_eval, _run_eval_vs_history, _run_eval_vs_heuristic --
+imported by validation/'s checks, which also cover a full cross-league
+round robin _run_session never did itself), checkpoint/progress helpers,
+and the per-deck network builder. Extracted so other callers (e.g.
+benchmarking/training_run.py) can import these side-effect-free functions
+without importing the run_league.py CLI script."""
 import copy
 import json
 import os
@@ -32,13 +34,11 @@ D_MODEL = 64  # SetTransformer width; must match rl.model.arch.SetTransformer's 
 # different point and every win rate would measure something else.
 HORIZON = 120
 
-# Games per in-training eval check (vs_history / vs_gauntlet / vs_heuristic).
-# Raising EVAL_GAMES and eval_every_sessions together trades reading
-# frequency for precision at the same total compute cost. Config-driven
-# (run-config "eval_games" / "eval_every_sessions") since the right point on
-# that trade depends on session size.
+# Default games-per-check for _run_eval_vs_history/_run_eval_vs_heuristic
+# when a caller doesn't override it. Both now run only as validation/
+# checks (see that package), driven by run_training_pipeline.py at its own
+# checks_games cadence, which always does override this default explicitly.
 EVAL_GAMES = 20
-EVAL_EVERY_SESSIONS = 1
 
 # DeckNetwork trunk widths, per deck (each deck's SetTransformer encoder adds
 # a further 117,056 params on top of this, and trains with it). Per-league
@@ -211,8 +211,7 @@ def _run_session(n_iterations, games_per_iteration, snapshot_every, executor, n_
                   league_dir=None, seed=None,
                   train_deck=True, train_mulligan=True, train_decks=None,
                   matchup=None, game_logs=None, checkpoint_rate=0.0, roster=None, pfsp=True,
-                  gauntlet_league_dir=None, heuristic_decks=(), cumulative_games=0,
-                  ppo_hparams=None, eval_games=EVAL_GAMES, eval_every_sessions=EVAL_EVERY_SESSIONS,
+                  cumulative_games=0, ppo_hparams=None,
                   pfsp_power=PFSP_POWER, trunk_hidden=TRUNK_HIDDEN, device="cpu"):
     # device: where the nets live, and where ppo_update's gradient work runs.
     # Only the update moves -- collection always runs on CPU (inference over
@@ -374,8 +373,6 @@ def _run_session(n_iterations, games_per_iteration, snapshot_every, executor, n_
                    n_iterations=n_iterations, games_per_iteration=games_per_iteration,
                    snapshot_every=snapshot_every, checkpoint_rate=checkpoint_rate,
                    pfsp=pfsp, n_workers=n_workers, horizon=horizon,
-                   gauntlet=gauntlet_league_dir is not None,
-                   eval_games=eval_games, eval_every_sessions=eval_every_sessions,
                    pfsp_power=pfsp_power, **hp)
     t0 = time.time()
     total_games = 0
@@ -549,49 +546,12 @@ def _run_session(n_iterations, games_per_iteration, snapshot_every, executor, n_
           f"collect={collect_time_total:.1f}s ({100 * collect_time_total / elapsed:.0f}%), "
           f"update={update_time_total:.1f}s ({100 * update_time_total / elapsed:.0f}%)")
 
-    # Once per session: does the live net beat its own past selves. Only
-    # meaningful in league mode (matchup mode never snapshots). Runs
-    # sequentially in this process via plain collect_rollout, not the
-    # session's own executor/n_workers, so it adds real extra games on top
-    # of however small the training batch was.
-    cumulative_at_session_end = cumulative_games + n_iterations * games_per_iteration
-    # eval_every_sessions > 1 spends the same total eval compute on fewer,
-    # bigger, more precise readings. Session 0 always evals.
-    run_evals = eval_every_sessions <= 1 or session % eval_every_sessions == 0
-    if not run_evals:
-        print(f"  (evals skipped: session {session} % eval_every_sessions={eval_every_sessions} != 0)", flush=True)
-    if matchup is None and run_evals:
-        # Every check below plays on CPU nets, so the mirrors must carry
-        # this session's final trained weights before evaluating.
-        sync_cpu_mirrors()
-        for name in train_decks:
-            for r in _run_eval_vs_history(name, cpu_nets[name], cpu_mulligan_nets[name], deck_ctxs[name],
-                                          decklists[name], league_dir, horizon,
-                                          games_per_snapshot=eval_games, seed=seed):
-                _append_metric(league_dir, kind="vs_history", session=session, iteration=iteration, deck=name,
-                               cumulative_games=cumulative_at_session_end, **r)
-                print(f"  vs-history [{name}] vs {r['label']}: {r['live_wins']}/{r['games']} live wins "
-                      f"({r['snapshot_wins']} snapshot wins, {r['no_winner']} no-winner)", flush=True)
-            # The gauntlet check (an independently-trained twin population)
-            # -- None until that population's training reaches this deck, or
-            # no gauntlet_league_dir is configured.
-            r = _run_eval_vs_gauntlet(name, cpu_nets[name], cpu_mulligan_nets[name], deck_ctxs[name],
-                                      decklists[name], gauntlet_league_dir, horizon,
-                                      games=eval_games, seed=seed)
-            if r is not None:
-                _append_metric(league_dir, kind="vs_gauntlet", session=session, iteration=iteration, deck=name,
-                               cumulative_games=cumulative_at_session_end, **r)
-                print(f"  vs-gauntlet [{name}]: {r['live_wins']}/{r['games']} live wins "
-                      f"({r['gauntlet_wins']} gauntlet wins, {r['no_winner']} no-winner)", flush=True)
-            # The tier-1 gauntlet member (HeuristicAgent) -- only for
-            # whichever deck(s) heuristic_decks names.
-            if name in heuristic_decks:
-                r = _run_eval_vs_heuristic(name, cpu_nets[name], cpu_mulligan_nets[name], deck_ctxs[name],
-                                           decklists[name], horizon, games=eval_games, seed=seed)
-                _append_metric(league_dir, kind="vs_heuristic", session=session, iteration=iteration, deck=name,
-                               cumulative_games=cumulative_at_session_end, **r)
-                print(f"  vs-heuristic [{name}]: {r['live_wins']}/{r['games']} live wins "
-                      f"({r['heuristic_wins']} heuristic wins, {r['no_winner']} no-winner)", flush=True)
+    # vs_history/vs_gauntlet/vs_heuristic used to run automatically here,
+    # once per session. All mid-run quality/stats checks (including a much
+    # more thorough replacement for vs_gauntlet -- a full cross-product
+    # round robin, not just a same-name diagonal) now live in validation/,
+    # run by run_training_pipeline.py at its own games/deck cadence instead
+    # -- see that package's docstring. _run_session itself is training only.
 
     _save_live_checkpoints(live_nets, optimizers, deck_names, session, session_path, league_dir,
                            mulligan_nets, mulligan_optimizers)
@@ -741,15 +701,14 @@ def _play_paired_eval_games(live_agent, opp_agent, decklist, n_games, horizon, s
 
 def _play_eval_games(live_agent, opp_agent, decklist, n_games, horizon, rng, opp_wins_key,
                      greedy=True):
-    """Shared tail for every vs_history/vs_gauntlet/vs_heuristic eval pass:
-    plays a fixed live_agent-vs-opp_agent pairing (no training), scores
-    winners via collect_rollout's "game_over" event, and returns
-    {"games", "live_wins", <opp_wins_key>, "no_winner"}. opp_wins_key names
-    the opponent side (e.g. "snapshot_wins"/"gauntlet_wins"/"heuristic_wins").
+    """Shared tail for every vs_history/vs_heuristic eval pass: plays a fixed
+    live_agent-vs-opp_agent pairing (no training), scores winners via
+    collect_rollout's "game_over" event, and returns {"games", "live_wins",
+    <opp_wins_key>, "no_winner"}. opp_wins_key names the opponent side (e.g.
+    "snapshot_wins"/"heuristic_wins").
 
     greedy defaults to True (measure the policy's actual best play, not an
-    exploration sample); run_anchor_eval.py overrides it since argmax over a
-    randomly initialized head is degenerate. Applies to both seats."""
+    exploration sample). Applies to both seats."""
     pairing = _constant_pairing([live_agent, opp_agent], [decklist, decklist], [None, None], [None, None])
     game_logs = []
     _bufs, _mull, played = collect_rollout(pairing, n_games, horizon, rng, device="cpu",
@@ -800,55 +759,13 @@ def _run_eval_vs_history(deck_name, live_net, mulligan_net, deck_ctx, decklist, 
     return results
 
 
-def _run_eval_vs_gauntlet(deck_name, live_net, mulligan_net, deck_ctx, decklist, gauntlet_league_dir,
-                           horizon, games=EVAL_GAMES, seed=None):
-    """Plays deck_name's current live net against the same-named deck from an
-    independently-trained population (gauntlet_league_dir) -- a genuinely
-    external reference, not another point in this league's own self-play
-    history. A shared population-wide blind spot is something an
-    independently-evolved population is more likely to expose than any
-    opponent drawn from this league's own history.
-
-    Returns None (not []) if the gauntlet league has no live.pt for this
-    deck yet, or gauntlet_league_dir is unset -- distinct from
-    _run_eval_vs_history's [] since there's only ever one gauntlet opponent
-    per deck. greedy=True."""
-    if gauntlet_league_dir is None:
-        return None
-    # No stack-compatibility check needed: the gauntlet's checkpoint brings
-    # its own perception encoder, so its weights are never reinterpreted
-    # through this league's.
-    gauntlet_live_path = f"{gauntlet_league_dir}/{deck_name}/live.pt"
-    if not os.path.exists(gauntlet_live_path):
-        return None
-
-    vocab, fixed_table = deck_ctx
-    # The gauntlet is a different population that may have been trained at a
-    # different trunk width, so its own checkpoint is the only authority on
-    # the shape to build.
-    gauntlet_net = build_deck_net(vocab.size, len(fixed_table),
-                                  ckpt_io.trunk_hidden_from_deck_checkpoint(gauntlet_live_path))
-    ckpt_io.load_deck_checkpoint(gauntlet_live_path, gauntlet_net)  # existence already checked above
-    gauntlet_net.eval()
-    gauntlet_mull = MulliganNet(gauntlet_net.encoder)
-    gauntlet_mull_path = f"{gauntlet_league_dir}/{deck_name}/mulligan.pt"
-    ckpt_io.load_deck_checkpoint(gauntlet_mull_path, gauntlet_mull)
-    gauntlet_mull.eval()
-
-    live_agent = SeatAgent(live_net, mulligan_net, deck_ctx)
-    gauntlet_agent = SeatAgent(gauntlet_net, gauntlet_mull, deck_ctx)
-    return _play_paired_eval_games(live_agent, gauntlet_agent, decklist, games, horizon, seed, "gauntlet_wins")
-
-
 def _run_eval_vs_heuristic(deck_name, live_net, mulligan_net, deck_ctx, decklist, horizon,
                             games=EVAL_GAMES, seed=None):
     """Plays deck_name's current live net against a HeuristicAgent
     (rl.decision.heuristic_agent) for the same deck -- the gauntlet's tier-1
-    member, distinct from _run_eval_vs_gauntlet's tier-2 (an
-    independently-trained population). Only called for whichever deck(s)
-    the caller's heuristic_decks names -- the heuristic's rules are general
-    MTG principles hand-picked for mono_red_rally, not audited for every
-    deck."""
+    member. Only called for whichever deck(s) the caller's heuristic_decks
+    names -- the heuristic's rules are general MTG principles hand-picked
+    for mono_red_rally, not audited for every deck."""
     live_agent = SeatAgent(live_net, mulligan_net, deck_ctx)
     heuristic_agent = HeuristicAgent(deck_ctx)
     return _play_paired_eval_games(live_agent, heuristic_agent, decklist, games, horizon, seed, "heuristic_wins")

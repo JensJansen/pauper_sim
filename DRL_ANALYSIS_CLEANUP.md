@@ -152,6 +152,71 @@ sharing them, guarded only by drift-checking tests).
       runs of both opponent modes and `--config` against existing
       checkpoints).
 
+## Done — single training pipeline + validation checks (2026-08-22, fourth pass)
+
+Replaces the manual "re-invoke `run_league.py` session by session, eyeball
+the log" workflow (the `/train` skill used to encode this in prose; deleted
+earlier this pass) with one script that owns a whole training run, plus a
+single home for every mid-run quality/stats check instead of them being
+scattered (an automatic per-session trio inside `_run_session`, a
+standalone `run_cross_league_eval.py`, an unwired `run_anchor_eval.py`).
+
+- [x] New `src/run_training_pipeline.py` — `--config PATH [--fresh]` trains
+      a whole league end to end (fixed cadence-sized chunks, not the old
+      doubling/shakeout ladder — one process now runs the entire thing, so
+      there's no more per-invocation judgment call to make), running the
+      full `validation/` check suite every `checks_cadence_pct` of
+      `total_games` (default 5%). `run_league.py` itself keeps `--matchup`
+      training and one-off debug runs only.
+- [x] New `src/validation/` package, five checks, one registry
+      (`__init__.py`'s `CHECKS`, `run_all` — a check that raises is logged
+      and skipped, training is never aborted by a bad check):
+      `round_robin_primary` (absorbs `_run_eval`'s round-robin core),
+      `round_robin_training` (absorbs the now-deleted
+      `run_cross_league_eval.py`'s full cross-product logic — genuinely
+      more thorough than the old same-name-only `vs_gauntlet` diagonal
+      check it supersedes), `mulligan_audit` (extends
+      `_mulligan_common.audit_land_counts` with per-deck attribution rather
+      than reimplementing it — analyzes the SAME games the two round robins
+      just played, primary-controlled seats only, not a separate batch),
+      `vs_history` and `vs_heuristic` (absorbed as-is from
+      `_run_eval_vs_history`/`_run_eval_vs_heuristic`, re-homed off
+      `_run_session`'s old automatic per-session cadence onto this
+      pipeline's coarser one). `run_anchor_eval.py` deleted outright
+      (owner's call: the "vs. fully untrained net" comparison is redundant
+      with `vs_history`'s much more precise self-improvement signal).
+- [x] `_run_session` (`league_runner.py`) no longer triggers any eval
+      itself — `gauntlet_league_dir`/`heuristic_decks`/`eval_games`/
+      `eval_every_sessions` params and the `_run_eval_vs_gauntlet` function
+      all removed; it's purely collect+update+snapshot+checkpoint now.
+      `run_league.py`'s `--eval` flag correspondingly requires `--matchup`
+      (the roster-wide round robin moved to `validation.round_robin_primary`).
+- [x] Renamed "gauntlet" → "training league" in code/docs/config-field
+      vocabulary (`gauntlet_league_name` → `training_league_name`,
+      `--gauntlet-league-name` CLI flag removed, `vs_gauntlet` metric kind
+      retired in favor of `round_robin_training`) — but NOT on-disk
+      directory/file names (`checkpoints/4_deck_subleague_gauntlet/`,
+      `training_configs/run_gauntlet_twin.json`, etc. keep their literal
+      names; only what refers to the concept changed). The "Gauntlet"
+      umbrella term itself stays — it covers `HeuristicAgent` (tier 1) too,
+      which "training league" was never meant to describe.
+      `heuristic_agent.py`/`agent.py`/tests describing tier 1 untouched.
+- [x] Output layout: `checkpoints/<primary_league>/checks/` for league-wide
+      results, `checkpoints/<primary_league>/<deck>/checks/` for a single
+      deck's own — every file stamped with the games/deck count
+      (`<check>_<games>games.json`, never overwritten) plus a compact
+      per-deck summary appended to `metrics.jsonl` (new `kind`s matching
+      each check's name) for `report_metrics.py`'s existing trend tooling.
+- [x] Full test suite green (992 passed) — new unit tests for
+      `run_training_pipeline.py`'s cadence/config resolution, `validation/`'s
+      registry failure-isolation and output-path plumbing, and
+      `audit_land_counts`'s per-deck attribution extension — plus a real
+      end-to-end smoke run (tiny league, real games, real checkpoints) that
+      caught and gracefully survived one genuine pre-existing checkpoint
+      incompatibility (a stale `training_league` checkpoint predating a
+      `MulliganNet` hand-representation version bump) without stopping
+      training, confirming the failure-isolation design actually works.
+
 ## Next
 
 The DRL (`rl/`, `drl_env/`) and analysis (`analysis/`, `benchmarking/`)

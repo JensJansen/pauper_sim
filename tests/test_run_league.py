@@ -15,7 +15,7 @@ from rl.training.train import batch_size_for_iteration, ent_coef_schedule
 # Training-mechanics keys a league config should inherit from run_default.json
 # via its own top-level "extends" rather than retype -- retyping them is
 # exactly the duplicate-source-of-truth that silently drifted once already
-# (see test_the_gauntlet_twin_inherits_mechanics_and_points_back_at_the_main_league).
+# (see test_the_training_league_inherits_mechanics_and_points_back_at_the_main_league).
 MECHANICS = ["snapshot_every_games", "n_workers", "games_per_iteration",
              "pfsp_power", "checkpoint_opponent_rate", "pfsp", "device"]
 
@@ -230,14 +230,15 @@ def test_main_league_inherits_mechanics_instead_of_duplicating_them():
     assert set(resolved["roster"]) == set(manifest), "main league must carry the full manifest roster"
 
 
-def test_the_gauntlet_twin_inherits_mechanics_and_points_back_at_the_main_league():
-    """A twin population exists to differ from the main league in nothing but
-    its nondeterministic training trajectory. Extending run_default.json
-    instead of retyping its fields (mechanics AND roster -- the twin plays
-    the same decks) makes a mechanical difference structurally impossible
-    rather than something a test has to keep re-catching. Only league_name
-    and gauntlet_league_name are set locally, and must point at each other,
-    which is what makes each side report vs_gauntlet against the other."""
+def test_the_training_league_inherits_mechanics_and_points_back_at_the_main_league():
+    """A training-league population exists to differ from the main (primary)
+    league in nothing but its nondeterministic training trajectory.
+    Extending run_default.json instead of retyping its fields (mechanics AND
+    roster -- it plays the same decks) makes a mechanical difference
+    structurally impossible rather than something a test has to keep
+    re-catching. Only league_name and training_league_name are set locally,
+    and must point at each other, which is what makes each side report
+    validation.round_robin_training against the other."""
     from repo_paths import REPO_ROOT
     from config_loader import load_config
     cfgs = REPO_ROOT / "training_configs"
@@ -248,22 +249,22 @@ def test_the_gauntlet_twin_inherits_mechanics_and_points_back_at_the_main_league
     default = load_config(str(cfgs / "run_default.json"))
     twin = load_config(str(cfgs / "run_gauntlet_twin.json"))
 
-    assert twin["roster"] == default["roster"], "a twin must play the same decks"
-    assert twin["league_name"] != default["league_name"], "the twin must be a SEPARATE population"
-    assert twin["gauntlet_league_name"] == default["league_name"]
-    assert default["gauntlet_league_name"] == twin["league_name"]
+    assert twin["roster"] == default["roster"], "a training league must play the same decks"
+    assert twin["league_name"] != default["league_name"], "the training league must be a SEPARATE population"
+    assert twin["training_league_name"] == default["league_name"]
+    assert default["training_league_name"] == twin["league_name"]
 
 
-def test_bench_config_nulls_out_inherited_gauntlet_fields():
-    """run_bench.json extends run_default.json, which sets gauntlet_league_name
+def test_bench_config_nulls_out_inherited_training_league_fields():
+    """run_bench.json extends run_default.json, which sets training_league_name
     and heuristic_decks -- both explicitly nulled/emptied out in run_bench.json
-    so a benchmark timing run doesn't inherit the vs_gauntlet/vs_heuristic eval
-    wall-time it exists specifically to exclude. Pins that an extending file's
-    explicit null/[] actually overrides the base's value rather than the merge
-    treating an absent-vs-null key the same way."""
+    so a benchmark timing run doesn't inherit round_robin_training/vs_heuristic
+    checks' wall-time, which it exists specifically to exclude. Pins that an
+    extending file's explicit null/[] actually overrides the base's value
+    rather than the merge treating an absent-vs-null key the same way."""
     from repo_paths import REPO_ROOT
     from config_loader import load_config
     cfgs = REPO_ROOT / "training_configs"
     resolved = load_config(str(cfgs / "run_bench.json"))
-    assert resolved["gauntlet_league_name"] is None
+    assert resolved["training_league_name"] is None
     assert resolved["heuristic_decks"] == []

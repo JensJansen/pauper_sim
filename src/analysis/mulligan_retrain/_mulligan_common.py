@@ -33,18 +33,32 @@ def load_frozen_nets(league_dir, deck_names, vocab, fixed_tables):
     return nets
 
 
-def audit_land_counts(game_logs):
+_UNBUCKETED = object()  # sentinel key used internally when deck_by_game_seat is None
+
+
+def audit_land_counts(game_logs, deck_by_game_seat=None):
     """Reconstructs each game's hand at every keep/mulligan decision from its
     event log (zone_move/draw, /mulligan_take, /mulligan_bottom -- there is
     no separate "hand contents" event, the draw events are the hand) and
     buckets by land count. Only meaningful for an arm whose pregame decider
     is a real MulliganNet -- AlwaysKeep/RandomMulligan never emit the
-    decision_weights events this reads."""
-    by_lc = {}
-    for events in game_logs:
+    decision_weights events this reads.
+
+    deck_by_game_seat (optional): a list parallel to game_logs, each entry
+    {seat: deck_name} attributing that game's seats to a deck. A seat absent
+    from the dict is excluded entirely -- the caller's way to filter out a
+    seat it doesn't want counted (e.g. an opponent-league seat in a
+    cross-league game: validation.mulligan_audit passes an entry only for
+    the primary-controlled seat). When given, returns
+    {deck_name: {land_count: {...}}} instead of the flat {land_count: {...}}
+    a bare game_logs call still returns, unchanged from before this parameter
+    existed."""
+    by_deck = {}
+    for i, events in enumerate(game_logs):
+        seat_deck = deck_by_game_seat[i] if deck_by_game_seat is not None else None
         hand = {0: [], 1: []}
         winner = None
-        decisions = []  # (seat, land_count, chosen, p_keep)
+        decisions = []  # (deck_name, seat, land_count, chosen, p_keep)
         for ev in events:
             k, seat = ev.get("kind"), ev.get("active_idx")
             if k == "zone_move" and ev.get("reason") == "draw" and ev.get("to_zone") == "hand":
@@ -56,26 +70,32 @@ def audit_land_counts(game_logs):
                 if name in hand[seat]:
                     hand[seat].remove(name)
             elif k == "decision_weights" and ev.get("network") == "mulligan_keep":
+                if seat_deck is not None and seat not in seat_deck:
+                    continue  # this seat is excluded by the caller
+                deck_name = seat_deck[seat] if seat_deck is not None else _UNBUCKETED
                 chosen = ev["chosen_index"]
                 p_keep = next(c["probability"] for c in ev["candidates"] if c["fixed_label"] == "Keep")
                 lc = sum(1 for c in hand[seat] if game.CARD_DEFS[c].card_type.name == "LAND")
-                decisions.append((seat, lc, chosen, p_keep))
+                decisions.append((deck_name, seat, lc, chosen, p_keep))
             elif k == "game_over":
                 winner = ev.get("winner")
-        last_by_seat = {}
-        for seat, lc, chosen, p_keep in decisions:
+        last_by_seat = {}  # seat -> (deck_name, land_count)
+        for deck_name, seat, lc, chosen, p_keep in decisions:
+            by_lc = by_deck.setdefault(deck_name, {})
             d = by_lc.setdefault(lc, {"kept": 0, "mulliganed": 0, "keep_probs": [], "wins": 0, "losses": 0})
             if chosen == 0:
                 d["kept"] += 1
                 d["keep_probs"].append(p_keep)
-                last_by_seat[seat] = lc
+                last_by_seat[seat] = (deck_name, lc)
             else:
                 d["mulliganed"] += 1
-        for seat, lc in last_by_seat.items():
+        for seat, (deck_name, lc) in last_by_seat.items():
             if winner is None:
                 continue
-            by_lc[lc]["wins" if winner == seat else "losses"] += 1
-    return by_lc
+            by_deck[deck_name][lc]["wins" if winner == seat else "losses"] += 1
+    if deck_by_game_seat is None:
+        return by_deck.get(_UNBUCKETED, {})
+    return by_deck
 
 
 def build_probe_hands(decklist, vocab):

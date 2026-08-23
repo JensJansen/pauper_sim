@@ -16,7 +16,9 @@ pool of historical opponents. No framework dependencies beyond PyTorch.
 | **Action space** | `src/drl_env/` | Decklist + `EFFECT_REGISTRY` -> a flat action table with per-action legality, execute closures, and legal masks. Not a gym `Env`. |
 | **DRL system** | `src/rl/` | Per-deck Set-Transformer + FiLM encoder, trunk/critic/pointer-network action heads, PPO self-play + league training loop. |
 | **Decks** | `data/*.txt` + `league_decks.json` | An 11-deck roster (see below). |
-| **Training driver** | `src/run_league.py` | Trains every deck continuously in a league, encoder and policy together. |
+| **Training pipeline** | `src/run_training_pipeline.py` | Trains a whole league end to end (encoder + policy together), running the full `validation/` check suite on a cadence. The primary way to train. |
+| **Training driver** | `src/run_league.py` | One training session; `--matchup`/one-off debug runs. |
+| **Validation checks** | `src/validation/` | Mid-run quality/stats checks (round robins, mulligan quality, vs. history/heuristic), run by `run_training_pipeline.py`. |
 | **Replay viewer** | `src/webapp/` | Local Flask app that steps through a logged game's board state one event at a time, plus a publicly-hostable subset. |
 
 **Roster** (`data/league_decks.json`): `mono_red_madness`, `rakdos_madness`,
@@ -111,8 +113,25 @@ src/
                              (CPU-only on disk).
     league_cli_spec.py        run_league.py's CLI surface, torch-free.
 
-  run_league.py            Thin CLI wrapper around rl/league/league_runner.py.
+  run_training_pipeline.py Trains a whole league end to end, running the full
+                           validation/ check suite on a cadence -- see
+                           "Validation checks" above. The primary training entry
+                           point.
+  run_league.py            One training session; --matchup / one-off debug runs.
   run_rollback.py          Promote a historical snapshot back to live.pt.
+  validation/              Every mid-run quality/stats check, one module per
+                           check, run through by run_training_pipeline.py.
+                           To add a new check: write a module (NAME + run(ctx)),
+                           register it in __init__.py's CHECKS list.
+    __init__.py              CHECKS registry + run_all(ctx) (log-and-continue on
+                             a check that raises).
+    _common.py               ValidationContext + shared net-loading/output-
+                             writing/metrics.jsonl helpers every check uses.
+    round_robin_primary.py   primary_vs_primary_round_robin.
+    round_robin_training.py  primary_vs_training_round_robin (full cross product).
+    mulligan_audit.py        mulligan_audit (per-deck + league rollup).
+    vs_history.py            vs_history.
+    vs_heuristic.py          vs_heuristic.
   analysis/                Read-only inspection tools (never train, except
                            mulligan_retrain/, which writes a new
                            mulligan_bootstrap*.pt, never live.pt/mulligan.pt).
@@ -120,12 +139,11 @@ src/
                            `python analysis/eval/report_metrics.py ../checkpoints/<league>`.
     eval/                    Play games / summarize logs.
       report_metrics.py       Plain-text summary of a league's metrics.jsonl.
-      run_anchor_eval.py      Checkpoints vs a fully untrained DeckNetwork.
       run_snapshot_round_robin.py
                                Round robin among a deck's own snapshots — Bradley-
-                               Terry Elo + residual vs noise floor.
-      run_cross_league_eval.py
-                               One league's live weights vs another's, per deck.
+                               Terry Elo + residual vs noise floor. A retrospective,
+                               whole-run analysis (not per-checkpoint), so it stays
+                               a standalone tool rather than a validation/ check.
       bench_gpu_vs_cpu.py      CPU-vs-GPU A/B timing for ppo_update.
     mulligan_retrain/        Rebuilding the mulligan model against a frozen main
                              policy — an open investigation.
@@ -133,7 +151,10 @@ src/
                                probing the same collapse-to-always-keep failure
                                mode. Config-file driven (--config, same "extends"
                                precedence as run_league.py).
-      _mulligan_common.py      Shared net-loading/land-audit/probe-hand helpers.
+      _mulligan_common.py      Shared net-loading/land-audit/probe-hand helpers
+                               (validation/mulligan_audit.py extends
+                               audit_land_counts from here with per-deck
+                               attribution rather than reimplementing it).
   benchmarking/            training_run.py benchmarks the real league loop under
                            different collection configs.
   webapp/                  GIT SUBMODULE (github.com/JensJansen/pauper-sim-replay)
@@ -150,10 +171,11 @@ checkpoints/               Trained weights + vocab.json (gitignored; see below).
 logs/                      Game event logs from --log runs (gitignored).
 ```
 
-**Run scripts from `src/`.** `run_league.py` and `benchmarking/*` use
-relative paths like `../data`, `../checkpoints`, and `../training_configs`,
-and the `rl.*` modules import each other and `game`/`drl_env` by name — both
-resolve when run from `src/`. `game/` is a proper importable package.
+**Run scripts from `src/`.** `run_training_pipeline.py`, `run_league.py`, and
+`benchmarking/*` use relative paths like `../data`, `../checkpoints`, and
+`../training_configs`, and the `rl.*`/`validation.*` modules import each
+other and `game`/`drl_env` by name — both resolve when run from `src/`.
+`game/` is a proper importable package.
 
 ---
 
@@ -313,6 +335,21 @@ stays measurable for the life of a run. See **Instrumentation** below.
 All decks share one vocabulary (`checkpoints/vocab.json`, append-only) —
 the card index mapping, not learned weights. Run from **`src/`**.
 
+**`run_training_pipeline.py --config PATH [--fresh]`** is the primary way to
+train a league end to end: one command trains from wherever
+`progress.json` says a league is at to `--config`'s `total_games`/deck,
+running the full **validation/** check suite every `checks_cadence_pct` of
+the way there (see **Validation checks** below) — no repeated manual
+invocation needed.
+
+```
+cd src
+python run_training_pipeline.py --config ../training_configs/league_main.json [--fresh]
+```
+
+`run_league.py` itself remains for `--matchup` training and one-off debug
+runs (`--n-iterations`, bypassing auto-sizing):
+
 ```
 cd src
 python run_league.py --n-iterations N --snapshot-every 15 --n-workers 6
@@ -342,9 +379,11 @@ Key flags:
   historical snapshot instead of live weights (default 0.0).
 - `--pfsp` / `--no-pfsp` — PFSP-weight opponent sampling instead of uniform
   (default True).
-- `--gauntlet-league-name` — an independently-trained twin league
-  (`checkpoints/<name>/`) to periodically measure this league's live nets
-  against (optional; see **Gauntlet** below).
+
+`training_league_name`/`heuristic_decks`/`checks_cadence_pct`/`checks_games`
+are config-only fields (no `run_league.py` flag) — they're read by
+`run_training_pipeline.py`, not `run_league.py` itself. See **Validation
+checks** below.
 
 `--games-per-iteration` isn't a flag — defaults to `max(1, n_workers)`,
 overridable via the run-config's `games_per_iteration`.
@@ -352,8 +391,7 @@ overridable via the run-config's `games_per_iteration`.
 PPO knobs (`lr`, `mulligan_lr`, `gamma`, `gae_lambda`, `target_kl`,
 `n_epochs`, `adv_norm_floor`, `ent_coef`) come from
 `rl.league.league_runner.PPO_DEFAULTS`, overridable per league via a
-run-config `"ppo"` object; an unknown key is a hard error. Eval budget
-(`eval_games`, `eval_every_sessions`) is config-driven the same way.
+run-config `"ppo"` object; an unknown key is a hard error.
 
 `ent_coef` defaults to `None` (`rl.training.train.ent_coef_schedule`'s
 0.02 -> 0.005 anneal); a float pins it constant instead.
@@ -381,18 +419,15 @@ Every league session appends to `checkpoints/<league>/metrics.jsonl`, one
 JSON line per record:
 
 - `kind: "session_start"` — one header per session: reward function,
-  roster, cumulative games/deck, every resolved PPO/eval hyperparameter.
+  roster, cumulative games/deck, every resolved PPO hyperparameter.
 - `kind: "ppo"` — per deck per iteration: `policy_loss`, `value_loss`,
   `entropy`, `explained_variance`, `buffer_size`/`batch_size` side by side
   (so a saturated minibatch ramp is visible), `cumulative_games`.
 - `kind: "mulligan"` — per deck per iteration REINFORCE loss/n.
-- `kind: "vs_history"` — once per session per deck (league mode): live net
-  vs its own oldest still-active snapshot, and (once one exists) its oldest
-  **archived** snapshot. `archive_oldest` is pinned to `snapshot_0`
-  forever; `active_oldest` tracks a rolling ~6,400-game-old self. Side-
-  swapped from a paired seed, so on-the-play is balanced exactly.
-- `kind: "vs_gauntlet"` / `kind: "vs_heuristic"` — the gauntlet's two
-  tiers, external to the league's own self-play history. See **Gauntlet**.
+
+`vs_history`/`vs_heuristic`/the primary-vs-training-league comparison no
+longer append here automatically every session -- they're validation/'s
+checks now, on their own much coarser cadence. See **Validation checks**.
 
 Every game also gets one `game_over` event (`winner`, `turn_won`) appended
 to its own `event_log`.
@@ -406,25 +441,56 @@ hides a decline). Four verdicts: `IMPROVING` / `FLAT` / `REGRESSING`
 searched. `FLAT` is annotated with the minimum effect the sample size
 could have detected.
 
-### Gauntlet
+### Validation checks
 
-`vs_history` and PFSP sampling only ever measure a league against its own
-self-play history. The gauntlet adds two external reference points:
+`run_training_pipeline.py` runs the full `validation/` check suite every
+`checks_cadence_pct` of `total_games` (default 5%, so ~20 passes over a
+full run), `checks_games` games each (default 50) -- a single umbrella
+covering every mid-run quality/stats question, in one place, easy to extend
+(add a module to `validation/`, register it in `validation/__init__.py`'s
+`CHECKS` list). A check that raises is logged and skipped; training itself
+is never aborted by a bad check.
 
-- **Tier 2 — an independently-trained twin population**: measured each
-  session against a separate checkpoint tree (`gauntlet_league_name`) that
-  never plays against this league's live nets during training. Wired via a
-  config's `gauntlet_league_name` field; costs nothing when unconfigured.
-- **Tier 1 — `rl.decision.agent.HeuristicAgent`**: hand-authored,
-  non-learned opponent, reusing the same legal-action machinery a trained
-  `SeatAgent` does, scoring by fixed principles: play a land if possible;
-  else cast the highest-cost affordable thing; attack only if safe or a
-  fair-or-better trade; block to kill when possible; else pass. Deliberately
-  rough, for catching regressions rather than benchmarking strength.
-  Currently scoped to `mono_red_rally` only (`heuristic_decks` in a league
-  config). Pregame delegates to `AlwaysKeep`.
+Five checks today:
+- **`primary_vs_primary_round_robin`** — every training deck plays every
+  other, mirrors included, on current live weights.
+- **`primary_vs_training_round_robin`** — the FULL cross product against an
+  independently-trained **training league** (`training_league_name` in a
+  league config; was `gauntlet_league_name`) -- every primary deck vs every
+  training-league deck, not just same-name pairs. A genuinely external
+  reference: a shared population-wide blind spot is something an
+  independently-evolved population is more likely to expose than any
+  opponent drawn from this league's own history. Optional; costs nothing
+  when unconfigured, or skipped (logged, not fatal) until the training
+  league has a checkpoint for a given deck.
+- **`mulligan_audit`** — % of hands kept vs. mulliganed by land count (0-7),
+  from the SAME games the two round-robin checks above just played
+  (primary-controlled seats only, even in a cross-league game) -- not a
+  separate batch of its own.
+- **`vs_history`** — each deck's current live net vs. its own frozen old
+  self (the oldest still-active snapshot, and once one exists, the oldest
+  **archived** snapshot). The one check immune to the "everyone is
+  improving together" confound the two round robins both have, since the
+  opponent here can never change -- any win-rate movement is unambiguously
+  this deck's own progress.
+- **`vs_heuristic`** — `rl.decision.heuristic_agent.HeuristicAgent`
+  (hand-authored, non-learned, fixed rules: play a land if possible; else
+  cast the highest-cost affordable thing; attack only if safe or a
+  fair-or-better trade; block to kill when possible; else pass), only for
+  whichever deck(s) `heuristic_decks` names (currently `mono_red_rally`).
+  Since the opponent never changes and was never trained, any drop in this
+  win rate is unambiguously the policy breaking, not the opponent
+  improving -- the cleanest regression alarm available.
 
-Both report into `metrics.jsonl` (`kind: "vs_gauntlet"` / `"vs_heuristic"`).
+Output, at two levels: `checkpoints/<primary_league>/checks/` for
+league-wide results (both round robins; a league-wide rollup for the other
+three), `checkpoints/<primary_league>/<deck>/checks/` for a single deck's
+own results (`mulligan_audit`/`vs_history`/`vs_heuristic`). Every file is
+stamped with the games/deck count at that cadence point
+(`<check>_<games>games.json`) and never overwritten, so a whole run's
+history stays on disk. Each check also drops a compact per-deck summary
+into `metrics.jsonl` (`kind` matching the check's own name above) for
+`report_metrics.py`'s existing trend tooling.
 
 ### Direct matchup (no league sampling)
 

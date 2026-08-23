@@ -50,9 +50,10 @@ def build_arg_parser(description=None):
     parser.add_argument("--train-mulligan-only", action="store_true",
                          help="Train the mulligan models only; freeze the per-deck policies (a clean bandit vs fixed skill).")
     parser.add_argument("--eval", action="store_true",
-                         help="Eval / log-generation: play games with NO training over the current live agents "
-                              "(round-robin with mirrors over the roster, or one A-vs-B pairing with --matchup). "
-                              "--games games per pairing.")
+                         help="Eval / log-generation: play --games games with NO training, one A-vs-B pairing "
+                              "over current live agents -- requires --matchup. Roster-wide round-robin eval "
+                              "moved to validation.round_robin_primary, run via run_training_pipeline.py's own "
+                              "cadence rather than this flag.")
     parser.add_argument("--sampled", action="store_true",
                          help="Eval: sample from the policy instead of argmaxing (default: greedy/argmax, so logged "
                               "eval games show the policy's actual best play; pass this for the old exploratory-"
@@ -83,17 +84,6 @@ def build_arg_parser(description=None):
                               "default checkpoints/league/. Prefer --league-config, which sets this AND the roster "
                               "together; this flag is the lower-level override (or use it alone with no config at "
                               "all, matching the pre-config-file interface).")
-    parser.add_argument("--gauntlet-league-name", type=str, default=None,
-                         help="An INDEPENDENTLY-trained twin league (checkpoints/<name>/) to periodically measure "
-                              "this league's live nets against (rl.league.league_runner._run_eval_vs_gauntlet) -- a genuinely "
-                              "external reference, unlike this league's own historical snapshots. Optional; most "
-                              "leagues won't have one. Prefer --league-config's own gauntlet_league_name field (see "
-                              "training_configs/run_gauntlet.json's _note); this flag is the lower-level override.")
-    parser.add_argument("--heuristic-decks", type=str, default=None, metavar="A,B,...",
-                         help="Deck(s) to ALSO periodically measure against rl.decision.heuristic_agent.HeuristicAgent -- the "
-                              "gauntlet's hand-authored, non-learned tier-1 member (rl.league.league_runner._run_eval_vs_heuristic). "
-                              "Default: none (most decks don't have an owner-authored heuristic opponent). Prefer "
-                              "--league-config's own heuristic_decks field; this flag is the lower-level override.")
     parser.add_argument("--roster", type=str, default=None, metavar="A,B,...",
                          help="Restrict the ENTIRE opponent pool to this comma-separated subset: a true isolated "
                               "sub-league where no deck outside the set is ever loaded, trained, or sampled as an "
@@ -109,9 +99,10 @@ def build_arg_parser(description=None):
                               "invocation. A league config can inherit these instead of retyping them via its own "
                               "top-level \"extends\": \"run_default.json\" -- see training_configs/league_main.json.")
     parser.add_argument("--league-config", type=str, default=None, metavar="PATH",
-                         help="JSON describing one league (league_name, roster, total_games, "
-                              "optional gauntlet_league_name, optional heuristic_decks) -- see "
+                         help="JSON describing one league (league_name, roster, total_games) -- see "
                               "training_configs/league_*.json. Drives automatic batch sizing whenever "
                               "--n-iterations is not given. May itself \"extend\" a run-mechanics config (see "
-                              "--run-config) so both flags can point at the same self-sufficient file.")
+                              "--run-config) so both flags can point at the same self-sufficient file. A config's "
+                              "own training_league_name/heuristic_decks fields, if present, are read by "
+                              "run_training_pipeline.py, not this script.")
     return parser

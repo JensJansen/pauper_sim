@@ -55,7 +55,7 @@ from repo_paths import CHECKPOINTS_DIR
 from rl.league.league import PFSP_POWER
 from rl.league_cli_spec import build_arg_parser
 from rl.league.league_runner import (
-    EVAL_EVERY_SESSIONS, EVAL_GAMES, TRUNK_HIDDEN, advance_progress,
+    TRUNK_HIDDEN, advance_progress,
     _load_progress, _next_batch_games, _run_eval, _run_session, _save_progress, _write_event_log,
 )
 
@@ -96,11 +96,14 @@ def main():
     game_logs = [] if args.log else None
     league_name = args.league_name or league_cfg.get("league_name")
     league_dir = CHECKPOINTS_DIR / league_name if league_name else None
-    gauntlet_league_name = args.gauntlet_league_name or league_cfg.get("gauntlet_league_name")
-    gauntlet_league_dir = CHECKPOINTS_DIR / gauntlet_league_name if gauntlet_league_name else None
-    heuristic_decks = args.heuristic_decks.split(",") if args.heuristic_decks else league_cfg.get("heuristic_decks", [])
 
-    if args.eval:  # no training: round-robin (or single matchup) over current live agents
+    if args.eval:  # no training: a single --matchup pairing over current live agents
+        if matchup is None:
+            raise SystemExit(
+                "--eval without --matchup is no longer supported here -- the roster-wide round robin now "
+                "lives in validation.round_robin_primary, run via run_training_pipeline.py's own cadence. "
+                "--eval remains available for a single --matchup DECK_A DECK_B pairing."
+            )
         resolved_decks, game_pairings = _run_eval(train_decks, args.games, not args.sampled, args.seed, game_logs,
                                                     matchup=matchup, league_dir=league_dir)
         if args.log:
@@ -176,11 +179,8 @@ def main():
                             train_deck=train_deck, train_mulligan=train_mulligan, train_decks=train_decks,
                             matchup=matchup, game_logs=game_logs, checkpoint_rate=checkpoint_rate,
                             league_dir=league_dir, roster=roster, pfsp=pfsp,
-                            gauntlet_league_dir=gauntlet_league_dir, heuristic_decks=heuristic_decks,
                             cumulative_games=cumulative_games,
                             ppo_hparams=run_cfg.get("ppo"),
-                            eval_games=run_cfg.get("eval_games", EVAL_GAMES),
-                            eval_every_sessions=run_cfg.get("eval_every_sessions", EVAL_EVERY_SESSIONS),
                             pfsp_power=run_cfg.get("pfsp_power", PFSP_POWER),
                             # DeckNetwork's trainable trunk widths. Applies only to a
                             # deck with no live.pt yet -- an existing checkpoint's own

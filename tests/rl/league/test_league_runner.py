@@ -126,51 +126,6 @@ def test_run_eval_vs_history_finds_archived_and_active_milestones(tmp_path, monk
 
 
 @pytest.mark.slow
-def test_run_eval_vs_gauntlet_plays_the_independent_twin_and_handles_missing_deck(tmp_path, monkeypatch):
-    """_run_eval_vs_gauntlet is the external reference check (an
-    independently trained twin league): confirms it (a) returns None when
-    the gauntlet league has no checkpoint for this deck yet, and (b) plays
-    real games against the gauntlet's live net and tallies a real result
-    once one exists."""
-    monkeypatch.chdir(_SRC_DIR)
-    monkeypatch.setattr(
-        league_runner, "build_pool",
-        lambda: _real_build_pool(vocab_path=str(tmp_path / "vocab.json")),
-    )
-    deck_name = "rakdos_madness"
-    decklists, vocab, deck_ctxs, fixed_tables = _real_build_pool(vocab_path=str(tmp_path / "vocab.json"))
-    live_net = league_runner.build_deck_net(vocab.size, len(fixed_tables[deck_name]))
-    from rl.model.mulligan import MulliganNet
-    mulligan_net = MulliganNet(live_net.encoder)
-
-    gauntlet_dir = str(tmp_path / "gauntlet")
-    # No gauntlet checkpoint for this deck yet -- must return None, not crash or return an empty dict.
-    assert league_runner._run_eval_vs_gauntlet(
-        deck_name, live_net, mulligan_net, deck_ctxs[deck_name], decklists[deck_name],
-        gauntlet_dir, horizon=20,
-    ) is None
-    # gauntlet_league_dir=None (most leagues) must also return None.
-    assert league_runner._run_eval_vs_gauntlet(
-        deck_name, live_net, mulligan_net, deck_ctxs[deck_name], decklists[deck_name],
-        None, horizon=20,
-    ) is None
-
-    # Write a real (untrained but structurally valid) gauntlet checkpoint for this deck.
-    import os
-    import torch
-    deck_dir = os.path.join(gauntlet_dir, deck_name)
-    os.makedirs(deck_dir, exist_ok=True)
-    torch.save({"net": live_net.state_dict()}, os.path.join(deck_dir, "live.pt"))
-
-    result = league_runner._run_eval_vs_gauntlet(
-        deck_name, live_net, mulligan_net, deck_ctxs[deck_name], decklists[deck_name],
-        gauntlet_dir, horizon=20, games=2, seed=0,
-    )
-    assert result["games"] == 2
-    assert result["live_wins"] + result["gauntlet_wins"] + result["no_winner"] == 2
-
-
-@pytest.mark.slow
 def test_run_eval_vs_heuristic_plays_real_games(tmp_path, monkeypatch):
     """_run_eval_vs_heuristic is the gauntlet's tier-1 (hand-authored,
     non-learned) member -- confirms it plays real games between a live net
