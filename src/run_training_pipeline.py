@@ -16,7 +16,7 @@ validation.run_all -- training itself is never aborted by a bad check.
 Config (--config, e.g. training_configs/league_main.json): the same schema
 run_league.py reads (run-mechanics + league identity, "extends"-composable
 via config_loader), plus training_league_name (was gauntlet_league_name),
-heuristic_decks, checks_cadence_pct (default 5), checks_games (default 50).
+checks_cadence_pct (default 5), checks_games (default 50).
 --matchup training and one-off debug runs still go through run_league.py
 directly -- this script is league training only.
 
@@ -72,7 +72,6 @@ def _resolve_options(cfg):
         "total_games": total_games,
         "roster": cfg.get("roster"),
         "training_league_name": cfg.get("training_league_name"),
-        "heuristic_decks": tuple(cfg.get("heuristic_decks", [])),
         "checks_cadence_pct": checks_cadence_pct,
         "checks_games": cfg.get("checks_games", 50),
         "n_workers": n_workers,
@@ -114,7 +113,7 @@ def main():
     print(f"training pipeline: league={opts['league_name']!r} total_games={opts['total_games']} "
           f"checks_cadence_pct={opts['checks_cadence_pct']} (~{opts['cadence_games']} games/deck/chunk) "
           f"checks_games={opts['checks_games']} training_league={opts['training_league_name']!r} "
-          f"heuristic_decks={opts['heuristic_decks']} device={device} n_workers={opts['n_workers']}")
+          f"device={device} n_workers={opts['n_workers']}")
 
     executor_cm = ProcessPoolExecutor(max_workers=opts["n_workers"]) if opts["n_workers"] > 1 else nullcontext(None)
     with executor_cm as executor:
@@ -146,7 +145,7 @@ def main():
                 primary_league_name=opts["league_name"], train_decks=train_decks, decklists=decklists, vocab=vocab,
                 deck_ctxs=deck_ctxs, fixed_tables=fixed_tables, games_per_check=opts["checks_games"],
                 seed=opts["seed"], cumulative_games=new_progress["cumulative_games_per_deck"],
-                training_league_name=opts["training_league_name"], heuristic_decks=opts["heuristic_decks"],
+                training_league_name=opts["training_league_name"],
             )
             run_all(ctx)
 

@@ -1,5 +1,5 @@
 {
-  "_note": "Run MECHANICS -- how a batch executes, independent of which league or decks. Pass alongside a league-identity config (--run-config this, --league-config that), or let a league config inherit these directly via its own top-level \"extends\": \"run_default.json\" (see league_main.json, run_gauntlet_twin.json, run_bench.json -- all three do this now instead of retyping the fields below, so they can never drift from this file). checkpoint_opponent_rate is the one field meant to be overridden per-invocation rather than edited here. Fields that are absent are absent on purpose: games_per_iteration below overrides it, but with no override run_league derives max(1, n_workers) (one game per worker, per its own benchmark comment); the PPO batch-size ramp is hardcoded in rl.train.batch_size_for_iteration; and max_batch_size's safety role belongs to whatever repeatedly re-invokes run_league.py and health-checks between batches. training_league_name/heuristic_decks/checks_cadence_pct/checks_games are read by run_training_pipeline.py, not run_league.py itself -- see validation/'s own docstring for what each check does.",
+  "_note": "Run MECHANICS -- how a batch executes, independent of which league or decks. Pass alongside a league-identity config (--run-config this, --league-config that), or let a league config inherit these directly via its own top-level \"extends\": \"run_default.json\" (see league_main.json, run_gauntlet_twin.json, run_bench.json -- all three do this now instead of retyping the fields below, so they can never drift from this file). checkpoint_opponent_rate is the one field meant to be overridden per-invocation rather than edited here. Fields that are absent are absent on purpose: games_per_iteration below overrides it, but with no override run_league derives max(1, n_workers) (one game per worker, per its own benchmark comment); the PPO batch-size ramp is hardcoded in rl.train.batch_size_for_iteration; and max_batch_size's safety role belongs to whatever repeatedly re-invokes run_league.py and health-checks between batches. training_league_name/checks_cadence_pct/checks_games are read by run_training_pipeline.py, not run_league.py itself -- see validation/'s own docstring for what each check does.",
   "_values_note": "The two non-obvious values, both set 2026-08-13 and both still current. games_per_iteration 24 (not n_workers=6): at 6, every ppo_update spent its whole trust region on six games and approx_kl measured 0.044 against target_kl 0.03 -- early stopping on most updates, epochs_run falling 3.8 -> 2.8 over a run. The larger buffer costs wall-clock without adding collection parallelism; that is the deliberate trade. pfsp_power 0.5 (not 2.0): 2.0 was backwards and sent three of four decks into 58-77% of their games in matchups they win under 25% of -- see rl/league.py's own comment for the measurement.",
   "snapshot_every_games": 200,
   "n_workers": 6,
@@ -19,8 +19,5 @@
     "mono_red_rally"
   ],
   "total_games": 600000,
-  "training_league_name": "4_deck_subleague_gauntlet",
-  "heuristic_decks": [
-    "mono_red_rally"
-  ]
+  "training_league_name": "4_deck_subleague_gauntlet"
 }

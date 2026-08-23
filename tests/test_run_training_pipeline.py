@@ -31,14 +31,13 @@ def test_resolve_options_defaults():
     assert opts["device"] == "cpu"
     assert opts["roster"] is None
     assert opts["training_league_name"] is None
-    assert opts["heuristic_decks"] == ()
     assert opts["seed"] is None
 
 
 def test_resolve_options_reads_config_overrides():
     cfg = {"league_name": "x", "total_games": 1000, "n_workers": 4, "games_per_iteration": 10,
            "snapshot_every_games": 100, "checkpoint_opponent_rate": 0.2, "pfsp": False,
-           "device": "cuda", "training_league_name": "y", "heuristic_decks": ["a", "b"],
+           "device": "cuda", "training_league_name": "y",
            "roster": ["a", "b", "c"], "checks_cadence_pct": 10, "checks_games": 25, "seed": 7}
     opts = pipeline._resolve_options(cfg)
     assert opts["n_workers"] == 4
@@ -48,7 +47,6 @@ def test_resolve_options_reads_config_overrides():
     assert opts["pfsp"] is False
     assert opts["device"] == "cuda"
     assert opts["training_league_name"] == "y"
-    assert opts["heuristic_decks"] == ("a", "b")
     assert opts["roster"] == ["a", "b", "c"]
     assert opts["checks_games"] == 25
     assert opts["seed"] == 7

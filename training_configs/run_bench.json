@@ -1,7 +1,6 @@
 {
-  "_note": "BENCHMARK ONLY -- extends run_default.json, pointed at a throwaway checkpoint tree (checkpoints/4_deck_bench), with the round_robin_training/vs_heuristic checks disabled (training_league_name/heuristic_decks nulled out below) so run_training_pipeline.py's validation wall time does not pollute a pure-training timing run. Mechanics, roster, and total_games are INHERITED from run_default.json, not retyped: the point is to time the REAL training regime, not a copy of it that could silently drift.",
+  "_note": "BENCHMARK ONLY -- extends run_default.json, pointed at a throwaway checkpoint tree (checkpoints/4_deck_bench), with the round_robin_training check disabled (training_league_name nulled out below) so run_training_pipeline.py's validation wall time does not pollute a pure-training timing run. Mechanics, roster, and total_games are INHERITED from run_default.json, not retyped: the point is to time the REAL training regime, not a copy of it that could silently drift.",
   "extends": "run_default.json",
   "league_name": "4_deck_bench",
-  "training_league_name": null,
-  "heuristic_decks": []
+  "training_league_name": null
 }

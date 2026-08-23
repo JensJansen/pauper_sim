@@ -232,8 +232,8 @@ def collect_rollout(pairing, n_games, horizon, rng, device="cpu", record=True, g
             # Clear every agent's recurrent state before the game starts (the
             # ONE place this happens -- LeaguePool hands back the same agent
             # game after game). Deduped by identity since a mirror pairing
-            # puts one agent on both seats. Guarded by hasattr since
-            # HeuristicAgent has no network/reset.
+            # puts one agent on both seats. Guarded by hasattr since not
+            # every agent type defines reset().
             for agent in {id(a): a for a in agents}.values():
                 if hasattr(agent, "reset"):
                     agent.reset()

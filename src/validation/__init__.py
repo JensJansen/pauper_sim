@@ -12,10 +12,10 @@ Registry order matters: mulligan_audit is a post-hoc analysis of games the
 two round-robin checks already played (ctx.collected_game_logs), not a
 separate batch of its own, so it must run after both.
 """
-from . import mulligan_audit, round_robin_primary, round_robin_training, vs_heuristic, vs_history
+from . import mulligan_audit, round_robin_primary, round_robin_training, vs_history
 from ._common import ValidationContext  # re-exported for run_training_pipeline.py
 
-CHECKS = [round_robin_primary, round_robin_training, mulligan_audit, vs_history, vs_heuristic]
+CHECKS = [round_robin_primary, round_robin_training, mulligan_audit, vs_history]
 
 
 def run_all(ctx):

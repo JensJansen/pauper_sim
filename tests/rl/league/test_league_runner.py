@@ -125,30 +125,6 @@ def test_run_eval_vs_history_finds_archived_and_active_milestones(tmp_path, monk
         assert r["live_wins"] + r["snapshot_wins"] + r["no_winner"] == r["games"]
 
 
-@pytest.mark.slow
-def test_run_eval_vs_heuristic_plays_real_games(tmp_path, monkeypatch):
-    """_run_eval_vs_heuristic is the gauntlet's tier-1 (hand-authored,
-    non-learned) member -- confirms it plays real games between a live net
-    and HeuristicAgent and returns a real tally, using mono_red_rally."""
-    monkeypatch.chdir(_SRC_DIR)
-    monkeypatch.setattr(
-        league_runner, "build_pool",
-        lambda: _real_build_pool(vocab_path=str(tmp_path / "vocab.json")),
-    )
-    deck_name = "mono_red_rally"
-    decklists, vocab, deck_ctxs, fixed_tables = _real_build_pool(vocab_path=str(tmp_path / "vocab.json"))
-    live_net = league_runner.build_deck_net(vocab.size, len(fixed_tables[deck_name]))
-    from rl.model.mulligan import MulliganNet
-    mulligan_net = MulliganNet(live_net.encoder)
-
-    result = league_runner._run_eval_vs_heuristic(
-        deck_name, live_net, mulligan_net, deck_ctxs[deck_name], decklists[deck_name],
-        horizon=20, games=3, seed=0,
-    )
-    assert result["games"] == 3
-    assert result["live_wins"] + result["heuristic_wins"] + result["no_winner"] == 3
-
-
 # --- eval instrumentation ---
 
 

@@ -18,7 +18,7 @@ pool of historical opponents. No framework dependencies beyond PyTorch.
 | **Decks** | `data/*.txt` + `league_decks.json` | An 11-deck roster (see below). |
 | **Training pipeline** | `src/run_training_pipeline.py` | Trains a whole league end to end (encoder + policy together), running the full `validation/` check suite on a cadence. The primary way to train. |
 | **Training driver** | `src/run_league.py` | One training session; `--matchup`/one-off debug runs. |
-| **Validation checks** | `src/validation/` | Mid-run quality/stats checks (round robins, mulligan quality, vs. history/heuristic), run by `run_training_pipeline.py`. |
+| **Validation checks** | `src/validation/` | Mid-run quality/stats checks (round robins, mulligan quality, vs. history), run by `run_training_pipeline.py`. |
 | **Replay viewer** | `src/webapp/` | Local Flask app that steps through a logged game's board state one event at a time, plus a publicly-hostable subset. |
 
 **Roster** (`data/league_decks.json`): `mono_red_madness`, `rakdos_madness`,
@@ -94,8 +94,6 @@ src/
       action_bridge.py         Maps the combined action space back to engine calls.
       agent.py                 SeatAgent: per-seat dispatch (pregame -> mulligan
                                model, everything else -> DeckNetwork).
-      heuristic_agent.py       HeuristicAgent: hand-authored, non-learned gauntlet
-                               opponent (see Gauntlet below).
     training/                 The rollout loop and PPO update math.
       train.py                 collect_rollout + league opponent-pairing orchestration.
       ppo.py                   GAE + ppo_update.
@@ -131,7 +129,6 @@ src/
     round_robin_training.py  primary_vs_training_round_robin (full cross product).
     mulligan_audit.py        mulligan_audit (per-deck + league rollup).
     vs_history.py            vs_history.
-    vs_heuristic.py          vs_heuristic.
   analysis/                Read-only inspection tools (never train, except
                            mulligan_retrain/, which writes a new
                            mulligan_bootstrap*.pt, never live.pt/mulligan.pt).
@@ -380,7 +377,7 @@ Key flags:
 - `--pfsp` / `--no-pfsp` — PFSP-weight opponent sampling instead of uniform
   (default True).
 
-`training_league_name`/`heuristic_decks`/`checks_cadence_pct`/`checks_games`
+`training_league_name`/`checks_cadence_pct`/`checks_games`
 are config-only fields (no `run_league.py` flag) — they're read by
 `run_training_pipeline.py`, not `run_league.py` itself. See **Validation
 checks** below.
@@ -425,7 +422,7 @@ JSON line per record:
   (so a saturated minibatch ramp is visible), `cumulative_games`.
 - `kind: "mulligan"` — per deck per iteration REINFORCE loss/n.
 
-`vs_history`/`vs_heuristic`/the primary-vs-training-league comparison no
+`vs_history`/the primary-vs-training-league comparison no
 longer append here automatically every session -- they're validation/'s
 checks now, on their own much coarser cadence. See **Validation checks**.
 
@@ -473,19 +470,11 @@ Five checks today:
   improving together" confound the two round robins both have, since the
   opponent here can never change -- any win-rate movement is unambiguously
   this deck's own progress.
-- **`vs_heuristic`** — `rl.decision.heuristic_agent.HeuristicAgent`
-  (hand-authored, non-learned, fixed rules: play a land if possible; else
-  cast the highest-cost affordable thing; attack only if safe or a
-  fair-or-better trade; block to kill when possible; else pass), only for
-  whichever deck(s) `heuristic_decks` names (currently `mono_red_rally`).
-  Since the opponent never changes and was never trained, any drop in this
-  win rate is unambiguously the policy breaking, not the opponent
-  improving -- the cleanest regression alarm available.
 
 Output, at two levels: `checkpoints/<primary_league>/checks/` for
 league-wide results (both round robins; a league-wide rollup for the other
-three), `checkpoints/<primary_league>/<deck>/checks/` for a single deck's
-own results (`mulligan_audit`/`vs_history`/`vs_heuristic`). Every file is
+two), `checkpoints/<primary_league>/<deck>/checks/` for a single deck's
+own results (`mulligan_audit`/`vs_history`). Every file is
 stamped with the games/deck count at that cadence point
 (`<check>_<games>games.json`) and never overwritten, so a whole run's
 history stays on disk. Each check also drops a compact per-deck summary

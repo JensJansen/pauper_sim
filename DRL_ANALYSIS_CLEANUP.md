@@ -82,8 +82,9 @@ cohesive package split by MTG action category, imported broadly outside RL
       import edges:
   - `model/` — `features.py`, `arch.py`, `deck.py`, `mulligan.py` (network
     architecture / observation shape)
-  - `decision/` — `action_bridge.py`, `agent.py`, `heuristic_agent.py`
-    (turning an observation into a chosen action)
+  - `decision/` — `action_bridge.py`, `agent.py` (turning an observation
+    into a chosen action; `heuristic_agent.py` lived here too until removed,
+    see the fifth pass below)
   - `training/` — `train.py`, `ppo.py`, `rollout_parallel.py` (rollout loop
     + PPO update math)
   - `league/` — `league.py`, `league_runner.py` (opponent pool + session
@@ -216,6 +217,37 @@ standalone `run_cross_league_eval.py`, an unwired `run_anchor_eval.py`).
       incompatibility (a stale `training_league` checkpoint predating a
       `MulliganNet` hand-representation version bump) without stopping
       training, confirming the failure-isolation design actually works.
+
+## Done — heuristic agent removed (2026-08-22, fifth pass)
+
+Owner's call: `vs_heuristic` (a trained deck vs. a hand-authored, non-learned
+opponent) was a pointless exercise and is gone, along with everything that
+existed only to feed it. `mono_red_rally` itself is untouched — it stays in
+every roster as an ordinary trained deck; only the fixed-rule opponent tier
+and the check that measured against it are removed.
+
+- [x] Deleted `rl/decision/heuristic_agent.py` (`HeuristicAgent` and its
+      scoring helpers) and `validation/vs_heuristic.py`; removed
+      `vs_heuristic` from `validation/__init__.py`'s `CHECKS` registry.
+- [x] Removed `league_runner._run_eval_vs_heuristic`, its `HeuristicAgent`
+      import, and the now-stale `heuristic_wins`/`vs_heuristic` mentions in
+      surrounding docstrings/comments.
+- [x] Removed the `heuristic_decks` field end to end: `ValidationContext`,
+      `run_training_pipeline.py`'s config parsing/log line/`ValidationContext`
+      construction, `league_cli_spec.py`'s help text, and every
+      `training_configs/*.json` that set or nulled it out.
+- [x] Deleted the `HeuristicAgent`-specific tests in
+      `tests/rl/decision/test_agent.py` and
+      `tests/rl/league/test_league_runner.py`; dropped `heuristic_decks`
+      assertions from `tests/test_run_league.py` and
+      `tests/test_run_training_pipeline.py`; swapped
+      `tests/test_report_metrics.py`'s synthetic `"vs_heuristic"` fixture
+      record for a generic `"vs_snapshot"` one (that test exercises
+      `report_metrics`'s generic SATURATED-detection path, not anything
+      heuristic-specific).
+- [x] README.md: dropped the `heuristic_agent.py`/`vs_heuristic.py` file-tree
+      rows, the `vs_heuristic` check writeup, and every `heuristic_decks`
+      mention.
 
 ## Next
 

@@ -37,7 +37,6 @@ class ValidationContext:
     seed: object
     cumulative_games: int
     training_league_name: str = None
-    heuristic_decks: tuple = ()
     collected_game_logs: list = field(default_factory=list)
     collected_deck_league: list = field(default_factory=list)
 

@@ -257,14 +257,13 @@ def test_the_training_league_inherits_mechanics_and_points_back_at_the_main_leag
 
 def test_bench_config_nulls_out_inherited_training_league_fields():
     """run_bench.json extends run_default.json, which sets training_league_name
-    and heuristic_decks -- both explicitly nulled/emptied out in run_bench.json
-    so a benchmark timing run doesn't inherit round_robin_training/vs_heuristic
-    checks' wall-time, which it exists specifically to exclude. Pins that an
-    extending file's explicit null/[] actually overrides the base's value
-    rather than the merge treating an absent-vs-null key the same way."""
+    -- explicitly nulled out in run_bench.json so a benchmark timing run
+    doesn't inherit round_robin_training's wall-time, which it exists
+    specifically to exclude. Pins that an extending file's explicit null
+    actually overrides the base's value rather than the merge treating an
+    absent-vs-null key the same way."""
     from repo_paths import REPO_ROOT
     from config_loader import load_config
     cfgs = REPO_ROOT / "training_configs"
     resolved = load_config(str(cfgs / "run_bench.json"))
     assert resolved["training_league_name"] is None
-    assert resolved["heuristic_decks"] == []

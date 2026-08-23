@@ -395,8 +395,3 @@ class SeatAgent:
             state, seat, self.deck_ctx, self.main, horizon, device, greedy=greedy,
             hidden=self.hidden.get(seat), prev_action=self.prev_action.get(seat))
         return DecisionResult(executor, ppo_entry, None, is_pass)
-
-
-# HeuristicAgent, the hand-authored non-learned gauntlet opponent, lives in
-# rl/decision/heuristic_agent.py. It imports the decision plumbing above; this
-# file stays the learned path only.

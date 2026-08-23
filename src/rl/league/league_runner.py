@@ -1,5 +1,5 @@
 """run_league.py's reusable core: session driving (_run_session), eval-mode
-functions (_run_eval, _run_eval_vs_history, _run_eval_vs_heuristic --
+functions (_run_eval, _run_eval_vs_history --
 imported by validation/'s checks, which also cover a full cross-league
 round robin _run_session never did itself), checkpoint/progress helpers,
 and the per-deck network builder. Extracted so other callers (e.g.
@@ -19,7 +19,6 @@ from rl.model.deck import DeckNetwork
 from rl.league.league import LeaguePool, PFSP_POWER
 from rl.roster import build_pool
 from rl.decision.agent import SeatAgent
-from rl.decision.heuristic_agent import HeuristicAgent
 from rl.training.train import batch_size_for_iteration, collect_rollout, collect_rollout_league, _constant_pairing, ent_coef_schedule
 from rl.training.rollout_parallel import collect_rollout_league_parallel
 from rl.training.ppo import ppo_update
@@ -34,10 +33,10 @@ D_MODEL = 64  # SetTransformer width; must match rl.model.arch.SetTransformer's 
 # different point and every win rate would measure something else.
 HORIZON = 120
 
-# Default games-per-check for _run_eval_vs_history/_run_eval_vs_heuristic
-# when a caller doesn't override it. Both now run only as validation/
-# checks (see that package), driven by run_training_pipeline.py at its own
-# checks_games cadence, which always does override this default explicitly.
+# Default games-per-check for _run_eval_vs_history when a caller doesn't
+# override it. Runs only as a validation/ check (see that package), driven
+# by run_training_pipeline.py at its own checks_games cadence, which always
+# does override this default explicitly.
 EVAL_GAMES = 20
 
 # DeckNetwork trunk widths, per deck (each deck's SetTransformer encoder adds
@@ -546,7 +545,7 @@ def _run_session(n_iterations, games_per_iteration, snapshot_every, executor, n_
           f"collect={collect_time_total:.1f}s ({100 * collect_time_total / elapsed:.0f}%), "
           f"update={update_time_total:.1f}s ({100 * update_time_total / elapsed:.0f}%)")
 
-    # vs_history/vs_gauntlet/vs_heuristic used to run automatically here,
+    # vs_history/vs_gauntlet used to run automatically here,
     # once per session. All mid-run quality/stats checks (including a much
     # more thorough replacement for vs_gauntlet -- a full cross-product
     # round robin, not just a same-name diagonal) now live in validation/,
@@ -701,11 +700,11 @@ def _play_paired_eval_games(live_agent, opp_agent, decklist, n_games, horizon, s
 
 def _play_eval_games(live_agent, opp_agent, decklist, n_games, horizon, rng, opp_wins_key,
                      greedy=True):
-    """Shared tail for every vs_history/vs_heuristic eval pass: plays a fixed
+    """Shared tail for every vs_history eval pass: plays a fixed
     live_agent-vs-opp_agent pairing (no training), scores winners via
     collect_rollout's "game_over" event, and returns {"games", "live_wins",
     <opp_wins_key>, "no_winner"}. opp_wins_key names the opponent side (e.g.
-    "snapshot_wins"/"heuristic_wins").
+    "snapshot_wins").
 
     greedy defaults to True (measure the policy's actual best play, not an
     exploration sample). Applies to both seats."""
@@ -757,18 +756,6 @@ def _run_eval_vs_history(deck_name, live_net, mulligan_net, deck_ctx, decklist, 
         # reference), while active_oldest tracks a rolling older self.
         results.append({"label": label, "snapshot_id": snapshot_id, "is_archive": is_archive, **result})
     return results
-
-
-def _run_eval_vs_heuristic(deck_name, live_net, mulligan_net, deck_ctx, decklist, horizon,
-                            games=EVAL_GAMES, seed=None):
-    """Plays deck_name's current live net against a HeuristicAgent
-    (rl.decision.heuristic_agent) for the same deck -- the gauntlet's tier-1
-    member. Only called for whichever deck(s) the caller's heuristic_decks
-    names -- the heuristic's rules are general MTG principles hand-picked
-    for mono_red_rally, not audited for every deck."""
-    live_agent = SeatAgent(live_net, mulligan_net, deck_ctx)
-    heuristic_agent = HeuristicAgent(deck_ctx)
-    return _play_paired_eval_games(live_agent, heuristic_agent, decklist, games, horizon, seed, "heuristic_wins")
 
 
 def _json_default(obj):

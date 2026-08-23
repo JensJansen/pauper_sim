@@ -84,8 +84,8 @@ def test_flat_and_improving_and_saturated_are_distinguished(tmp_path):
     assert "IMPROVING" in "\n".join(improving)
 
     saturated = report_metrics.report(
-        [{"kind": "vs_heuristic", "session": s, "deck": "d", "games": 20, "live_wins": 20,
-          "heuristic_wins": 0, "no_winner": 0} for s in range(8)])
+        [{"kind": "vs_snapshot", "session": s, "deck": "d", "games": 20, "live_wins": 20,
+          "snapshot_wins": 0, "no_winner": 0} for s in range(8)])
     assert "SATURATED" in "\n".join(saturated)
 
 
