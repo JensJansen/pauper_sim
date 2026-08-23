@@ -44,8 +44,8 @@ into subdirectories by actual cohesion (not guessed from file names).
       `run_bench.json`, and added `"device"` to `tests/test_run_league.py`'s
       `MECHANICS` parity list.
 - [x] Fixed ~10 stale doc/comment references pointing at deleted
-      functions/files across README.md, `drl_env/`, `game/`, `rl/`,
-      `.claude/skills/train/SKILL.md`.
+      functions/files across README.md, `drl_env/`, `game/`, `rl/`, and the
+      (since-removed) `/train` skill.
 - [x] Full test suite green: 834 fast + 128 slow.
 
 ## Reviewed, no action needed
@@ -105,8 +105,8 @@ cohesive package split by MTG action category, imported broadly outside RL
     itself)
 - [x] Every import site repo-wide updated (~70 files touched: `rl/`
       internals, `analysis/` internals, tests, `run_league.py`,
-      `run_rollback.py`, `benchmarking/training_run.py`, README.md,
-      `.claude/skills/train/SKILL.md`) — verified by repo-wide grep sweeps
+      `run_rollback.py`, `benchmarking/training_run.py`, README.md, and the
+      (since-removed) `/train` skill) — verified by repo-wide grep sweeps
       for leftover old dotted-paths and old flat file-paths (none found)
       plus a full test-suite run.
 - [x] `sys.path.insert` depth fixed in the 4 `analysis/eval/*.py` scripts

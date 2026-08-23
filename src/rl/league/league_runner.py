@@ -198,8 +198,7 @@ def _next_batch_games(league_dir, total_games):
 
     No separate ceiling here -- the doubling ladder's safety property (never
     jump from a small, verified-healthy batch to a huge one) is enforced by
-    whatever repeatedly re-invokes this and health-checks between calls (the
-    `/train` skill, or the webapp's auto-escalation loop)."""
+    whatever repeatedly re-invokes this and health-checks between calls."""
     progress = _load_progress(league_dir)
     remaining = total_games - progress["cumulative_games_per_deck"]
     if remaining <= 0:
@@ -388,6 +387,9 @@ def _run_session(n_iterations, games_per_iteration, snapshot_every, executor, n_
     MULLIGAN_UPDATE_EVERY = 8
     mull_by_deck_accum = {name: [] for name in train_decks}
     for iteration in range(n_iterations):
+        iter_t0 = time.time()
+        games_this_iter = 0
+        print(f"  iter {iteration}: start at {time.strftime('%H:%M:%S', time.localtime(iter_t0))}", flush=True)
         # Both the PPO minibatch ramp and the entropy-coefficient anneal
         # (the latter only when hp["ent_coef"] is None) track true
         # cumulative games/deck: this session's starting point plus games
@@ -445,6 +447,7 @@ def _run_session(n_iterations, games_per_iteration, snapshot_every, executor, n_
                         pool.record_outcome(name, ("snapshot", opp_name, snap_id), won)
             collect_time_total += time.time() - t_collect0
             total_games += played
+            games_this_iter += played
             # Accumulate mulligan transitions for each train deck that
             # generated some this round; a frozen opponent's are discarded.
             # Gated on train_mulligan to match the flush below.
@@ -533,6 +536,13 @@ def _run_session(n_iterations, games_per_iteration, snapshot_every, executor, n_
             checkpoint_progress(league_dir, games_before + games_per_iteration)
             print(f"  iter {iteration}: snapshotted {len(train_decks)} train deck(s) + saved live checkpoints "
                   f"(counts now: { {n: len(pool.snapshots[n]) for n in deck_names} })", flush=True)
+
+        iter_done_t = time.time()
+        iter_elapsed = iter_done_t - iter_t0
+        avg_s_per_game = iter_elapsed / games_this_iter if games_this_iter else float("nan")
+        print(f"  iter {iteration}: done at {time.strftime('%H:%M:%S', time.localtime(iter_done_t))}, "
+              f"took {iter_elapsed:.1f}s across {games_this_iter} games ({avg_s_per_game:.2f}s/game) "
+              f"(session elapsed so far: {iter_done_t - t0:.1f}s)", flush=True)
 
     elapsed = time.time() - t0
     print(f"session {session} done in {elapsed:.1f}s ({elapsed / total_games:.2f}s/game across {total_games} games) -- "

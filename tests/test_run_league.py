@@ -1,9 +1,8 @@
 """Self-check for run_league.py's progress/schedule plumbing: pins the chain
-by which `--n-iterations` runs (what the /train skill always passes) still
-advance progress.json's cumulative_games_per_deck, the horizon both the PPO
-minibatch ramp and the ent_coef anneal schedule ramp against. Covers the
-pieces of that chain that can be tested without spawning a training
-subprocess.
+by which `--n-iterations` runs still advance progress.json's
+cumulative_games_per_deck, the horizon both the PPO minibatch ramp and the
+ent_coef anneal schedule ramp against. Covers the pieces of that chain that
+can be tested without spawning a training subprocess.
 """
 import json
 
@@ -63,10 +62,9 @@ def test_next_batch_games_doubles_and_never_overshoots(tmp_path):
 
 
 def test_forced_n_iterations_still_advances_the_cumulative_counter(tmp_path):
-    """A --n-iterations run (auto_sizing False -- what the /train skill and
-    the webapp escalation loop always produce) must still advance the
-    league's cumulative game count, since that count is the horizon both PPO
-    schedules ramp against."""
+    """A --n-iterations run (auto_sizing False -- a forced/debug batch size)
+    must still advance the league's cumulative game count, since that count
+    is the horizon both PPO schedules ramp against."""
     league = str(tmp_path)
     _save_progress(league, last_batch_size=64, cumulative_games_per_deck=10_000)
     after = advance_progress(league, n_iterations=100, games_per_iteration=6, auto_sizing=False)
