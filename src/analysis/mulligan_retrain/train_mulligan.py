@@ -225,7 +225,8 @@ def _build_arg_parser():
     ap.add_argument("--league", default=None, help="the population being trained (checkpoint dir name). "
                     "Default 4_deck_subleague_test.")
     ap.add_argument("--twin", default=None, help="opponent-mode=twin only: the twin league (checkpoint dir "
-                    "name), READ ONLY. Default 4_deck_subleague_gauntlet.")
+                    "name), READ ONLY. Default <--league>-training (run_training_pipeline.py's "
+                    "create_training_league naming).")
     ap.add_argument("--train-games", type=int, default=None,
                     help="training games per deck. Default 1000 (twin) / 3000 (self-mirror).")
     ap.add_argument("--update-every", type=int, default=None, help="games per REINFORCE update. Default 50.")
@@ -287,11 +288,15 @@ def _resolve_options(args, cfg):
                          "opponent_mode key)")
     is_twin = opponent_mode == "twin"
 
+    league = resolve("league", "league", "4_deck_subleague_test")
     opts = {
         "opponent_mode": opponent_mode,
         "is_twin": is_twin,
-        "league": resolve("league", "league", "4_deck_subleague_test"),
-        "twin": resolve("twin", "twin", "4_deck_subleague_gauntlet"),
+        "league": league,
+        # Matches run_training_pipeline.py's create_training_league derivation
+        # (f"{league_name}-training") so this script's default twin always
+        # points at whatever twin that pipeline actually maintains for --league.
+        "twin": resolve("twin", "twin", f"{league}-training"),
         "train_games": resolve("train_games", "train_games", 1000 if is_twin else 3000),
         "update_every": resolve("update_every", "update_every", 50),
         "eval_games": resolve("eval_games", "eval_games", 100),

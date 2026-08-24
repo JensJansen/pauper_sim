@@ -1,5 +1,5 @@
 {
-  "_note": "The full 11-deck league (checkpoints/league/) -- the primary training target. Roster is the complete data/league_decks.json manifest. Run mechanics are inherited from baseline_settings.json via \"extends\" rather than retyped here -- only fields that genuinely differ (league_name, roster, total_games, training_league_name) are listed below.",
+  "_note": "The full 11-deck league (checkpoints/league/) -- the primary training target. Roster is the complete data/league_decks.json manifest. Run mechanics are inherited from baseline_settings.json via \"extends\" rather than retyped here -- only fields that genuinely differ (league_name, roster, total_games, create_training_league) are listed below. create_training_league=true: an independently-trained twin (same roster/mechanics) is auto-managed under checkpoints/main-league-training/, fixed at 10,000 games/deck -- see run_training_pipeline.py's own docstring.",
   "_status": "Checkpoints deleted in the 2026-08-17 cleanup, so this league starts from zero. No preparation step is needed any more: per-deck encoders removed the pretrain/freeze phase, and a deck with no live.pt starts from a freshly-initialized net (vocab.json is rewritten on demand). Run run_training_pipeline.py --config against this file to train from scratch (run_league.py is now the lower-level, session-at-a-time tool; run_training_pipeline.py owns the whole run plus the validation cadence).",
   "_open_meta_problem": "mono_red_rally wins 85.5% of its non-mirror games against this roster (4,931/5,770 measured at 6,984 games/deck), from 74% vs mono_blue_terror up to 100% vs spy_combo, while its own mirror sits at a clean 49.6%. The other ten decks therefore spend much of training in matchups whose outcome is near-determined, where the terminal reward carries almost no gradient. Ten optimizer/architecture hypotheses for the resulting plateau were tested and all came back null. Owner's assessment (2026-08-17): mono_red_rally is implemented correctly and the gap is strategic facets the other decks' agents cannot currently express or perceive -- which is what WORK_CHECKLIST.md items 2-4 are aimed at, not another hyperparameter.",
   "extends": "baseline_settings.json",
@@ -18,5 +18,5 @@
     "mono_red_rally"
   ],
   "total_games": 20000,
-  "training_league_name": "4_deck_subleague_test"
+  "create_training_league": true
 }

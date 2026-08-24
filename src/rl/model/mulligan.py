@@ -30,7 +30,16 @@ from rl.model.features import build_token_set
 
 HAND = game.HAND_SIZE_LIMIT  # 7 -- London mulligan cap and hand-size normalizer
 WIN_REWARD = 1.0
-ENTROPY_COEF = 0.01  # keep some exploration so the keep/mull head doesn't re-collapse
+ENTROPY_COEF = 1.0  # 2026-08-24: 0.01 -- tiny-league's keep/mull head kept re-collapsing
+# toward "always keep" even with stratify_0land_pct forcing exposure (entropy fell from ~0.86
+# to ~0.35 bits at 0 lands between 20k and 30k games/deck despite the critic's own value spread
+# continuing to widen over the same span -- the entropy bonus vanishes as the policy sharpens,
+# so mere forced exposure wasn't enough to hold the gain). Tried 3.0 first: within ~2.5k games
+# it flooded P(mulligan) to a flat ~50/50 at every land count (entropy pinned at ~1.0 bit
+# everywhere) -- too strong, drowning the land-count signal instead of preserving it, confirming
+# logs/mulligan_stratify_0p2_entropy3_2k.json's earlier finding on a different deck/setup.
+# Dropped to 1.0 to look for a middle ground that holds differentiation without going fully
+# uniform -- still experimental, not yet validated at this magnitude on the main league loop.
 
 # Bumped whenever what MulliganNet's trunk reads changes shape-compatibly (a
 # shape/param-count mismatch already fails loudly via load_state_dict; a

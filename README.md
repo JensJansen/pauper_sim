@@ -377,7 +377,7 @@ Key flags:
 - `--pfsp` / `--no-pfsp` — PFSP-weight opponent sampling instead of uniform
   (default True).
 
-`training_league_name`/`checks_cadence_pct`/`checks_games`/`stratify_0land_pct`
+`create_training_league`/`checks_cadence_pct`/`checks_games`/`stratify_0land_pct`
 are config-only fields (no `run_league.py` flag) — they're read by
 `run_training_pipeline.py`, not `run_league.py` itself. See **Validation
 checks** below.
@@ -452,14 +452,20 @@ Five checks today:
 - **`primary_vs_primary_round_robin`** — every training deck plays every
   other, mirrors included, on current live weights.
 - **`primary_vs_training_round_robin`** — the FULL cross product against an
-  independently-trained **training league** (`training_league_name` in a
-  league config; was `gauntlet_league_name`) -- every primary deck vs every
+  independently-trained **training league** -- every primary deck vs every
   training-league deck, not just same-name pairs. A genuinely external
   reference: a shared population-wide blind spot is something an
   independently-evolved population is more likely to expose than any
-  opponent drawn from this league's own history. Optional; costs nothing
-  when unconfigured, or skipped (logged, not fatal) until the training
-  league has a checkpoint for a given deck.
+  opponent drawn from this league's own history. Opt in per league config
+  with `"create_training_league": true` (same roster/mechanics as the
+  primary league, auto-managed under `checkpoints/<league_name>-training/`).
+  When set, `run_training_pipeline.py` trains that twin to a **fixed**
+  `TRAINING_LEAGUE_GAMES` (10,000) games/deck first, once, before the
+  primary league's own training starts; it is never extended past that cap
+  even if the primary's `total_games` later rises -- a stable benchmark
+  population, not a moving target. Skipped (logged, not fatal) whenever
+  `create_training_league` is unset/false, or until the twin has a
+  checkpoint for a given deck.
 - **`mulligan_audit`** — % of hands kept vs. mulliganed by land count (0-7),
   from two sources: (1) the SAME games the two round-robin checks above just
   played (primary-controlled seats only, even in a cross-league game) -- not

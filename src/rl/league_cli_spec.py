@@ -103,6 +103,6 @@ def build_arg_parser(description=None):
                               "training_configs/league_*.json. Drives automatic batch sizing whenever "
                               "--n-iterations is not given. May itself \"extend\" a run-mechanics config (see "
                               "--run-config) so both flags can point at the same self-sufficient file. A config's "
-                              "own training_league_name field, if present, is read by "
+                              "own create_training_league field, if present, is read by "
                               "run_training_pipeline.py, not this script.")
     return parser

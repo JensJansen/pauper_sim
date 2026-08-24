@@ -15,7 +15,7 @@ from rl.training.train import batch_size_for_iteration, ent_coef_schedule
 # Training-mechanics keys a league config should inherit from baseline_settings.json
 # via its own top-level "extends" rather than retype -- retyping them is
 # exactly the duplicate-source-of-truth that silently drifted once already
-# (see test_the_training_league_inherits_mechanics_and_points_back_at_the_main_league).
+# (see test_small_league_opts_into_an_auto_managed_training_league).
 MECHANICS = ["snapshot_every_games", "n_workers", "games_per_iteration",
              "pfsp_power", "checkpoint_opponent_rate", "pfsp", "device"]
 
@@ -230,40 +230,29 @@ def test_main_league_inherits_mechanics_instead_of_duplicating_them():
     assert set(resolved["roster"]) == set(manifest), "main league must carry the full manifest roster"
 
 
-def test_the_training_league_inherits_mechanics_and_points_back_at_the_main_league():
-    """A training-league population exists to differ from the main (primary)
-    league in nothing but its nondeterministic training trajectory.
-    Extending small_league.json instead of retyping its fields
-    (mechanics AND roster -- it plays the same decks) makes a mechanical
-    difference structurally impossible rather than something a test has to
-    keep re-catching. Only league_name and training_league_name are set
-    locally, and must point at each other, which is what makes each side
-    report validation.round_robin_training against the other."""
+def test_small_league_opts_into_an_auto_managed_training_league():
+    """A training-league population exists to differ from the primary league
+    in nothing but its nondeterministic training trajectory -- see
+    validation.round_robin_training's own docstring. run_training_pipeline.py
+    derives its name/roster/mechanics from the primary config itself (see
+    _resolve_options's create_training_league handling), so there's no
+    longer a separate config file for the twin that could drift from the
+    primary's own roster/mechanics."""
     from repo_paths import REPO_ROOT
-    from config_loader import load_config
     cfgs = REPO_ROOT / "training_configs"
-    raw_twin = json.loads((cfgs / "small_league_training_league.json").read_text())
-    _assert_extends_not_duplicates(raw_twin, "small_league_training_league.json", "small_league.json")
-    assert "roster" not in raw_twin, "roster should be inherited via extends, not retyped"
-
-    default = load_config(str(cfgs / "small_league.json"))
-    twin = load_config(str(cfgs / "small_league_training_league.json"))
-
-    assert twin["roster"] == default["roster"], "a training league must play the same decks"
-    assert twin["league_name"] != default["league_name"], "the training league must be a SEPARATE population"
-    assert twin["training_league_name"] == default["league_name"]
-    assert default["training_league_name"] == twin["league_name"]
+    raw = json.loads((cfgs / "small_league.json").read_text())
+    assert raw["create_training_league"] is True
 
 
-def test_bench_config_nulls_out_inherited_training_league_fields():
-    """benchmarking_league.json extends small_league.json, which sets training_league_name
-    -- explicitly nulled out in benchmarking_league.json so a benchmark timing run
-    doesn't inherit round_robin_training's wall-time, which it exists
-    specifically to exclude. Pins that an extending file's explicit null
-    actually overrides the base's value rather than the merge treating an
-    absent-vs-null key the same way."""
+def test_bench_config_overrides_inherited_create_training_league_to_false():
+    """benchmarking_league.json extends small_league.json, which opts into an
+    auto-managed training league -- overridden to false here so a benchmark
+    timing run doesn't inherit round_robin_training's wall-time (or a
+    from-scratch twin build), which it exists specifically to exclude. Pins
+    that an extending file's explicit false actually overrides the base's
+    value rather than the merge treating an absent-vs-false key the same way."""
     from repo_paths import REPO_ROOT
     from config_loader import load_config
     cfgs = REPO_ROOT / "training_configs"
     resolved = load_config(str(cfgs / "benchmarking_league.json"))
-    assert resolved["training_league_name"] is None
+    assert resolved["create_training_league"] is False

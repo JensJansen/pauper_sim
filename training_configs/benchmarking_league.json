@@ -1,6 +1,6 @@
 {
-  "_note": "BENCHMARK ONLY -- extends small_league.json, pointed at a throwaway checkpoint tree (checkpoints/4_deck_bench), with the round_robin_training check disabled (training_league_name nulled out below) so run_training_pipeline.py's validation wall time does not pollute a pure-training timing run. Mechanics, roster, and total_games are INHERITED from small_league.json, not retyped: the point is to time the REAL training regime, not a copy of it that could silently drift.",
+  "_note": "BENCHMARK ONLY -- extends small_league.json, pointed at a throwaway checkpoint tree (checkpoints/4_deck_bench), with the round_robin_training check disabled (create_training_league overridden to false below) so run_training_pipeline.py's validation wall time -- and a from-scratch twin build -- does not pollute a pure-training timing run. Mechanics, roster, and total_games are INHERITED from small_league.json, not retyped: the point is to time the REAL training regime, not a copy of it that could silently drift.",
   "extends": "small_league.json",
   "league_name": "4_deck_bench",
-  "training_league_name": null
+  "create_training_league": false
 }

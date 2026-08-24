@@ -56,7 +56,15 @@ def test_twin_mode_defaults():
     opts = train_mulligan._resolve_options(_args(opponent_mode="twin"), {})
     assert opts["train_games"] == 1000
     assert opts["bootstrap_name"] == "mulligan_bootstrap"
-    assert opts["twin"] == "4_deck_subleague_gauntlet"
+    # Derived from --league's own default (4_deck_subleague_test), matching
+    # run_training_pipeline.py's create_training_league naming -- not a
+    # hardcoded twin name that can drift from what that pipeline maintains.
+    assert opts["twin"] == "4_deck_subleague_test-training"
+
+
+def test_twin_default_follows_an_explicit_league_override():
+    opts = train_mulligan._resolve_options(_args(opponent_mode="twin", league="main-league"), {})
+    assert opts["twin"] == "main-league-training"
 
 
 def test_resume_from_requires_exactly_one_deck():

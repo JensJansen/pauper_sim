@@ -15,10 +15,20 @@ validation.run_all -- training itself is never aborted by a bad check.
 
 Config (--config, e.g. training_configs/main_league.json): the same schema
 run_league.py reads (run-mechanics + league identity, "extends"-composable
-via config_loader), plus training_league_name (was gauntlet_league_name),
+via config_loader), plus create_training_league (bool, default False),
 checks_cadence_pct (default 5), checks_games (default 50).
 --matchup training and one-off debug runs still go through run_league.py
 directly -- this script is league training only.
+
+create_training_league: if True, an independently-trained twin population
+(same roster/mechanics, different nondeterministic trajectory -- see
+validation.round_robin_training's own docstring for why that's useful)
+is trained under checkpoints/<league_name>-training/ to a FIXED
+TRAINING_LEAGUE_GAMES games/deck before this league's own training starts,
+unless it's already there. It is never extended past that cap, even if this
+league's own total_games later rises -- a stable benchmark, not a moving
+target. No validation checks run during the twin's own build; nothing
+consumes them until it has weights to be compared against.
 
 Usage:
   python run_training_pipeline.py --config training_configs/main_league.json [--fresh]
@@ -35,6 +45,10 @@ from rl.league.league_runner import TRUNK_HIDDEN, _load_progress, _run_session, 
 from rl.roster import build_pool
 from run_league import _resolve_device
 from validation import ValidationContext, run_all
+
+# Fixed regardless of the primary league's own total_games -- see
+# create_training_league in the module docstring.
+TRAINING_LEAGUE_GAMES = 10000
 
 
 def _build_arg_parser():
@@ -68,6 +82,7 @@ def _resolve_options(cfg):
     checks_cadence_pct = cfg.get("checks_cadence_pct", 5)
     checkpoint_rate = cfg.get("checkpoint_opponent_rate", 0.0)
     stratify_0land_pct = cfg.get("stratify_0land_pct", 0.0)
+    create_training_league = bool(cfg.get("create_training_league", False))
     if stratify_0land_pct > 0 and checkpoint_rate <= 0:
         # stratify only ever fires against a frozen-snapshot opponent (see
         # collect_rollout_league's own docstring) -- sample_opponent
@@ -82,7 +97,8 @@ def _resolve_options(cfg):
         "league_name": league_name,
         "total_games": total_games,
         "roster": cfg.get("roster"),
-        "training_league_name": cfg.get("training_league_name"),
+        "create_training_league": create_training_league,
+        "training_league_name": f"{league_name}-training" if create_training_league else None,
         "checks_cadence_pct": checks_cadence_pct,
         "checks_games": cfg.get("checks_games", 50),
         "n_workers": n_workers,
@@ -98,6 +114,45 @@ def _resolve_options(cfg):
         "seed": cfg.get("seed"),
         "cadence_games": max(1, round(total_games * checks_cadence_pct / 100)),
     }
+
+
+def _train_to(league_dir, target_games, opts, executor, device, on_chunk=None, chunk_games=None):
+    """Runs cadence-sized chunks (persisting progress after each, so a kill
+    mid-run resumes rather than restarting) until league_dir reaches
+    target_games/deck. on_chunk(new_progress), if given, runs after every
+    chunk -- the primary league's validation cadence; the training league's
+    own build has nothing to consume it and passes None.
+
+    chunk_games: chunk size in games/deck, default opts["cadence_games"]
+    (sized off the PRIMARY league's own total_games). Pass an explicit value
+    when target_games isn't the primary's total_games -- e.g. the training
+    league's fixed TRAINING_LEAGUE_GAMES cap -- so a kill mid-build still
+    resumes from a recent chunk instead of one single session covering the
+    whole cap (opts["cadence_games"] can exceed a smaller target_games)."""
+    chunk_games = chunk_games if chunk_games is not None else opts["cadence_games"]
+    while True:
+        progress = _load_progress(str(league_dir))
+        remaining = target_games - progress["cumulative_games_per_deck"]
+        if remaining <= 0:
+            return progress
+        chunk = min(chunk_games, remaining)
+        n_iterations = max(1, chunk // opts["games_per_iteration"])
+
+        _run_session(n_iterations, opts["games_per_iteration"], opts["snapshot_every"], executor,
+                    opts["n_workers"], league_dir=str(league_dir), seed=opts["seed"], roster=opts["roster"],
+                    pfsp=opts["pfsp"], checkpoint_rate=opts["checkpoint_rate"],
+                    cumulative_games=progress["cumulative_games_per_deck"], ppo_hparams=opts["ppo_hparams"],
+                    pfsp_power=opts["pfsp_power"], trunk_hidden=opts["trunk_hidden"], device=device,
+                    stratify_0land_pct=opts["stratify_0land_pct"])
+
+        # auto_sizing=False: fixed cadence-sized chunks, not the doubling
+        # ladder -- last_batch_size is meaningless here and left untouched.
+        advance_progress(str(league_dir), n_iterations, opts["games_per_iteration"], auto_sizing=False,
+                         session_start_games=progress["cumulative_games_per_deck"])
+
+        new_progress = _load_progress(str(league_dir))
+        if on_chunk is not None:
+            on_chunk(new_progress)
 
 
 def _wipe(league_dir):
@@ -129,29 +184,22 @@ def main():
 
     executor_cm = ProcessPoolExecutor(max_workers=opts["n_workers"]) if opts["n_workers"] > 1 else nullcontext(None)
     with executor_cm as executor:
-        while True:
-            progress = _load_progress(str(league_dir))
-            remaining = opts["total_games"] - progress["cumulative_games_per_deck"]
-            if remaining <= 0:
-                print(f"{opts['league_name']!r} already at {progress['cumulative_games_per_deck']}/"
-                      f"{opts['total_games']} games/deck -- done")
-                break
-            chunk = min(opts["cadence_games"], remaining)
-            n_iterations = max(1, chunk // opts["games_per_iteration"])
+        if opts["create_training_league"]:
+            training_league_dir = CHECKPOINTS_DIR / opts["training_league_name"]
+            twin_progress = _load_progress(str(training_league_dir))
+            if twin_progress["cumulative_games_per_deck"] >= TRAINING_LEAGUE_GAMES:
+                print(f"training league {opts['training_league_name']!r} already at "
+                      f"{twin_progress['cumulative_games_per_deck']}/{TRAINING_LEAGUE_GAMES} games/deck -- "
+                      f"fixed, not extending")
+            else:
+                print(f"training league {opts['training_league_name']!r}: "
+                      f"{twin_progress['cumulative_games_per_deck']}/{TRAINING_LEAGUE_GAMES} games/deck -- "
+                      f"training to its fixed cap first (no validation checks)", flush=True)
+                twin_chunk_games = max(1, round(TRAINING_LEAGUE_GAMES * opts["checks_cadence_pct"] / 100))
+                _train_to(training_league_dir, TRAINING_LEAGUE_GAMES, opts, executor, device,
+                         chunk_games=twin_chunk_games)
 
-            _run_session(n_iterations, opts["games_per_iteration"], opts["snapshot_every"], executor,
-                        opts["n_workers"], league_dir=str(league_dir), seed=opts["seed"], roster=opts["roster"],
-                        pfsp=opts["pfsp"], checkpoint_rate=opts["checkpoint_rate"],
-                        cumulative_games=progress["cumulative_games_per_deck"], ppo_hparams=opts["ppo_hparams"],
-                        pfsp_power=opts["pfsp_power"], trunk_hidden=opts["trunk_hidden"], device=device,
-                        stratify_0land_pct=opts["stratify_0land_pct"])
-
-            # auto_sizing=False: fixed cadence-sized chunks, not the doubling
-            # ladder -- last_batch_size is meaningless here and left untouched.
-            advance_progress(str(league_dir), n_iterations, opts["games_per_iteration"], auto_sizing=False,
-                             session_start_games=progress["cumulative_games_per_deck"])
-
-            new_progress = _load_progress(str(league_dir))
+        def _validate(new_progress):
             print(f"=== cadence checkpoint: {new_progress['cumulative_games_per_deck']}/{opts['total_games']} "
                   f"games/deck -- running validation checks ===", flush=True)
             ctx = ValidationContext(
@@ -161,6 +209,8 @@ def main():
                 training_league_name=opts["training_league_name"],
             )
             run_all(ctx)
+
+        _train_to(league_dir, opts["total_games"], opts, executor, device, on_chunk=_validate)
 
     print(f"training pipeline done: {opts['league_name']!r} reached "
           f"{_load_progress(str(league_dir))['cumulative_games_per_deck']}/{opts['total_games']} games/deck")

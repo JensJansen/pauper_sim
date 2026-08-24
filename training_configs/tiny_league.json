@@ -1,11 +1,11 @@
 {
-  "_note": "Small 2-deck league (checkpoints/tiny-league/), a smaller, more legible testing structure than the 4-deck sub-league. Run mechanics are inherited from baseline_settings.json via \"extends\"; only league_name/roster/total_games/training_league_name/checkpoint_opponent_rate/stratify_0land_pct differ. training_league_name is null (no twin comparison for this run).",
+  "_note": "Small 2-deck league (checkpoints/tiny-league/), a smaller, more legible testing structure than the 4-deck sub-league. Run mechanics are inherited from baseline_settings.json via \"extends\"; only league_name/roster/total_games/checkpoint_opponent_rate/stratify_0land_pct differ. create_training_league is left at its default (false, no twin) for this run.",
   "_stratify_note": "2026-08-23: forced-0-land-hand mulligan experiment for this league only, restarted from scratch under league_name tiny-league (previously 2_deck_elves_dmir_terror, wiped -- that run's mulligan nets had collapsed to always-keep with no stratification wired in). checkpoint_opponent_rate raised 0.15 -> 0.30 (more frozen-snapshot opponents, since stratify can only fire when the opponent is frozen -- see rl.training.train.collect_rollout's own docstring). stratify_0land_pct=0.33 chosen so the two rates compound to ~1/10 games (0.30 * 0.33 ~= 0.099): stratify only rolls its own die on the checkpoint_opponent_rate-gated slice, not on every game. Now live: run_training_pipeline.py/_resolve_options and rl.league.league_runner thread stratify_0land_pct through, and a stratified game's outcome is excluded from pool.record_outcome so it can't bias PFSP's difficulty estimate for whichever snapshot got stratified.",
+  "_entropy_note": "2026-08-24: checkpoints wiped and restarted again -- stratify alone (above) got real land-count differentiation by 20k games/deck but both decks re-collapsed toward always-keep by 30k (entropy at 0 lands fell from ~0.86 to ~0.35 bits for elves) even as the critic's own value spread kept widening, i.e. the keep/mull policy stopped acting on information the value head already had. rl.model.mulligan.ENTROPY_COEF first tried at 0.01 -> 3.0: killed and wiped again within ~2.5k games/deck once probe_hands showed P(mulligan) flooded flat to ~50/50 at every land count (entropy pinned ~1.0 bit everywhere) -- too strong, drowning the signal instead of preserving it. Now at 1.0, looking for a middle ground. total_games stays at 10000 for a faster read on this ablation before committing to a full run.",
   "extends": "baseline_settings.json",
   "league_name": "tiny-league",
   "roster": ["elves", "dmir_terror"],
-  "total_games": 20000,
-  "training_league_name": null,
+  "total_games": 10000,
   "checkpoint_opponent_rate": 0.30,
   "stratify_0land_pct": 0.33
 }
