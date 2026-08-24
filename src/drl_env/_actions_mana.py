@@ -237,11 +237,28 @@ def _mana_subdecision_color_legal(color):
     upstream reasoned optimistically about a color not yet chosen,
     crediting one pip of any offered color, so choosing a color the
     remaining cost cannot use is refused here rather than allowed to
-    strand."""
+    strand.
+
+    Must also simulate the subdecision's OWN pending tap: a Saruli-shaped
+    source's choose_target stage records its target (sub["target"]) but
+    deliberately leaves it untapped until a color is actually chosen (see
+    execute_mana_subdecision_target) -- so a color choice that finishes
+    the subdecision taps that target as a side effect THIS SAME ACTION
+    performs, not something already reflected in state. Omitting
+    tapped=[target] here let `available_mana_units` keep counting a
+    target that was itself a needed mana source (e.g. Overgrown
+    Battlement) as still available right up to the moment choosing a
+    non-matching color consumed it for nothing, wrongly certifying that
+    choice as safe and permanently stranding the payment (production
+    crash, 2026-08-24). A filter_mana subdecision has no "target" (its
+    source already tapped/paid in its own first stage), hence .get."""
     def legal(state):
-        if not state.active_mana_subdecision["can_produce"](state, color):
+        sub = state.active_mana_subdecision
+        if not sub["can_produce"](state, color):
             return False
-        return game.payment_survives(state, game.units_after(state, produced=[{color}]))
+        target = sub.get("target")
+        tapped = [target] if target is not None else []
+        return game.payment_survives(state, game.units_after(state, tapped=tapped, produced=[{color}]))
     legal._mana_subdecision_gate = "choose_color"
     return legal
 

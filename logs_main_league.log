@@ -1,0 +1,4 @@
+training pipeline: league='main-league' total_games=10000 checks_cadence_pct=5 (~500 games/deck/chunk) checks_games=50 training_league='main-league-training' device=cuda n_workers=10
+training league 'main-league-training': 0/10000 games/deck -- training to its fixed cap first (no validation checks)
+League session 0: n_iterations=8 games_per_iteration=60 snapshot_every=3 checkpoint_rate=0.3 decks=['mono_red_madness', 'rakdos_madness', 'spy_combo', 'boggles', 'monster_tron', 'dmir_terror', 'elves', 'grixis_affinity', 'jund_wildfire', 'mono_blue_terror', 'mono_red_rally'] n_workers=10 stratify_0land_pct=0.33
+  iter 0: start at 12:32:00

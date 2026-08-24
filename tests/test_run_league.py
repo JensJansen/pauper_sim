@@ -20,12 +20,6 @@ MECHANICS = ["snapshot_every_games", "n_workers", "games_per_iteration",
              "pfsp_power", "checkpoint_opponent_rate", "pfsp", "device"]
 
 
-def _assert_extends_not_duplicates(raw_cfg, cfg_name, base_name):
-    assert raw_cfg.get("extends") == base_name, f"{cfg_name} should extend {base_name}"
-    dup = set(MECHANICS) & raw_cfg.keys()
-    assert not dup, f"{cfg_name} duplicates {dup} instead of inheriting them via extends"
-
-
 def test_absent_progress_json_reads_as_zero_not_as_an_error(tmp_path):
     """A missing progress.json reads the same as a genuinely fresh league."""
     assert _load_progress(str(tmp_path)) == {"last_batch_size": 0, "cumulative_games_per_deck": 0}
@@ -209,20 +203,41 @@ def test_trunk_width_is_read_off_an_existing_checkpoint_not_the_config():
     assert trunk_hidden_from_deck_checkpoint(str(CHECKPOINTS_DIR / "nope" / "live.pt")) is None
 
 
+# main_league.json's own, currently-deliberate exceptions to "inherit, don't
+# duplicate" -- see its _note field for the reasoning behind each (10 workers/
+# 60 games-per-iteration for wall-clock throughput on this machine's 12 logical
+# cores, dividing evenly with no stragglers; checkpoint_opponent_rate raised to
+# 0.30 alongside stratify_0land_pct so forced-0-land-hand mulligan exposure has
+# a frozen-snapshot opponent to fire against -- see rl.training.train.
+# collect_rollout's own docstring). Anything NOT in this set must still come
+# from baseline_settings.json untouched -- this pins the original bug the test
+# below caught (retyping EVERY mechanics field, not a chosen few) without
+# blocking today's narrow, documented overrides.
+_MAIN_LEAGUE_DELIBERATE_OVERRIDES = {"n_workers", "games_per_iteration", "checkpoint_opponent_rate"}
+
+
 def test_main_league_inherits_mechanics_instead_of_duplicating_them():
     """main_league.json used to retype every baseline_settings.json mechanics
     field (games_per_iteration, checkpoint_opponent_rate, pfsp_power, ...);
     it now extends the file instead, so the two structurally cannot drift
-    apart the way a manual copy could."""
+    apart the way a manual copy could -- except for
+    _MAIN_LEAGUE_DELIBERATE_OVERRIDES, each individually chosen and documented
+    in main_league.json's own _note, not a wholesale copy."""
     from repo_paths import REPO_ROOT
     from config_loader import load_config
     cfgs = REPO_ROOT / "training_configs"
     raw_main = json.loads((cfgs / "main_league.json").read_text())
-    _assert_extends_not_duplicates(raw_main, "main_league.json", "baseline_settings.json")
+    assert raw_main.get("extends") == "baseline_settings.json"
+    dup = set(MECHANICS) & raw_main.keys()
+    assert dup <= _MAIN_LEAGUE_DELIBERATE_OVERRIDES, (
+        f"main_league.json duplicates {dup - _MAIN_LEAGUE_DELIBERATE_OVERRIDES} instead of inheriting "
+        f"them via extends")
 
     resolved = load_config(str(cfgs / "main_league.json"))
     default = json.loads((cfgs / "baseline_settings.json").read_text())
     for k in MECHANICS:
+        if k in _MAIN_LEAGUE_DELIBERATE_OVERRIDES:
+            continue
         assert resolved[k] == default[k]
 
     # The full manifest, not a subset -- this league's whole point is the 11-deck meta.
