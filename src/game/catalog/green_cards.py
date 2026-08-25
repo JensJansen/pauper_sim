@@ -873,6 +873,13 @@ GREEN_EFFECT_REGISTRY = {
         "mana_no_tap": True,
         "mana_extra_available": lambda state, permanent: _wall_of_roots_mana_available(state, permanent),
         "on_tap": lambda state, permanent: _wall_of_roots_on_tap(state, permanent),
+        # One more -0/-1 counter than it currently has -- mirrors
+        # state_based.check_state_based_actions' own death condition
+        # (damage_marked >= toughness) exactly, so a Wall already carrying
+        # combat damage this turn is correctly judged lethal sooner too.
+        "mana_tap_removes_self": lambda state, permanent: (
+            permanent.damage_marked >= permanent_toughness(state, permanent) - 1
+        ),
     },
     EffectId.ROOST_SEEK: {
         "cast": {"resolve": lambda state, card_def: cast_roost_seek(state, card_def)},

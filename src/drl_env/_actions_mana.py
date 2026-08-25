@@ -90,7 +90,8 @@ def _mana_ability_legal(name, color):
         if source is None:
             return False
         produced = [frozenset({symbol}) for symbol in game.mana_output(source, state, color)]
-        return game.payment_survives(state, game.units_after(state, tapped=[source], produced=produced))
+        return game.payment_survives(
+            state, game.units_after(state, tapped=[source], produced=produced, own_ability_tap=source))
     return legal
 
 

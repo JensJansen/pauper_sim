@@ -116,6 +116,60 @@ def test_count_source_produces_one_symbol_per_matching_permanent():
     assert state.mana_pool_single_pip == {}  # a 3-symbol event -- never single-pip-tagged
 
 
+def test_available_mana_units_exclude_recomputes_a_count_sources_own_value():
+    # Overgrown Battlement + Wall of Roots -- 2 Defenders, so Battlement's
+    # own untapped contribution is 2G. Wall of Roots on its last -0/-1
+    # counter (one more activation kills it): exclude={wall} must not just
+    # drop Wall's own unit, it must ALSO recompute Battlement's still-
+    # untapped contribution down to 1G, as if Wall were already gone --
+    # the production strand (2026-08-25) this exists to prevent.
+    state = GameState(on_the_play=True)
+    battlement = Permanent(CardDef("Overgrown Battlement", CardType.CREATURE, {"G": 1}, EffectId.OVERGROWN_BATTLEMENT, defender=True))
+    wall = Permanent(CardDef("Wall of Roots", CardType.CREATURE, {"generic": 1, "G": 1}, EffectId.WALL_OF_ROOTS, defender=True))
+    state.battlefield = [battlement, wall]
+    for p in state.battlefield:
+        p.summoning_sick = False
+    assert mana.mana_output(battlement, state) == ["G", "G"]  # 2 Defenders, both alive
+
+    units_with_wall = mana.available_mana_units(state)
+    assert sorted("".join(sorted(u)) for u in units_with_wall) == ["G", "G", "G"]  # 2 from Battlement + Wall's own 1
+
+    units_wall_excluded = mana.available_mana_units(state, exclude={wall})
+    assert sorted("".join(sorted(u)) for u in units_wall_excluded) == ["G"], (
+        "Battlement's own contribution must drop to 1G when Wall is excluded, not stay at the stale 2G")
+
+
+def test_units_after_own_ability_tap_accounts_for_a_lethal_self_removal():
+    # Same board, mid-payment: hypothetically tapping Wall of Roots for its
+    # OWN mana ability (own_ability_tap=wall) when doing so would kill it
+    # must recompute Battlement's still-untapped value down to 1G in the
+    # result, not the stale pre-death 2G a naive patch would produce.
+    # Uses the REAL registered CardDefs (not ad-hoc ones, which default to
+    # toughness=0 -- ad-hoc Wall of Roots would look "already dead" at 0
+    # counters, defeating the point of this test), since this specifically
+    # exercises the real mana_tap_removes_self registry lambda and real
+    # base toughness (5).
+    state = GameState(on_the_play=True)
+    battlement = Permanent(registry.CARD_DEFS["Overgrown Battlement"])
+    wall = Permanent(registry.CARD_DEFS["Wall of Roots"])
+    wall.counters["-0/-1"] = 4  # toughness 1 -- one more activation is lethal
+    state.battlefield = [battlement, wall]
+    for p in state.battlefield:
+        p.summoning_sick = False
+
+    lethal_result = mana.units_after(state, tapped=[wall], produced=[frozenset({"G"})], own_ability_tap=wall)
+    assert sorted("".join(sorted(u)) for u in lethal_result) == ["G", "G"], (
+        "expected Battlement's devalued 1G + Wall's own one-time produced G, not the stale pre-death 2G")
+
+    # A non-lethal tap (fresh Wall of Roots) must be completely unaffected --
+    # the existing patch-based behavior, unchanged: Battlement's own 2G
+    # (Wall still alive and counted) plus Wall's own produced G = 3 total.
+    wall.counters["-0/-1"] = 0
+    non_lethal_result = mana.units_after(state, tapped=[wall], produced=[frozenset({"G"})], own_ability_tap=wall)
+    assert sorted("".join(sorted(u)) for u in non_lethal_result) == ["G", "G", "G"], (
+        "Battlement's full 2G must be preserved when Wall's own tap does not kill it")
+
+
 def test_single_pip_tag_on_fixed_source():
     # A plain land's tap is always a 1-symbol event -> tagged single-pip.
     state = GameState(on_the_play=True)

@@ -6,6 +6,7 @@ import pytest
 
 import drl_env
 import game
+from game.effects.state_based import check_state_based_actions
 from game.state import CardInstance, GameState, Permanent, PlayerState
 from rl.decision.action_bridge import (
     _TARGETING_PREFIXES,
@@ -444,6 +445,74 @@ def test_lotleth_giant_cast_survives_saruli_tapping_wall_of_roots():
     spy_table[wall_tap_idx][2](st)
     assert "G" in st.mana_pool
 
+    while st.pending_resolution is not None:
+        game.execute_pool_spend(st, game.pool_spend_options(st)[0])
+    assert st.pending_resolution is None, "the cast must fully pay off, not strand"
+    game.resolve_top_of_stack(st)
+    assert any(p.card_def.name == "Lotleth Giant" for p in st.battlefield), \
+        "Lotleth Giant must actually resolve onto the battlefield"
+
+
+@pytest.mark.slow
+def test_lotleth_giant_cast_survives_wall_of_roots_dying_mid_payment():
+    # END-TO-END REPRODUCTION of the real production crash (2026-08-25):
+    # 3 Forest + Swamp + Overgrown Battlement + Wall of Roots on its LAST
+    # -0/-1 counter (its own 5th activation is lethal). At announce time
+    # Overgrown Battlement counts 2 Walls (itself + Wall of Roots still
+    # alive) = 2G; total 3F(3G) + Wall(1G) + Swamp(1B) + Battlement(2G) = 7,
+    # covering Lotleth Giant's {6}{B} exactly. Tapping Wall of Roots FIRST
+    # kills it (state-based death), silently devaluing Battlement's
+    # still-untapped contribution from 2G to 1G -- pre-fix this left
+    # remaining={'generic': 5, 'B': 1} owed against only 5 real mana left,
+    # an all-False action mask, a hard crash.
+    spy_decklist = game.parse_decklist_file("../data/spy_combo.txt")
+    spy_table = drl_env.build_action_table(spy_decklist, game.EFFECT_REGISTRY)
+
+    def idx(name):
+        return next(i for i, (n, _l, _e) in enumerate(spy_table) if n == name)
+
+    st = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)], event_log=[])
+    st.phase = game.turn.Phase.MAIN1
+    forests = [Permanent(game.CARD_DEFS["Forest"]) for _ in range(3)]
+    swamp = Permanent(game.CARD_DEFS["Swamp"])
+    battlement = Permanent(game.CARD_DEFS["Overgrown Battlement"])
+    wall = Permanent(game.CARD_DEFS["Wall of Roots"])
+    wall.counters["-0/-1"] = 4  # toughness 1 -- this activation is lethal
+    for p in [battlement, wall]:
+        p.summoning_sick = False
+    for i, p in enumerate(forests + [swamp, battlement, wall]):
+        p.slot = i
+    st.battlefield = forests + [swamp, battlement, wall]
+    st.hand = [game.CARD_DEFS["Lotleth Giant"]]
+
+    cast_idx = idx("Cast Lotleth Giant")
+    assert drl_env.legal_action_mask(st, spy_table)[cast_idx], \
+        "3 Forest + Swamp + Wall of Roots + Battlement (2 Walls alive) must cover {6}{B}"
+    spy_table[cast_idx][2](st)
+    assert st.pending_resolution["remaining"] == {"generic": 6, "B": 1}
+
+    # The regression: tapping Wall of Roots first, while Battlement is still
+    # untapped and its full (still-2-Wall) value is still needed to finish,
+    # must be illegal -- forcing the correct order instead of stranding.
+    wall_idx = idx("Tap Wall of Roots")
+    battlement_idx = idx("Tap Overgrown Battlement")
+    mask = drl_env.legal_action_mask(st, spy_table)
+    assert not mask[wall_idx], "Tap Wall of Roots must be illegal before Battlement's full value is secured"
+    assert mask[battlement_idx], "Tap Overgrown Battlement must still be legal"
+
+    # Tap Battlement first (banks its full 2G), then Wall of Roots is safe.
+    spy_table[battlement_idx][2](st)
+    assert st.mana_pool.get("G", 0) == 2, "Battlement must produce 2G while Wall of Roots is still alive"
+    assert drl_env.legal_action_mask(st, spy_table)[wall_idx], "now safe -- Battlement's value is already banked"
+    spy_table[wall_idx][2](st)
+    check_state_based_actions(st)  # not auto-run outside the real turn loop -- see game/turn.py's own call site
+    assert wall not in st.battlefield, "Wall of Roots must have died from its own 5th activation"
+    assert any(e["kind"] == "state_based_death" and e["permanent"] == ["Wall of Roots", wall.slot]
+               for e in st.event_log), "the death must be logged, matching the real crash's captured event log"
+
+    for f in forests:
+        spy_table[idx("Tap Forest")][2](st)
+    spy_table[idx("Tap Swamp")][2](st)
     while st.pending_resolution is not None:
         game.execute_pool_spend(st, game.pool_spend_options(st)[0])
     assert st.pending_resolution is None, "the cast must fully pay off, not strand"

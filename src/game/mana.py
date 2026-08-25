@@ -117,14 +117,20 @@ def _granted_mana_colors(state, permanent):
     return granted
 
 
-def mana_output(permanent, state, color_choice=None):
+def mana_output(permanent, state, color_choice=None, exclude=()):
     """Mana symbols this permanent would produce if tapped for its plain
     mana ability right now. Raises if effect_id isn't a simple source or a
     required/forbidden color_choice is missing/invalid.
 
     A granted color (_granted_mana_colors) is checked first and, if
     matched, short-circuits the registry-driven dispatch below -- a
-    separate ability, not a variant of the native one."""
+    separate ability, not a variant of the native one.
+
+    exclude: permanents to treat as already gone from the battlefield when
+    evaluating a "count"/"count_all" predicate (e.g. Overgrown Battlement's
+    "per Wall you control") -- see units_after's own docstring for why this
+    exists: a hypothetical tap can itself remove a DIFFERENT, still-untapped
+    source's own predicate match, which a plain snapshot can't see."""
     effect = permanent.card_def.effect_id
     spec = registry.EFFECT_REGISTRY.get(effect, {}).get("mana")
     if spec is None:
@@ -157,14 +163,14 @@ def mana_output(permanent, state, color_choice=None):
         if color_choice is not None:
             raise ValueError(f"{permanent.card_def.name} has no color choice")
         symbol, predicate = spec[1], spec[2]
-        output = [symbol] * sum(1 for p in state.battlefield if predicate(p))
+        output = [symbol] * sum(1 for p in state.battlefield if p not in exclude and predicate(p))
     elif kind == "count_all":
         # ("count_all", symbol, predicate): like "count" but over BOTH
         # players' battlefields (Priest of Titania).
         if color_choice is not None:
             raise ValueError(f"{permanent.card_def.name} has no color choice")
         symbol, predicate = spec[1], spec[2]
-        output = [symbol] * sum(1 for pl in state.players for p in pl.battlefield if predicate(p))
+        output = [symbol] * sum(1 for pl in state.players for p in pl.battlefield if p not in exclude and predicate(p))
     else:
         raise ValueError(f"{permanent.card_def.name} is not a simple mana source")
     return output + _bonus_mana_symbols(state, permanent)
@@ -422,11 +428,13 @@ def pool_can_pay(pool, cost):
     return can_pay(_pool_units(pool), cost)
 
 
-def source_mana_units(state, permanent):
+def source_mana_units(state, permanent, exclude=()):
     """The mana units `permanent` could still contribute, or () if it can't
     be tapped for mana right now. A "unit" is one mana symbol, as the
     frozenset of colors it could be -- singleton for a determined output,
     wider for a color CHOICE.
+
+    exclude: forwarded to mana_output -- see its own docstring.
 
     Shares tappable_for_mana with mana_ability_options, so the two can't
     disagree about what's usable.
@@ -460,7 +468,7 @@ def source_mana_units(state, permanent):
         # Every other kind produces a DETERMINED multiset (fixed/fixed_multi/
         # tron/count/count_all) -- ask mana_output rather than approximating.
         # It already appends the bonus, so strip it off and re-add once below.
-        full = mana_output(permanent, state)
+        full = mana_output(permanent, state, exclude=exclude)
         symbols = full[:len(full) - len(bonus)] if bonus else full
         if granted and len(symbols) == 1:
             native = [set(symbols) | granted]  # one symbol either way -- still exact
@@ -472,10 +480,18 @@ def source_mana_units(state, permanent):
     return [frozenset(colors) for colors in native] + bonus
 
 
-def available_mana_units(state):
+def available_mana_units(state, exclude=()):
     """Every mana unit the ACTIVE player could still put toward a cost right
     now: one per floating pool pip, plus whatever each untapped, available
     source would produce (source_mana_units).
+
+    exclude: permanents to treat as already gone from the battlefield --
+    both their own contribution AND any OTHER source's "count"/"count_all"
+    predicate match (see units_after's own docstring for why this exists).
+    Forwarded into source_mana_units for every remaining permanent, not
+    just used to skip iterating the excluded ones, since a count-based
+    source's own predicate scan reads state.battlefield directly and has
+    no other way to learn about the exclusion.
 
     Deliberately NOT cached, unlike _enchanting: plan_payment is called
     directly by cards and tests, not just sweep legal_fns, so a state-keyed
@@ -483,7 +499,9 @@ def available_mana_units(state):
     mutation)."""
     units = _pool_units(state.mana_pool)
     for p in state.battlefield:
-        units.extend(source_mana_units(state, p))
+        if p in exclude:
+            continue
+        units.extend(source_mana_units(state, p, exclude=exclude))
     return units
 
 
@@ -574,7 +592,29 @@ def outstanding_cost(state):
     return None
 
 
-def units_after(state, tapped=(), spent=(), produced=()):
+def _mana_tap_removes_self(state, permanent):
+    """Would activating `permanent`'s own mana ability right now cause it to
+    leave the battlefield -- for ANY reason (toughness reaching 0, an
+    unconditional sacrifice cost, etc.), not just "is this tap lethal"?
+    Reads a per-card registry predicate (registry.EFFECT_REGISTRY[effect_id]
+    ["mana_tap_removes_self"]), the same declarative-per-card pattern
+    mana_no_tap/mana_extra_available/on_tap already use, so a future card
+    with a similarly self-removing mana ability declares its own version
+    rather than this needing to special-case a card by name. False (no
+    removal) for every card without the key -- today, every card except
+    Wall of Roots (whose own -0/-1 counter can bring it to lethal toughness;
+    see its registry entry). See units_after's own docstring for why this
+    matters: a hypothetical tap that removes the source can ALSO devalue a
+    different, still-untapped "count"-based source (Overgrown Battlement,
+    Priest of Titania) whose own output depends on this permanent's
+    continued presence -- a real production strand, 2026-08-25 (Lotleth
+    Giant, Wall of Roots' 5th activation killing it mid-payment while
+    Overgrown Battlement's still-uncounted 2nd Wall was still needed)."""
+    spec = registry.EFFECT_REGISTRY.get(permanent.card_def.effect_id, {}).get("mana_tap_removes_self")
+    return spec is not None and spec(state, permanent)
+
+
+def units_after(state, tapped=(), spent=(), produced=(), own_ability_tap=None):
     """available_mana_units as it WOULD be after a hypothetical mana action:
     every permanent in `tapped` loses its still-available units, every color
     in `spent` loses one pool pip, and each entry in `produced` adds one
@@ -582,7 +622,8 @@ def units_after(state, tapped=(), spent=(), produced=()):
 
     One helper for all three mid-payment actions (tap a source, a mana
     filter, Saruli's cost) -- only the bookkeeping differs:
-      tap a source   tapped=[source], produced=[{s} for s in mana_output(...)]
+      tap a source   tapped=[source], produced=[{s} for s in mana_output(...)],
+                     own_ability_tap=source
       mana filter    tapped=[source], spent=[input], produced=[output_colors]
       Saruli's cost  tapped=[the creature it taps], produced=[COLORS]
 
@@ -591,11 +632,31 @@ def units_after(state, tapped=(), spent=(), produced=()):
     collapses it to one concrete color (Jagged Barrens counted toward {R},
     then tapped for {B}, leaving {R} owed with no red source left).
 
+    own_ability_tap: pass the permanent ONLY when this hypothetical action
+    is that permanent's OWN mana ability actually being activated (i.e. the
+    caller will go on to call activate_mana_source, which is what actually
+    runs a card's on_tap side effect) -- never for the other two shapes
+    above (a mana filter's execute sets p.tapped directly and a Saruli-cost
+    tap calls tap_for_cost, neither ever runs on_tap, so a permanent merely
+    APPEARING in `tapped` there must never be treated as possibly dying: a
+    nearly-dead Wall of Roots being tapped as Saruli's unrelated cost does
+    NOT accumulate a -0/-1 counter and must not be excluded here). When
+    _mana_tap_removes_self(state, own_ability_tap) is true, the baseline
+    snapshot is computed with that permanent already excluded from the
+    battlefield (via available_mana_units' own exclude param) instead of
+    merely patched out afterward -- so any OTHER still-untapped "count"-
+    based source's own value is correctly recomputed as if it were already
+    gone, not left at its stale pre-tap value.
+
     Removal is by VALUE, so an entry from the pool and one from a same-color
     source are interchangeable. Pure (no mutation)."""
-    units = list(available_mana_units(state))
+    dying = own_ability_tap is not None and _mana_tap_removes_self(state, own_ability_tap)
+    excl = {own_ability_tap} if dying else ()
+    units = list(available_mana_units(state, exclude=excl))
     for permanent in tapped:
-        for unit in source_mana_units(state, permanent):
+        if dying and permanent is own_ability_tap:
+            continue  # already excluded from the baseline above -- don't double-subtract
+        for unit in source_mana_units(state, permanent, exclude=excl):
             units.remove(unit)
     for color in spent:
         units.remove(frozenset({color}))

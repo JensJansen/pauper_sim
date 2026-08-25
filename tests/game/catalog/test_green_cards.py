@@ -383,6 +383,32 @@ def test_wall_of_roots_no_tap_ability_and_counter_death():
     assert any(c.name == wall.card_def.name for c in state.graveyard)
 
 
+def test_wall_of_roots_mana_tap_removes_self_predicts_the_lethal_activation():
+    """mana_tap_removes_self (game.mana.units_after's own hook, see its docstring for the production
+    strand this closes) must correctly predict Wall of Roots' 5th activation as self-removing, and
+    every earlier one as not -- including when combat damage is already marked, matching
+    state_based.check_state_based_actions' own damage_marked >= toughness formula exactly."""
+    spec = registry.EFFECT_REGISTRY[EffectId.WALL_OF_ROOTS]["mana_tap_removes_self"]
+    state = GameState(on_the_play=True)
+    wall = _wall_of_roots()
+    state.battlefield = [wall]
+
+    for n in range(4):  # 0..3 counters: one more activation leaves toughness 1..4, never lethal
+        wall.counters["-0/-1"] = n
+        assert not spec(state, wall), f"{n} counters: one more activation must not be predicted lethal"
+
+    wall.counters["-0/-1"] = 4  # toughness 1 -- the 5th activation IS lethal
+    assert spec(state, wall)
+
+    # Pre-existing combat damage brings the lethal point earlier, matching
+    # check_state_based_actions' real damage_marked >= toughness formula.
+    wall.counters["-0/-1"] = 1  # toughness 4
+    wall.damage_marked = 0
+    assert not spec(state, wall)
+    wall.damage_marked = 3  # 3 damage + 1 more counter (toughness 4->3) would be lethal (3 >= 3)
+    assert spec(state, wall)
+
+
 def test_wall_of_roots_mana_still_available_when_tapped_by_something_else():
     """REGRESSION (2026-08-23, a real production-training crash): Wall of
     Roots' mana ability has no {T} in its cost, so being tapped for an
