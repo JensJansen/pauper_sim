@@ -21,7 +21,7 @@ def run(ctx):
     t0 = time.time()
     decks, game_pairings = _run_eval(ctx.train_decks, ctx.games_per_check, greedy=True, seed=ctx.seed,
                                      game_logs=game_logs, league_dir=ctx.primary_league_dir)
-    elapsed = time.time() - t0
+    elapsed_ms = (time.time() - t0) * 1000
 
     by_pairing = defaultdict(lambda: {"games": 0, "a_wins": 0, "b_wins": 0, "no_winner": 0})
     for ev, (a, b) in zip(game_logs, game_pairings):
@@ -54,7 +54,7 @@ def run(ctx):
 
     payload = {"check": NAME, "primary_league": ctx.primary_league_name, "decks": decks,
                "games_per_pairing": ctx.games_per_check, "seed": ctx.seed,
-               "cumulative_games": ctx.cumulative_games, "elapsed_s": elapsed,
+               "cumulative_games": ctx.cumulative_games, "elapsed_ms": elapsed_ms,
                "pairings": pairing_results,
                "deck_totals": {d: {"wins": t["wins"], "games": t["games"],
                                    "win_rate": t["wins"] / t["games"] if t["games"] else None}
@@ -66,4 +66,4 @@ def run(ctx):
         wr = t["wins"] / t["games"] if t["games"] else float("nan")
         _common.append_metric(ctx, kind=NAME, deck=d, games=t["games"], wins=t["wins"], win_rate=wr)
 
-    return {"pairings": len(by_pairing), "games": len(game_logs), "elapsed_s": elapsed, "wrote": write_path}
+    return {"pairings": len(by_pairing), "games": len(game_logs), "elapsed_ms": elapsed_ms, "wrote": write_path}

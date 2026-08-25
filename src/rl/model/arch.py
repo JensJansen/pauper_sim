@@ -42,8 +42,7 @@ def pad_token_batch(token_lists, device="cpu"):
         vocab_idx_np[b, :n] = [idx for idx, _row, _identity in tl]
         features_np[b, :n] = [row for _idx, row, _identity in tl]
         pad_mask_np[b, :n] = False
-        for t, (_idx, _row, identity) in enumerate(tl):
-            identities[b][t] = identity
+        identities[b][:n] = [identity for _idx, _row, identity in tl]
     vocab_idx = torch.from_numpy(vocab_idx_np).to(device)
     features = torch.from_numpy(features_np).to(device)
     key_padding_mask = torch.from_numpy(pad_mask_np).to(device)

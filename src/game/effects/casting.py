@@ -86,11 +86,11 @@ def cast_permanent_from_hand(state, card_def):
 
 
 def _log_target_fizzle(state, card_def, chosen_name_slot):
-    """Console-visible record of a targeted spell failing to resolve --
-    otherwise this looks identical to "cast a spell that legitimately does
-    nothing." where=None when there was never a captured target at all."""
-    where = f"{chosen_name_slot[0]!r} (slot {chosen_name_slot[1]})" if chosen_name_slot is not None else "no legal target at cast time"
-    print(f"[target fizzle] turn {state.turn_number}: {card_def.name} failed to resolve -- target was {where}, not on the battlefield anymore.")
+    """Record of a targeted spell failing to resolve -- otherwise this looks
+    identical to "cast a spell that legitimately does nothing." target=None
+    when there was never a captured target at all. Routed through
+    state.log_event, a no-op when logging is off, so this costs nothing
+    during real training runs."""
     state.log_event("target_fizzle", card=card_def.name, target=chosen_name_slot)
 
 

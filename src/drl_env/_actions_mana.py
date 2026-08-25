@@ -24,7 +24,7 @@ legal(state)/execute(state) factory pairs build_action_table
 
 import game
 
-_mana_ability_options_cache = None  # (state, result) -- one legal_action_mask sweep, same lifecycle as the combat-side battlefield-lookup cache in _actions_combat
+_mana_ability_options_cache = None  # (state, result) -- one legal_action_mask sweep, same lifecycle as this module's other sweep-scoped caches
 
 
 def _cached_mana_ability_options(state):
@@ -120,7 +120,7 @@ def _find_mana_source(state, name, color):
     return None
 
 
-_mana_source_cache = None  # (state, {(name, color): Permanent or None}) -- one legal_action_mask sweep, same lifecycle as the combat-side battlefield-lookup cache in _actions_combat
+_mana_source_cache = None  # (state, {(name, color): Permanent or None}) -- one legal_action_mask sweep, same lifecycle as this module's other sweep-scoped caches
 
 
 def _cached_mana_source(state, name, color):
@@ -294,7 +294,7 @@ def _find_filter_source(state, name):
     return None
 
 
-_filter_source_cache = None  # (state, {name: Permanent or None}) -- one legal_action_mask sweep, same lifecycle as the combat-side battlefield-lookup cache in _actions_combat
+_filter_source_cache = None  # (state, {name: Permanent or None}) -- one legal_action_mask sweep, same lifecycle as this module's other sweep-scoped caches
 
 
 def _cached_filter_source(state, name):

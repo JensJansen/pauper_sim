@@ -49,9 +49,32 @@ def _save_with_retry(obj, path):
 def load_optimizer_if_present(optimizer, ckpt, key="optimizer"):
     """Loads optimizer state from ckpt[key] if present, else leaves
     `optimizer` at its fresh-constructed state. Tolerates a checkpoint saved
-    before that optimizer entry existed."""
-    if key in ckpt:
-        optimizer.load_state_dict(ckpt[key])
+    before that optimizer entry existed.
+
+    Adam's `fused` param-group flag is preserved across the load instead of
+    letting the checkpoint's own saved param_groups silently overwrite it --
+    unlike lr (which the checkpoint is deliberately allowed to override, see
+    load_deck_checkpoint's caller), `fused` is a pure kernel-choice with no
+    effect on the training math, so the CALLER's construction-time choice
+    should win, not whatever an older checkpoint happened to record.
+    _to_cpu always saves optimizer state on CPU regardless of training
+    device, so a fused/capturable optimizer's loaded state tensors (e.g.
+    Adam's `step`) can land on a different device than the live parameter
+    after load -- silently tolerated by eager Adam but a hard RuntimeError
+    for the fused kernel, which requires every state tensor on the same
+    device as its parameter. Re-homed unconditionally (cheap no-op when
+    already correct), not gated on `fused`, since it's the same fix either
+    way and no caller benefits from a stale-device state tensor."""
+    if key not in ckpt:
+        return
+    fused = [g.get("fused") for g in optimizer.param_groups]
+    optimizer.load_state_dict(ckpt[key])
+    for group, was_fused in zip(optimizer.param_groups, fused):
+        group["fused"] = was_fused
+    for param, state in optimizer.state.items():
+        for k, v in state.items():
+            if torch.is_tensor(v) and v.device != param.device:
+                state[k] = v.to(param.device)
 
 
 def _to_cpu(obj):

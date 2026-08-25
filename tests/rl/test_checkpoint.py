@@ -74,6 +74,62 @@ def test_load_deck_checkpoint_round_trips_net_and_optimizer(tmp_path):
 
 
 @pytest.mark.slow
+def test_load_optimizer_if_present_preserves_fused_flag_across_a_legacy_resume(tmp_path):
+    """This repo's on-disk checkpoints predate fused=True (see
+    load_optimizer_if_present's own docstring). Resuming one of those into a
+    freshly-built fused=True optimizer must come back out still fused=True --
+    load_state_dict alone would silently overwrite it with the checkpoint's
+    own saved (unset) flag."""
+    net = torch.nn.Linear(4, 4)
+    legacy_opt = torch.optim.Adam(net.parameters(), lr=1e-3)  # no fused=True, matches every currently-saved live.pt/mulligan.pt
+    for p in net.parameters():
+        p.grad = torch.ones_like(p)
+    legacy_opt.step()
+    path = str(tmp_path / "legacy_optimizer.pt")
+    ckpt_io.save_deck_checkpoint(path, net, legacy_opt)
+
+    resumed_opt = torch.optim.Adam(net.parameters(), lr=1e-3, fused=True)
+    ckpt = torch.load(path, weights_only=True)
+    ckpt_io.load_optimizer_if_present(resumed_opt, ckpt)
+
+    assert resumed_opt.param_groups[0]["fused"] is True, (
+        "the live optimizer's fused=True must survive a legacy checkpoint's load_state_dict"
+    )
+
+
+@pytest.mark.slow
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="device re-homing only diverges from a no-op on a real second device")
+def test_load_optimizer_if_present_rehomes_state_tensors_to_the_live_param_device(tmp_path):
+    """save_deck_checkpoint always writes optimizer state on CPU (_to_cpu),
+    regardless of training device. Resuming that CPU-saved state into a
+    fused=True optimizer whose params live on CUDA must re-home every state
+    tensor to match -- fused Adam hard-errors on a device-mismatched state
+    tensor where eager Adam would have silently tolerated it."""
+    net = torch.nn.Linear(4, 4).to("cuda")
+    opt = torch.optim.Adam(net.parameters(), lr=1e-3, fused=True)
+    for p in net.parameters():
+        p.grad = torch.ones_like(p)
+    opt.step()  # populate optimizer.state with CUDA-resident tensors
+    path = str(tmp_path / "cuda_optimizer.pt")
+    ckpt_io.save_deck_checkpoint(path, net, opt)  # on-disk state is always CPU, per _to_cpu
+
+    resumed_net = torch.nn.Linear(4, 4).to("cuda")
+    resumed_opt = torch.optim.Adam(resumed_net.parameters(), lr=1e-3, fused=True)
+    ckpt = torch.load(path, weights_only=True, map_location="cpu")
+    ckpt_io.load_optimizer_if_present(resumed_opt, ckpt)
+
+    for param, state in resumed_opt.state.items():
+        for value in state.values():
+            if torch.is_tensor(value):
+                assert value.device == param.device, (
+                    "a CPU-saved state tensor must be re-homed to its live CUDA param, or fused Adam.step() hard-errors"
+                )
+    for p in resumed_net.parameters():
+        p.grad = torch.ones_like(p)
+    resumed_opt.step()  # would raise RuntimeError ("state_steps is on cpu...") if any state tensor were left on the wrong device
+
+
+@pytest.mark.slow
 def test_load_deck_checkpoint_missing_path_is_a_noop(tmp_path):
     encoder = _tiny_encoder()
     net = DeckNetwork(encoder, film_condition_dim=8, non_targeting_n_actions=4)

@@ -68,4 +68,4 @@ def test_collect_rollout_league_parallel_smoke():
         "a single-deck roster is always a self-mirror (both seats recorded) -- stratify_0land_pct=1.0 above must "
         "still never fire here, proving the boundary crossing didn't accidentally also cross the seat-count guard"
     )
-    print(f"rl.training.rollout_parallel collect_rollout_league_parallel smoke test: OK ({time.time() - t0:.1f}s)")
+    print(f"rl.training.rollout_parallel collect_rollout_league_parallel smoke test: OK ({(time.time() - t0) * 1000:,.0f}ms)")

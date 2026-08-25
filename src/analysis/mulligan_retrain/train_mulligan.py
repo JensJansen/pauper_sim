@@ -452,7 +452,7 @@ def main():
                 }
         results["decks"][name] = deck_result
 
-    print(f"\ndone in {time.time() - t0:.1f}s")
+    print(f"\ndone in {(time.time() - t0) * 1000:,.0f}ms")
     if out:
         with open(out, "w") as f:
             json.dump(results, f, indent=2)

@@ -83,7 +83,7 @@ def _patched(net, optimizer, buf, device, **kwargs):
             t_w = time.perf_counter()
             try:
                 _timed_gpu(net, optimizer, buf, kwargs)
-                print(f"    [bench] cuda warmup {time.perf_counter() - t_w:.1f}s", flush=True)
+                print(f"    [bench] cuda warmup {(time.perf_counter() - t_w) * 1000:,.0f}ms", flush=True)
             except Exception as exc:  # noqa: BLE001 -- recorded, not hidden
                 gpu_err = f"warmup: {type(exc).__name__}: {exc}"
                 print(f"    [bench] cuda warmup FAILED: {gpu_err}", flush=True)
@@ -100,7 +100,7 @@ def _patched(net, optimizer, buf, device, **kwargs):
     cpu_t = time.perf_counter() - t0
 
     rec = {"n_transitions": len(buf), "batch_size": kwargs.get("batch_size"),
-           "cpu_s": cpu_t, "gpu_s": gpu_t, "gpu_error": gpu_err,
+           "cpu_ms": cpu_t * 1000, "gpu_ms": gpu_t * 1000 if gpu_t else None, "gpu_error": gpu_err,
            "cpu_epochs": cpu_out[5], "gpu_epochs": gpu_out[5] if gpu_out else None}
     if gpu_out is not None:
         # Both arms must agree on epochs_run and loss within tolerance to be comparable.
@@ -115,7 +115,7 @@ def _patched(net, optimizer, buf, device, **kwargs):
                 f"ploss {cpu_out[0]:+.4f}vs{gpu_out[0]:+.4f} "
                 f"vloss {cpu_out[1]:.4f}vs{gpu_out[1]:.4f}]")
     print(f"    [bench {len(RECORDS):4d}] n={rec['n_transitions']:5d} bs={rec['batch_size']} "
-          f"cpu={cpu_t:7.2f}s gpu={f'{gpu_t:7.2f}s' if gpu_t else '   --   '} "
+          f"cpu={cpu_t * 1000:8,.0f}ms gpu={f'{gpu_t * 1000:8,.0f}ms' if gpu_t else '    --    '} "
           f"{'x%.2f' % (cpu_t / gpu_t) if gpu_t else ''} "
           f"eq={rec.get('equivalent')}{diag} {rec['gpu_error'] or ''}", flush=True)
     return cpu_out
@@ -155,16 +155,16 @@ def bench_broadcast(reps=200):
     t0 = time.perf_counter()
     for _ in range(reps):
         _cpu_broadcast()
-    cpu_s = (time.perf_counter() - t0) / reps
-    gpu_s = None
+    cpu_ms = (time.perf_counter() - t0) / reps * 1000
+    gpu_ms = None
     if gpu_nets:
         _sync()
         t0 = time.perf_counter()
         for _ in range(reps):
             _gpu_broadcast()
         _sync()
-        gpu_s = (time.perf_counter() - t0) / reps
-    return {"reps": reps, "cpu_broadcast_s": cpu_s, "gpu_broadcast_s": gpu_s}
+        gpu_ms = (time.perf_counter() - t0) / reps * 1000
+    return {"reps": reps, "cpu_broadcast_ms": cpu_ms, "gpu_broadcast_ms": gpu_ms}
 
 
 def main():
@@ -187,8 +187,8 @@ def main():
         return
 
     bcast = bench_broadcast()
-    print(f"broadcast/call: cpu={bcast['cpu_broadcast_s']*1000:.1f}ms  "
-          f"gpu={bcast['gpu_broadcast_s']*1000:.1f}ms", flush=True)
+    print(f"broadcast/call: cpu={bcast['cpu_broadcast_ms']:.1f}ms  "
+          f"gpu={bcast['gpu_broadcast_ms']:.1f}ms", flush=True)
 
     league_runner.ppo_update = _patched  # league_runner did `from rl.training.ppo import ppo_update`
     import run_league
@@ -197,15 +197,15 @@ def main():
                 "--league-config", "../training_configs/benchmarking_league.json"]
     t0 = time.time()
     run_league.main()
-    wall = time.time() - t0
+    wall_ms = (time.time() - t0) * 1000
 
     Path(args.out).write_text(json.dumps(
-        {"records": RECORDS, "broadcast": bcast, "wall_s": wall,
+        {"records": RECORDS, "broadcast": bcast, "wall_ms": wall_ms,
          "iterations": args.iterations,
          "torch": torch.__version__, "threads": torch.get_num_threads(),
          "gpu": torch.cuda.get_device_name(0) if torch.cuda.is_available() else None},
         indent=2))
-    print(f"\nwrote {len(RECORDS)} paired records to {args.out} (wall {wall:.0f}s)")
+    print(f"\nwrote {len(RECORDS)} paired records to {args.out} (wall {wall_ms:,.0f}ms)")
 
 
 if __name__ == "__main__":

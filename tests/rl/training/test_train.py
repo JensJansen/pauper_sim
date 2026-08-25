@@ -140,7 +140,7 @@ def test_mirror_selfplay_smoke():
     for p in net_a.parameters():
         assert torch.isfinite(p).all(), "a parameter went non-finite after the mirror PPO update"
     print(f"rl.training.train mirror smoke test: OK ({games_played} games, buf_size={len(buf)}, "
-          f"policy_loss={policy_loss:.4f}, {time.time() - t0:.1f}s)")
+          f"policy_loss={policy_loss:.4f}, {(time.time() - t0) * 1000:,.0f}ms)")
 
 
 @pytest.mark.slow
@@ -164,7 +164,7 @@ def test_cross_matchup_smoke():
     for net in (net_a, net_b):
         for p in net.parameters():
             assert torch.isfinite(p).all(), "a parameter went non-finite after the cross-matchup PPO update"
-    print(f"rl.training.train cross-matchup smoke test: OK ({time.time() - t0:.1f}s)")
+    print(f"rl.training.train cross-matchup smoke test: OK ({(time.time() - t0) * 1000:,.0f}ms)")
 
 
 @pytest.mark.slow
@@ -265,7 +265,7 @@ def test_league_smoke_and_ppo_update_trains_the_encoder():
     finally:
         shutil.rmtree(tmp_dir)
 
-    print(f"rl.training.train league smoke test: OK (mirror/cross-deck/snapshot opponents all exercised, {time.time() - t0:.1f}s)")
+    print(f"rl.training.train league smoke test: OK (mirror/cross-deck/snapshot opponents all exercised, {(time.time() - t0) * 1000:,.0f}ms)")
 
     t0 = time.time()
     encoder_before = [p.clone() for p in net_a.encoder.parameters()]
@@ -283,7 +283,7 @@ def test_league_smoke_and_ppo_update_trains_the_encoder():
         "the per-deck head must have actually trained"
     for p in net_a.parameters():
         assert torch.isfinite(p).all(), "a parameter went non-finite after the ppo_update"
-    print(f"rl.training.train ppo_update smoke test: OK (encoder AND head trained, {time.time() - t0:.1f}s)")
+    print(f"rl.training.train ppo_update smoke test: OK (encoder AND head trained, {(time.time() - t0) * 1000:,.0f}ms)")
 
 
 @pytest.mark.slow
@@ -304,7 +304,7 @@ def test_eval_record_false_smoke():
     assert bufs == {} and mull == {}, "record=False must produce NO training buffers"
     assert len(eval_logs) == 2 and all(len(g) > 0 for g in eval_logs), "record=False must still produce event logs"
     print(f"rl.training.train eval/record=False smoke test: OK (no buffers, {sum(len(g) for g in eval_logs)} events logged, "
-          f"{time.time() - t0:.1f}s)")
+          f"{(time.time() - t0) * 1000:,.0f}ms)")
 
 
 def test_wants_mana_mistake_gates_on_reward_fn_tag():

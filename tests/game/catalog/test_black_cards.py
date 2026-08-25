@@ -1,8 +1,5 @@
 """Tests for game.catalog.black_cards."""
 
-import contextlib
-import io
-
 import drl_env
 
 from game import registry
@@ -74,10 +71,9 @@ def test_dread_return_fizzles_if_target_leaves_graveyard():
     """Fizzles if the target leaves the graveyard before it resolves."""
     state, grizzly_inst = _dread_return_cast_and_target()
     state.graveyard.remove(grizzly_inst)
-    log = io.StringIO()
-    with contextlib.redirect_stdout(log):
-        resolve_top_of_stack(state)
-    assert "fizzle" in log.getvalue().lower()
+    state.event_log = []
+    resolve_top_of_stack(state)
+    assert any(e["kind"] == "target_fizzle" for e in state.event_log)
     assert any(c.name == "Dread Return" for c in state.graveyard)
     assert not any(p.card_def is _GRIZZLY_BEARS for p in state.battlefield)  # nothing reanimated
 

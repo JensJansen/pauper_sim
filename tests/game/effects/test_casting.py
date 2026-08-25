@@ -1,9 +1,6 @@
 """Battlefield entry and the direct cast paths (casting.py): land bounce ETB,
 Aura targeting/attachment/fizzle, targeted-creature spells, and the shared
 capture_any_target / target_still_legal targeting contract."""
-import contextlib
-import io
-
 from game import registry, resolution
 from game.cards import CardDef, CardType, EffectId
 from game.effects import stats
@@ -105,10 +102,9 @@ def test_cast_aura_target_fizzle_when_target_dies_before_resolution():
     resolution.execute_choose_any_target_creature(state, 0, "Slippery Bogle", 2)  # targets other_bogle specifically
     state.battlefield.remove(other_bogle)  # dies before the cast resolves
 
-    fizzle_log = io.StringIO()
-    with contextlib.redirect_stdout(fizzle_log):
-        resolve_top_of_stack(state)
-    assert "fizzle" in fizzle_log.getvalue().lower()
+    state.event_log = []
+    resolve_top_of_stack(state)
+    assert any(e["kind"] == "target_fizzle" for e in state.event_log)
     assert state.hand == []
     assert any(c.name == ethereal_armor.name for c in state.graveyard)  # graveyard holds a fresh instance
     assert not any(p.card_def.name == "Ethereal Armor" for p in state.battlefield)

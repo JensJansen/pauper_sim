@@ -98,7 +98,7 @@ def run(ctx):
             ctx.collected_game_logs.append(ev)
             ctx.collected_deck_league.append({0: ("training", b), 1: ("primary", a)})
 
-    elapsed = time.time() - t0
+    elapsed_ms = (time.time() - t0) * 1000
     burn_summary = {f"{side}/{name}": {"games": n, "mana_burnt_total_per_game": total / n,
                                        "mana_burnt_total_single_pip_per_game": total_sp / n}
                     for (side, name), (n, total, total_sp) in burn_by_deck.items()}
@@ -106,7 +106,7 @@ def run(ctx):
                "training_league": ctx.training_league_name,
                "primary_roster": primary_decks, "training_roster": training_roster,
                "games_per_pairing": ctx.games_per_check, "seed": ctx.seed,
-               "cumulative_games": ctx.cumulative_games, "elapsed_s": elapsed,
+               "cumulative_games": ctx.cumulative_games, "elapsed_ms": elapsed_ms,
                "pairings": pairing_results, "mana_burnt_by_deck": burn_summary,
                "primary_totals": {d: {"wins": t["wins"], "games": t["games"],
                                       "win_rate": t["wins"] / t["games"] if t["games"] else None}
@@ -119,4 +119,4 @@ def run(ctx):
         _common.append_metric(ctx, kind=NAME, deck=d, games=t["games"], wins=t["wins"], win_rate=wr)
 
     return {"pairings": len(pairing_results), "games": sum(r["games"] for r in pairing_results),
-            "elapsed_s": elapsed, "wrote": write_path}
+            "elapsed_ms": elapsed_ms, "wrote": write_path}

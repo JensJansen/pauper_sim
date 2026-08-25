@@ -172,7 +172,7 @@ def main():
 
     with open(args.out, "w") as f:
         json.dump({"league": args.league, "games_per_pair": args.games, "decks": out}, f, indent=1)
-    print(f"done in {time.time() - t0:.0f}s -> {args.out}")
+    print(f"done in {(time.time() - t0) * 1000:,.0f}ms -> {args.out}")
     print("A transitive matrix with a FLAT elo span is the 'sitting still' result:\n"
           "no cycling, and no strength gained either.")
 

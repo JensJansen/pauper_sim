@@ -52,7 +52,7 @@ import numpy as np
 
 import game
 
-from . import _actions_combat, _actions_mana
+from . import _actions_mana
 from ._actions_cast import (
     _CAST_MODE_BUTTON_MAX,
     _CAST_X_BUTTON_MAX,
@@ -918,14 +918,15 @@ def legal_action_mask(state, actions):
          another pending_resolution kind since that's a single slot, not a
          stack, and a second pending would clobber whatever's already open.
 
-    Resets _actions_combat._battlefield_lookup_cache, _actions_mana's own
-    sweep-scoped caches, and game.mana's cache before and after the sweep,
-    so none can leak past this call's scope into a later execute_fn call or
-    an unrelated sweep.
+    Resets _actions_mana's own sweep-scoped caches and game.mana's cache
+    before and after the sweep, so none can leak past this call's scope into
+    a later execute_fn call or an unrelated sweep. (_actions_combat carried a
+    matching sweep-scoped cache until 2026-08-25; removed once it was
+    confirmed dead on every production path -- see _actions_combat's own
+    _find_on_battlefield docstring.)
 
     Mask is built as a plain list and converted to a numpy array once at
     the end, since indexed numpy writes in a tight loop carry real overhead."""
-    _actions_combat._battlefield_lookup_cache = None
     _actions_mana._mana_ability_options_cache = None
     _actions_mana._mana_source_cache = None
     _actions_mana._filter_source_cache = None
@@ -948,7 +949,6 @@ def legal_action_mask(state, actions):
         _validate_choose_name_coverage(state, actions)
         return np.asarray(mask, dtype=bool)
     finally:
-        _actions_combat._battlefield_lookup_cache = None
         _actions_mana._mana_ability_options_cache = None
         _actions_mana._mana_source_cache = None
         _actions_mana._filter_source_cache = None

@@ -137,14 +137,17 @@ def ppo_update(net, optimizer, buf, device, n_epochs=4, batch_size=64, gamma=0.9
             # n_fixed read off the net directly, never inferred from
             # mask_length - token_count (a zero-token entry pads to one
             # dummy slot, which would make that inference off-by-one).
-            full_mask_mb = torch.zeros((len(mb), n_fixed + max_tokens), dtype=torch.bool, device=device)
+            # Filled as one numpy buffer, then one H2D transfer -- per-row
+            # torch.as_tensor(..., device=device) calls here previously cost
+            # ~1.5s/minibatch on GPU (measured) from kernel-launch overhead,
+            # dwarfing the actual compute.
+            mask_np = np.zeros((len(mb), n_fixed + max_tokens), dtype=bool)
             for row, i in enumerate(mb):
                 stored = buf.mask[i]
-                full_mask_mb[row, :n_fixed] = torch.as_tensor(stored[:n_fixed], dtype=torch.bool, device=device)
+                mask_np[row, :n_fixed] = stored[:n_fixed]
                 pointer_part = stored[n_fixed:]
-                full_mask_mb[row, n_fixed:n_fixed + len(pointer_part)] = torch.as_tensor(
-                    pointer_part, dtype=torch.bool, device=device,
-                )
+                mask_np[row, n_fixed:n_fixed + len(pointer_part)] = pointer_part
+            full_mask_mb = torch.as_tensor(mask_np, device=device)
 
             pointer_mask_mb = full_mask_mb[:, n_fixed:]
             # hidden=None -> zeros: every episode replays from the same

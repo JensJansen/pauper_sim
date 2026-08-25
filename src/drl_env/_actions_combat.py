@@ -7,20 +7,21 @@ import game
 
 from ._actions_common import _GATE_NO_PENDING
 
-_battlefield_lookup_cache = None  # (state, {(name, slot): Permanent}) -- valid only for one legal_action_mask sweep
 
-
-def _cached_battlefield_lookup(state):
-    """Sweep-scoped {(name, slot): Permanent} lookup for state.battlefield,
-    replacing a per-action O(battlefield_size) scan with O(1) (profiled:
-    ~3.4M calls across one 8192-step training burst). Safe because a
-    legal_action_mask sweep only calls legal_fns, never execute_*, so state
-    can't change mid-sweep. (name, slot) is a safe key since
-    state.battlefield is always one side's own zone."""
-    global _battlefield_lookup_cache
-    if _battlefield_lookup_cache is None or _battlefield_lookup_cache[0] is not state:
-        _battlefield_lookup_cache = (state, {(p.card_def.name, p.slot): p for p in state.battlefield})
-    return _battlefield_lookup_cache[1]
+def _find_on_battlefield(state, name, slot):
+    """The (name, slot) permanent on state.battlefield, or None. Plain
+    O(battlefield_size) scan: the "Attack: "/"Assign Blocker: " rows this
+    backs are filtered out of the production table before
+    drl_env.legal_action_mask ever sees them (rl.decision.action_bridge's
+    build_fixed_action_table routes attacking/blocking through the pointer
+    head instead, via game.creature_attack_eligible/creature_block_eligible
+    directly) -- so this only ever runs from a direct unit test invoking
+    _attack_legal/_assign_blocker_legal against the raw, unfiltered table,
+    never from a hot per-decision sweep. A former sweep-scoped cache here
+    (removed 2026-08-25, having been measured dead on every production call
+    path) existed to serve exactly that sweep, which no longer reaches this
+    code."""
+    return next((p for p in state.battlefield if p.card_def.name == name and p.slot == slot), None)
 
 
 def _attack_legal(name, slot):
@@ -38,7 +39,7 @@ def _attack_legal(name, slot):
             return False
         if state.active_idx != state.turn_player_idx:
             return False
-        p = _cached_battlefield_lookup(state).get((name, slot))
+        p = _find_on_battlefield(state, name, slot)
         return p is not None and game.creature_attack_eligible(state, p)
     legal._pending_gate = _GATE_NO_PENDING
     return legal
@@ -67,7 +68,7 @@ def _assign_blocker_legal(name, slot):
         pending = state.pending_resolution
         if pending is None or pending["kind"] != "declare_blockers":
             return False
-        p = _cached_battlefield_lookup(state).get((name, slot))
+        p = _find_on_battlefield(state, name, slot)
         return p is not None and game.creature_block_eligible(state, p)
     legal._pending_gate = frozenset({"declare_blockers"})
     return legal
@@ -142,6 +143,5 @@ __all__ = [
     '_done_blocking_execute',
     '_assign_damage_to_opponent_legal',
     '_assign_damage_to_opponent_execute',
-    '_battlefield_lookup_cache',
-    '_cached_battlefield_lookup',
+    '_find_on_battlefield',
 ]

@@ -81,7 +81,7 @@ def main():
     base = results.get("seq")
     for name, secs in results.items():
         rel = f"  ({base / secs:.2f}x vs seq)" if base and secs else ""
-        print(f"  {name:>10}: {secs:7.1f}s{rel}")
+        print(f"  {name:>10}: {secs * 1000:11,.0f}ms{rel}")
     print("\nnote: MP config's per-worker sampling is not fully seeded, so its games differ slightly; "
           "raise --iterations/--games-per-iter to average out cross-config game-length noise.")
 

@@ -53,6 +53,9 @@ def _sanitize_events(game_logs):
     return [[conv(event) for event in one_game] for one_game in game_logs]
 
 
+_worker_pool_cache = None  # (decklists, vocab, deck_ctxs, fixed_tables) -- built once per WORKER PROCESS, see below
+
+
 def _league_rollout_worker(training_deck_name, all_state_dicts, all_trunk_hidden,
                             reward_fn_name, league_root_dir, horizon, n_games, seed,
                             mulligan_state_dicts=None, collect_logs=False, checkpoint_rate=0.0, pfsp=True,
@@ -66,7 +69,15 @@ def _league_rollout_worker(training_deck_name, all_state_dicts, all_trunk_hidden
     legal_fn/execute_fn closures, which pickle cannot serialize. Only plain
     tensors, scalars, and strings cross the process boundary; reward_fn is
     passed by name for the same reason. league_root_dir is passed
-    explicitly to avoid a circular import with rl.league.league_runner."""
+    explicitly to avoid a circular import with rl.league.league_runner.
+
+    build_pool() itself is cached in _worker_pool_cache (module-global,
+    always called with its own defaults here -- never parameterized), not
+    rebuilt on every call: the roster/vocab/action tables never change
+    within a run, and collect_rollout_league_parallel reuses the SAME
+    ProcessPoolExecutor -- and so the same worker process -- across every
+    collection round, not just once per spawn (measured ~30ms/call
+    otherwise wasted, every worker, every round)."""
     torch.set_num_threads(1)  # avoid oversubscribing cores: this worker IS the unit of parallelism
     import rl.rewards as rewards_module
     from rl.model.arch import SetTransformer
@@ -74,8 +85,11 @@ def _league_rollout_worker(training_deck_name, all_state_dicts, all_trunk_hidden
     from rl.league.league import LeaguePool
     from rl.roster import build_pool
 
+    global _worker_pool_cache
     reward_fn = getattr(rewards_module, reward_fn_name)
-    decklists, vocab, deck_ctxs, fixed_tables = build_pool()
+    if _worker_pool_cache is None:
+        _worker_pool_cache = build_pool()
+    decklists, vocab, deck_ctxs, fixed_tables = _worker_pool_cache
 
     # One encoder per deck, built fresh as a shape and filled from that
     # deck's own state_dict (a registered child of DeckNetwork).
