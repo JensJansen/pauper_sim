@@ -26,7 +26,17 @@ class ValidationContext:
     round_robin_primary and round_robin_training as they play (registry
     order matters: mulligan_audit runs after both and reads these instead of
     replaying games). Discarded with the rest of ctx once a cadence point's
-    checks finish -- never written to disk."""
+    checks finish -- never written to disk.
+
+    executor / n_workers: the SAME ProcessPoolExecutor run_training_pipeline.py
+    already builds for training collection, threaded through so a check can
+    parallelize its own game-playing across it instead of running single-
+    process. Provably idle for a check's whole duration: run_all only ever
+    runs synchronously between training chunks, never concurrently with one.
+    executor=None (the default) means "run sequentially" -- every check must
+    keep working with no executor at all, since standalone callers (run_league.py
+    --eval, analysis/ scripts, a check invoked directly in a test) never
+    build or pass one."""
     primary_league_name: str
     train_decks: list
     decklists: dict
@@ -39,6 +49,8 @@ class ValidationContext:
     training_league_name: str = None
     collected_game_logs: list = field(default_factory=list)
     collected_deck_league: list = field(default_factory=list)
+    executor: object = None
+    n_workers: int = 1
 
     @property
     def primary_league_dir(self):

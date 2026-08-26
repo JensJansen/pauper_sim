@@ -4,6 +4,8 @@ validation.mulligan_audit depends on. Backward compatibility (no
 deck_by_game_seat) is pinned too, since train_mulligan.py still relies on
 that flat shape unchanged.
 """
+from pathlib import Path
+
 import pytest
 
 import game as game_module
@@ -16,6 +18,8 @@ from rl.model.mulligan import MulliganNet
 
 LAND = "Forest"
 SPELL = "Llanowar Elves"
+
+_SRC_DIR = Path(__file__).resolve().parent.parent / "src"
 
 
 def _game(seat, hand_lands, chosen, p_keep, winner=None):
@@ -96,7 +100,8 @@ def test_binary_entropy_bits_extremes_and_midpoint():
 
 
 @pytest.mark.slow
-def test_build_probe_hands_sampled_is_deterministic_and_respects_land_count():
+def test_build_probe_hands_sampled_is_deterministic_and_respects_land_count(monkeypatch):
+    monkeypatch.chdir(_SRC_DIR)  # parse_decklist_file's "../data/..." is relative to src/, same as rl.roster's own convention
     decklist = game_module.parse_decklist_file("../data/mono_blue_terror.txt")
     vocab = CardVocab([decklist])
     land_indices = {vocab.index(n) for n, *_ in decklist if game_module.CARD_DEFS[n].card_type.name == "LAND"}
@@ -116,8 +121,27 @@ def test_build_probe_hands_sampled_is_deterministic_and_respects_land_count():
 
 
 @pytest.mark.slow
-def test_probe_land_count_stats_shape():
+def test_build_probe_hands_sampled_skips_a_land_count_the_deck_cant_draw():
+    """A real deck this shape exists in the league roster: spy_combo runs
+    only 4 Forest/Swamp (the rest of its "mana" is creatures, not Lands),
+    which used to crash build_probe_hands_sampled at land_count=5 --
+    rng.sample(lands, 5) from a population of 4 raises ValueError. A deck
+    that can never physically be dealt a 5+-land hand shouldn't be asked
+    to produce one; the bucket is skipped, not forced or faked."""
+    decklist = [(LAND, 4), (SPELL, 56)]  # mirrors spy_combo's real 4-land/56-nonland shape
+    vocab = CardVocab([decklist])
+
+    probes = build_probe_hands_sampled(decklist, vocab, land_counts=range(8), n_variants=2, seed=0)
+
+    assert set(probes) == {0, 1, 2, 3, 4}  # 5, 6, 7 are impossible with only 4 lands -- skipped, not crashed
+    for lc, hands in probes.items():
+        assert len(hands) == 2
+
+
+@pytest.mark.slow
+def test_probe_land_count_stats_shape(monkeypatch):
     torch = pytest.importorskip("torch")
+    monkeypatch.chdir(_SRC_DIR)
     decklist = game_module.parse_decklist_file("../data/mono_blue_terror.txt")
     vocab = CardVocab([decklist])
     shared = SetTransformer(vocab.size, d_model=16, n_heads=2, n_layers=1, dim_feedforward=32)

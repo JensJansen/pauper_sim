@@ -153,13 +153,25 @@ def build_probe_hands_sampled(decklist, vocab, land_counts=range(8), n_variants=
     same call always returns the same hands -- comparable across cadence
     points during a run -- while averaging out any one hand's idiosyncrasy
     and reaching land counts (6, 7; often 0 too) natural self-play rarely or
-    never draws. Returns {land_count: [tokens, ...]}."""
+    never draws. Returns {land_count: [tokens, ...]}.
+
+    A land_count this deck could never actually draw (lc lands sampled
+    without replacement needs lc <= len(lands), and the other 7-lc slots
+    need 7-lc <= len(spells)) is skipped rather than raising or padding with
+    a fake repeat -- e.g. a low-land deck like spy_combo (4 real Lands, the
+    rest mana creatures) can't ever be dealt a 5+-land hand, so probing for
+    one isn't a rare case worth forcing, it's asking about a hand that
+    can't exist. Returns whatever subset of land_counts is achievable;
+    probe_land_count_stats' own {lc: ...} dict comprehension already only
+    walks the keys actually present."""
     rng = random.Random(seed)
     lands = [n for n, c, *_ in decklist for _ in range(c) if game.CARD_DEFS[n].card_type.name == "LAND"]
     spells = [n for n, c, *_ in decklist for _ in range(c) if game.CARD_DEFS[n].card_type.name != "LAND"]
     assert lands and spells, "a deck with no lands or no spells can't build these probes"
     out = {}
     for lc in land_counts:
+        if lc > len(lands) or 7 - lc > len(spells):
+            continue
         hands = []
         for _ in range(n_variants):
             hand = rng.sample(lands, lc) + rng.sample(spells, 7 - lc)

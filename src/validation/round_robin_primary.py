@@ -20,7 +20,8 @@ def run(ctx):
     game_logs = []
     t0 = time.time()
     decks, game_pairings = _run_eval(ctx.train_decks, ctx.games_per_check, greedy=True, seed=ctx.seed,
-                                     game_logs=game_logs, league_dir=ctx.primary_league_dir)
+                                     game_logs=game_logs, league_dir=ctx.primary_league_dir,
+                                     executor=ctx.executor, n_workers=ctx.n_workers)
     elapsed_ms = (time.time() - t0) * 1000
 
     by_pairing = defaultdict(lambda: {"games": 0, "a_wins": 0, "b_wins": 0, "no_winner": 0})

@@ -20,7 +20,7 @@ from rl.league.league import LeaguePool, PFSP_POWER
 from rl.roster import build_pool
 from rl.decision.agent import SeatAgent
 from rl.training.train import batch_size_for_iteration, collect_rollout, collect_rollout_league, _constant_pairing, ent_coef_schedule
-from rl.training.rollout_parallel import collect_rollout_league_parallel
+from rl.training.rollout_parallel import collect_rollout_league_parallel, _sanitize_events
 from rl.training.ppo import ppo_update
 from rl.model.mulligan import MulliganNet, update as mulligan_update
 from rl import checkpoint as ckpt_io
@@ -576,8 +576,86 @@ def _run_session(n_iterations, games_per_iteration, snapshot_every, executor, n_
     print("live checkpoints saved for all decks")
 
 
+_eval_worker_pool_cache = None  # (decklists, vocab, deck_ctxs, fixed_tables) -- built once per WORKER PROCESS
+
+
+def _eval_worker_pool():
+    """build_pool()'s result, cached per worker PROCESS -- the roster/vocab/
+    action tables never change within a run, and collect_rollout_league_parallel's
+    own ProcessPoolExecutor (reused here) keeps its worker processes alive
+    across many calls, not just one. Own cache, separate from
+    rl.training.rollout_parallel's _worker_pool_cache: different module,
+    and the ~30ms build_pool() cost is a one-time-per-process triviality
+    either way, not worth sharing a cache across modules to save."""
+    global _eval_worker_pool_cache
+    if _eval_worker_pool_cache is None:
+        _eval_worker_pool_cache = build_pool()
+    return _eval_worker_pool_cache
+
+
+def _eval_pairing_chunk_worker(league_dir, pairing_seeds, games_per_pairing, greedy, collect_logs):
+    """Runs in a SEPARATE PROCESS. Plays one CHUNK of _run_eval's pairings
+    -- each (a, b, seed) in pairing_seeds -- reusing the identical per-pairing
+    body _run_eval's own sequential loop runs, just relocated so many chunks
+    can run across an existing ProcessPoolExecutor instead of one process
+    running every pairing in turn.
+
+    Reads live weights straight off league_dir rather than having them
+    shipped from the parent: by the time ANY validation check runs,
+    _run_session's own last line has already called _save_live_checkpoints,
+    so this chunk's live.pt/mulligan.pt are already the current weights on
+    disk -- nothing "live in memory only" a worker could miss. decklists/
+    vocab/deck_ctxs/fixed_tables are rebuilt (cached per process, see
+    _eval_worker_pool) rather than shipped either -- fixed_table entries
+    hold legal_fn/execute_fn closures pickle can't serialize, the same
+    constraint rl.training.rollout_parallel._league_rollout_worker documents.
+
+    Each pairing gets its own random.Random(seed) rather than sharing one
+    stream across the whole eval the way the sequential path does -- the
+    only way to make per-pairing collection order-independent AND still
+    reproducible for a given top-level seed (see _run_eval's own dispatch
+    for how pairing_seeds is derived).
+
+    Returns (sanitized_game_logs_or_None, game_pairings_for_this_chunk_or_None,
+    games_played) -- sanitized via rollout_parallel._sanitize_events since a
+    raw event can hold an unpicklable card closure/lambda."""
+    torch.set_num_threads(1)  # this worker IS the unit of parallelism
+    decklists, vocab, deck_ctxs, fixed_tables = _eval_worker_pool()
+    live_nets, mulligan_nets = {}, {}  # cached across this chunk's own pairings only
+
+    def _agent_for(name):
+        if name not in live_nets:
+            live_path = f"{league_dir}/{name}/live.pt"
+            net = build_deck_net(vocab.size, len(fixed_tables[name]),
+                                 ckpt_io.trunk_hidden_from_deck_checkpoint(live_path))
+            ckpt_io.load_deck_checkpoint(live_path, net)
+            net.eval()
+            live_nets[name] = net
+            mnet = MulliganNet(net.encoder)
+            ckpt_io.load_deck_checkpoint(f"{league_dir}/{name}/mulligan.pt", mnet)
+            mnet.eval()
+            mulligan_nets[name] = mnet
+        return SeatAgent(live_nets[name], mulligan_nets[name], deck_ctxs[name])
+
+    game_logs = [] if collect_logs else None
+    game_pairings = [] if collect_logs else None
+    total = 0
+    for a, b, seed in pairing_seeds:
+        pairing = _constant_pairing([_agent_for(a), _agent_for(b)],
+                                    [decklists[a], decklists[b]], [None, None], [None, None])
+        before = len(game_logs) if game_logs is not None else 0
+        _bufs, _mull, played = collect_rollout(pairing, games_per_pairing, HORIZON, random.Random(seed),
+                                               device="cpu", record=False, greedy=greedy, game_logs=game_logs)
+        total += played
+        if game_pairings is not None:
+            game_pairings.extend([(a, b)] * (len(game_logs) - before))
+    if game_logs is not None:
+        game_logs = _sanitize_events(game_logs)
+    return game_logs, game_pairings, total
+
+
 def _run_eval(eval_decks, games_per_pairing, greedy, seed, game_logs, matchup=None,
-              league_dir=None):
+              league_dir=None, executor=None, n_workers=1):
     """Eval / faithful log generation: plays games with no training
     (record=False, no updates, no checkpointing) over the current live
     agents (deck net + its mulligan model). Pairing is a round-robin with
@@ -587,7 +665,17 @@ def _run_eval(eval_decks, games_per_pairing, greedy, seed, game_logs, matchup=No
     engine event_log per game. Returns (resolved deck roster actually
     played, per-game (deck_a, deck_b) pairing list aligned 1:1 with
     game_logs, or None when game_logs is None) -- the pairing list is what
-    lets _write_event_log stamp each game with its real matchup."""
+    lets _write_event_log stamp each game with its real matchup.
+
+    executor / n_workers: an existing (already-running) ProcessPoolExecutor
+    to spread pairings across, and how many workers it has -- validation's
+    own reuse of the same pool _train_to already built, since that pool
+    sits idle for every check's whole duration. None/<=1 (the default) runs
+    every pairing sequentially in this process, exactly as before -- every
+    other caller (run_league.py's own --eval/--matchup CLI, any direct
+    test) keeps this identical behavior with no executor to pass.
+    `matchup` (exactly one pairing) always runs sequentially regardless --
+    a single pairing has nothing to chunk across workers."""
     import itertools
     league_dir = league_dir or LEAGUE_DIR
     decklists, vocab, deck_ctxs, fixed_tables = build_pool()
@@ -595,43 +683,77 @@ def _run_eval(eval_decks, games_per_pairing, greedy, seed, game_logs, matchup=No
     eval_decks = list(matchup) if matchup else (list(eval_decks) if eval_decks else deck_names)
     assert set(eval_decks) <= set(deck_names), f"eval decks {eval_decks} not all in roster {deck_names}"
     pairings = [tuple(matchup)] if matchup else list(itertools.combinations_with_replacement(eval_decks, 2))
-    rng = random.Random(seed)
     horizon = HORIZON
 
-    live_nets, mulligan_nets = {}, {}
-    for name in set(eval_decks):
-        live_path = f"{league_dir}/{name}/live.pt"
-        net = build_deck_net(vocab.size, len(fixed_tables[name]),
-                             ckpt_io.trunk_hidden_from_deck_checkpoint(live_path))
-        ckpt_io.load_deck_checkpoint(live_path, net)  # optimizer=None: eval only ever needs inference weights
-        net.eval()
-        live_nets[name] = net
-        mnet = MulliganNet(net.encoder)
-        mull_path = f"{league_dir}/{name}/mulligan.pt"
-        ckpt_io.load_deck_checkpoint(mull_path, mnet)
-        mnet.eval()
-        mulligan_nets[name] = mnet
+    if executor is None or n_workers <= 1 or matchup is not None:
+        rng = random.Random(seed)
+        live_nets, mulligan_nets = {}, {}
+        for name in set(eval_decks):
+            live_path = f"{league_dir}/{name}/live.pt"
+            net = build_deck_net(vocab.size, len(fixed_tables[name]),
+                                 ckpt_io.trunk_hidden_from_deck_checkpoint(live_path))
+            ckpt_io.load_deck_checkpoint(live_path, net)  # optimizer=None: eval only ever needs inference weights
+            net.eval()
+            live_nets[name] = net
+            mnet = MulliganNet(net.encoder)
+            mull_path = f"{league_dir}/{name}/mulligan.pt"
+            ckpt_io.load_deck_checkpoint(mull_path, mnet)
+            mnet.eval()
+            mulligan_nets[name] = mnet
 
-    print(f"Eval: {len(pairings)} pairing(s) x {games_per_pairing} games "
+        print(f"Eval: {len(pairings)} pairing(s) x {games_per_pairing} games "
+              f"({'greedy' if greedy else 'sampled'}, seed={seed}) over decks={eval_decks}")
+        t0 = time.time()
+        total = 0
+        game_pairings = [] if game_logs is not None else None
+        for a, b in pairings:
+            # record_as/reward_fns = [None, None]: pure play, record=False ignores them.
+            pairing = _constant_pairing(
+                [SeatAgent(live_nets[a], mulligan_nets[a], deck_ctxs[a]),
+                 SeatAgent(live_nets[b], mulligan_nets[b], deck_ctxs[b])],
+                [decklists[a], decklists[b]], [None, None], [None, None])
+            before = len(game_logs) if game_logs is not None else 0
+            _bufs, _mull, played = collect_rollout(pairing, games_per_pairing, horizon, rng, device="cpu",
+                                                   record=False, greedy=greedy, game_logs=game_logs)
+            total += played
+            if game_pairings is not None:
+                # len(game_logs) - before, not `played`: robust even if
+                # collect_rollout appends a different count than it reports.
+                game_pairings.extend([(a, b)] * (len(game_logs) - before))
+            print(f"  {a} vs {b}: {played} games", flush=True)
+        print(f"eval done: {total} games in {(time.time() - t0) * 1000:,.0f}ms")
+        return eval_decks, game_pairings
+
+    # Parallel path: one seed per pairing, pre-drawn sequentially in pairing
+    # order BEFORE dispatch -- reproducible for a given `seed` regardless of
+    # worker completion order (workers must never draw their own; that would
+    # make results depend on scheduling, not just on `seed`).
+    master_rng = random.Random(seed)
+    pairing_seeds = [(a, b, master_rng.randrange(2 ** 31)) for a, b in pairings]
+    base, remainder = len(pairing_seeds) // n_workers, len(pairing_seeds) % n_workers
+    chunks = []
+    start = 0
+    for i in range(n_workers):
+        size = base + (1 if i < remainder else 0)
+        if size:
+            chunks.append(pairing_seeds[start:start + size])
+            start += size
+
+    collect_logs = game_logs is not None
+    print(f"Eval (parallel, {len(chunks)} workers): {len(pairings)} pairing(s) x {games_per_pairing} games "
           f"({'greedy' if greedy else 'sampled'}, seed={seed}) over decks={eval_decks}")
     t0 = time.time()
+    futures = [executor.submit(_eval_pairing_chunk_worker, league_dir, chunk, games_per_pairing, greedy, collect_logs)
+              for chunk in chunks]
     total = 0
     game_pairings = [] if game_logs is not None else None
-    for a, b in pairings:
-        # record_as/reward_fns = [None, None]: pure play, record=False ignores them.
-        pairing = _constant_pairing(
-            [SeatAgent(live_nets[a], mulligan_nets[a], deck_ctxs[a]),
-             SeatAgent(live_nets[b], mulligan_nets[b], deck_ctxs[b])],
-            [decklists[a], decklists[b]], [None, None], [None, None])
-        before = len(game_logs) if game_logs is not None else 0
-        _bufs, _mull, played = collect_rollout(pairing, games_per_pairing, horizon, rng, device="cpu",
-                                               record=False, greedy=greedy, game_logs=game_logs)
+    for chunk, future in zip(chunks, futures):
+        chunk_logs, chunk_pairings, played = future.result()
         total += played
-        if game_pairings is not None:
-            # len(game_logs) - before, not `played`: robust even if
-            # collect_rollout appends a different count than it reports.
-            game_pairings.extend([(a, b)] * (len(game_logs) - before))
-        print(f"  {a} vs {b}: {played} games", flush=True)
+        if game_logs is not None:
+            game_logs.extend(chunk_logs)
+            game_pairings.extend(chunk_pairings)
+        print(f"  worker chunk ({len(chunk)} pairings): {played} games", flush=True)
     print(f"eval done: {total} games in {(time.time() - t0) * 1000:,.0f}ms")
     return eval_decks, game_pairings
 

@@ -207,6 +207,10 @@ def main():
                 deck_ctxs=deck_ctxs, fixed_tables=fixed_tables, games_per_check=opts["checks_games"],
                 seed=opts["seed"], cumulative_games=new_progress["cumulative_games_per_deck"],
                 training_league_name=opts["training_league_name"],
+                # Same pool _train_to just used for training collection -- provably idle for the
+                # whole duration of run_all, since it only runs between training chunks, never
+                # concurrently with one. Checks reuse opts["n_workers"], the same knob training uses.
+                executor=executor, n_workers=opts["n_workers"],
             )
             run_all(ctx)
 

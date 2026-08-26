@@ -4,6 +4,7 @@ rl.league.league_runner pulls in torch/rl.*."""
 import json
 import os
 import tempfile
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -83,6 +84,81 @@ def test_run_eval_labels_each_game_with_its_real_pairing(tmp_path, monkeypatch):
         doc = json.load(f)
     assert [(g["deck_a"], g["deck_b"]) for g in doc["games"]] == game_pairings
     assert [g["game_index"] for g in doc["games"]] == list(range(6))
+
+
+@pytest.mark.slow
+def test_run_eval_parallel_matches_sequential_pairing_coverage(tmp_path, monkeypatch):
+    """executor/n_workers is opt-in: passing a (thread-pool stand-in for a
+    real process pool -- same trick test_rollout_parallel.py uses, since a
+    thread shares this test's monkeypatched build_pool(), a real spawned
+    process would not) executor must still cover every pairing exactly
+    once, with the same games-per-pairing count as the sequential path --
+    just dispatched across chunks instead of one process's own loop."""
+    monkeypatch.chdir(_SRC_DIR)
+    monkeypatch.setattr(
+        league_runner, "build_pool",
+        lambda: _real_build_pool(vocab_path=str(tmp_path / "vocab.json")),
+    )
+    monkeypatch.setattr(league_runner, "_eval_worker_pool_cache", None)  # fresh per test, not leaked from another
+
+    game_logs = []
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        eval_decks, game_pairings = league_runner._run_eval(
+            ["rakdos_madness", "dmir_terror"], games_per_pairing=2, greedy=False, seed=0,
+            game_logs=game_logs, league_dir=str(tmp_path / "league"),
+            executor=executor, n_workers=2,
+        )
+    assert eval_decks == ["rakdos_madness", "dmir_terror"]
+    assert len(game_logs) == 6  # 3 pairings (AA, AB, BB) x 2 games, same total as the sequential path
+    from collections import Counter
+    assert Counter(game_pairings) == Counter(
+        [("rakdos_madness", "rakdos_madness")] * 2
+        + [("rakdos_madness", "dmir_terror")] * 2
+        + [("dmir_terror", "dmir_terror")] * 2
+    )  # Counter, not list equality: chunk/worker completion order isn't the sequential path's pairing order
+
+
+@pytest.mark.slow
+def test_run_eval_parallel_is_deterministic_for_a_given_seed(tmp_path, monkeypatch):
+    """The whole point of pre-drawing one seed per pairing before dispatch
+    (see _run_eval's own parallel-path comment) is that a given `seed`
+    reproduces the same per-pairing outcomes regardless of worker
+    scheduling -- run twice, same seed, expect identical winners.
+
+    Saves a REAL checkpoint for both decks first: build_deck_net randomly
+    initializes fresh weights on every construction (torch's own global
+    RNG, which `seed` never touches), so an empty league_dir -- fine for
+    the pairing-coverage test above, which never checks outcomes -- would
+    reconstruct different-weighted nets on every call and make outcomes
+    incomparable regardless of `seed`, parallel or not. Fixed weights on
+    disk remove that variable; greedy=True (matching round_robin_primary's
+    own real call) then removes action-selection sampling too, leaving
+    `seed` (starting player, shuffles) as the only remaining randomness."""
+    monkeypatch.chdir(_SRC_DIR)
+    monkeypatch.setattr(
+        league_runner, "build_pool",
+        lambda: _real_build_pool(vocab_path=str(tmp_path / "vocab.json")),
+    )
+    from rl.model.mulligan import MulliganNet
+    decklists, vocab, deck_ctxs, fixed_tables = _real_build_pool(vocab_path=str(tmp_path / "vocab.json"))
+    league_dir = tmp_path / "league"
+    for name in ("rakdos_madness", "dmir_terror"):
+        net = league_runner.build_deck_net(vocab.size, len(fixed_tables[name]), trunk_hidden=(24, 24))
+        ckpt_io.save_deck_checkpoint(str(league_dir / name / "live.pt"), net)
+        ckpt_io.save_deck_checkpoint(str(league_dir / name / "mulligan.pt"), MulliganNet(net.encoder))
+
+    def _winners(seed):
+        monkeypatch.setattr(league_runner, "_eval_worker_pool_cache", None)
+        game_logs = []
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            league_runner._run_eval(
+                ["rakdos_madness", "dmir_terror"], games_per_pairing=2, greedy=True, seed=seed,
+                game_logs=game_logs, league_dir=str(league_dir),
+                executor=executor, n_workers=2,
+            )
+        return [next(e for e in ev if e["kind"] == "game_over")["winner"] for ev in game_logs]
+
+    assert _winners(seed=7) == _winners(seed=7)
 
 
 @pytest.mark.slow
