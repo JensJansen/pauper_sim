@@ -14,6 +14,7 @@ from rl import checkpoint as ckpt_io
 from rl.decision.agent import SeatAgent
 from rl.league.league_runner import _append_metric, build_deck_net
 from rl.model.mulligan import MulliganNet
+from webapp_mirror import mirror_json
 
 
 @dataclass
@@ -25,8 +26,13 @@ class ValidationContext:
     a parallel seat->(league, deck_name) attribution, accumulated by
     round_robin_primary and round_robin_training as they play (registry
     order matters: mulligan_audit runs after both and reads these instead of
-    replaying games). Discarded with the rest of ctx once a cadence point's
-    checks finish -- never written to disk.
+    replaying games). ctx's own copy is discarded with the rest of ctx once
+    a cadence point's checks finish -- never written to disk itself. A check
+    that wants ITS games kept around for replay embeds them directly into
+    its own write_league_json payload instead (a "games" key, same shape
+    rl.league.league_runner._write_event_log uses) -- see
+    round_robin_primary.py and write_league_json's own docstring below on
+    why that key is stripped before mirroring.
 
     executor / n_workers: the SAME ProcessPoolExecutor run_training_pipeline.py
     already builds for training collection, threaded through so a check can
@@ -62,22 +68,55 @@ class ValidationContext:
 
 
 def _write_json(path, payload):
+    # No indent when a "games" key is present: pretty-printing a full event
+    # log substantially bloats it and slows the write down for no benefit
+    # (nobody hand-reads this file at that size) -- same call
+    # rl.league.league_runner._write_event_log already makes for the same
+    # reason.
+    indent = None if "games" in payload else 2
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "w") as f:
-        json.dump(payload, f, indent=2)
+        json.dump(payload, f, indent=indent)
+
+
+def _strip_games_for_mirror(payload):
+    """A check that embeds a "games" key (round_robin_primary -- see its own
+    docstring) wants that exact file, unmodified, openable in the webapp's
+    replay viewer. But write_league_json/write_deck_json also mirror
+    everything they write into the webapp submodule's small, git-committed
+    logs/validation/ for /stats (webapp_mirror.mirror_json) -- and a full
+    round robin's embedded games can be hundreds of MB, which must never
+    land in a public git repo. /stats never reads a "games" key anyway (it
+    only ever uses check/decks/pairings/deck_totals/etc.), so dropping it
+    from the MIRRORED copy costs /stats nothing while keeping that copy
+    small; the full payload, games included, still goes to the real,
+    local-only checkpoints/ file untouched."""
+    if "games" not in payload:
+        return payload
+    return {k: v for k, v in payload.items() if k != "games"}
 
 
 def write_league_json(ctx, check_name, payload):
-    """checkpoints/<primary_league>/checks/<check_name>_<games>games.json"""
-    path = f"{ctx.primary_league_dir}/checks/{check_name}_{ctx.cumulative_games}games.json"
+    """checkpoints/<primary_league>/checks/<check_name>_<games>games.json,
+    mirrored into the webapp submodule's logs/validation/ if it's checked
+    out (see webapp_mirror.mirror_json) -- minus payload["games"] if
+    present, see _strip_games_for_mirror."""
+    relative = f"checks/{check_name}_{ctx.cumulative_games}games.json"
+    path = f"{ctx.primary_league_dir}/{relative}"
     _write_json(path, payload)
+    mirror_json(ctx.primary_league_dir, relative, _strip_games_for_mirror(payload))
     return path
 
 
 def write_deck_json(ctx, deck_name, check_name, payload):
-    """checkpoints/<primary_league>/<deck>/checks/<check_name>_<games>games.json"""
-    path = f"{ctx.primary_league_dir}/{deck_name}/checks/{check_name}_{ctx.cumulative_games}games.json"
+    """checkpoints/<primary_league>/<deck>/checks/<check_name>_<games>games.json,
+    mirrored into the webapp submodule's logs/validation/ if it's checked
+    out (see webapp_mirror.mirror_json) -- minus payload["games"] if
+    present, see _strip_games_for_mirror."""
+    relative = f"{deck_name}/checks/{check_name}_{ctx.cumulative_games}games.json"
+    path = f"{ctx.primary_league_dir}/{relative}"
     _write_json(path, payload)
+    mirror_json(ctx.primary_league_dir, relative, _strip_games_for_mirror(payload))
     return path
 
 

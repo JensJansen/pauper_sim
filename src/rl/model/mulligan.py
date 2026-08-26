@@ -9,10 +9,16 @@ This model owns the pregame phase (rl.decision.agent.SeatAgent routes
 mulligan_decision / mulligan_bottom decisions here) and is trained by
 REINFORCE with its own reward, decoupled from the main PPO update:
 
-    reward(seat) = WIN_REWARD * (1 if seat won else 0)
+    reward(seat) = WIN_REWARD if seat won else LOSS_REWARD
 
 No per-mulligan-count penalty. mulligans_taken remains a net input
-(_scalars, below).
+(_scalars, below). Symmetric +/-1 (2026-08-26, matching the main deck net's
+flat_win_loss_reward rather than a 0/1 bandit reward): with a 0-floor loss,
+REINFORCE's advantage (reward - value baseline) is near-zero for a loss
+until the baseline has learned to track P(win), so early training
+reinforces whatever preceded a win much harder than it penalizes what
+preceded a loss. +/-1 removes that transient asymmetry regardless of the
+baseline's calibration.
 
 It reads the same structured, self-attended hand representation the main
 policy sees at every in-game decision (rl.model.features.build_token_set's
@@ -30,6 +36,7 @@ from rl.model.features import build_token_set
 
 HAND = game.HAND_SIZE_LIMIT  # 7 -- London mulligan cap and hand-size normalizer
 WIN_REWARD = 1.0
+LOSS_REWARD = -1.0
 ENTROPY_COEF = 1.0  # 2026-08-24: 0.01 -- tiny-league's keep/mull head kept re-collapsing
 # toward "always keep" even with stratify_0land_pct forcing exposure (entropy fell from ~0.86
 # to ~0.35 bits at 0 lands between 20k and 30k games/deck despite the critic's own value spread
@@ -52,8 +59,8 @@ HAND_REPR_VERSION = 2
 
 def mulligan_reward(won):
     """This seat's terminal reward for its pregame decisions: WIN_REWARD if
-    it won, 0.0 otherwise."""
-    return WIN_REWARD if won else 0.0
+    it won, LOSS_REWARD otherwise."""
+    return WIN_REWARD if won else LOSS_REWARD
 
 
 class MulliganNet(nn.Module):

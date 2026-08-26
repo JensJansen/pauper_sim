@@ -129,6 +129,9 @@ src/
     round_robin_training.py  primary_vs_training_round_robin (full cross product).
     mulligan_audit.py        mulligan_audit (per-deck + league rollup).
     vs_history.py            vs_history.
+    round_robin_review.py    primary_round_robin_review (2 games/pairing, for
+                             human review -- writes to the webapp's own
+                             logs/replays/, not checkpoints/).
   analysis/                Read-only inspection tools (never train, except
                            mulligan_retrain/, which writes a new
                            mulligan_bootstrap*.pt, never live.pt/mulligan.pt).
@@ -442,15 +445,26 @@ could have detected.
 
 `run_training_pipeline.py` runs the full `validation/` check suite every
 `checks_cadence_pct` of `total_games` (default 5%, so ~20 passes over a
-full run), `checks_games` games each (default 50) -- a single umbrella
-covering every mid-run quality/stats question, in one place, easy to extend
-(add a module to `validation/`, register it in `validation/__init__.py`'s
-`CHECKS` list). A check that raises is logged and skipped; training itself
-is never aborted by a bad check.
+full run), `checks_games` games each (default 50, `ctx.games_per_check`) --
+a single umbrella covering every mid-run quality/stats question, in one
+place, easy to extend (add a module to `validation/`, register it in
+`validation/__init__.py`'s `CHECKS` list). A check that raises is logged
+and skipped; training itself is never aborted by a bad check.
+`primary_round_robin_review` (below) is the one exception to `checks_games`
+-- it ignores `ctx.games_per_check` and always plays a small, fixed 2
+games/pairing, since it exists for human review rather than a
+statistically-meaningful win rate.
 
 Five checks today:
 - **`primary_vs_primary_round_robin`** — every training deck plays every
-  other, mirrors included, on current live weights.
+  other, mirrors included, on current live weights. Its own output file
+  (`checkpoints/<league>/checks/primary_vs_primary_round_robin_<N>games.json`)
+  embeds every one of those games' full event log (a `"games"` key)
+  alongside the aggregate win/loss summary, so that exact file opens
+  directly in the webapp's replay viewer — see "Replay viewer" below.
+  `write_league_json` strips that key before mirroring into the webapp
+  submodule's small, git-committed copy (`/stats` never reads it, and a
+  full round robin's games can be hundreds of MB).
 - **`primary_vs_training_round_robin`** — the FULL cross product against an
   independently-trained **training league** -- every primary deck vs every
   training-league deck, not just same-name pairs. A genuinely external
@@ -480,6 +494,16 @@ Five checks today:
   improving together" confound the two round robins both have, since the
   opponent here can never change -- any win-rate movement is unambiguously
   this deck's own progress.
+- **`primary_round_robin_review`** — the odd one out: a full primary-vs-primary
+  round robin (mirrors included, same pairing set as `primary_vs_primary_round_robin`
+  above) at a small, **fixed** 2 games/pairing, purely so a human has fresh
+  real games to page through. Writes nothing under `checkpoints/` and no
+  `metrics.jsonl` line -- its only output is a full event log dropped
+  straight into the webapp submodule's own `logs/replays/`
+  (`<league>_round_robin_review_<N>games.json`), so it shows up in the
+  replay viewer's "Browse server logs" list automatically, no "Open new
+  file" needed. A clean no-op (skipped, not fatal) when `src/webapp` isn't a
+  checked-out submodule.
 
 Output, at two levels: `checkpoints/<primary_league>/checks/` for
 league-wide results (both round robins; a league-wide rollup for the other
@@ -489,7 +513,8 @@ stamped with the games/deck count at that cadence point
 (`<check>_<games>games.json`) and never overwritten, so a whole run's
 history stays on disk. Each check also drops a compact per-deck summary
 into `metrics.jsonl` (`kind` matching the check's own name above) for
-`report_metrics.py`'s existing trend tooling.
+`report_metrics.py`'s existing trend tooling -- except `primary_round_robin_review`,
+which (see above) writes only to the webapp's `logs/replays/`, nothing here.
 
 ### Direct matchup (no league sampling)
 
@@ -510,8 +535,9 @@ JSON file (wired only through `--matchup` mode) — the replay viewer's input.
   the win/loss signal attributes their cost on its own given enough
   training. `mana_burnt_total`/`mana_burnt_this_turn` are diagnostics only,
   fed to no reward. The **mulligan model** trains on its own reward
-  (`WIN_REWARD` if the seat won, else 0), accumulated across several league
-  iterations per REINFORCE update.
+  (`WIN_REWARD` if the seat won, `LOSS_REWARD` otherwise — symmetric +/-1,
+  matching `flat_win_loss_reward`'s scale), accumulated across several
+  league iterations per REINFORCE update.
 
   **Dense mana-burn shaping** (`with_dense_mana_burn_penalty`,
   `refund_on_loss=True`): a per-transition penalty for mana burnt at a
@@ -569,13 +595,14 @@ python app.py          # http://127.0.0.1:5000 -- localhost only, no auth
 ```
 
 `--log` output needs to land inside the submodule's own checkout for the
-server-side log browser to find it (`logs/` resolves relative to
-`src/webapp/`), e.g. from `src/`:
+server-side log browser to find it (`logs/replays/` resolves relative to
+`src/webapp/` -- a sibling `logs/validation/` holds mirrored validation
+metrics instead, see `src/webapp_mirror.py`), e.g. from `src/`:
 ```
-python run_league.py --matchup deck_a deck_b --log webapp/logs/<run-name>/event_log.json
+python run_league.py --matchup deck_a deck_b --log webapp/logs/replays/<run-name>/event_log.json
 ```
 
-### Game replay viewer (`/`)
+### Game replay viewer (`/replay`)
 
 Retroactive viewing of an already-completed `--log` file only (no live
 game viewing).
@@ -588,9 +615,15 @@ game viewing).
   game list) without disturbing scrub position. File selection posts a
   picked file's content to the backend for reduction.
 - **Browse server logs** lists every `*.json` under the submodule's own
-  `logs/` (`GET /api/replay/runs`, newest first); `app_public.py` has the
-  same routes against its own `logs/`. Games are labeled from `deck_a`/
-  `deck_b` fields; older logs fall back to a file-level label.
+  `logs/replays/` (`GET /api/replay/runs`, newest first) -- a sibling
+  `logs/validation/` holds unrelated validation metrics for `/stats` and is
+  never scanned here; `app_public.py` has the same routes against its own
+  `logs/replays/`. Games are labeled from `deck_a`/`deck_b` fields; older
+  logs fall back to a file-level label. **Open new file** isn't limited to
+  this list, though: `primary_vs_primary_round_robin`'s own output file
+  (`checkpoints/<league>/checks/primary_vs_primary_round_robin_<N>games.json`
+  here in the parent repo) embeds a `"games"` key directly, so it opens here
+  too, unmodified -- see "Validation checks" above.
 - Both hands and the stack are always fully visible — this is post-hoc
   review, not live play.
 - Card art is hotlinked from Scryfall by name (no local cache).
@@ -637,7 +670,7 @@ game viewing).
 
 Deploy-only entrypoint with the same routes as `app.py`, including the
 server-side log browser, scoped to files already committed to the public
-repo's own `logs/` (deliberately not gitignored there). `replay_engine.py`
+repo's own `logs/replays/` (deliberately not gitignored there). `replay_engine.py`
 has no imports beyond the stdlib.
 
 Hosting is driven from the

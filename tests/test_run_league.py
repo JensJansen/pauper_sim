@@ -8,8 +8,8 @@ import json
 
 import pytest
 
-from rl.league.league_runner import (_load_progress, _next_batch_games, _save_progress, advance_progress,
-                              checkpoint_progress, should_snapshot)
+from rl.league.league_runner import (_append_metric, _load_progress, _next_batch_games, _save_progress,
+                              advance_progress, checkpoint_progress, should_snapshot)
 from rl.training.train import batch_size_for_iteration, ent_coef_schedule
 
 # Training-mechanics keys a league config should inherit from baseline_settings.json
@@ -29,6 +29,27 @@ def test_progress_round_trips(tmp_path):
     _save_progress(str(tmp_path), last_batch_size=64, cumulative_games_per_deck=12_800)
     assert _load_progress(str(tmp_path)) == {"last_batch_size": 64, "cumulative_games_per_deck": 12_800}
     assert json.loads((tmp_path / "progress.json").read_text())["cumulative_games_per_deck"] == 12_800
+
+
+def test_save_progress_also_mirrors_into_the_webapp_submodule(tmp_path, fake_webapp):
+    league = tmp_path / "main-league"
+    validation_dir = fake_webapp
+
+    _save_progress(str(league), last_batch_size=64, cumulative_games_per_deck=12_800)
+
+    mirrored = validation_dir / "main-league" / "progress.json"
+    assert json.loads(mirrored.read_text()) == {"last_batch_size": 64, "cumulative_games_per_deck": 12_800}
+
+
+def test_append_metric_also_mirrors_into_the_webapp_submodule(tmp_path, fake_webapp):
+    league = tmp_path / "main-league"
+    league.mkdir()
+    validation_dir = fake_webapp
+
+    _append_metric(str(league), kind="ppo", deck="elves", entropy=0.5)
+
+    mirrored = validation_dir / "main-league" / "metrics.jsonl"
+    assert json.loads(mirrored.read_text().splitlines()[0]) == {"kind": "ppo", "deck": "elves", "entropy": 0.5}
 
 
 def test_both_schedules_are_flat_at_a_horizon_that_never_advances():

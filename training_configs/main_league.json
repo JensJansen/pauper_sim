@@ -17,7 +17,7 @@
     "mono_blue_terror",
     "mono_red_rally"
   ],
-  "total_games": 10000,
+  "total_games": 20000,
   "create_training_league": true,
   "checkpoint_opponent_rate": 0.30,
   "stratify_0land_pct": 0.33,

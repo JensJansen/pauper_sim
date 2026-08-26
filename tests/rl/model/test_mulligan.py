@@ -25,9 +25,9 @@ from rl.model.mulligan import HAND, MulliganNet, decide, mulligan_reward, update
 @pytest.mark.slow
 def test_mulligan_reward_shape():
     # No per-mulligan-count penalty: win pays WIN_REWARD regardless of how
-    # many mulligans it took, a loss is always exactly 0.
+    # many mulligans it took, a loss always pays exactly LOSS_REWARD.
     assert abs(mulligan_reward(True) - 1.0) < 1e-9
-    assert abs(mulligan_reward(False)) < 1e-9
+    assert abs(mulligan_reward(False) - (-1.0)) < 1e-9
 
 
 def _hand_tokens(decklist, vocab, names, rng, k=7):
