@@ -63,8 +63,22 @@ def test_write_league_json_also_mirrors_into_the_webapp_submodule(tmp_path, monk
 
     _common.write_league_json(ctx, "some_check", {"a": 1})
 
-    mirrored = validation_dir / "my_league" / "checks" / "some_check_4800games.json"
-    assert json.loads(mirrored.read_text()) == {"a": 1}
+    mirrored = validation_dir / "my_league" / "checks" / "some_check.jsonl"
+    assert json.loads(mirrored.read_text().strip()) == {"a": 1}
+
+
+def test_write_league_json_accumulates_across_cadence_points_in_the_mirror(tmp_path, monkeypatch, fake_webapp):
+    """Two cadence points for the same check mirror as two lines in one
+    growing file, not two separate files -- see webapp_mirror.mirror_json."""
+    monkeypatch.setattr(_common, "CHECKPOINTS_DIR", tmp_path)
+    validation_dir = fake_webapp
+
+    _common.write_league_json(_ctx(cumulative_games=4800), "some_check", {"cumulative_games": 4800})
+    _common.write_league_json(_ctx(cumulative_games=9600), "some_check", {"cumulative_games": 9600})
+
+    mirrored = validation_dir / "my_league" / "checks" / "some_check.jsonl"
+    lines = [json.loads(l) for l in mirrored.read_text().splitlines()]
+    assert lines == [{"cumulative_games": 4800}, {"cumulative_games": 9600}]
 
 
 def test_write_deck_json_also_mirrors_into_the_webapp_submodule(tmp_path, monkeypatch, fake_webapp):
@@ -74,8 +88,8 @@ def test_write_deck_json_also_mirrors_into_the_webapp_submodule(tmp_path, monkey
 
     _common.write_deck_json(ctx, "elves", "mulligan_audit", {"b": 2})
 
-    mirrored = validation_dir / "my_league" / "elves" / "checks" / "mulligan_audit_4800games.json"
-    assert json.loads(mirrored.read_text()) == {"b": 2}
+    mirrored = validation_dir / "my_league" / "elves" / "checks" / "mulligan_audit.jsonl"
+    assert json.loads(mirrored.read_text().strip()) == {"b": 2}
 
 
 def test_append_metric_also_mirrors_into_the_webapp_submodule(tmp_path, monkeypatch, fake_webapp):
@@ -132,8 +146,8 @@ def test_write_league_json_strips_games_from_the_mirrored_copy(tmp_path, monkeyp
 
     _common.write_league_json(ctx, "primary_vs_primary_round_robin", {"a": 1, "games": games})
 
-    mirrored = validation_dir / "my_league" / "checks" / "primary_vs_primary_round_robin_4800games.json"
-    assert json.loads(mirrored.read_text()) == {"a": 1}, "the mirrored copy must have \"games\" stripped"
+    mirrored = validation_dir / "my_league" / "checks" / "primary_vs_primary_round_robin.jsonl"
+    assert json.loads(mirrored.read_text().strip()) == {"a": 1}, "the mirrored copy must have \"games\" stripped"
 
 
 def test_write_deck_json_also_strips_games_from_the_mirrored_copy(tmp_path, monkeypatch, fake_webapp):
@@ -145,8 +159,8 @@ def test_write_deck_json_also_strips_games_from_the_mirrored_copy(tmp_path, monk
 
     local = json.loads(open(f"{ctx.primary_league_dir}/elves/checks/some_check_4800games.json").read())
     assert local == {"b": 2, "games": [{"game_index": 0}]}, "the local file must keep \"games\""
-    mirrored = validation_dir / "my_league" / "elves" / "checks" / "some_check_4800games.json"
-    assert json.loads(mirrored.read_text()) == {"b": 2}, "the mirrored copy must have \"games\" stripped"
+    mirrored = validation_dir / "my_league" / "elves" / "checks" / "some_check.jsonl"
+    assert json.loads(mirrored.read_text().strip()) == {"b": 2}, "the mirrored copy must have \"games\" stripped"
 
 
 def test_write_json_skips_indent_when_a_games_key_is_present(tmp_path, monkeypatch):

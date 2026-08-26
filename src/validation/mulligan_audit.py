@@ -90,9 +90,14 @@ def run(ctx):
 
         decided_total = sum(d["kept"] + d["mulliganed"] for d in by_deck.get(deck, {}).values())
         mulliganed_total = sum(d["mulliganed"] for d in by_deck.get(deck, {}).values())
+        # by_land_count/probe_hands deliberately excluded here -- they're
+        # already written in full above (write_deck_json) and in the league
+        # rollup below (write_league_json); metrics.jsonl stays a compact
+        # trend-line record, matching every other check's append_metric call
+        # (vs_history, both round robins).
         _common.append_metric(ctx, kind=NAME, deck=deck,
                               decisions=decided_total, mulligan_rate=mulliganed_total / decided_total
-                              if decided_total else None, by_land_count=table, probe_hands=probe_table)
+                              if decided_total else None)
 
     league_payload = {"check": NAME, "primary_league": ctx.primary_league_name,
                       "cumulative_games": ctx.cumulative_games, "decks": per_deck_tables}

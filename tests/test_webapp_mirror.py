@@ -54,13 +54,41 @@ def _ready(tmp_path, monkeypatch):
     return checkpoints_dir
 
 
-def test_mirror_json_writes_under_the_mirrored_league_when_ready(tmp_path, monkeypatch):
+def test_mirror_json_appends_to_a_consolidated_jsonl_not_a_new_file_per_snapshot(tmp_path, monkeypatch):
     checkpoints_dir = _ready(tmp_path, monkeypatch)
     league_dir = str(checkpoints_dir / "main-league")
-    wm.mirror_json(league_dir, "checks/mulligan_audit_100games.json", {"a": 1})
+    wm.mirror_json(league_dir, "checks/mulligan_audit_100games.json", {"cumulative_games": 100, "a": 1})
+    wm.mirror_json(league_dir, "checks/mulligan_audit_200games.json", {"cumulative_games": 200, "a": 2})
 
-    dest = tmp_path / "webapp" / "logs" / "validation" / "main-league" / "checks" / "mulligan_audit_100games.json"
-    assert json.loads(dest.read_text()) == {"a": 1}
+    dest = tmp_path / "webapp" / "logs" / "validation" / "main-league" / "checks" / "mulligan_audit.jsonl"
+    lines = [json.loads(l) for l in dest.read_text().splitlines()]
+    assert lines == [{"cumulative_games": 100, "a": 1}, {"cumulative_games": 200, "a": 2}]
+    # No per-snapshot file was ever written -- one growing file per check.
+    assert not (dest.parent / "mulligan_audit_100games.json").exists()
+    assert not (dest.parent / "mulligan_audit_200games.json").exists()
+
+
+def test_mirror_json_consolidates_a_per_deck_relative_path_the_same_way(tmp_path, monkeypatch):
+    checkpoints_dir = _ready(tmp_path, monkeypatch)
+    league_dir = str(checkpoints_dir / "main-league")
+    wm.mirror_json(league_dir, "elves/checks/vs_history_100games.json", {"cumulative_games": 100, "deck": "elves"})
+
+    dest = tmp_path / "webapp" / "logs" / "validation" / "main-league" / "elves" / "checks" / "vs_history.jsonl"
+    assert json.loads(dest.read_text().strip()) == {"cumulative_games": 100, "deck": "elves"}
+
+
+def test_mirror_json_skips_a_relative_path_that_isnt_a_check_snapshot(tmp_path, monkeypatch):
+    """mirror_json's only two real callers (write_league_json/write_deck_json)
+    always pass a checks/<check>_<N>games.json shape -- this pins the
+    defensive no-op for anything else, so a future caller passing a
+    differently-shaped path fails silently (best-effort, per the module's
+    own contract) rather than writing somewhere unexpected."""
+    checkpoints_dir = _ready(tmp_path, monkeypatch)
+    league_dir = str(checkpoints_dir / "main-league")
+    wm.mirror_json(league_dir, "some_other_shape.json", {"a": 1})
+
+    assert not (tmp_path / "webapp" / "logs" / "validation" / "main-league" / "some_other_shape.json").exists()
+    assert not (tmp_path / "webapp" / "logs" / "validation" / "main-league").exists()
 
 
 def test_mirror_json_is_a_noop_when_webapp_not_checked_out(tmp_path, monkeypatch):
