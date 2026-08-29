@@ -1,6 +1,9 @@
 """Tests for game.catalog.black_cards."""
 
+import pytest
+
 import drl_env
+import game
 
 from game import registry
 from game import resolution
@@ -34,7 +37,7 @@ from game.effects.stats import has_keyword, lifelink_count, permanent_power, per
 from game.effects.triggers import promote_triggers_to_stack
 from game.mana import activate_mana_source, execute_pool_spend, mana_output, pool_spend_options
 from game.state import GameState, Permanent, PlayerState
-from game.turn import Phase
+from game.turn import Phase, _run_priority_round_gen
 
 
 # --- Dread Return: target locked at cast; fizzles if the target leaves the
@@ -741,6 +744,116 @@ def test_eviscerators_insight_extra_legal_both_branches():
     fodder_present = GameState(on_the_play=True)
     fodder_present.battlefield = [Permanent(CardDef("Fodder", CardType.CREATURE, {"B": 1}, EffectId.FILLER, power=1, toughness=1))]
     assert registry.EFFECT_REGISTRY[EffectId.EVISCERATORS_INSIGHT]["cast"]["extra_legal"](fodder_present)
+
+
+def test_sac_cost_fodder_dying_mid_payment_crashes_the_resolve():
+    """PROOF of the 2026-08-27 production crash's underlying mechanism (see
+    traceback at logs_main_league.log around the jund_wildfire iter-19
+    failure), isolated from game.turn._run_priority_round_gen's own SBA
+    scheduling (see test_sac_cost_fodder_survives_mid_payment_via_the_
+    real_priority_loop below for the fix, driven through that real loop).
+
+    game.begin_pay_cost's multi-step payment window pays one pip per agent
+    action (game.mana.execute_pool_spend); production dispatches each pip
+    through _run_priority_round_gen, whose loop calls
+    check_state_based_actions(state) before every action. This test calls
+    that same check_state_based_actions directly (bypassing the loop
+    entirely, including its now-added state.casting_depth guard) to isolate
+    the actual failure this repo's fix targets: a creature that's the
+    caster's ONLY sac fodder when Eviscerator's Insight is cast (extra_legal
+    passes) dying to a state-based action (lethal damage marked by
+    combat/burn) in the window between the spell's own mana-payment
+    sub-actions -- BEFORE the additional-cost sacrifice ever gets chosen.
+    begin_choose_permanent then auto-fizzles with None per its own
+    documented contract (handlers_targeting.py: "fizzles with None if
+    nothing matches"), and _sac_artifact_or_creature's `_on_chosen` doesn't
+    handle that documented case: `name, slot = choice` raises TypeError on
+    None."""
+    state = GameState(on_the_play=True)
+    card_def = registry.CARD_DEFS["Eviscerator's Insight"]
+    fodder = Permanent(CardDef("Fodder", CardType.CREATURE, {"B": 1}, EffectId.FILLER, power=1, toughness=1))
+    fodder.slot = 1
+    swamp1 = Permanent(registry.CARD_DEFS["Swamp"])
+    swamp2 = Permanent(registry.CARD_DEFS["Swamp"])
+    state.battlefield = [fodder, swamp1, swamp2]
+    assert registry.EFFECT_REGISTRY[EffectId.EVISCERATORS_INSIGHT]["cast"]["extra_legal"](state)  # legal to cast
+
+    activate_mana_source(state, swamp1)
+    activate_mana_source(state, swamp2)
+    assert state.mana_pool == {"B": 2}  # {1}{B} fully coverable
+
+    def _after_pay(s):
+        game.on_cast_trigger(s, card_def)
+        cast_eviscerators_insight(s, card_def)
+    game.begin_pay_cost(state, card_def.cast_cost, on_complete=_after_pay)
+
+    execute_pool_spend(state, "B")  # pays the {B} pip; {1} generic still owed -- cost not yet satisfied
+    assert state.pending_resolution["kind"] == "pay_cost"
+
+    # The window real _run_priority_round_gen always opens between this pip
+    # and the next: lethal combat/burn damage lands on the caster's only
+    # creature, and (absent the casting_depth guard, bypassed here on
+    # purpose) an unconditional SBA check would claim it before the
+    # caster's next action.
+    fodder.damage_marked = permanent_toughness(state, fodder)
+    check_state_based_actions(state)
+    assert fodder not in state.battlefield  # genuinely removed by the real SBA path, not test bookkeeping
+
+    with pytest.raises(TypeError, match="cannot unpack non-iterable NoneType"):
+        execute_pool_spend(state, "B")  # last pip -> cost satisfied -> resolve() -> crash
+
+
+def test_sac_cost_fodder_survives_mid_payment_via_the_real_priority_loop():
+    """Regression for the fix: driven through the REAL
+    game.turn._run_priority_round_gen (not the isolated pieces the test
+    above exercises), the same lethal-damage-mid-payment race must NOT
+    crash, because state.casting_depth (incremented by begin_pay_cost,
+    decremented by push_to_stack -- see both docstrings) keeps the loop's
+    check_state_based_actions/refizzle_if_now_targetless suppressed for the
+    spell's WHOLE cast, not just its pay_cost sub-window: mana payment,
+    AND cast_eviscerators_insight's own follow-up sacrifice choice, which
+    opens only after pay_cost completes and is exactly where an SBA
+    suppressed only during "pay_cost" would still have struck (proven by
+    hand before landing on the casting_depth-spanning fix below)."""
+    state = GameState(on_the_play=True)
+    state.turn_player_idx = 0
+    card_def = registry.CARD_DEFS["Eviscerator's Insight"]
+    fodder = Permanent(CardDef("Fodder", CardType.CREATURE, {"B": 1}, EffectId.FILLER, power=1, toughness=1))
+    fodder.slot = 1
+    swamp1 = Permanent(registry.CARD_DEFS["Swamp"])
+    swamp2 = Permanent(registry.CARD_DEFS["Swamp"])
+    state.battlefield = [fodder, swamp1, swamp2]
+    activate_mana_source(state, swamp1)
+    activate_mana_source(state, swamp2)
+
+    def _cast():
+        def _after_pay(s):
+            game.on_cast_trigger(s, card_def)
+            cast_eviscerators_insight(s, card_def)
+        game.begin_pay_cost(state, card_def.cast_cost, on_complete=_after_pay)
+
+    gen = _run_priority_round_gen(state)
+    next(gen)  # primes the round: first (no-op) SBA check, first yield
+    gen.send(_cast)  # announces the cast, opens "pay_cost" -- casting_depth == 1
+    gen.send(lambda: execute_pool_spend(state, "B"))  # pays the {B} pip
+
+    # Same production race as the crash repro above, but now inside the
+    # real loop: lethal damage lands on the caster's only creature between
+    # two actions of the SAME spell's cast.
+    fodder.damage_marked = permanent_toughness(state, fodder)
+
+    # Last pip -> cost satisfied -> resolve() -> _sac_artifact_or_creature
+    # opens "choose_permanent" -- still inside this one send(), the loop
+    # loops back and would (pre-fix) immediately re-check SBAs against the
+    # freshly-opened choose_permanent and refizzle it to None. No crash.
+    gen.send(lambda: execute_pool_spend(state, "B"))
+
+    assert state.pending_resolution["kind"] == "choose_permanent"
+    assert fodder in state.battlefield  # protected through the whole cast, not just pay_cost
+    resolution.execute_choose_permanent_option(state, "Fodder", 1)
+    assert fodder not in state.battlefield  # sacrificed as intended, not claimed by the SBA first
+    assert state.stack and state.stack[-1]["card_def"] is card_def  # spell fully cast, sitting on the stack
+    assert state.casting_depth == 0  # balanced back down once push_to_stack committed it
 
 
 def test_eviscerators_insight_flashback_sac_draws_two_and_exiles():

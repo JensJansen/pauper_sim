@@ -176,7 +176,7 @@ def mana_output(permanent, state, color_choice=None, exclude=()):
     return output + _bonus_mana_symbols(state, permanent)
 
 
-def begin_pay_cost(state, cost, on_complete):
+def begin_pay_cost(state, cost, on_complete, counts_as_cast=True):
     """CR 601.2f/601.2g: the payment window, entered once `cost` is known
     payable (callers gate on plan_payment first) -- the agent activates
     mana abilities and spends the pool, one action at a time, until `cost`
@@ -187,7 +187,17 @@ def begin_pay_cost(state, cost, on_complete):
     report distinguish a bad plan_payment from supply consumed afterwards.
 
     A cost already fully covered before any spend (e.g. Lotus Petal's
-    empty {} cast cost) completes immediately."""
+    empty {} cast cost) completes immediately.
+
+    counts_as_cast=True (default) increments state.casting_depth for the
+    duration, so game.turn._run_priority_round_gen won't run a
+    state-based-action check while this spell/ability is still being cast
+    (see casting_depth's own docstring on game.state.GameState). The
+    caller's matching game.effects.stack.push_to_stack decrements it back.
+    Pass False for a cost that pays for an outcome of something ALREADY on
+    the stack rather than casting something new -- e.g.
+    handlers_casting.pay_unless_pay (Ward/Spell Pierce) -- which never
+    reaches push_to_stack and would leak the counter otherwise."""
     # The STRANDING INVARIANT (see module docstring), checked here so a
     # caller that skipped plan_payment fails with the guilty call site in
     # the traceback, not several actions later as an opaque all-False mask.
@@ -199,6 +209,8 @@ def begin_pay_cost(state, cost, on_complete):
             f"{dict(state.mana_pool)}. This caller did not gate on plan_payment, or gated on a "
             f"DIFFERENT cost than it went on to charge."
         )
+    if counts_as_cast:
+        state.casting_depth += 1
     begin_resolution(state, "pay_cost", on_complete, remaining=dict(cost), announced=dict(cost))
     if _cost_satisfied(state.pending_resolution["remaining"]):
         complete_resolution(state)

@@ -262,7 +262,14 @@ def begin_pay_unless(state, payer_idx, cost, on_result):
 def pay_unless_pay(state):
     """The payer chose to pay: hand off to begin_pay_cost (active_idx stays
     on the payer so they tap their own sources); once paid, restore
-    active_idx and report paid=True."""
+    active_idx and report paid=True.
+
+    counts_as_cast=False: this pays for an outcome of something ALREADY on
+    the stack (Ward's tax, Spell Pierce's counter-unless) -- it never
+    reaches push_to_stack itself, so counting it against
+    state.casting_depth (see that field's own docstring) would leak the
+    counter and permanently suppress state-based-action checks for the
+    rest of the game."""
     from ..mana import begin_pay_cost  # call-time import -- mana imports resolution, avoiding a load cycle
 
     pending = state.pending_resolution
@@ -273,7 +280,7 @@ def pay_unless_pay(state):
         state.active_idx = original
         on_result(state, True)
 
-    begin_pay_cost(state, cost, on_complete=_paid)
+    begin_pay_cost(state, cost, on_complete=_paid, counts_as_cast=False)
 
 
 def pay_unless_decline(state):

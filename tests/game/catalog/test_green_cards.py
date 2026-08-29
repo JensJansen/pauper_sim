@@ -160,6 +160,22 @@ def test_sagu_wildling_omen_search_and_redraw():
     assert sagu_permanent.card_def is SAGU_WILDLING_CREATURE_CARD_DEF
 
 
+def test_roost_seek_logs_its_own_library_return():
+    """Regression for the webapp viz showing Sagu Wildling's Omen half in
+    the graveyard: the generic stack-resolution log only records "left the
+    stack," not a destination, so cast_roost_seek must log its own
+    from_zone=None/to_zone="library" zone_move for replay_engine's
+    pending-resolution claim to find (see cast_roost_seek's own comment)."""
+    state = GameState(on_the_play=True, event_log=[])
+    roost_seek = CardDef("Sagu Wildling", CardType.SORCERY, {"G": 1}, EffectId.ROOST_SEEK)
+    state.hand = [roost_seek]
+    state.library = [CardDef("Forest", CardType.LAND, None, EffectId.FOREST, basic=True)]
+    cast_roost_seek(state, roost_seek)
+    zone_moves = [e for e in state.event_log if e["kind"] == "zone_move" and e.get("card") == "Sagu Wildling"]
+    assert len(zone_moves) == 1
+    assert zone_moves[0]["from_zone"] is None and zone_moves[0]["to_zone"] == "library"
+
+
 def test_sagu_wildling_omen_full_cast_path():
     """Casting Sagu Wildling removes the physical hand card immediately; the creature side resolves onto the
     battlefield without re-entering hand."""

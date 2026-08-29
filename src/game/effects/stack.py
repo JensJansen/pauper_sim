@@ -52,7 +52,18 @@ def push_to_stack(state, card_def, resolve, reserves_hand_card=True, is_spell=Tr
     promoted trigger.
 
     Records active_idx as the entry's controller since a priority round can
-    flip active_idx before this resolves; resolve_top_of_stack restores it."""
+    flip active_idx before this resolves; resolve_top_of_stack restores it.
+
+    The real "becomes cast"/"becomes activated" commit point (601.2i/
+    602.2b), so this is where state.casting_depth's matching decrement
+    lands (floored at 0 -- a promoted TRIGGER also reaches this function,
+    with no begin_pay_cost of its own behind it, but triggers only ever
+    promote while pending_resolution is None (game.effects.triggers.
+    promote_triggers_to_stack), which a cast in progress never is, so the
+    two calls can't collide; the floor is just a backstop, not load-bearing
+    for a real trigger call)."""
+    if state.casting_depth > 0:
+        state.casting_depth -= 1
     state.stack.append({
         "card_def": card_def, "resolve": resolve, "controller": state.active_idx,
         "reserves_hand_card": reserves_hand_card, "is_spell": is_spell,

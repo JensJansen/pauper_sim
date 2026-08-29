@@ -8,6 +8,6 @@
   "checkpoint_opponent_rate": 0.15,
   "pfsp": true,
   "device": "cuda",
-  "checks_cadence_pct": 5,
+  "checks_cadence_pct": 10,
   "checks_games": 50
 }

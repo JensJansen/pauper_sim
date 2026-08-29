@@ -13,7 +13,9 @@ same-shaped new file per tick -- see mirror_json's own docstring. This is a
 webapp-mirror-only change: checkpoints/ itself (the canonical, unbounded,
 gitignored local copy) keeps writing one file per snapshot exactly as
 before -- see validation/_common.py's write_league_json/write_deck_json.
-app.py's /checks routes read both the old (pre-migration) and new shape.
+app.py's /checks routes only understand the new .jsonl shape now -- the
+pre-migration per-snapshot .json read path was retired once all leagues
+were migrated (see logs/validation/README.md).
 
 Every function here is a no-op when either guard fails:
   - webapp_ready(): src/webapp isn't a checked-out git submodule (a fresh
@@ -32,7 +34,11 @@ immediately instead of needing a restart.
 A write that gets past both guards is still wrapped in try/except OSError:
 this mirroring is a convenience for the webapp, never allowed to raise and
 take training down with it (disk full, permissions, a submodule mid-checkout
--- none of that is this module's problem to propagate).
+-- none of that is this module's problem to propagate). The failure is
+printed rather than swallowed outright -- a transient lock (e.g. a
+concurrent `git commit` inside the submodule holding a file open) otherwise
+drops that data point forever with zero trace, which is how mulligan_audit
+silently lost two cadence points' worth of mirrored data in the past.
 
 Stdlib-only, no torch import -- same rationale as repo_paths.py, and it
 keeps this importable from a plain `python -c` sanity check.
@@ -111,8 +117,9 @@ def mirror_json(league_dir, relative_path, payload):
         dest.parent.mkdir(parents=True, exist_ok=True)
         with open(dest, "a") as f:
             f.write(json.dumps(payload) + "\n")
-    except OSError:
-        pass
+    except OSError as e:
+        print(f"webapp_mirror: mirror_json({relative_path!r}) failed, dropping this data point: {e}",
+              flush=True)
 
 
 def mirror_metrics_line(league_dir, fields):
@@ -127,8 +134,8 @@ def mirror_metrics_line(league_dir, fields):
         dest_dir.mkdir(parents=True, exist_ok=True)
         with open(dest_dir / "metrics.jsonl", "a") as f:
             f.write(json.dumps(fields) + "\n")
-    except OSError:
-        pass
+    except OSError as e:
+        print(f"webapp_mirror: mirror_metrics_line failed, dropping this data point: {e}", flush=True)
 
 
 def mirror_progress(league_dir, payload):
@@ -143,5 +150,5 @@ def mirror_progress(league_dir, payload):
         dest_dir.mkdir(parents=True, exist_ok=True)
         with open(dest_dir / "progress.json", "w") as f:
             json.dump(payload, f)
-    except OSError:
-        pass
+    except OSError as e:
+        print(f"webapp_mirror: mirror_progress failed: {e}", flush=True)

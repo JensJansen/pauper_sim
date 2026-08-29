@@ -192,6 +192,13 @@ def cast_roost_seek(state, card_def):
     if card_def in state.hand:
         state.hand.remove(card_def)  # already removed at cast normally; tolerant of direct calls
     state.library.append(card_def)  # Omen: goes to the library, not the graveyard
+    # The generic stack-resolution log (game.effects.stack.resolve_top_of_stack)
+    # only logs "left the stack," not where it landed -- webapp's replay_engine
+    # parks that card in a pending_resolution bucket until a follow-up zone_move
+    # claims it (else it's eventually shown in the graveyard). from_zone=None is
+    # what that claim matches on; to_zone="library" isn't a rendered pool, so the
+    # card correctly just vanishes from view, same as any other hidden-zone card.
+    state.log_event("zone_move", card=card_def.name, from_zone=None, to_zone="library", reason="omen")
     resolution.begin_search_fetch(state, lambda c: c.card_type == CardType.LAND and c.extra.get("basic", False), find_to_hand)
 
 

@@ -343,7 +343,28 @@ def _run_priority_round_gen(state):
     left targetless by those SBAs is re-fizzled
     (refizzle_if_now_targetless), and any newly-queued triggers are
     promoted onto the stack (704.3's ordering: SBAs, then triggers, then
-    priority).
+    priority) -- EXCEPT while state.casting_depth > 0, i.e. a spell/
+    ability is still mid-cast/mid-activation (game.mana.begin_pay_cost
+    opened, game.effects.stack.push_to_stack not yet reached; see
+    casting_depth's own docstring on GameState). 601.2f-601.2i/602.2 pay a
+    single spell/ability's total cost -- mana AND any additional cost's own
+    choices, like which permanent to sacrifice -- as one atomic action with
+    no intervening state-based-action or priority window; before this
+    guard, an SBA firing between two actions of that SAME atomic payment
+    (e.g. two mana-pool spends, or a pip-spend followed by the additional
+    cost's own sacrifice choice) could silently invalidate a not-yet-paid
+    additional cost -- if the caster's only qualifying permanent died
+    mid-payment (lethal combat/burn damage claimed by the SBA check
+    itself, not by anything the payment did), begin_choose_permanent found
+    zero legal targets for the sacrifice and fizzled with None, which its
+    on_complete never expected (2026-08-27 production crash -- see
+    tests.game.catalog.test_black_cards.
+    test_sac_cost_fodder_dying_mid_payment_crashes_the_resolve for the
+    proven repro, and test_sac_cost_fodder_survives_mid_payment_via_the_
+    real_priority_loop for the fix driven through this exact generator).
+    Suppressing SBAs for the casting/activating window matches real
+    Magic's atomicity and is a no-op for every other pending kind, since
+    nothing else opens while casting_depth is still counting down.
 
     Whoever holds priority either acts (stack grows, priority stays with
     them, rule 2) or passes (priority moves to the other player). Once
@@ -354,10 +375,18 @@ def _run_priority_round_gen(state):
     Never called for Phase.UNTAP (rule 4). Phase.END calls this only
     conditionally; once entered, it behaves like any other phase."""
     state.active_idx = state.turn_player_idx
+    # Self-healing backstop for casting_depth (see its own docstring): if
+    # some as-yet-unknown begin_pay_cost path never reaches push_to_stack
+    # and leaks a stuck count, this bounds the damage to "SBAs stayed
+    # suppressed too long within the current phase/step" rather than "for
+    # the rest of the game" -- a fresh priority round is never legitimately
+    # entered mid-cast (casting only ever spans actions within one round).
+    state.casting_depth = 0
     consecutive_passes = 0
     while True:
-        check_state_based_actions(state)
-        refizzle_if_now_targetless(state)
+        if state.casting_depth <= 0:
+            check_state_based_actions(state)
+            refizzle_if_now_targetless(state)
         # Move queued triggers onto the stack only at a genuine priority
         # point, never mid-resolution (704.3/603.3): promoting then could
         # land a trigger under a not-yet-pushed spell, or clobber an

@@ -393,6 +393,34 @@ class GameState:
         # game.resolution.begin_resolution/complete_resolution.
         self.pending_resolution = None
 
+        # Reentrant counter: >0 while a spell/ability is still being CAST/
+        # ACTIVATED (601.2f-601.2i / 602.2) -- from game.mana.begin_pay_cost
+        # opening through the matching game.effects.stack.push_to_stack that
+        # commits it. Real Magic pays a single spell/ability's total cost
+        # (including choices like "which permanent to sacrifice" for an
+        # additional cost) as ONE atomic action: no state-based actions, no
+        # priority, run in between. game.turn._run_priority_round_gen
+        # suppresses check_state_based_actions/refizzle_if_now_targetless
+        # while this is >0, so a creature that's the caster's only
+        # sacrifice fodder can't be claimed by an SBA mid-payment and leave
+        # a later additional-cost choice with zero legal targets (2026-08-27
+        # production crash -- cast_eviscerators_insight's own sacrifice
+        # fizzled to None mid-cast; see tests.game.catalog.test_black_cards.
+        # test_sac_cost_fodder_dying_mid_payment_crashes_the_resolve).
+        #
+        # A counter, not a bool: begin_pay_cost can be reentered before the
+        # outer spell reaches the stack (e.g. a cost that itself triggers
+        # another cost payment). Incremented by begin_pay_cost by default;
+        # its one documented exception is game.resolution.handlers_casting.
+        # pay_unless_pay (Ward/Spell Pierce's "pay to avoid an outcome"),
+        # which pays a cost for something ALREADY on the stack and never
+        # reaches push_to_stack -- begin_pay_cost's counts_as_cast=False
+        # opts that call out. Self-heals to 0 at the top of every fresh
+        # _run_priority_round_gen (once per phase/step) as a blast-radius
+        # bound against any uncaught exception or as-yet-undiscovered
+        # begin_pay_cost path that skips push_to_stack.
+        self.casting_depth = 0
+
         # None, or a dict describing an in-progress GATE-FREE mana ability's
         # own multi-step choice -- Saruli Caretaker's "tap another
         # creature, then choose a color", or a mana filter's "pay the
