@@ -308,11 +308,61 @@ def _mana_value(card_def):
     return sum(card_def.cast_cost.values()) if card_def.cast_cost else 0
 
 
-def _sac_artifact_or_creature(state, on_sacrificed):
+def _dump_sac_fizzle_diagnostic(state, source_name):
+    """TEMPORARY forensic dump (2026-08-31, remove once the None-fizzle
+    root cause below is confirmed): _on_chosen has hit choice=None in
+    production (Fanatical Offering) despite state.casting_depth already
+    protecting the documented SBA-during-payment race (2026-08-29 fix,
+    see game.turn._run_priority_round_gen's own docstring) -- the caster's
+    own card pool for this occurrence (jund_wildfire) has no creature/
+    artifact of its own that produces mana, ruling out a self-sacrificing
+    mana source (Treasure/Lotus Petal/Wall of Roots) as the cause too, so
+    the actual mechanism is still unknown. Writes one JSON line to
+    logs/sac_fizzle_diagnostics.jsonl with enough live state to diagnose
+    the next occurrence for real, then lets the caller's existing `name,
+    slot = choice` raise exactly as before -- this changes no behavior."""
+    import json
+    import os
+    try:
+        path = os.path.join(os.path.dirname(__file__), "..", "..", "..", "logs", "sac_fizzle_diagnostics.jsonl")
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        record = {
+            "source": source_name,
+            "active_idx": state.active_idx,
+            "turn_player_idx": state.turn_player_idx,
+            "casting_depth": state.casting_depth,
+            "phase": str(getattr(state, "phase", None)),
+            "step": str(getattr(state, "step", None)),
+            "stack": [(e.get("card_def").name if e.get("card_def") else None) for e in state.stack],
+            "mana_pool_by_player": [dict(p.mana_pool) for p in state.players],
+            "players": [
+                {
+                    "hand": [c.name for c in p.hand],
+                    "battlefield": [
+                        {"name": pm.card_def.name, "slot": pm.slot, "tapped": pm.tapped,
+                         "type": str(pm.card_type), "is_artifact": is_artifact(pm.card_def),
+                         "damage_marked": getattr(pm, "damage_marked", None),
+                         "counters": dict(getattr(pm, "counters", {}) or {})}
+                        for pm in p.battlefield
+                    ],
+                }
+                for p in state.players
+            ],
+        }
+        with open(path, "a") as f:
+            f.write(json.dumps(record) + "\n")
+    except Exception:
+        pass  # diagnostics must never be why the crash itself fails to surface
+
+
+def _sac_artifact_or_creature(state, on_sacrificed, source_name="?"):
     """Choose an artifact or creature you control and sacrifice it (the
     additional cost shared by Fanatical Offering / Eviscerator's Insight /
-    Reckoner's Bargain), then on_sacrificed(state, sacrificed_card_def)."""
+    Reckoner's Bargain), then on_sacrificed(state, sacrificed_card_def).
+    source_name is diagnostic-only (see _dump_sac_fizzle_diagnostic)."""
     def _on_chosen(state, choice):
+        if choice is None:
+            _dump_sac_fizzle_diagnostic(state, source_name)
         name, slot = choice
         perm = next(p for p in state.battlefield if p.card_def.name == name and p.slot == slot)
         sacced = perm.card_def
@@ -334,7 +384,7 @@ def cast_fanatical_offering(state, card_def):
             create_token(st, MAP_TOKEN_CARD_DEF)
         push_to_stack(state, card_def, _resolve)
 
-    _sac_artifact_or_creature(state, _after_sac)
+    _sac_artifact_or_creature(state, _after_sac, source_name="Fanatical Offering")
 
 
 def cast_reckoners_bargain(state, card_def):
@@ -349,7 +399,7 @@ def cast_reckoners_bargain(state, card_def):
             st.draw(2)
         push_to_stack(state, card_def, _resolve)
 
-    _sac_artifact_or_creature(state, _after_sac)
+    _sac_artifact_or_creature(state, _after_sac, source_name="Reckoner's Bargain")
 
 
 def cast_eviscerators_insight(state, card_def):
@@ -360,7 +410,7 @@ def cast_eviscerators_insight(state, card_def):
             st.draw(2)
         push_to_stack(state, card_def, _resolve)
 
-    _sac_artifact_or_creature(state, _after_sac)
+    _sac_artifact_or_creature(state, _after_sac, source_name="Eviscerator's Insight")
 
 
 def flashback_eviscerators_insight(state, inst):
@@ -370,7 +420,7 @@ def flashback_eviscerators_insight(state, inst):
     def _after_sac(state, _sacced):
         push_to_stack(state, inst, lambda st, cd: st.draw(2), reserves_hand_card=False, exiles_on_resolve=True)
 
-    _sac_artifact_or_creature(state, _after_sac)
+    _sac_artifact_or_creature(state, _after_sac, source_name="Eviscerator's Insight (flashback)")
 
 
 def blood_fountain_return(state, permanent):
