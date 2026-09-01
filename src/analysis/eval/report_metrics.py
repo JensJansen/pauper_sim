@@ -1,5 +1,6 @@
 """Summarizes checkpoints/<league>/metrics.jsonl -- the per-iteration "ppo" /
-"mulligan" / "vs_history" / "vs_gauntlet" records
+"mulligan" / "mulligan_audit" / "vs_history" / "primary_vs_primary_round_robin" /
+"primary_vs_training_round_robin" records
 rl.league.league_runner's _run_session appends during every training run.
 Plain-text, stdlib only.
 
@@ -71,7 +72,7 @@ def trend_z(rows):
 
     Positive z = improving over time. 0.0 when there is no variation to
     regress against (one record, or an all-wins/all-losses series)."""
-    pts = [(i, r.get("live_wins", 0), r.get("games", 0)) for i, r in enumerate(rows) if r.get("games")]
+    pts = [(i, r.get("live_wins", r.get("wins", 0)), r.get("games", 0)) for i, r in enumerate(rows) if r.get("games")]
     if len(pts) < 2:
         return 0.0
     total_n = sum(n for _, _, n in pts)
@@ -109,7 +110,7 @@ def peak_comparison(rows, group=5):
     if len(pts) < 2 * group:
         return 0.0, None, 2.0
     windows = [(i, pts[i:i + group]) for i in range(0, len(pts) - group + 1)]
-    pool = lambda g: (sum(r.get("live_wins", 0) for r in g), sum(r.get("games", 0) for r in g))
+    pool = lambda g: (sum(r.get("live_wins", r.get("wins", 0)) for r in g), sum(r.get("games", 0) for r in g))
     rates = [(pool(w), i + group - 1) for i, w in windows]
     (best_w, best_n), best_end = max(rates, key=lambda t: t[0][0] / t[0][1])
     (last_w, last_n), last_end = rates[-1]
@@ -145,10 +146,10 @@ def _win_rate_lines(deck, tag, rows, window):
         return [f"  [{tag}] no completed games"]
 
     shown = rows[-window:]
-    trend = " ".join(f"{100 * r['live_wins'] / r['games']:.0f}" for r in shown if r.get("games"))
+    trend = " ".join(f"{100 * r.get('live_wins', r.get('wins', 0)) / r['games']:.0f}" for r in shown if r.get("games"))
     half = max(1, len(rows) // 2)
     early, late = rows[:half], rows[half:]
-    pool = lambda g: (sum(r.get("live_wins", 0) for r in g), sum(r.get("games", 0) for r in g))
+    pool = lambda g: (sum(r.get("live_wins", r.get("wins", 0)) for r in g), sum(r.get("games", 0) for r in g))
     we, ne = pool(early)
     wl, nl = pool(late)
     verdict, z, peak_z, peak_at = _verdict(rows, wl, nl)
