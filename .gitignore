@@ -29,7 +29,7 @@ todo/
 # committed; only the per-node local config (hub URL + registration
 # credential) and the hub's own runtime state are excluded here.
 distributed_configs/*.local.json
-distributed_configs/hub_credential.local
+distributed_configs/*.local
 distributed_configs/hub_runtime_state.json
 
 # Terraform's local provider plugin cache + working state -- regenerable via

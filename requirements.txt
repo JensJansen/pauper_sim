@@ -6,3 +6,4 @@ torch==2.11.0+cu128
 numpy
 pytest
 flask  # training-ops web UI (src/webapp/) -- see README
+requests  # distributed training: admin CLI + tests/distributed (nodes get it via distributed_configs/requirements-cpu.txt)

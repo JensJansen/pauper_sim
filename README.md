@@ -20,6 +20,7 @@ pool of historical opponents. No framework dependencies beyond PyTorch.
 | **Training driver** | `src/run_league.py` | One training session; `--matchup`/one-off debug runs. |
 | **Validation checks** | `src/validation/` | Mid-run quality/stats checks (round robins, mulligan quality, vs. history), run by `run_training_pipeline.py`. |
 | **Replay viewer** | `src/webapp/` | Local Flask app that steps through a logged game's board state one event at a time, plus a publicly-hostable subset. |
+| **Distributed training** | `src/distributed/`, `distributed_configs/` | Optional WAN mode: this machine is a hub holding the canonical checkpoints; one remote node per deck trains it and syncs back. Additive -- the single-machine path above is untouched. See **Distributed training** below. |
 
 **Roster** (`data/league_decks.json`): `mono_red_madness`, `rakdos_madness`,
 `spy_combo`, `boggles`, `monster_tron`, `dmir_terror`, `elves`,
@@ -156,7 +157,26 @@ src/
                                audit_land_counts from here with per-deck
                                attribution rather than reimplementing it).
   benchmarking/            training_run.py benchmarks the real league loop under
-                           different collection configs.
+                           different collection configs;
+                           distributed_call_granularity.py measures
+                           _run_session's per-call setup cost (how small a node's
+                           sync interval can go).
+  distributed/             WAN node-ownership training (see "Distributed training").
+    hub_server.py            Flask hub: register/push/pull/poll/release, GET /vocab,
+                             /admin/{status,stop,resume}. `python -m distributed.hub_server`.
+    hub_ownership.py         Deck pool + runtime state: claims, node-id -> deck map,
+                             drift/liveness, stop/release, metrics de-dup acks.
+    hub_store.py             Canonical checkpoints/<league>/ read/write (atomic push,
+                             snapshot-eviction mirroring, per-deck locks).
+    node_agent.py            A node: registers, then loops the unmodified
+                             _run_session, syncing with the hub.
+    node_sync.py             The node's HTTP client (retry/backoff).
+    version_gate.py          Accepted-code-version + vocab-hash check at registration.
+    seed_hub.py              One-shot: seed the hub tree + per-deck progress from an
+                             existing trained league.
+    admin.py                 Operator CLI: status / stop / resume.
+    auth.py                  Credential/token primitives; `python -m distributed.auth`
+                             prints a fresh secret.
   webapp/                  GIT SUBMODULE (github.com/JensJansen/pauper-sim-replay)
                            — `git submodule update --init` after a plain clone.
                            app.py (routes) + replay_engine.py (event-log-to-
@@ -167,8 +187,18 @@ src/
 
 data/                      Decklists (*.txt) + league_decks.json roster.
 training_configs/          Run-mechanics + league-identity JSON configs.
+                           main_league_node.json = main_league.json + only the
+                           CPU/2-worker overrides a distributed node needs.
+distributed_configs/       Distributed training: the ownership pool, CPU node
+                           requirements, the Terraform module that provisions
+                           OVH nodes. Secrets/runtime state are gitignored
+                           (*.local.json, hub_credential.local, hub_runtime_state.json).
 checkpoints/               Trained weights + vocab.json (gitignored; see below).
 logs/                      Game event logs from --log runs (gitignored).
+DISTRIBUTED_TRAINING_PLAN.md            Design/decisions record for distributed training.
+DISTRIBUTED_TRAINING_IMPLEMENTATION_PLAN.md   Build order + what's done (section 7 = fixes).
+TAILSCALE_SETUP_NOTES.md, OVHCLOUD_SETUP_NOTES.md, OVH_TERRAFORM_NOTES.md,
+HOSTING_RESEARCH.md        Networking/hosting setup notes and research.
 ```
 
 **Run scripts from `src/`.** `run_training_pipeline.py`, `run_league.py`, and
@@ -575,6 +605,154 @@ JSON file (wired only through `--matchup` mode) — the replay viewer's input.
 
 ---
 
+## Distributed training (`src/distributed/`)
+
+An **optional, additive** way to train a league across remote machines. It
+changes nothing about the single-machine path above: `run_training_pipeline.py`,
+`run_league.py`, `league_runner.py`, `checkpoint.py` etc. are not modified, and
+both modes can run side by side. Design record: `DISTRIBUTED_TRAINING_PLAN.md`;
+build order and status (incl. the 2026-10-17 review fixes):
+`DISTRIBUTED_TRAINING_IMPLEMENTATION_PLAN.md`.
+
+**Status:** hub and node are built and tested (`tests/distributed/`) and were
+smoke-tested over a real Tailscale link on one machine. **Never yet run
+against a real OVH instance, and the Tailscale policy has not been applied to
+the real tailnet** -- the first real node is the remaining Phase 3 work.
+
+### How it works
+
+- The **hub** (this machine; it never trains) holds the canonical
+  `checkpoints/<league>/` tree and serves it. A **node** trains exactly **one
+  deck** by running the *unmodified* `_run_session` with `train_decks=[its deck]`
+  against the full roster, and syncs with the hub every call.
+- **Registration.** Every node image is identical: it carries the hub URL and a
+  shared *registration credential*. At boot it registers; the hub assigns the
+  next free deck from the ownership pool and mints a deck-scoped token. A node
+  keeps a persistent **node ID** (`/var/lib/pauper-sim/node_id`), so a restarted
+  node gets its own deck back; a new registration for a deck revokes the old
+  token.
+- **Sync.** One sync per `_run_session` call -- default **3 iterations**
+  (= `snapshot_every`, so each sync carries about one new snapshot). A sync
+  pushes the node's deck (`live.pt`, `mulligan.pt`, `opponent_stats.json`, active
+  snapshots, new `metrics.jsonl` lines, progress) and pulls the whole roster.
+  `archive/` and `checks/` never sync. Opponents are therefore as fresh as the
+  last sync -- an accepted staleness, not a bug.
+- **Mirrors.** Snapshot evictions propagate: the hub deletes snapshots a node
+  evicted, and nodes delete the other decks' snapshots the hub no longer has, so
+  the 32-snapshot window holds everywhere. On bootstrap a node's own deck is made
+  an exact copy of the hub's (hub is canonical).
+- **Metrics.** Pushes carry the node's new `metrics.jsonl` lines tagged with
+  their position in the node's local file; the hub appends only lines it doesn't
+  already hold, so restarts and lost acks never duplicate records.
+- **Vocabulary.** `checkpoints/vocab.json` is append-only history, not a pure
+  function of the manifest, so the hub serves its own copy (`GET /vocab`) and a
+  node writes it before building its pool.
+- **Pacing.** A node that gets more than `--drift-threshold` games (default
+  1000) ahead of the slowest *active* node is told to pause and polls until
+  released; a node quiet longer than `--liveness-timeout` (default 300 s) stops
+  counting as active. Both are unbenchmarked placeholders (no real second machine
+  yet).
+- **Failures.** A connection failure is logged and retried next sync; after 5
+  consecutive failed syncs the node stops training and polls for the hub. A
+  superseded token (403) triggers an in-process re-registration with the same
+  node ID. Nothing completed locally is ever lost to a sync failure.
+- **Ending.** A node exits (final push, then releases its deck) when its deck
+  reaches the config's `total_games`, on a hub `stop`, or on SIGTERM.
+- **Version gate.** The hub rejects (HTTP 426) any node whose code isn't on an
+  operator-approved list -- stale engine code would train under different rules
+  (invalid data under this repo's rules-faithfulness mandate). A rejected node
+  never trains; it logs loudly and retries every 5 minutes.
+
+### Running it
+
+All commands run from `src/`.
+
+**Hub (this machine):**
+
+```
+# one-time secrets (gitignored files); the admin token must differ from the registration credential
+python -m distributed.auth > ../distributed_configs/hub_credential.local
+python -m distributed.auth > ../distributed_configs/hub_admin.local
+
+# one-time: copy a trained league into the hub tree and record per-deck progress
+# (stop the hub first; --force wipes and reseeds)
+python -m distributed.seed_hub --from-league main-league --to-league main-league-distributed \
+    --ownership-pool ../distributed_configs/main_league_ownership.json
+
+# approve the code version(s) nodes run: commit SHAs (or >=7-char prefixes);
+# re-read on every registration, no restart needed. Missing/empty = reject everyone.
+echo '{"shas": ["<commit sha>"]}' > ../distributed_configs/accepted_versions.local.json
+
+python -m distributed.hub_server --league-name main-league-distributed \
+    --ownership-pool ../distributed_configs/main_league_ownership.json \
+    --credential-file ../distributed_configs/hub_credential.local \
+    --admin-credential-file ../distributed_configs/hub_admin.local
+```
+
+The hub serves plain HTTP on `0.0.0.0:5000` by default -- safe **only** behind
+Tailscale, never on the open internet (`--tls adhoc` needs `pip install
+cryptography`). `--no-version-gate` disables the version check (development
+only, loud warning).
+
+**Operating it** (any machine on the tailnet):
+
+```
+python -m distributed.admin --hub-url http://<hub-tailnet-ip>:5000 \
+    --admin-credential-file ../distributed_configs/hub_admin.local status
+... stop --deck elves      # or: stop --all   (graceful, lossless)
+... resume --deck elves    # cancel a stop the node hasn't acted on (or --all)
+```
+
+`status` lists each deck (unclaimed / active / quiet / stopping / released),
+games, last-sync age and signal, plus recent version rejections. **`stop` is
+the clean way to stop planned work**: the node finishes its in-flight call
+(minutes), pushes, releases its deck and exits. SIGTERM / `systemctl restart`
+work too (the unit allows 30 min), but `terraform destroy` or deleting an
+instance gives a node no chance -- `stop --all`, wait for releases, then destroy.
+
+**A node** (normally provisioned, below; by hand for local testing):
+
+```
+python -m distributed.node_agent --config ../training_configs/main_league_node.json \
+    --hub-url http://<hub-tailnet-ip>:5000 \
+    --credential-file <json with {"registration_credential": "..."}> \
+    --node-id-file <path outside the git checkout>
+```
+
+`main_league_node.json` is `main_league.json` plus only `device: cpu` and
+`n_workers: 2` (pinned by `tests/distributed/test_node_config.py`); a node reads
+its config read-only and no drift is detected -- the operator keeps nodes'
+configs correct. Rough speed (this dev machine, CPU, 2 workers, 60 games/deck/
+iteration): ~100 s per iteration, so a fresh 100,000-game deck is ~2 days; an
+OVH instance is unmeasured.
+
+### Provisioning (OVHcloud + Tailscale)
+
+`distributed_configs/terraform/` provisions one OVH Public Cloud instance per
+entry in `var.decks` (a fleet-size knob only -- which deck a node trains is
+decided at registration). Nodes have no public IP: they reach the hub over
+Tailscale and the only way in is Tailscale SSH. Cloud-init
+(`node_bootstrap.sh.tftpl`) installs Tailscale and the CPU requirements
+(`distributed_configs/requirements-cpu.txt`), fetches the repo at a pinned
+`git_ref` (branch/tag/commit SHA -- its commit must be on the hub's accepted
+list), writes the node-local credential and runs the node as a systemd service.
+`TAILSCALE_SETUP_NOTES.md` has the tailnet policy (nodes may reach only the hub's
+port), the auth-key settings and a debugging cheat-sheet; `OVHCLOUD_SETUP_NOTES.md`
+and `OVH_TERRAFORM_NOTES.md` cover the account and provider schema. `terraform
+validate` passes; `terraform apply` has not been run.
+
+### Known gaps
+
+Hub-side validation checks (the plan has the hub run `validation/` on a timer)
+and a rollback push (`run_rollback.py` doesn't sync) are not built; pull payloads
+still carry unchanged files and optimizer state (no delta sync); the drift
+threshold and liveness timeout need real nodes to tune; a node whose Tailscale
+fails to start cannot be inspected (destroy and recreate). Statistical
+equivalence with the single-machine path was never measured (owner-waived) -- see
+the implementation plan, section 7.
+
+---
+
 ## Replay viewer (`src/webapp/`)
 
 Local Flask app that steps through a logged game's board state one event
@@ -694,7 +872,10 @@ pip install -r requirements.txt
 pip from silently swapping to a CPU-only build on a machine that has one,
 and is what `--device cuda` needs. The replay converter additionally needs
 `grpcio-tools`. The replay viewer (`src/webapp/`, a submodule) has its own
-dependency: `flask`.
+dependency: `flask`. Distributed training adds `requests` (the admin CLI and
+`tests/distributed/`); a remote node installs
+`distributed_configs/requirements-cpu.txt` instead (CPU-only torch, not the
+CUDA pin above).
 
 ---
 
@@ -714,8 +895,11 @@ pytest -m slow                     # rl/ tier: imports torch, plays real
                                     # mini-games, runs PPO/REINFORCE updates
 ```
 
-The whole suite runs in well under a minute. No pre-commit hook wired up
-yet — running the suite is manual.
+The fast tier (`-m "not slow"`) runs in about 15 seconds; the whole suite
+takes about 4 minutes (the `slow` tier plays real games and does real PPO
+updates). `tests/distributed/` covers the hub, node, version gate, seeding,
+admin and sync behavior; its loopback test starts a real hub and node on one
+machine. No pre-commit hook wired up yet — running the suite is manual.
 
 `benchmarking/training_run.py` measures the real league loop under
 different collection configs (`seq`, `mp<N>`) over a fresh untrained stack
@@ -727,7 +911,10 @@ different collection configs (`seq`, `mp<N>`) over a fresh untrained stack
 
 `checkpoints/` (trained weights + `vocab.json`) and `logs/` (event logs
 from `--log` runs) — regenerable by rerunning training. `.gitignore` also
-lists `models/`, `reports/`, `graphify-out/`.
+lists `models/`, `reports/`, `graphify-out/`. Distributed training adds
+gitignored secrets/runtime state under `distributed_configs/` (`*.local.json`,
+`*.local`, `hub_runtime_state.json`, the accepted-versions file) and Terraform's
+local state/provider cache.
 
 ---
 
@@ -738,3 +925,9 @@ The engine and DRL architecture are the current, active surface.
 - **The DRL pipeline is 2-player only.** The engine tolerates a
   no-opponent (1-player) configuration for isolated card-behavior tests,
   but the token architecture always encodes an opponent seat.
+- **Distributed training is built but not yet deployed.** The hub, node
+  agent, version gate and OVH/Tailscale provisioning exist and are tested
+  (`tests/distributed/`); no real remote node has run yet, so drift/liveness
+  tuning, hub-side validation, rollback sync and delta sync are still open
+  (see **Distributed training** above and
+  `DISTRIBUTED_TRAINING_IMPLEMENTATION_PLAN.md`).
