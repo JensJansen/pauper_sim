@@ -1,0 +1,10 @@
+# CPU-only torch build for distributed training nodes -- see
+# DISTRIBUTED_TRAINING_IMPLEMENTATION_PLAN.md decision #1. The hub
+# machine's own requirements.txt is deliberately pinned to a CUDA build for
+# its own GPU and is never edited for this; nodes use this file instead.
+--index-url https://download.pytorch.org/whl/cpu
+torch==2.11.0
+numpy
+pytest
+flask
+requests

@@ -1,0 +1,118 @@
+#!/bin/bash
+# Node bootstrap script -- run once, as cloud-init user-data, on a fresh
+# Ubuntu LTS instance. See DISTRIBUTED_TRAINING_IMPLEMENTATION_PLAN.md
+# section 4.1 for the design this implements.
+#
+# A real Terraform template (rendered via templatefile() in instances.tf),
+# not a hand-rolled placeholder scheme -- this script has no bash brace
+# expansions of its own to collide with Terraform's interpolation syntax,
+# so there's nothing to escape. (Terraform's templatefile() parses that
+# syntax anywhere in the raw file, including inside a bash comment like
+# this one -- literally writing out the syntax itself, even to explain it,
+# breaks parsing; caught by actually running `terraform validate`, not
+# assumed safe.) Variables (all required, see instances.tf's templatefile()
+# call):
+#
+#   hub_url                 e.g. https://hub.<tailnet-name>.ts.net:5000
+#   registration_credential the shared credential from `python -m distributed.auth`
+#   tailscale_auth_key      a Tailscale auth key for this tailnet (a distinct secret from
+#                            registration_credential -- see the implementation plan's own
+#                            note: revoking network access and revoking application-level
+#                            registration access are different concerns, never one credential)
+#   git_ref                 a pinned commit or tag, NOT a branch name -- the version gate
+#                            (Phase 3) is only meaningful if every node's code is pinned to
+#                            something specific, not "whatever main happens to be at boot time"
+#   git_repo_url            this repo's clone URL
+#   league_config_name      e.g. main_league_node.json -- which training_configs/*.json this node trains against
+
+set -euo pipefail
+
+# 1. Base packages
+apt-get update
+apt-get install -y python3-venv python3-pip git curl
+
+# 2. Tailscale -- network-layer membership, a distinct secret from the
+#    registration credential below (see the implementation plan's own note:
+#    revoking network access and revoking application-level registration
+#    access are different concerns and shouldn't share one credential).
+curl -fsSL https://tailscale.com/install.sh | sh
+# --ssh enables Tailscale SSH: the ONLY way into a node (no public IP). Who may
+# connect is the tailnet policy's job (see TAILSCALE_SETUP_NOTES.md); the node
+# takes its tag (tag:pauper-node) from the auth key itself.
+tailscale up --authkey="${tailscale_auth_key}" --ssh
+
+# 2b. Keep the systemd journal across reboots, so a node's service log is still
+#     there to read after a crash-restart or reboot.
+mkdir -p /var/log/journal
+systemctl restart systemd-journald
+
+# 3. Pinned checkout -- never `main`, see the git_ref variable note above.
+install -d -o root -g root /opt/pauper-sim
+# init + shallow fetch of exactly git_ref, NOT `git clone --branch`: that accepts a
+# branch or tag only, while git_ref may also be a raw commit SHA. (Fetching a SHA
+# needs the server to allow it -- GitHub does.) The node reports the resulting
+# commit SHA to the hub, whose accepted-versions list must contain it.
+git init -q /opt/pauper-sim
+cd /opt/pauper-sim
+git remote add origin "${git_repo_url}"
+git fetch --depth 1 origin "${git_ref}"
+git checkout -q --detach FETCH_HEAD
+
+# 4. CPU-only venv -- deliberately NOT this repo's own requirements.txt,
+#    which is pinned to a CUDA build for the hub's own GPU. See
+#    distributed_configs/requirements-cpu.txt's own header for why a
+#    separate file exists instead of editing that one.
+python3 -m venv /opt/pauper-sim/venv
+/opt/pauper-sim/venv/bin/pip install --upgrade pip
+/opt/pauper-sim/venv/bin/pip install -r distributed_configs/requirements-cpu.txt
+
+# 5. Node-local config -- hub URL + registration credential. Gitignored by
+#    convention (distributed_configs/*.local.json), written fresh here
+#    since it never comes from the git clone above.
+cat > /opt/pauper-sim/distributed_configs/node.local.json <<EOF
+{"registration_credential": "${registration_credential}"}
+EOF
+chmod 600 /opt/pauper-sim/distributed_configs/node.local.json
+
+# 6. systemd service -- auto-restarts on a transient crash without needing
+#    an operator to notice, consistent with nodes running unattended
+#    between check-ins.
+cat > /etc/systemd/system/pauper-sim-node.service <<EOF
+[Unit]
+Description=pauper-sim distributed training node
+After=network-online.target tailscaled.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Creates /var/lib/pauper-sim, which holds the persistent node ID (outside the git checkout).
+StateDirectory=pauper-sim
+WorkingDirectory=/opt/pauper-sim/src
+ExecStart=/opt/pauper-sim/venv/bin/python -m distributed.node_agent \\
+  --config ../training_configs/${league_config_name} \\
+  --hub-url ${hub_url} \\
+  --credential-file ../distributed_configs/node.local.json \\
+  --node-id-file /var/lib/pauper-sim/node_id
+Restart=on-failure
+RestartSec=10
+# SIGTERM is node_agent's own graceful-stop trigger (see
+# DISTRIBUTED_TRAINING_PLAN.md's "Node lifecycle" -- Graceful stop) --
+# systemd's default stop signal is already SIGTERM, no override needed,
+# but stated explicitly here so it's never accidentally changed to
+# SIGKILL, which would skip the final push entirely.
+KillSignal=SIGTERM
+# Graceful stop finishes the in-flight _run_session call first, which cannot be
+# interrupted. Measured ~100s per iteration (2 workers, CPU, this dev machine),
+# so a 3-iteration call is ~5 min here and likely 5-10+ min on a 2-vCPU node;
+# 120s would SIGKILL it mid-call, losing that work and the final push + release.
+# 1800s = ~3x the measured call. PLANNED stops should use `python -m
+# distributed.admin stop` instead (lossless, no systemd involved); this timeout
+# only backs the SIGTERM path (systemctl stop/restart, reboot).
+TimeoutStopSec=1800
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+systemctl daemon-reload
+systemctl enable --now pauper-sim-node.service

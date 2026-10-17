@@ -1,0 +1,6 @@
+{
+  "_note": "Distributed-training node config (b3-8: 2 vCPU, CPU-only). Inherits EVERYTHING from main_league.json except the two hardware-dependent fields below, so a node's training regimen can't drift from the hub's (tests/distributed/test_node_config.py pins exactly this override set). games_per_iteration stays inherited (60) by owner decision 2026-10-16. See DISTRIBUTED_TRAINING_PLAN.md: n_workers/device are the two fields expected to differ per node.",
+  "extends": "main_league.json",
+  "device": "cpu",
+  "n_workers": 2
+}

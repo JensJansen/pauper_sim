@@ -23,3 +23,20 @@ checkpoints/*/progress.json
 planning/
 replays/
 todo/
+
+# Distributed training: secrets and hub-local runtime state -- never
+# committed. distributed_configs/*_ownership.json (the static deck pool) IS
+# committed; only the per-node local config (hub URL + registration
+# credential) and the hub's own runtime state are excluded here.
+distributed_configs/*.local.json
+distributed_configs/hub_credential.local
+distributed_configs/hub_runtime_state.json
+
+# Terraform's local provider plugin cache + working state -- regenerable via
+# `terraform init`, machine-specific, never committed. .terraform.lock.hcl
+# (the provider version pin) IS committed, per Terraform's own convention.
+distributed_configs/terraform/.terraform/
+distributed_configs/terraform/*.tfstate
+distributed_configs/terraform/*.tfstate.backup
+distributed_configs/terraform/*.tfvars
+distributed_configs/terraform/*.tfvars.tmp
