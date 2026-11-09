@@ -32,11 +32,19 @@ _ID_MATCHED_KINDS = {
 
 
 def build_fixed_action_table(decklist, token_card_defs=(), extra_choosable_names=()):
-    """Every non-targeting action for this decklist (Play land, Cast,
-    Activate, Forestcycle, Pass, "Choose: X" resolution picks, "Choose: X as
-    color", Keep/Dispose, Decline, Abandon payment, mulligan actions, "Done
-    blocking"). Always calls with opponent_decklist=None since this table
-    drops "Choose opponent's: ..." rows regardless."""
+    """Every non-targeting action for this decklist: Play land, the Tap/
+    Filter mana abilities, Cast, Activate, Forestcycle/Cycle, Pass, "Choose:
+    X" by-name resolution picks, Spend from pool, Keep/Dispose, the Decline/
+    Target/Enter room/Mode/X/Delve/Produce decision buttons, and "Done
+    blocking". The rows addressed by pointer instead -- "Choose target:",
+    "Attack:", "Assign Blocker:" and "Choose opponent's:" -- are dropped
+    (_TARGETING_PREFIXES). There are no mulligan rows (the MulliganNet owns
+    every pregame decision) and no "Abandon payment" (there is no undo).
+    Always calls with opponent_decklist=None since the opponent rows are
+    dropped regardless.
+
+    ROW ORDER IS LOAD-BEARING: the policy's action head is indexed by this
+    table -- see tests/drl_env/test_action_table_order.py."""
     full_table = drl_env.build_action_table(
         decklist, game.EFFECT_REGISTRY, token_card_defs=token_card_defs,
         opponent_decklist=None, extra_choosable_names=extra_choosable_names,

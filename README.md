@@ -297,10 +297,15 @@ between decks but the card index mapping:
   seats) and cleared **per game**.
 - **`DeckNetwork` (`rl/model/deck.py`)** — small trunk + critic + a
   pointer-network action head. Action space = a **fixed table**
-  (non-targeting actions: play land, cast X, pass, mana payments,
-  mulligans, ...) union a **pointer-scored** set (attack / assign-blocker /
-  choose-target, scored against post-attention tokens). Both halves feed
-  one combined softmax.
+  (non-targeting actions: play land, cast X, pass, mana payments, the
+  decision buttons, ...; no mulligan rows, the mulligan model owns those)
+  union a **pointer-scored** set (attack / assign-blocker / choose-target,
+  scored against post-attention tokens). Both halves feed one combined
+  softmax. **The fixed table's row order is load-bearing:** the action head
+  has one logit per row, so reordering or relabelling rows (even at the same
+  length) silently scrambles every saved checkpoint.
+  `tests/drl_env/test_action_table_order.py` pins it; regenerate its snapshot
+  only for a deliberate change that retrains the affected decks.
 - **Pregame mulligan model (`rl/model/mulligan.py`)** — separate small head
   for every pregame keep/mulligan/bottom decision, reading its own deck's
   `SetTransformer` output over the full hand token set. Holds that encoder

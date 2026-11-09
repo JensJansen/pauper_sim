@@ -5,10 +5,13 @@ module feeds into. Kept together since the table-builder touches every
 category and the mask sweep resets every category's own sweep-scoped
 cache.
 
-Categories, in table order (see _actions_cast/_actions_cast_altzone/
-_combat/_resolution/_mana for the category boundaries themselves):
-  A. Play land: <name>            -- one per distinct land name
-  A2. Tap <name> [for <color>]    -- mana abilities: one no-color row per
+Categories, in table order (each is built by one row builder below; see
+_actions_cast/_actions_cast_altzone/_combat/_resolution/_mana for the
+legal/execute factories and the category boundaries themselves). THE ORDER
+IS LOAD-BEARING -- a trained policy's action head is indexed by it; see
+tests/drl_env/test_action_table_order.py:
+  1. Play land: <name>            -- one per distinct land name
+  2. Tap <name> [for <color>]     -- mana abilities: one no-color row per
      fixed/Tron/count source, one row per producible color for a
      flexible/granted source. Legal in any priority window, even
      mid-resolution of anything else (605.1a/605.3b), resolves
@@ -18,33 +21,49 @@ _combat/_resolution/_mana for the category boundaries themselves):
      shot. "Filter <name>, paying <input_color>" (Conduit Pylons/Barrels):
      pays the {1} immediately, then opens the same choose_color
      mana_subdecision stage for the output color.
-  B. Cast <name>                  -- one per card with a registry "cast" entry
-  C. Activate <name> (<ability>)  -- one per registered activated ability
-  D. Forestcycle <name>           -- one per registry "forestcycle" entry
-  E. Pass
-  F. Choose: <name>               -- shared across every pending-resolution
+  3. Cast <name>                  -- one per card with a registry "cast"
+     entry, plus modal casts, X-cost modes, delve, free alt-costs,
+     Flashback/Escape, Plot (+ cast from exile), Omen and Prototype
+  4. Activate <name> (<ability>)  -- one per registered activated ability
+  5. Forestcycle / Cycle <name>   -- the "forestcycle" and "cycle" entries
+  6. Play from exile: <name>      -- impulse, only for a deck that can impulse
+  7. Activate <name> (graveyard)  -- the "graveyard_ability" entries
+  8. Pass
+  9. Choose: <name>               -- shared across every pending-resolution
      kind that picks a plain card name (search_fetch, ancient_stirrings,
      discard, and scry/surveil's ordering phase), dispatched by
      pending_resolution["kind"]. Paying a cost never appears here: once a
-     cost is announced, the only legal actions are the A2 mana abilities
+     cost is announced, the only legal actions are the mana abilities (2)
      and "Spend <color> from pool" below.
-     Not sacrifice (see category K) -- a battlefield permanent is never
-     just a name, unlike a hand/library/graveyard card.
-  H. Keep / Dispose (scry/surveil)
-  I. Decline (Ancient Stirrings)
-  K. Choose target: <name> (slot k) -- exact-(name, slot)-addressed, the
+     Not sacrifice (see 10) -- a battlefield permanent is never just a
+     name, unlike a hand/library/graveyard card.
+ 10. Choose target: <name> (slot k) -- exact-(name, slot)-addressed, the
      "choose_permanent" resolution's own actions (Aura enchant-targets,
      Crop Rotation's sacrifice cost, land bounce, and every generic
-     sacrifice cost). Not category F: two same-named permanents stop
-     being interchangeable once one is enchanted/tapped/has a counter,
-     and cast_aura's fizzle-on-invalid-target contract depends on knowing
+     sacrifice cost). Not 9: two same-named permanents stop being
+     interchangeable once one is enchanted/tapped/has a counter, and
+     cast_aura's fizzle-on-invalid-target contract depends on knowing
      exactly which physical permanent was chosen.
+ 11. Attack: <name> (slot k), Assign Blocker: <name> (slot k), Done
+     blocking, Assign combat damage to opponent (permanently illegal; kept
+     so the table's length stays stable)
+ 12. Choose opponent's: <name> (slot k) -- only when an opponent decklist is
+     passed; the league passes none
+ 13. Spend <color> from pool
+ 14. The decision buttons: Keep/Dispose (scry/surveil), the Decline rows,
+     Shuffle (Ponder), Pay/Don't pay (unless), Tuck, Transform, Copy,
+     Cast (may)/(madness), select-to-hand, discard-or-sacrifice, then
+     Target: / Target any: / Choose no target, Enter room: <room> and Add
+     mana: <color>. Most are universal (an opponent's card can pose the
+     question); the self-only ones are gated on the deck's own pending kinds.
+ 15. Mode n / X=n / Delve n, and Produce <color> -- the shared sub-decision
+     button sets, only for a deck with a card of that shape.
 
-Per-deck additions: B also covers modal casts, free alt-costs, Flashback,
+Per-deck additions: 3 also covers modal casts, free alt-costs, Flashback,
 and x_cast_modes (one action per (mode, X) pair, each its own cost
-distinct from card_def.cast_cost); C also covers non-mana activated
-abilities; F/H also cover select_to_hand's Keep/Bottom pair, its ordering
-phase, and an optional search's Decline; K also covers opponent-facing ETB
+distinct from card_def.cast_cost); 4 also covers non-mana activated
+abilities; 9/14 also cover select_to_hand's Keep/Bottom pair, its ordering
+phase, and an optional search's Decline; 10 also covers opponent-facing ETB
 targets (choose_opponent_permanent, same category as blocking's
 cross-player targeting)."""
 
@@ -875,9 +894,9 @@ def build_action_table(decklist, registry, token_card_defs=(),
     # flipped state.active_idx to the defender and a "declare_blockers"
     # resolution is pending -- see _assign_blocker_legal). "Done blocking"
     # is the explicit action that closes the consult, same "Done" precedent
-    # as scry/surveil's own keep-then-order decomposition. Deliberately NO
+    # as scry/surveil's own keep-then-order decomposition.
     # AUTHORIZED SIMPLIFICATION (owner, 2026-07-31): no undo (no "Unassign
-    # Blocker") -- once committed, a blocker stays committed until Done. Real
+    # Blocker" action) -- once committed, a blocker stays committed until Done. Real
     # Magic's declare-blockers is a single simultaneous action (509.1); this
     # engine linearizes it into one-creature-at-a-time picks with no way
     # back, by design, across the whole engine (no action anywhere lets the
