@@ -765,8 +765,8 @@ pytest -m slow                     # rl/ tier: imports torch, plays real
 ```
 
 The fast tier (`-m "not slow"`) runs in about 15 s; the whole suite takes
-about 3 minutes. No pre-commit hook wired up yet — running the suite is
-manual.
+about 3 minutes. Only the linter is wired into a pre-commit hook (below);
+running the suite is manual.
 
 ### Lint
 
@@ -786,6 +786,14 @@ call-time lookup for definition-time binding, breaking monkeypatching) and
 `PLW0603` (the per-process module-global caches are deliberate). `__init__.py`
 files may re-export and star-import their submodules. `src/webapp` is its own
 repo and is excluded.
+
+A pre-commit hook (`.githooks/pre-commit`) runs the same `ruff check` and
+refuses the commit if it fails. Git doesn't version hook config, so enable it
+once per clone:
+
+```
+git config core.hooksPath .githooks
+```
 
 `benchmarking/training_run.py` measures the real league loop under
 different collection configs (`seq`, `mp<N>`) over a fresh untrained stack

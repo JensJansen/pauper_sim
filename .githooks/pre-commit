@@ -1,0 +1,8 @@
+#!/bin/sh
+# Pre-commit: lint src/ and tests/ with ruff (config in pyproject.toml).
+# Enable once per clone:  git config core.hooksPath .githooks
+if command -v ruff >/dev/null 2>&1; then
+    ruff check src tests --no-cache
+else
+    python -m ruff check src tests --no-cache
+fi
