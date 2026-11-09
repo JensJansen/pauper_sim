@@ -18,6 +18,10 @@ its replay `logs/replays/<league>/round_robin_review_<N>games.json`. Retention:
 Legacy flat replays (`logs/replays/<league>_round_robin_review_<N>games.json`)
 are moved into their league folder the first time sync runs.
 
+Every replay also gets a `<replay>.json.gameindex` sidecar (byte range + label info
+per game), built here before the commit and pruned with its replay, so the replay
+viewer can read one game without parsing the whole ~30 MB file (webapp/replay_index.py).
+
 Best-effort like webapp_mirror: sync() never raises (a git/network problem is
 printed and retried at the next tick), and sync_async() runs it on a background
 thread so training doesn't wait on a push. Git never prompts for credentials
@@ -33,6 +37,7 @@ The parent-repo pointer bump is a LOCAL commit restricted to src/webapp on
 whatever branch is checked out; it is not pushed (PUSH_PARENT) so this never
 pushes unrelated unpushed work.
 """
+import importlib.util
 import json
 import os
 import re
@@ -50,6 +55,7 @@ BRANCH = "main"
 
 _FLAT_REVIEW_RE = re.compile(r"^(?P<league>.+)_round_robin_review_(?P<n>\d+)games\.json$")
 _REVIEW_RE = re.compile(r"^round_robin_review_(?P<n>\d+)games\.json$")
+SIDECAR_SUFFIX = ".gameindex"  # keep in sync with webapp/replay_index.SIDECAR_SUFFIX
 
 
 # ---- retention (plain filesystem, no git) ----
@@ -84,8 +90,25 @@ def prune_replays(replays_dir, keep=KEEP_SETS):
                        key=lambda t: t[0], reverse=True)
         for _n, path in files[keep:]:
             path.unlink()
+            Path(str(path) + SIDECAR_SUFFIX).unlink(missing_ok=True)
             removed.append(path)
     return removed
+
+
+def build_sidecars(webapp_dir):
+    """Builds/refreshes the per-game byte-offset index (`<replay>.json.gameindex`) of
+    every replay under logs/replays/ that lacks a valid one, and drops orphaned ones,
+    so the viewer can serve one game without parsing a ~30 MB file. The indexer is the
+    replay repo's own replay_index.py, loaded by path (it is stdlib-only and imports
+    nothing from either repo); a submodule checkout too old to have it is skipped.
+    Returns (built, orphans_removed)."""
+    module_path = Path(webapp_dir) / "replay_index.py"
+    if not module_path.is_file():
+        return 0, 0
+    spec = importlib.util.spec_from_file_location("_webapp_replay_index", module_path)
+    indexer = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(indexer)
+    return indexer.ensure_sidecars(Path(webapp_dir) / "logs" / "replays")
 
 
 def prune_checks(league_dir, keep=KEEP_SETS):
@@ -224,15 +247,18 @@ def sync(label, webapp_dir=None, repo_root=None, keep=KEEP_SETS):
         webapp_dir = Path(webapp_dir or webapp_mirror.WEBAPP_DIR)
         repo_root = Path(repo_root or REPO_ROOT)
         removed, rewritten = prune_all(webapp_dir, keep)
+        sidecars_built, sidecars_dropped = build_sidecars(webapp_dir)
         git = commit_and_push(webapp_dir, f"Mirror {label}")
         bumped = False
         if git["error"] is None and git["head"] and webapp_dir.is_relative_to(repo_root):
             bumped = bump_parent_pointer(repo_root, webapp_dir.relative_to(repo_root).as_posix(),
                                          f"Bump replay repo to {git['head']} ({label})")
         print(f"webapp_sync: {label}: pruned {len(removed)} replays + {rewritten} check files; "
+              f"sidecars built={sidecars_built} dropped={sidecars_dropped}; "
               f"committed={git['committed']} pushed={git['pushed']} head={git['head']} "
               f"parent_bumped={bumped}" + (f" ERROR: {git['error']}" if git["error"] else ""), flush=True)
-        return {"removed": removed, "rewritten": rewritten, "git": git, "parent_bumped": bumped}
+        return {"removed": removed, "rewritten": rewritten, "sidecars": (sidecars_built, sidecars_dropped),
+                "git": git, "parent_bumped": bumped}
     except Exception as e:  # noqa: BLE001 -- never let a mirroring hiccup take training down
         print(f"webapp_sync: {label}: failed, will retry at the next tick: {e!r}", flush=True)
         return None

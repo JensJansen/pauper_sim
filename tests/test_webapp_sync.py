@@ -4,10 +4,12 @@ submodule) -- never the real src/webapp (conftest stubs sync_async suite-wide)."
 import json
 import os
 import subprocess
+import shutil
 import threading
 import time
 
 import pytest
+from pathlib import Path
 
 import webapp_sync as ws
 
@@ -222,3 +224,53 @@ def test_sync_async_coalesces_overlapping_requests(monkeypatch):
     t.join(10)
     assert calls == ["first", "third"]                                         # latest label wins; "second" dropped
     assert ws._running is False
+
+
+# ---- per-game index sidecars (webapp/replay_index.py, loaded by path) ----
+
+REAL_INDEXER = Path(__file__).resolve().parent.parent / "src" / "webapp" / "replay_index.py"
+
+
+def _write_replay(path, n_games=2):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    games = [{"game_index": i, "deck_a": "elves", "deck_b": "boggles", "events": [{"kind": "turn_start"}] * 3}
+             for i in range(n_games)]
+    path.write_text(json.dumps({"meta": {}, "games": games}))
+
+
+def test_prune_replays_deletes_a_replays_sidecar_with_it(tmp_path):
+    for n in range(1, 13):
+        _write_replay(tmp_path / "lg" / f"round_robin_review_{n * 1000}games.json")
+        (tmp_path / "lg" / f"round_robin_review_{n * 1000}games.json.gameindex").write_text("{}")
+    ws.prune_replays(tmp_path)
+    left = sorted(p.name for p in (tmp_path / "lg").iterdir())
+    assert len([n for n in left if n.endswith(".json")]) == 10 and len([n for n in left if n.endswith(".gameindex")]) == 10
+    assert "round_robin_review_1000games.json.gameindex" not in left
+
+
+def test_build_sidecars_skips_a_checkout_without_the_indexer(tmp_path):
+    _write_replay(tmp_path / "logs" / "replays" / "lg" / "round_robin_review_1000games.json")
+    assert ws.build_sidecars(tmp_path) == (0, 0)
+
+
+def test_sync_commits_sidecars_with_their_replays_and_drops_pruned_ones(repos):
+    webapp, parent = repos["webapp"], repos["parent"]
+    shutil.copy(REAL_INDEXER, webapp / "replay_index.py")                    # untracked code: never committed
+    for n in range(1, 13):
+        _write_replay(webapp / "logs" / "replays" / "main-league" / f"round_robin_review_{n * 1000}games.json")
+
+    result = ws.sync("sidecars", webapp_dir=webapp, repo_root=parent)
+
+    assert result["git"]["error"] is None and result["sidecars"][0] == 10         # built for the 10 survivors only
+    remote = _clone_remote(repos)
+    names = sorted(p.name for p in (remote / "logs" / "replays" / "main-league").iterdir())
+    assert len([n for n in names if n.endswith(".json")]) == 10
+    assert len([n for n in names if n.endswith(".gameindex")]) == 10
+    assert not (remote / "replay_index.py").exists()
+    index = json.loads((remote / "logs" / "replays" / "main-league"
+                        / "round_robin_review_12000games.json.gameindex").read_text())
+    assert [g["game_index"] for g in index["games"]] == [0, 1]
+
+    # a second tick with an unchanged replay set rebuilds nothing and makes no new commit
+    again = ws.sync("sidecars again", webapp_dir=webapp, repo_root=parent)
+    assert again["sidecars"] == (0, 0) and not again["git"]["committed"]

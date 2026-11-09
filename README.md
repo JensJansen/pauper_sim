@@ -635,6 +635,9 @@ drives it against throwaway git repos).
    pushed) it rebases onto `origin/main` (`--autostash`, so uncommitted edits
    survive). A rebase conflict is aborted and reported -- never forced -- and the
    data is retried next tick.
+   Each replay also gets a `<replay>.json.gameindex` sidecar (byte range and labels
+   per game; built here before the commit, pruned with its replay) so the viewer
+   can read one game without parsing the whole file.
 3. **Bump the pointer.** If the replay repo's head moved, it makes a **local**
    commit in *this* repo touching only `src/webapp`, on whatever branch is checked
    out. That commit is not pushed (`webapp_sync.PUSH_PARENT`), so this never
@@ -655,8 +658,11 @@ game viewing).
   face reverts, aura-orphan handling, same-phase-recast identity) — no
   intermediate replay format.
 - A hamburger drawer overlays the board (open-a-file, browse-server-logs,
-  game list) without disturbing scrub position. File selection posts a
-  picked file's content to the backend for reduction.
+  game list) without disturbing scrub position. Neither way of opening a
+  log ever sends the whole file to the server: a log from **Browse server logs**
+  is read server-side (`GET /api/replay/runs/<name>/games[/<i>]`), and a file
+  picked from disk is parsed once in the browser, which sends only the light game
+  list and then just the one clicked game. A replay is ~30 MB, one game ~200 KB.
 - **Browse server logs** lists every `*.json` under the submodule's own
   `logs/replays/` (`GET /api/replay/runs`, grouped by league -- `main-league` first
   -- and newest game count first, since a git checkout makes file times meaningless) -- a sibling
