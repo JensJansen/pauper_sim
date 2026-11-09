@@ -44,7 +44,9 @@ def _norm(v, depth=0):
     """Id-free description of a closure cell / default / attribute value."""
     if depth > 4:
         return "<deep>"
-    if isinstance(v, (types.FunctionType, types.BuiltinFunctionType, types.MethodType)):
+    if isinstance(v, types.FunctionType):
+        return f"fn:{_fn_name(v)}"
+    if isinstance(v, (types.BuiltinFunctionType, types.MethodType)):
         return f"fn:{getattr(v, '__module__', '?')}.{getattr(v, '__qualname__', '?')}"
     if isinstance(v, (int, float, str, bool, type(None))):
         return repr(v)
@@ -61,8 +63,18 @@ def _norm(v, depth=0):
     return f"<{type(v).__name__}>"
 
 
+def _fn_name(f):
+    """A function's identity. A lambda is named by what it does (the names and constants its code
+    uses), not by the function it happens to be defined in, so moving it between helpers is not a
+    change but editing it is."""
+    if f.__name__ == "<lambda>":
+        consts = [c for c in f.__code__.co_consts if isinstance(c, (str, int, float, bool, type(None)))]
+        return f"{f.__module__}.<lambda>{f.__code__.co_names}{consts}"
+    return f"{f.__module__}.{f.__qualname__}"
+
+
 def _fn_fp(f):
-    return {"fn": f"{f.__module__}.{f.__qualname__}",
+    return {"fn": _fn_name(f),
             "closure": [_norm(c.cell_contents) for c in (f.__closure__ or ())],
             "defaults": _norm(f.__defaults__),
             "attrs": {k: _norm(v) for k, v in sorted(vars(f).items())}}
