@@ -765,7 +765,7 @@ pytest -m slow                     # rl/ tier: imports torch, plays real
 ```
 
 The fast tier (`-m "not slow"`) runs in about 15 s; the whole suite takes
-about 3 minutes. Only the linter is wired into a pre-commit hook (below);
+about 4-5 minutes. Only the linter is wired into a pre-commit hook (below);
 running the suite is manual.
 
 ### Lint

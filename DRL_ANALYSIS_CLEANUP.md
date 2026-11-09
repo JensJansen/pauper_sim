@@ -60,15 +60,15 @@ into subdirectories by actual cohesion (not guessed from file names).
 
 ## Needs owner input (flagged, not touched)
 
-- [ ] **GPU path still unvalidated end-to-end.** Now that real configs
-      default to `cuda`, only a per-`ppo_update`-call microbenchmark
-      (`analysis/eval/bench_gpu_vs_cpu.py`) has ever confirmed correctness —
-      no session-level test exercises the `cpu_nets`/`cpu_mulligan_nets`
-      mirror-sync path on a real GPU run.
-- [ ] **Real multiprocessing path has zero test coverage.** The only test
-      of `rollout_parallel.collect_rollout_league_parallel` substitutes a
-      `ThreadPoolExecutor` for the real `ProcessPoolExecutor` — a
-      spawn/pickling regression would only surface in real training.
+- [x] **GPU path validated at the session level** (2026-11-09).
+      `tests/rl/league/test_run_session_modes.py::test_cpu_mirrors_follow_the_gpu_weights`
+      exercises `_make_cpu_mirrors` / `_sync_cpu_mirrors` on a real CUDA net
+      (skipped without CUDA). A seeded before/after golden of `_run_session`
+      was also run on CUDA during the `_run_session` split.
+- [x] **Real multiprocessing path now has a test** (2026-11-09).
+      `test_a_real_process_pool_runs_a_session` runs a session through a real
+      `ProcessPoolExecutor` (spawn + pickling); the other parallel-path test
+      uses an in-process executor for determinism.
 
 ## Done — structure reorg (2026-08-22, second pass)
 
