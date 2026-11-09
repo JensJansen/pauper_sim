@@ -274,6 +274,24 @@ def test_run_session_skips_record_outcome_for_a_stratified_game(tmp_path, monkey
 
 
 @pytest.mark.slow
+def test_run_session_with_frozen_deck_logs_zeroed_ppo_stats(tmp_path):
+    """--train-mulligan-only (train_deck=False): ppo_update never runs, so each
+    round's metric must report 0.0 for every PPO stat -- including
+    explained_variance/adv_std, which used to be assigned only inside the
+    training branch and raised an UnboundLocalError on the first round."""
+    import json
+
+    league_runner._run_session(1, 2, 99, None, 1, league_dir=str(tmp_path), seed=0, roster=["elves"],
+                               train_deck=False, trunk_hidden=(8, 8))
+    with open(tmp_path / "metrics.jsonl") as f:
+        ppo = [r for r in (json.loads(ln) for ln in f if ln.strip()) if r["kind"] == "ppo"]
+    assert ppo, "the round must still log a ppo record"
+    for r in ppo:
+        assert r["epochs_run"] == 0 and r["explained_variance"] == 0.0 and r["adv_std"] == 0.0
+        assert r["policy_loss"] == 0.0 and r["value_loss"] == 0.0
+
+
+@pytest.mark.slow
 def test_unknown_ppo_hyperparameter_is_a_hard_error():
     """A typo'd hyperparameter that silently does nothing must fail loudly,
     not run un-executed for thousands of iterations."""

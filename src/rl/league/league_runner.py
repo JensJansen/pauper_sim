@@ -483,7 +483,13 @@ def _run_session(n_iterations, games_per_iteration, snapshot_every, executor, n_
             # bucket in train_set (buffers_by_deck only ever holds
             # live-opponent buckets; a frozen-snapshot opponent records
             # nothing).
+            # Reset every round, explained_variance/adv_std included: with
+            # train_deck=False (--train-mulligan-only) or an empty own bucket
+            # ppo_update never runs for `name`, and the metric below would
+            # otherwise hit an unbound local (first round) or report the
+            # previous deck's stale value.
             policy_loss = value_loss = entropy = approx_kl = clip_fraction = 0.0
+            explained_variance = adv_std = 0.0
             epochs_run = 0
             salvaged = 0
             if train_deck:
