@@ -96,11 +96,12 @@ def _log_target_fizzle(state, card_def, chosen_name_slot):
 
 # MTG 400.7: a card that changes zones becomes a NEW object. Targeting here
 # captures the exact object, so a flickered/returned permanent or graveyard card
-# correctly makes an old target fizzle. Not modeled: a LINKED ability that
-# deliberately TRACKS an object across a zone change (Adventure, Foretell,
-# "exile, then you may play THIS card") -- the returned object is still new,
-# but the linked ability references it across the change. No card in this pool
-# needs that tracking; add cross-zone object linkage here (and to
+# correctly makes an old target fizzle.
+# AUTHORIZED SIMPLIFICATION (owner, 2026-11-09): not modeled is a LINKED
+# ability that deliberately TRACKS an object across a zone change (Adventure,
+# Foretell, "exile, then you may play THIS card") -- the returned object is
+# still new, but the linked ability references it across the change. No card
+# in this pool needs that tracking; add cross-zone object linkage here (and to
 # game.state.move_card's minting) if one arrives. See plans/object-identity-zone-model.md.
 def capture_any_target(state, target):
     """Cast/activation time: lock a resolution.begin_choose_any_target

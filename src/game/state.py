@@ -92,8 +92,10 @@ class Permanent(CardInstance):
 
         # dict[str counter-kind -> int count], e.g. {"+1/+1": 2}. Kind
         # strings are card-text-shaped ("+1/+1", Pinnacle Kill-Ship's
-        # "charge"). +1/+1-vs--1/-1 annihilation (122.3) is not modeled --
-        # no card here ever puts both kinds on one permanent.
+        # "charge").
+        # AUTHORIZED SIMPLIFICATION (owner, 2026-11-09): +1/+1-vs--1/-1
+        # annihilation (122.3) is not modeled -- no card here ever puts both
+        # kinds on one permanent. Revisit if a -1/-1-counter card arrives.
         self.counters = {}
 
         # None means "use card_def.card_type" (see the card_type property
