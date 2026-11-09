@@ -35,10 +35,10 @@ def ppo_update(net, optimizer, buf, device, n_epochs=4, batch_size=64, gamma=0.9
     # target_kl: an epoch-level trust-region backstop independent of
     # ent_coef, checked once per epoch (mean approx-KL across that epoch's
     # minibatches) since a per-minibatch check is noisier.
-    """PPO update over a buffer of variable-length token lists -- pads once
-    per minibatch (not once for the whole buffer), since padding to a single
-    global max would waste memory/compute proportional to the largest board
-    state seen.
+    """PPO update over a buffer of variable-length token lists -- pads the
+    whole buffer ONCE up front (device tensors), then slices each minibatch
+    to its own widest state, so the encoder sees exactly what per-minibatch
+    padding would give it without re-padding every minibatch x epoch.
 
     optimizer: one optimizer over net.parameters() (the encoder is a
     registered child of net, so it's covered).
@@ -86,14 +86,36 @@ def ppo_update(net, optimizer, buf, device, n_epochs=4, batch_size=64, gamma=0.9
         # episode rather than dropping transitions.
         bounds.append((start_idx, total))
     episodes = np.arange(len(bounds))
-    last_policy_loss = last_value_loss = last_entropy = last_approx_kl = last_clip_fraction = 0.0
+    n_fixed = net.non_targeting_head.out_features
+    # Everything per-transition is built ONCE here and indexed per minibatch.
+    # The encoder re-runs every minibatch/epoch (it trains), but its INPUTS
+    # never change: re-padding them from Python lists every minibatch x epoch
+    # was ~40% of the update's wall time (measured). Padding to the whole
+    # buffer's widest state and slicing to each minibatch's own widest state
+    # yields tensors identical to padding that minibatch alone.
+    n_tokens = np.array([len(tl) for tl in buf.token_lists], dtype=np.int64)
+    vocab_all, features_all, pad_all, _ids = pad_token_batch(buf.token_lists, device=device)
+    # Mask: n_fixed fixed-action columns, then one pointer column per token.
+    mask_np = np.zeros((total, n_fixed + vocab_all.shape[1]), dtype=bool)
+    for i, stored in enumerate(buf.mask):
+        mask_np[i, :n_fixed] = stored[:n_fixed]
+        pointer_part = stored[n_fixed:]
+        mask_np[i, n_fixed:n_fixed + len(pointer_part)] = pointer_part
+    mask_all = torch.as_tensor(mask_np, device=device)
+    scalar_all = torch.as_tensor(np.array(buf.scalar), dtype=torch.float32, device=device)
+    act_all = torch.as_tensor(np.array(buf.action), dtype=torch.int64, device=device)
+    old_logp_all = torch.as_tensor(np.array(buf.logp), dtype=torch.float32, device=device)
+    adv_all = torch.as_tensor(adv, dtype=torch.float32, device=device)
+    ret_all = torch.as_tensor(ret, dtype=torch.float32, device=device)
+    zero = torch.zeros((), device=device)
+    last_policy_loss = last_value_loss = last_entropy = last_approx_kl = last_clip_fraction = zero
     epochs_run = 0
     # Listed once (not re-walked per clip_grad_norm_ call); the encoder is a
     # registered child of net, so it's covered here too.
     all_params = list(net.parameters())
     for _epoch in range(n_epochs):
         epochs_run += 1
-        epoch_kl_sum, epoch_kl_n = 0.0, 0
+        epoch_kl_sum, epoch_kl_n = zero, 0
         np.random.shuffle(episodes)
         for start in range(0, len(episodes), batch_size):
             chunk = [bounds[e] for e in episodes[start:start + batch_size]]
@@ -115,40 +137,28 @@ def ppo_update(net, optimizer, buf, device, n_epochs=4, batch_size=64, gamma=0.9
                 valid_grid[row, :n] = True
                 prev_grid[row, 1:n] = [buf.action[j] for j in range(s_i, e_i - 1)]
             mb = idx_grid.reshape(-1)
+            mb_t = torch.as_tensor(mb, device=device)
             prev_action_mb = net.prev_action_symbols(prev_grid.reshape(-1).tolist(), device)
             valid = torch.as_tensor(valid_grid.reshape(-1), dtype=torch.float32, device=device)
             n_valid = valid.sum().clamp(min=1.0)
-            scalar_mb = torch.as_tensor(np.array([buf.scalar[i] for i in mb]), dtype=torch.float32, device=device)
-            act_mb = torch.as_tensor(np.array([buf.action[i] for i in mb]), dtype=torch.int64, device=device)
-            old_logp_mb = torch.as_tensor(np.array([buf.logp[i] for i in mb]), dtype=torch.float32, device=device)
-            adv_mb = torch.as_tensor(adv[mb], dtype=torch.float32, device=device)
-            ret_mb = torch.as_tensor(ret[mb], dtype=torch.float32, device=device)
+            scalar_mb = scalar_all[mb_t]
+            act_mb = act_all[mb_t]
+            old_logp_mb = old_logp_all[mb_t]
+            adv_mb = adv_all[mb_t]
+            ret_mb = ret_all[mb_t]
 
-            n_fixed = net.non_targeting_head.out_features
-            # The encoder trains with the rest of the net, so its forward is
-            # recomputed every minibatch/epoch (gradients must reach it).
-            vocab_idx, features, key_padding_mask, _identities = pad_token_batch(
-                [buf.token_lists[i] for i in mb], device=device)
+            # An empty-board batch still needs one padded slot (max_tokens >= 1).
+            max_tokens = max(int(n_tokens[mb].max()), 1)
+            vocab_idx = vocab_all[mb_t, :max_tokens]
+            features = features_all[mb_t, :max_tokens]
+            key_padding_mask = pad_all[mb_t, :max_tokens]
             side_flag = features[:, :, -1]
-            max_tokens = vocab_idx.shape[1]
             mine_summary, theirs_summary, token_reps = net.encoder(vocab_idx, features, key_padding_mask, side_flag)
 
-            # Mask padded to max_tokens, matching token_reps' own padding.
             # n_fixed read off the net directly, never inferred from
             # mask_length - token_count (a zero-token entry pads to one
             # dummy slot, which would make that inference off-by-one).
-            # Filled as one numpy buffer, then one H2D transfer -- per-row
-            # torch.as_tensor(..., device=device) calls here previously cost
-            # ~1.5s/minibatch on GPU (measured) from kernel-launch overhead,
-            # dwarfing the actual compute.
-            mask_np = np.zeros((len(mb), n_fixed + max_tokens), dtype=bool)
-            for row, i in enumerate(mb):
-                stored = buf.mask[i]
-                mask_np[row, :n_fixed] = stored[:n_fixed]
-                pointer_part = stored[n_fixed:]
-                mask_np[row, n_fixed:n_fixed + len(pointer_part)] = pointer_part
-            full_mask_mb = torch.as_tensor(mask_np, device=device)
-
+            full_mask_mb = mask_all[mb_t, :n_fixed + max_tokens]
             pointer_mask_mb = full_mask_mb[:, n_fixed:]
             # hidden=None -> zeros: every episode replays from the same
             # start state used during collection, avoiding stale hidden state.
@@ -178,16 +188,21 @@ def ppo_update(net, optimizer, buf, device, n_epochs=4, batch_size=64, gamma=0.9
                 # k3 estimator (Schulman): unbiased, lower-variance than the
                 # naive mean, and always >= 0. Diagnostic only (computed
                 # post-step), not a pre-step gate.
-                approx_kl = ((((ratio - 1) - torch.log(ratio)) * valid).sum() / n_valid).item()
-                clip_fraction = ((((ratio - 1.0).abs() > clip_range).float() * valid).sum() / n_valid).item()
-            epoch_kl_sum += approx_kl
+                approx_kl = (((ratio - 1) - torch.log(ratio)) * valid).sum() / n_valid
+                clip_fraction = (((ratio - 1.0).abs() > clip_range).float() * valid).sum() / n_valid
+            # Kept as device tensors: a per-minibatch .item() forced a GPU sync
+            # that stopped the host from queueing the next minibatch. One sync
+            # per epoch (the target_kl check below) and one at return.
+            epoch_kl_sum = epoch_kl_sum + approx_kl
             epoch_kl_n += 1
-            last_policy_loss, last_value_loss, last_entropy = policy_loss.item(), value_loss.item(), entropy.item()
+            last_policy_loss, last_value_loss, last_entropy = policy_loss.detach(), value_loss.detach(), entropy.detach()
             last_approx_kl, last_clip_fraction = approx_kl, clip_fraction
 
         # target_kl early stop, checked once per epoch (mean KL across that
         # epoch's minibatches). Only affects the NEXT epoch.
-        if target_kl is not None and epoch_kl_n and (epoch_kl_sum / epoch_kl_n) > target_kl:
+        if target_kl is not None and epoch_kl_n and float(epoch_kl_sum) / epoch_kl_n > target_kl:
             break
+    last_policy_loss, last_value_loss, last_entropy, last_approx_kl, last_clip_fraction = (
+        float(x) for x in (last_policy_loss, last_value_loss, last_entropy, last_approx_kl, last_clip_fraction))
     return (last_policy_loss, last_value_loss, last_entropy, last_approx_kl, last_clip_fraction,
             epochs_run, explained_variance, adv_std)
