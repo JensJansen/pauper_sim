@@ -21,7 +21,8 @@ def load_config(path):
     if not path:
         return {}
     path = Path(path)
-    cfg = json.load(open(path))
+    with open(path) as f:
+        cfg = json.load(f)
     base_name = cfg.pop("extends", None)
     if base_name is None:
         return cfg

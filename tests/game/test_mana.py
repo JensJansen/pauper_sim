@@ -282,11 +282,8 @@ def test_abundant_growth_granted_color_only_via_enchanted_permanent():
     mana.activate_mana_source(state, grant_plains, "G")
     assert grant_plains.tapped and not plain_plains.tapped
     assert state.mana_pool_single_pip == {"G": 1}  # a 1-symbol event -- tagged single-pip
-    try:
+    with pytest.raises(ValueError):
         mana.mana_output(plain_plains, state, "G")
-        assert False, "the unenchanted Plains must not be able to produce G"
-    except ValueError:
-        pass
 
 
 def test_discount_departing_source_ignores_permanent_without_mana_spec():

@@ -3,15 +3,16 @@ writing -- the plumbing every check module shares. Doesn't touch torch/game
 nets (load_deck_net/load_agent aren't exercised here; they're covered by a
 real smoke run instead, same as the checks that call them)."""
 import json
+from pathlib import Path
 
 import webapp_mirror as wm
 from validation import _common
 
 
 def _ctx(**overrides):
-    fields = dict(primary_league_name="my_league", train_decks=["elves", "dmir_terror"],
-                 decklists={}, vocab=None, deck_ctxs={}, fixed_tables={}, games_per_check=50,
-                 seed=None, cumulative_games=2400)
+    fields = {"primary_league_name": "my_league", "train_decks": ["elves", "dmir_terror"],
+              "decklists": {}, "vocab": None, "deck_ctxs": {}, "fixed_tables": {}, "games_per_check": 50,
+              "seed": None, "cumulative_games": 2400}
     fields.update(overrides)
     return _common.ValidationContext(**fields)
 
@@ -34,7 +35,7 @@ def test_write_league_json_stamps_the_games_count_and_writes_under_checks(tmp_pa
     ctx = _ctx(cumulative_games=4800)
     path = _common.write_league_json(ctx, "some_check", {"a": 1})
     assert path == f"{ctx.primary_league_dir}/checks/some_check_4800games.json"
-    assert json.loads(open(path).read()) == {"a": 1}
+    assert json.loads(Path(path).read_text()) == {"a": 1}
 
 
 def test_write_deck_json_writes_under_the_decks_own_subfolder(tmp_path, monkeypatch):
@@ -42,7 +43,7 @@ def test_write_deck_json_writes_under_the_decks_own_subfolder(tmp_path, monkeypa
     ctx = _ctx(cumulative_games=4800)
     path = _common.write_deck_json(ctx, "elves", "mulligan_audit", {"b": 2})
     assert path == f"{ctx.primary_league_dir}/elves/checks/mulligan_audit_4800games.json"
-    assert json.loads(open(path).read()) == {"b": 2}
+    assert json.loads(Path(path).read_text()) == {"b": 2}
 
 
 def test_append_metric_writes_one_jsonl_line_with_cumulative_games_tagged(tmp_path, monkeypatch):
@@ -77,7 +78,7 @@ def test_write_league_json_accumulates_across_cadence_points_in_the_mirror(tmp_p
     _common.write_league_json(_ctx(cumulative_games=9600), "some_check", {"cumulative_games": 9600})
 
     mirrored = validation_dir / "my_league" / "checks" / "some_check.jsonl"
-    lines = [json.loads(l) for l in mirrored.read_text().splitlines()]
+    lines = [json.loads(ln) for ln in mirrored.read_text().splitlines()]
     assert lines == [{"cumulative_games": 4800}, {"cumulative_games": 9600}]
 
 
@@ -116,7 +117,7 @@ def test_write_league_json_mirror_is_a_noop_when_webapp_not_checked_out(tmp_path
 
     path = _common.write_league_json(ctx, "some_check", {"a": 1})
 
-    assert json.loads(open(path).read()) == {"a": 1}  # primary write still succeeded
+    assert json.loads(Path(path).read_text()) == {"a": 1}  # primary write still succeeded
 
 
 def test_write_league_json_embeds_games_in_the_local_file_untouched(tmp_path, monkeypatch):
@@ -131,7 +132,7 @@ def test_write_league_json_embeds_games_in_the_local_file_untouched(tmp_path, mo
 
     path = _common.write_league_json(ctx, "primary_vs_primary_round_robin", {"a": 1, "games": games})
 
-    doc = json.loads(open(path).read())
+    doc = json.loads(Path(path).read_text())
     assert doc == {"a": 1, "games": games}
 
 
@@ -157,7 +158,7 @@ def test_write_deck_json_also_strips_games_from_the_mirrored_copy(tmp_path, monk
 
     _common.write_deck_json(ctx, "elves", "some_check", {"b": 2, "games": [{"game_index": 0}]})
 
-    local = json.loads(open(f"{ctx.primary_league_dir}/elves/checks/some_check_4800games.json").read())
+    local = json.loads(Path(f"{ctx.primary_league_dir}/elves/checks/some_check_4800games.json").read_text())
     assert local == {"b": 2, "games": [{"game_index": 0}]}, "the local file must keep \"games\""
     mirrored = validation_dir / "my_league" / "elves" / "checks" / "some_check.jsonl"
     assert json.loads(mirrored.read_text().strip()) == {"b": 2}, "the mirrored copy must have \"games\" stripped"
@@ -174,8 +175,8 @@ def test_write_json_skips_indent_when_a_games_key_is_present(tmp_path, monkeypat
     with_games = _common.write_league_json(ctx, "check_a", {"games": [{"game_index": 0}]})
     without_games = _common.write_league_json(ctx, "check_b", {"a": 1})
 
-    assert "\n" not in open(with_games).read(), "a payload with games must be written compact, no indent"
-    assert "\n" in open(without_games).read(), "a payload without games keeps the readable indent=2 formatting"
+    assert "\n" not in Path(with_games).read_text(), "a payload with games must be written compact, no indent"
+    assert "\n" in Path(without_games).read_text(), "a payload without games keeps the readable indent=2 formatting"
 
 
 def test_collected_game_logs_and_deck_league_start_empty_and_are_independent_per_context():

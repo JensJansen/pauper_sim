@@ -455,5 +455,3 @@ def has_unfulfilled_goad(state):
         p.flags.get("goaded_by") is not None and creature_attack_eligible(state, p)
         for p in state.battlefield
     )
-
-    print("combat.py initiative transfer self-check: OK")

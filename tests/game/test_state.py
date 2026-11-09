@@ -77,11 +77,10 @@ def test_real_game_event_log():
         # on the stack is still physically in hand until it resolves.
         hand_count = sum(1 for c in state.hand if c.name == "Lightning Bolt")
         stacked_count = sum(1 for e in state.stack if e["card_def"].name == "Lightning Bolt")
-        if hand_count > stacked_count:
-            if mana.plan_payment(state, bolt_def.cast_cost) is not None:
-                def _cast_bolt():
-                    mana.begin_pay_cost(state, bolt_def.cast_cost, on_complete=lambda s: push_to_stack(s, bolt_def, bolt_resolve))
-                return _cast_bolt
+        if hand_count > stacked_count and mana.plan_payment(state, bolt_def.cast_cost) is not None:
+            def _cast_bolt():
+                mana.begin_pay_cost(state, bolt_def.cast_cost, on_complete=lambda s: push_to_stack(s, bolt_def, bolt_resolve))
+            return _cast_bolt
         return None  # Pass -- resolves the stack if non-empty, else advances the phase
 
     events = []

@@ -81,7 +81,9 @@ def test_sequential_and_parallel_agree_on_pairing_results(tmp_path, monkeypatch)
     assert seq_result["pairings"] == par_result["pairings"] == 2  # rakdos_madness x rakdos_madness, dmir_terror x rakdos_madness
     assert seq_result["games"] == par_result["games"]
     # Same seed, same weights -> same per-pairing win/burn accounting, not just the same shape.
-    key = lambda p: (p["primary_deck"], p["training_deck"])
+    def key(p):
+        return (p["primary_deck"], p["training_deck"])
+
     assert sorted(seq_payload["pairings"], key=key) == sorted(par_payload["pairings"], key=key)
     assert seq_payload["primary_totals"] == par_payload["primary_totals"]
     assert seq_payload["mana_burnt_by_deck"] == par_payload["mana_burnt_by_deck"]

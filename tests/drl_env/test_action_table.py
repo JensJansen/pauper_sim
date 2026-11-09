@@ -323,7 +323,7 @@ def test_blocking():
     # attacking Slippery Bogles, one defending Slippery Bogle blocks only one.
     boggles_decklist = _boggles_decklist()
     my_actions = build_action_table(boggles_decklist, game.EFFECT_REGISTRY, opponent_decklist=boggles_decklist)
-    boggles_pending_kinds = game.derive_pending_kinds(boggles_decklist)  # exercised for its own sake
+    game.derive_pending_kinds(boggles_decklist)  # exercised for its own sake
 
     assign_slot_1 = _action_index(my_actions, "Assign Blocker: Slippery Bogle (slot 1)")
     done_blocking_idx = _action_index(my_actions, "Done blocking")
@@ -744,7 +744,7 @@ def test_mana_row_generation_derives_from_registry_kind():
     # Llanowar Elves: fixed G, non-land, no grant ever reaches a creature --
     # exactly one row.
     assert labels.count("Tap Llanowar Elves") == 1
-    assert not any(l.startswith("Tap Llanowar Elves for") for l in labels)
+    assert not any(label.startswith("Tap Llanowar Elves for") for label in labels)
 
     # Mountain: fixed R, but a land -- keeps a row for every color the full
     # registry declares grantable, even with no Abundant Growth in this deck.

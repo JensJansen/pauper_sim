@@ -2,21 +2,17 @@
 arithmetic (_resolve_options) and its --fresh wipe (_wipe) -- the pieces
 testable without a real training run (build_pool()/_run_session/torch).
 """
+import pytest
+
 import run_training_pipeline as pipeline
 
 
 def test_resolve_options_requires_league_name_and_total_games():
-    try:
+    with pytest.raises(AssertionError, match="league_name"):
         pipeline._resolve_options({"total_games": 100})
-        assert False, "missing league_name should raise"
-    except AssertionError as e:
-        assert "league_name" in str(e)
 
-    try:
+    with pytest.raises(AssertionError, match="total_games"):
         pipeline._resolve_options({"league_name": "x"})
-        assert False, "missing total_games should raise"
-    except AssertionError as e:
-        assert "total_games" in str(e)
 
 
 def test_resolve_options_defaults():

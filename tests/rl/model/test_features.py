@@ -10,7 +10,6 @@ import game
 from game.state import CardInstance, GameState, Permanent, PlayerState
 from rl.model.features import (
     CARD_TYPES,
-    COUNTER_VOCAB,
     KEYWORD_VOCAB,
     SLOTS_AFTER_TARGETING,
     SUBTYPE_VOCAB,
@@ -151,7 +150,7 @@ def test_build_token_set_both_seats_all_zones_and_targeting():
         tokens = build_token_set(fs_state, my_seat, vocab)
         # 2 (seat0 battlefield) + 1 (seat0 graveyard) + 1 (seat1 battlefield) + 1 (seat1 exile) + 3 (stack) = 8
         assert len(tokens) == 8, f"expected 8 tokens for my_seat={my_seat}, got {len(tokens)}"
-        for vocab_idx, row, identity in tokens:
+        for vocab_idx, row, _identity in tokens:
             assert isinstance(vocab_idx, int) and vocab_idx != 0  # every token here is a real, known card
             assert len(row) == TOKEN_FEATURE_DIM
         battlefield_tokens = [(idx, row, ident) for idx, row, ident in tokens if isinstance(ident, Permanent)]

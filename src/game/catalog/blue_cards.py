@@ -6,7 +6,6 @@ Scryfall.
 Seat of the Synod is a land that's also an artifact, so it counts for
 affinity/metalcraft and is a legal artifact-sacrifice."""
 
-from .. import registry
 from ..cards import CardDef, CardType, EffectId, card_subtypes
 from ..effects.casting import (
     _log_target_fizzle, capture_any_target, cast_permanent_from_hand, cast_targeting_creature, has_creature_target,

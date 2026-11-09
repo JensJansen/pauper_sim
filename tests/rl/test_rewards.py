@@ -23,7 +23,8 @@ def test_with_dense_mana_burn_penalty_telescopes():
     s = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
     s.active_idx = 0
     base_calls = []
-    base = lambda state, done, horizon: base_calls.append((done, horizon)) or 0.25
+    def base(state, done, horizon):
+        return base_calls.append((done, horizon)) or 0.25
     wrapped = with_dense_mana_burn_penalty(base, mana_burn_c=3.3, mana_burn_p=4.0)
 
     # reward_fn is a pure passthrough regardless of burn state -- the dense
@@ -87,7 +88,8 @@ def test_with_dense_mana_burn_penalty_game_cap():
     # within a test instead of needing dozens of turns.
     s = GameState(on_the_play=True, players=[PlayerState(True), PlayerState(False)])
     s.active_idx = 0
-    base = lambda state, done, horizon: 0.0
+    def base(state, done, horizon):
+        return 0.0
     wrapped = with_dense_mana_burn_penalty(base, mana_burn_c=3.3, mana_burn_p=4.0, game_penalty_cap=0.05)
 
     # Turn 1: burn 6 (hill(6) ~= 0.916, far past the 0.05 cap) -- charged

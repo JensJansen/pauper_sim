@@ -764,8 +764,28 @@ pytest -m slow                     # rl/ tier: imports torch, plays real
                                     # mini-games, runs PPO/REINFORCE updates
 ```
 
-The whole suite runs in well under a minute. No pre-commit hook wired up
-yet — running the suite is manual.
+The fast tier (`-m "not slow"`) runs in about 15 s; the whole suite takes
+about 3 minutes. No pre-commit hook wired up yet — running the suite is
+manual.
+
+### Lint
+
+`ruff` (config in `pyproject.toml`, installed by `requirements.txt`) checks
+`src/` and `tests/`:
+
+```
+ruff check src tests               # must report "All checks passed!"
+```
+
+The rule set is bug-finding and dead-code rules only (unused imports and
+variables, ambiguous names, unclosed files, `assert False`, and the like) —
+no formatting rules, so it never asks for churn. Three rules are off on
+purpose because their "fix" changes behavior: `B905` (`zip(strict=...)` would
+raise where `zip` truncates today), `PLW0108` (`lambda: f()` -> `f` swaps
+call-time lookup for definition-time binding, breaking monkeypatching) and
+`PLW0603` (the per-process module-global caches are deliberate). `__init__.py`
+files may re-export and star-import their submodules. `src/webapp` is its own
+repo and is excluded.
 
 `benchmarking/training_run.py` measures the real league loop under
 different collection configs (`seq`, `mp<N>`) over a fresh untrained stack

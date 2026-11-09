@@ -82,7 +82,8 @@ class LeaguePool:
         path = self._stats_path(deck_name)
         if not os.path.exists(path):
             return {}
-        raw = json.load(open(path))
+        with open(path) as f:
+            raw = json.load(f)
         return {_parse_opponent_key(k): tuple(v) for k, v in raw.items()}
 
     def save_opponent_stats(self):

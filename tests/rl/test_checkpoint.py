@@ -68,7 +68,7 @@ def test_load_deck_checkpoint_round_trips_net_and_optimizer(tmp_path):
     net2 = DeckNetwork(_tiny_encoder(), film_condition_dim=8, non_targeting_n_actions=4)
     opt2 = torch.optim.Adam(net2.parameters(), lr=3e-4)
     assert ckpt_io.load_deck_checkpoint(path, net2, opt2) is True
-    for (n1, p1), (n2, p2) in zip(net.state_dict().items(), net2.state_dict().items()):
+    for (n1, p1), (_n2, p2) in zip(net.state_dict().items(), net2.state_dict().items()):
         assert torch.equal(p1, p2), f"{n1} did not round-trip"
     assert opt2.state_dict()["state"]  # optimizer state actually loaded, not left fresh/empty
 

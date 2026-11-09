@@ -115,7 +115,7 @@ def test_zero_game_series_does_not_divide_by_zero():
     lines = report_metrics.report(
         [{"kind": "vs_gauntlet", "session": 0, "deck": "d", "games": 0, "live_wins": 0,
           "gauntlet_wins": 0, "no_winner": 0}])
-    assert any("no completed games" in l for l in lines)
+    assert any("no completed games" in ln for ln in lines)
 
 
 def test_wilson_stays_inside_the_unit_interval_at_the_ends():

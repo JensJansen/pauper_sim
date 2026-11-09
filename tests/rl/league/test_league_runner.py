@@ -2,7 +2,6 @@
 (_next_batch_games) and other league_runner helpers. Marked slow: importing
 rl.league.league_runner pulls in torch/rl.*."""
 import json
-import os
 import tempfile
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -291,7 +290,6 @@ def test_rollback_restores_a_snapshot_and_backs_up_the_replaced_live(tmp_path):
     the backup exists to prevent)."""
     import torch
     import run_rollback
-    from rl.model.deck import DeckNetwork
     from rl.model.mulligan import MulliganNet
     from rl import checkpoint as ckpt_io
 
@@ -326,7 +324,6 @@ def test_rollback_restores_a_snapshot_and_backs_up_the_replaced_live(tmp_path):
 @pytest.mark.slow
 def test_rollback_dry_run_changes_nothing(tmp_path):
     import run_rollback
-    from rl.model.deck import DeckNetwork
     from rl.model.mulligan import MulliganNet
     from rl import checkpoint as ckpt_io
 

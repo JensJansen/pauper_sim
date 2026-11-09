@@ -45,7 +45,6 @@ rl.league.league_runner -- benchmarking/training_run.py imports that
 directly rather than importing this script for its side-effect-free
 functions.
 """
-import json
 from concurrent.futures import ProcessPoolExecutor
 
 import torch  # needed for _resolve_device's CUDA check
@@ -56,7 +55,7 @@ from rl.league.league import PFSP_POWER
 from rl.league_cli_spec import build_arg_parser
 from rl.league.league_runner import (
     TRUNK_HIDDEN, advance_progress,
-    _load_progress, _next_batch_games, _run_eval, _run_session, _save_progress, _write_event_log,
+    _load_progress, _next_batch_games, _run_eval, _run_session, _write_event_log,
 )
 
 
@@ -183,23 +182,25 @@ def main():
     # ent_coef_schedule ramp against.
     cumulative_games = _load_progress(league_dir)["cumulative_games_per_deck"] if league_dir is not None else 0
 
-    schedule_kwargs = dict(seed=args.seed,
-                            train_deck=train_deck, train_mulligan=train_mulligan, train_decks=train_decks,
-                            matchup=matchup, game_logs=game_logs, checkpoint_rate=checkpoint_rate,
-                            league_dir=league_dir, roster=roster, pfsp=pfsp,
-                            cumulative_games=cumulative_games,
-                            ppo_hparams=run_cfg.get("ppo"),
-                            pfsp_power=run_cfg.get("pfsp_power", PFSP_POWER),
-                            # DeckNetwork's trainable trunk widths. Applies only to a
-                            # deck with no live.pt yet -- an existing checkpoint's own
-                            # width wins on resume, so this can't shape-mismatch a
-                            # league already on disk. JSON gives a list; DeckNetwork
-                            # wants a tuple.
-                            trunk_hidden=tuple(run_cfg.get("trunk_hidden", TRUNK_HIDDEN)),
-                            # Same flag > config > default precedence as elsewhere;
-                            # validated so a bad device name or missing CUDA fails at
-                            # startup, not mid-session.
-                            device=_resolve_device(args.device or run_cfg.get("device", "cpu")))
+    schedule_kwargs = {
+        "seed": args.seed,
+        "train_deck": train_deck, "train_mulligan": train_mulligan, "train_decks": train_decks,
+        "matchup": matchup, "game_logs": game_logs, "checkpoint_rate": checkpoint_rate,
+        "league_dir": league_dir, "roster": roster, "pfsp": pfsp,
+        "cumulative_games": cumulative_games,
+        "ppo_hparams": run_cfg.get("ppo"),
+        "pfsp_power": run_cfg.get("pfsp_power", PFSP_POWER),
+        # DeckNetwork's trainable trunk widths. Applies only to a
+        # deck with no live.pt yet -- an existing checkpoint's own
+        # width wins on resume, so this can't shape-mismatch a
+        # league already on disk. JSON gives a list; DeckNetwork
+        # wants a tuple.
+        "trunk_hidden": tuple(run_cfg.get("trunk_hidden", TRUNK_HIDDEN)),
+        # Same flag > config > default precedence as elsewhere;
+        # validated so a bad device name or missing CUDA fails at
+        # startup, not mid-session.
+        "device": _resolve_device(args.device or run_cfg.get("device", "cpu")),
+    }
 
     sequential = matchup is not None or n_workers <= 1  # matchup uses collect_rollout directly (no worker path)
     if not sequential:

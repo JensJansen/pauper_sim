@@ -241,6 +241,4 @@ def can_be_targeted(state, permanent, by_player_idx):
     kws = creature_keywords(state, permanent)
     if "shroud" in kws:
         return False
-    if "hexproof" in kws and controller_idx(state, permanent) != by_player_idx:
-        return False
-    return True
+    return not ("hexproof" in kws and controller_idx(state, permanent) != by_player_idx)

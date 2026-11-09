@@ -89,7 +89,7 @@ def _hand_cost_reduction_deltas(state, seat_idx):
     by name."""
     def _read(s):
         out = {}
-        for card_def in {c for c in s.players[seat_idx].hand}:
+        for card_def in set(s.players[seat_idx].hand):
             cost = card_def.cast_cost
             if cost is None or game.EFFECT_REGISTRY.get(card_def.effect_id, {}).get("cost_reduction") is None:
                 continue

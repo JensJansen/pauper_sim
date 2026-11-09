@@ -61,7 +61,7 @@ def test_mirror_json_appends_to_a_consolidated_jsonl_not_a_new_file_per_snapshot
     wm.mirror_json(league_dir, "checks/mulligan_audit_200games.json", {"cumulative_games": 200, "a": 2})
 
     dest = tmp_path / "webapp" / "logs" / "validation" / "main-league" / "checks" / "mulligan_audit.jsonl"
-    lines = [json.loads(l) for l in dest.read_text().splitlines()]
+    lines = [json.loads(ln) for ln in dest.read_text().splitlines()]
     assert lines == [{"cumulative_games": 100, "a": 1}, {"cumulative_games": 200, "a": 2}]
     # No per-snapshot file was ever written -- one growing file per check.
     assert not (dest.parent / "mulligan_audit_100games.json").exists()
@@ -117,7 +117,7 @@ def test_mirror_metrics_line_appends_jsonl(tmp_path, monkeypatch):
 
     dest = tmp_path / "webapp" / "logs" / "validation" / "main-league" / "metrics.jsonl"
     lines = dest.read_text().splitlines()
-    assert [json.loads(l)["deck"] for l in lines] == ["elves", "boggles"]
+    assert [json.loads(ln)["deck"] for ln in lines] == ["elves", "boggles"]
 
 
 def test_mirror_progress_overwrites_not_appends(tmp_path, monkeypatch):

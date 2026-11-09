@@ -35,9 +35,9 @@ def load(path):
     records = []
     with open(path) as f:
         for line in f:
-            line = line.strip()
-            if line:
-                records.append(json.loads(line))
+            text = line.strip()
+            if text:
+                records.append(json.loads(text))
     return records
 
 
@@ -109,8 +109,9 @@ def peak_comparison(rows, group=5):
     pts = [r for r in rows if r.get("games")]
     if len(pts) < 2 * group:
         return 0.0, None, 2.0
-    windows = [(i, pts[i:i + group]) for i in range(0, len(pts) - group + 1)]
-    pool = lambda g: (sum(r.get("live_wins", r.get("wins", 0)) for r in g), sum(r.get("games", 0) for r in g))
+    windows = [(i, pts[i:i + group]) for i in range(len(pts) - group + 1)]
+    def pool(g):
+        return (sum(r.get("live_wins", r.get("wins", 0)) for r in g), sum(r.get("games", 0) for r in g))
     rates = [(pool(w), i + group - 1) for i, w in windows]
     (best_w, best_n), best_end = max(rates, key=lambda t: t[0][0] / t[0][1])
     (last_w, last_n), last_end = rates[-1]
@@ -149,7 +150,8 @@ def _win_rate_lines(deck, tag, rows, window):
     trend = " ".join(f"{100 * r.get('live_wins', r.get('wins', 0)) / r['games']:.0f}" for r in shown if r.get("games"))
     half = max(1, len(rows) // 2)
     early, late = rows[:half], rows[half:]
-    pool = lambda g: (sum(r.get("live_wins", r.get("wins", 0)) for r in g), sum(r.get("games", 0) for r in g))
+    def pool(g):
+        return (sum(r.get("live_wins", r.get("wins", 0)) for r in g), sum(r.get("games", 0) for r in g))
     we, ne = pool(early)
     wl, nl = pool(late)
     verdict, z, peak_z, peak_at = _verdict(rows, wl, nl)
@@ -178,7 +180,8 @@ def _win_rate_lines(deck, tag, rows, window):
 def _ppo_lines(deck, rows):
     rows = sorted(rows, key=lambda r: (r.get("session", 0), r.get("iteration", 0)))
     half = max(1, len(rows) // 10)  # deciles
-    mean = lambda g, k: (sum(r[k] for r in g if k in r) / max(1, sum(1 for r in g if k in r)))
+    def mean(g, k):
+        return (sum(r[k] for r in g if k in r) / max(1, sum(1 for r in g if k in r)))
     first, last = rows[:half], rows[-half:]
 
     lines = [f"  [ppo] {len(rows)} iterations (first/last decile means)"]
@@ -239,7 +242,7 @@ def report(records, window=TREND_WINDOW):
 
 
 def main():
-    args = [a for a in sys.argv[1:]]
+    args = list(sys.argv[1:])
     window = TREND_WINDOW
     if "--window" in args:
         i = args.index("--window")

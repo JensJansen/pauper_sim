@@ -751,8 +751,6 @@ def cast_pulse_of_murasa(state, card_def):
 
     Same-named cards present in both graveyards resolve caster's-graveyard-
     first (this engine's fungible-by-name convention)."""
-    caster_idx = state.active_idx
-
     def _on_chosen(state, chosen):
         def _resolve(state, card_def):
             discard_from_hand_to_graveyard(state, card_def)  # Pulse itself -> caster's graveyard

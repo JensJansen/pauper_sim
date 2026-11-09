@@ -18,9 +18,7 @@ def _pass_legal(state):
         return False
     # Goad: a goaded creature that can attack must be declared before Pass ends
     # declare-attackers.
-    if state.phase is game.turn.Phase.DECLARE_ATTACKERS and game.has_unfulfilled_goad(state):
-        return False
-    return True
+    return not (state.phase is game.turn.Phase.DECLARE_ATTACKERS and game.has_unfulfilled_goad(state))
 
 
 _pass_legal._pending_gate = _GATE_NO_PENDING

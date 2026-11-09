@@ -5,6 +5,7 @@ _declare_blockers_gen flip-drive-restore shape, the turn-owner vs
 priority-holder split in speed_legal, and rule 500.4's per-phase-boundary
 mana clear."""
 
+import contextlib
 import random
 
 from drl_env._actions_mana import _mana_ability_legal
@@ -163,11 +164,10 @@ def test_real_two_player_game_through_actual_cards():
             return (lambda: mana.activate_mana_source(state, mtn)) if mtn is not None else None
         if state.lands_played_this_turn == 0 and any(c.name == "Mountain" for c in state.hand):
             return lambda: play_land_from_hand(state, registry.CARD_DEFS["Mountain"])
-        if _bolts_available(state) > 0:
-            if mana.plan_payment(state, bolt_def.cast_cost) is not None:
-                def _cast_bolt():
-                    mana.begin_pay_cost(state, bolt_def.cast_cost, on_complete=lambda s: push_to_stack(s, bolt_def, bolt_resolve))
-                return _cast_bolt
+        if _bolts_available(state) > 0 and mana.plan_payment(state, bolt_def.cast_cost) is not None:
+            def _cast_bolt():
+                mana.begin_pay_cost(state, bolt_def.cast_cost, on_complete=lambda s: push_to_stack(s, bolt_def, bolt_resolve))
+            return _cast_bolt
         return None  # Pass -- resolves the stack if non-empty, else advances the phase
 
     state = run_multiplayer_game(
@@ -228,10 +228,8 @@ def test_declare_blockers_gen_noop_with_fewer_than_two_players():
     # (StopIteration on the very first next()).
     state_1p = GameState(on_the_play=True)  # len(state.players) == 1
     gen_1p = _declare_blockers_gen(state_1p)
-    try:
+    with contextlib.suppress(StopIteration):
         next(gen_1p)
-    except StopIteration:
-        pass
     assert state_1p.pending_resolution is None
 
 
@@ -600,7 +598,7 @@ def test_mana_burn_state_resets_at_turn_boundary():
             seen_at_first_yield["p1"] = state.players[1].mana_burnt_this_turn
             seen_at_first_yield["p1_single_pip"] = state.players[1].mana_burnt_this_turn_single_pip
             seen_at_first_yield["p1_credited"] = state.players[1].mana_burn_penalty_credited
-        return None  # always pass -- nothing to play from a bare opening hand
+        return  # always pass -- nothing to play from a bare opening hand
 
     run_turn(state, choose_action=_pass_and_snoop, combat_enabled=False)
     assert seen_at_first_yield == {

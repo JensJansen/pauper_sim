@@ -12,7 +12,7 @@ bind a not-yet-built name) -- see game/registry.py's docstring."""
 
 from .. import registry
 from ..cards import CardType
-from ..state import Permanent, CardInstance
+from ..state import CardInstance
 from .shared import discard_from_hand_to_graveyard
 from .stack import push_to_stack
 from .stats import can_be_targeted

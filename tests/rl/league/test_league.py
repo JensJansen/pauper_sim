@@ -141,7 +141,7 @@ def test_load_snapshot_agent_legacy_deck_only_falls_back_to_always_keep(tmp_path
     legacy_path = os.path.join(str(tmp_path), "deck_b", "snapshot_0.pt")
     os.makedirs(os.path.dirname(legacy_path), exist_ok=True)
     torch.save({"state_dict": fake_net.state_dict(),
-                "trunk_hidden": tuple(l.out_features for l in fake_net.trunk_layers)}, legacy_path)
+                "trunk_hidden": tuple(layer.out_features for layer in fake_net.trunk_layers)}, legacy_path)
     legacy = pool.load_snapshot_agent(legacy_path, deck_ctx)
     assert isinstance(legacy, SeatAgent) and isinstance(legacy.mulligan, AlwaysKeep), \
         "a deck-only snapshot must load with an AlwaysKeep pregame decider"

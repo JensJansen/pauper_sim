@@ -355,7 +355,11 @@ def _run_session(n_iterations, games_per_iteration, snapshot_every, executor, n_
 
     pool = LeaguePool(league_dir, deck_names, pfsp_power=pfsp_power)
     session_path = f"{league_dir}/session.txt"
-    session = int(open(session_path).read()) + 1 if os.path.exists(session_path) else 0
+    if os.path.exists(session_path):
+        with open(session_path) as f:
+            session = int(f.read()) + 1
+    else:
+        session = 0
     if session > 0:
         print(f"resumed league (session {session}); snapshots on disk: "
               f"{ {name: len(pool.snapshots[name]) for name in deck_names} }")

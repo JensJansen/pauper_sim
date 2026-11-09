@@ -66,13 +66,15 @@ class _ScriptedAgent:
         if pend is not None and pend["kind"] == "mulligan_decision":
             return DecisionResult(lambda: resolution.execute_mulligan_keep(state), None, None, False)
         if state.lands_played_this_turn == 0 and any(c.name == "Mountain" for c in state.hand):
-            executor = lambda: play_land_from_hand(state, registry.CARD_DEFS["Mountain"])
+            def executor():
+                return play_land_from_hand(state, registry.CARD_DEFS["Mountain"])
             return DecisionResult(executor, (None, None, None, self._land_idx, 0.0, 0.0), None, False)
         if not self.tapped:
             mtn = next((p for p in state.battlefield if p.card_def.name == "Mountain" and not p.tapped), None)
             if mtn is not None:
                 self.tapped = True
-                executor = lambda: mana.activate_mana_source(state, mtn)
+                def executor():
+                    return mana.activate_mana_source(state, mtn)
                 return DecisionResult(executor, (None, None, None, self._tap_idx, 0.0, 0.0), None, False)
         return DecisionResult(None, (None, None, None, self._pass_idx, 0.0, 0.0), None, True)
 
@@ -386,7 +388,8 @@ def test_dense_mana_burn_credit_lands_on_the_tap_not_the_pass():
     tap_idx = next(i for i, (name, _l, _e) in enumerate(fixed_table) if name == "Tap Mountain")
     pass_idx = next(i for i, (name, _l, _e) in enumerate(fixed_table) if name == "Pass")
 
-    base = lambda state, done, horizon: 0.0
+    def base(state, done, horizon):
+        return 0.0
     reward_fn = with_dense_mana_burn_penalty(base, mana_burn_c=3.3, mana_burn_p=4.0, game_penalty_cap=2.0)
     agents = [_ScriptedAgent(fixed_table), _ScriptedAgent(fixed_table)]
     pairing = _constant_pairing(agents, [decklist, decklist], [reward_fn, reward_fn], ["m", None])
@@ -422,7 +425,8 @@ def test_winner_only_mana_burn_charges_the_winner_and_drops_the_loser():
     tap_idx = next(i for i, (name, _l, _e) in enumerate(fixed_table) if name == "Tap Mountain")
     pass_idx = next(i for i, (name, _l, _e) in enumerate(fixed_table) if name == "Pass")
 
-    base = lambda state, done, horizon: 0.0
+    def base(state, done, horizon):
+        return 0.0
     reward_fn = with_dense_mana_burn_penalty(base, mana_burn_c=3.3, mana_burn_p=4.0,
                                               game_penalty_cap=2.0, refund_on_loss=True)
     agents = [_ScriptedAgent(fixed_table), _ScriptedAgent(fixed_table)]
@@ -581,7 +585,8 @@ def test_non_progressing_priority_round_raises_instead_of_hanging(monkeypatch):
     decklist = [("Mountain", 20)]
     token_defs = (game.BLOOD_TOKEN_CARD_DEF, game.ROBOT_TOKEN_CARD_DEF)
     fixed_table = build_fixed_action_table(decklist, token_card_defs=token_defs)
-    reward_fn = lambda state, done, horizon: 0.0
+    def reward_fn(state, done, horizon):
+        return 0.0
     agent = _ScriptedAgent(fixed_table)
     pairing = _constant_pairing([agent, agent], [decklist, decklist],
                                 [reward_fn, reward_fn], ["m", "m"])
@@ -617,7 +622,8 @@ def test_the_guard_does_not_fire_on_ordinary_games():
     decklist = [("Mountain", 20)]
     token_defs = (game.BLOOD_TOKEN_CARD_DEF, game.ROBOT_TOKEN_CARD_DEF)
     fixed_table = build_fixed_action_table(decklist, token_card_defs=token_defs)
-    reward_fn = lambda state, done, horizon: 0.0
+    def reward_fn(state, done, horizon):
+        return 0.0
     agent = _ScriptedAgent(fixed_table)
     pairing = _constant_pairing([agent, agent], [decklist, decklist],
                                 [reward_fn, reward_fn], ["m", "m"])

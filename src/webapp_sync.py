@@ -124,8 +124,8 @@ def prune_checks(league_dir, keep=KEEP_SETS):
         records = []  # (n or None, raw line)
         raw_lines = 0
         with open(jsonl) as f:
-            for line in f:
-                line = line.strip()
+            for raw in f:
+                line = raw.strip()
                 if not line:
                     continue
                 raw_lines += 1
@@ -167,7 +167,7 @@ def prune_all(webapp_dir, keep=KEEP_SETS):
 def _git(cwd, *args, check=False):
     env = dict(os.environ, GIT_TERMINAL_PROMPT="0")
     result = subprocess.run(["git", "-C", str(cwd), *args], capture_output=True, text=True, env=env,
-                            timeout=GIT_TIMEOUT_SECONDS)
+                            timeout=GIT_TIMEOUT_SECONDS, check=False)
     if check and result.returncode != 0:
         raise RuntimeError(f"git {' '.join(args)} failed ({result.returncode}): {result.stderr.strip()}")
     return result

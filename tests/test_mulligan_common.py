@@ -134,13 +134,13 @@ def test_build_probe_hands_sampled_skips_a_land_count_the_deck_cant_draw():
     probes = build_probe_hands_sampled(decklist, vocab, land_counts=range(8), n_variants=2, seed=0)
 
     assert set(probes) == {0, 1, 2, 3, 4}  # 5, 6, 7 are impossible with only 4 lands -- skipped, not crashed
-    for lc, hands in probes.items():
+    for _lc, hands in probes.items():
         assert len(hands) == 2
 
 
 @pytest.mark.slow
 def test_probe_land_count_stats_shape(monkeypatch):
-    torch = pytest.importorskip("torch")
+    pytest.importorskip("torch")
     monkeypatch.chdir(_SRC_DIR)
     decklist = game_module.parse_decklist_file("../data/mono_blue_terror.txt")
     vocab = CardVocab([decklist])
@@ -151,7 +151,7 @@ def test_probe_land_count_stats_shape(monkeypatch):
     stats = probe_land_count_stats(net, probes)
 
     assert set(stats) == {0, 7}
-    for lc, s in stats.items():
+    for _lc, s in stats.items():
         assert s["n"] == 2
         assert 0.0 <= s["p_mulligan_mean"] <= 1.0
         assert 0.0 <= s["entropy_bits_mean"] <= 1.0

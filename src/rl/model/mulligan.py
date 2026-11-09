@@ -241,7 +241,8 @@ def update(net, optimizer, transitions):
         logits, value = net.decision(mine_summary, sc)
         for i, t in enumerate(dec):  # re-apply the collect-time legality mask
             if not t[3]:
-                logits = logits.clone(); logits[i, 1] = -1e8
+                logits = logits.clone()
+                logits[i, 1] = -1e8
         actions = torch.tensor([t[4] for t in dec], dtype=torch.long, device=device)
         rewards = torch.tensor([t[5] for t in dec], dtype=torch.float32, device=device)
         distn = torch.distributions.Categorical(logits=logits)

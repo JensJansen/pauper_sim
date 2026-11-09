@@ -65,21 +65,21 @@ import time
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
-import torch  # noqa: E402
+import torch
 
-from _mulligan_common import (  # noqa: E402
+from _mulligan_common import (
     audit_land_counts, build_probe_hands, load_frozen_nets, print_land_audit, probe_p_mulligan,
 )
-from config_loader import load_config  # noqa: E402
-from rl import checkpoint as ckpt_io  # noqa: E402
-from rl.model import mulligan as mulligan_mod  # noqa: E402 -- so --entropy-coef can patch ENTROPY_COEF
-from rl.decision.agent import AlwaysKeep, MulliganZeroLands, RandomMulligan, SeatAgent  # noqa: E402
-from rl.league.league_runner import HORIZON, PPO_DEFAULTS  # noqa: E402
-from rl.model.mulligan import MulliganNet, update as mulligan_update  # noqa: E402
-from rl.roster import build_pool  # noqa: E402
-from rl.rewards import deploy_reward_v6  # noqa: E402
-from rl.training.train import _constant_pairing, collect_rollout  # noqa: E402
-from repo_paths import CHECKPOINTS_DIR  # noqa: E402
+from config_loader import load_config
+from rl import checkpoint as ckpt_io
+from rl.model import mulligan as mulligan_mod  # so --entropy-coef can patch ENTROPY_COEF
+from rl.decision.agent import AlwaysKeep, MulliganZeroLands, RandomMulligan, SeatAgent
+from rl.league.league_runner import HORIZON, PPO_DEFAULTS
+from rl.model.mulligan import MulliganNet, update as mulligan_update
+from rl.roster import build_pool
+from rl.rewards import deploy_reward_v6
+from rl.training.train import _constant_pairing, collect_rollout
+from repo_paths import CHECKPOINTS_DIR
 
 
 def _twin_cycling_pairing(main_agent, main_bucket, main_decklist, reward_fn,

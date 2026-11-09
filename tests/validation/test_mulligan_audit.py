@@ -64,13 +64,13 @@ def test_run_keeps_by_land_count_and_probe_hands_in_write_deck_json_but_strips_t
     deck_path = Path(f"{ctx.primary_league_dir}/elves/checks/mulligan_audit_100games.json")
     import json
     deck_payload = json.loads(deck_path.read_text())
-    assert "by_land_count" in deck_payload and deck_payload["by_land_count"]
-    assert "probe_hands" in deck_payload and deck_payload["probe_hands"]
+    assert deck_payload.get("by_land_count")
+    assert deck_payload.get("probe_hands")
     # The natural-game audit bucket for the 2-land hand played above.
     assert deck_payload["by_land_count"]["2"]["kept"] == 1
 
     metrics_lines = Path(f"{ctx.primary_league_dir}/metrics.jsonl").read_text().splitlines()
-    records = [json.loads(l) for l in metrics_lines]
+    records = [json.loads(ln) for ln in metrics_lines]
     mulligan_record = next(r for r in records if r["kind"] == "mulligan_audit")
     assert "by_land_count" not in mulligan_record
     assert "probe_hands" not in mulligan_record

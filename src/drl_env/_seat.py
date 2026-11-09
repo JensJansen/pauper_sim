@@ -1,7 +1,6 @@
 """Two-player reward + seat-perspective helpers for the DRL policy
 (_for_player, _lost), used by rl.rewards / rl.training.train."""
 
-import game
 
 
 def _lost(state, seat_idx):

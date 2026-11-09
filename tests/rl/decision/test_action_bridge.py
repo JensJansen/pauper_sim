@@ -510,7 +510,7 @@ def test_lotleth_giant_cast_survives_wall_of_roots_dying_mid_payment():
     assert any(e["kind"] == "state_based_death" and e["permanent"] == ["Wall of Roots", wall.slot]
                for e in st.event_log), "the death must be logged, matching the real crash's captured event log"
 
-    for f in forests:
+    for _f in forests:
         spy_table[idx("Tap Forest")][2](st)
     spy_table[idx("Tap Swamp")][2](st)
     while st.pending_resolution is not None:
@@ -666,7 +666,7 @@ def test_no_mana_ability_during_a_casting_step_before_601_2f():
     # -- the rule is about the window, not one hazardous action inside it.
     bw_mask = drl_env.legal_action_mask(bw_state, bw_table)
     bw_mana_rows = [i for i, (n, _l, _e) in enumerate(bw_table)
-                    if n.startswith("Tap ") or n.startswith("Filter ")]
+                    if n.startswith(("Tap ", "Filter "))]
     assert bw_mana_rows, "sanity: monster_tron must have mana rows for this to be testing anything"
     assert not any(bw_mask[i] for i in bw_mana_rows), (
         "no mana ability may be activated between announcing a cast and reaching 601.2f"

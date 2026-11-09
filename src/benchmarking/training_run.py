@@ -42,7 +42,7 @@ def _run_config(name, iters, gpi, snapshot_every, seed, roster):
     workers = _parse_config(name)
     import tempfile
     league_dir = tempfile.mkdtemp(prefix=f"bench_train_{name}_")
-    kwargs = dict(league_dir=league_dir, seed=seed, roster=roster)
+    kwargs = {"league_dir": league_dir, "seed": seed, "roster": roster}
     t0 = time.perf_counter()
     try:
         if workers and workers > 1:

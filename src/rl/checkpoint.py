@@ -11,6 +11,7 @@ load_snapshot returns the raw dict rather than building the net: the caller
 needs trunk_hidden to construct the right-shaped net before load_state_dict
 can run.
 """
+import contextlib
 import os
 import time
 
@@ -38,10 +39,8 @@ def _save_with_retry(obj, path):
             return
         except (RuntimeError, OSError):
             if attempt == _SAVE_RETRY_ATTEMPTS - 1:
-                try:
+                with contextlib.suppress(OSError):
                     os.remove(tmp)  # don't leave a half-written temp file behind
-                except OSError:
-                    pass
                 raise
             time.sleep(_SAVE_RETRY_BASE_DELAY * (2 ** attempt))
 

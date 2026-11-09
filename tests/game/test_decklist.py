@@ -1,5 +1,7 @@
 """Tests for game.decklist.parse_decklist_text."""
 
+import pytest
+
 from game.decklist import parse_decklist_text
 
 
@@ -13,8 +15,5 @@ def test_ignores_header_and_blank_lines_and_merges_nothing():
 
 
 def test_unknown_card_name_raises_value_error():
-    try:
+    with pytest.raises(ValueError, match="Not A Real Card"):
         parse_decklist_text("4 Not A Real Card\n2 Swamp\n")
-        assert False, "expected ValueError"
-    except ValueError as e:
-        assert "Not A Real Card" in str(e)

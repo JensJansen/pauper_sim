@@ -30,12 +30,12 @@ from game.effects.stack import resolve_top_of_stack
 from game.effects.state_based import sacrifice_to_graveyard
 from game.effects.stats import has_keyword, permanent_power, permanent_toughness
 from game.effects.tokens import (
-    CLUE_TOKEN_CARD_DEF, MAP_TOKEN_CARD_DEF, TREASURE_TOKEN_CARD_DEF, activate_clue_sac, activate_map_sac,
+    CLUE_TOKEN_CARD_DEF, MAP_TOKEN_CARD_DEF, TREASURE_TOKEN_CARD_DEF, activate_clue_sac,
 )
 from game.effects.triggers import promote_triggers_to_stack
 from game.mana import activate_mana_source, execute_pool_spend, pool_spend_options
 from game.state import GameState, Permanent, PlayerState
-from game.turn import Phase, Speed
+from game.turn import Phase
 
 
 def _resolve_etb(state):
@@ -234,9 +234,11 @@ def test_rooftop_percher_etb_exiles_two_distinct_target_instances():
     life; same-named copies are tracked as distinct instances."""
     percher = CardDef("Rooftop Percher", CardType.CREATURE, {"generic": 5}, EffectId.ROOFTOP_PERCHER, power=3, toughness=3)
     st = _rp_state()
-    b1 = st.new_instance(_mk_gy("Bolt")); b2 = st.new_instance(_mk_gy("Bolt"))
+    b1 = st.new_instance(_mk_gy("Bolt"))
+    b2 = st.new_instance(_mk_gy("Bolt"))
     st.players[0].graveyard = [b1, b2]
-    opp = st.new_instance(_mk_gy("Opp Card")); st.players[1].graveyard = [opp]
+    opp = st.new_instance(_mk_gy("Opp Card"))
+    st.players[1].graveyard = [opp]
     st.players[0].hand = [percher]
     cast_permanent_from_hand(st, percher)
     promote_triggers_to_stack(st)  # target-at-promotion opens the up-to-2 pick
@@ -257,10 +259,14 @@ def test_rooftop_percher_etb_partial_fizzle_survivor_only_exiled():
     target is exiled; life is still gained."""
     percher = CardDef("Rooftop Percher", CardType.CREATURE, {"generic": 5}, EffectId.ROOFTOP_PERCHER, power=3, toughness=3)
     st = _rp_state()
-    p1 = st.new_instance(_mk_gy("X")); p2 = st.new_instance(_mk_gy("Y")); st.players[0].graveyard = [p1, p2]
+    p1 = st.new_instance(_mk_gy("X"))
+    p2 = st.new_instance(_mk_gy("Y"))
+    st.players[0].graveyard = [p1, p2]
     st.players[0].hand = [percher]
-    cast_permanent_from_hand(st, percher); promote_triggers_to_stack(st)
-    resolution.execute_choose_graveyard_card_option(st, p1); resolution.execute_choose_graveyard_card_option(st, p2)
+    cast_permanent_from_hand(st, percher)
+    promote_triggers_to_stack(st)
+    resolution.execute_choose_graveyard_card_option(st, p1)
+    resolution.execute_choose_graveyard_card_option(st, p2)
     st.players[0].graveyard.remove(p1)  # p1 exiled by other hate before this resolves
     resolve_top_of_stack(st)
     assert st.players[0].life_total == 23 and p2 not in st.players[0].graveyard  # survivor exiled, life gained
@@ -275,9 +281,11 @@ def test_rooftop_percher_etb_all_targets_gone_life_still_gained():
     # unconditional here."""
     percher = CardDef("Rooftop Percher", CardType.CREATURE, {"generic": 5}, EffectId.ROOFTOP_PERCHER, power=3, toughness=3)
     st = _rp_state()
-    z1 = st.new_instance(_mk_gy("Z")); st.players[0].graveyard = [z1]
+    z1 = st.new_instance(_mk_gy("Z"))
+    st.players[0].graveyard = [z1]
     st.players[0].hand = [percher]
-    cast_permanent_from_hand(st, percher); promote_triggers_to_stack(st)
+    cast_permanent_from_hand(st, percher)
+    promote_triggers_to_stack(st)
     resolution.execute_choose_graveyard_card_option(st, z1)  # only eligible card -> selection auto-ends
     st.players[0].graveyard.remove(z1)  # its only target leaves
     resolve_top_of_stack(st)
@@ -289,9 +297,12 @@ def test_rooftop_percher_etb_explicit_decline_after_one_pick():
     taking just one."""
     percher = CardDef("Rooftop Percher", CardType.CREATURE, {"generic": 5}, EffectId.ROOFTOP_PERCHER, power=3, toughness=3)
     st = _rp_state()
-    d1 = st.new_instance(_mk_gy("P")); d2 = st.new_instance(_mk_gy("Q")); st.players[0].graveyard = [d1, d2]
+    d1 = st.new_instance(_mk_gy("P"))
+    d2 = st.new_instance(_mk_gy("Q"))
+    st.players[0].graveyard = [d1, d2]
     st.players[0].hand = [percher]
-    cast_permanent_from_hand(st, percher); promote_triggers_to_stack(st)
+    cast_permanent_from_hand(st, percher)
+    promote_triggers_to_stack(st)
     resolution.execute_choose_graveyard_card_option(st, d1)
     assert st.pending_resolution["kind"] == "choose_graveyard_card"  # a 2nd pick is offered...
     resolution.execute_choose_graveyard_card_decline(st)  # ...but the agent stops at one

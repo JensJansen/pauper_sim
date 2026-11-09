@@ -53,7 +53,7 @@ def _fit_bradley_terry(labels, pair_wins, iters=500, prior=1.0):
     snapshot that went 0-for-everything (or won everything) from driving its
     rating to +/-infinity.
     """
-    p = {label: 1.0 for label in labels}
+    p = dict.fromkeys(labels, 1.0)
     wins, n = {}, {}
     for (a, b), (wa, total) in pair_wins.items():
         wins[(a, b)] = wa + prior / 2

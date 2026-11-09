@@ -7,3 +7,27 @@ testpaths = ["tests"]
 markers = [
     "slow: exercises the real game engine + torch (RL self-checks) -- excluded via `-m \"not slow\"` for a fast, deterministic tier",
 ]
+
+[tool.ruff]
+target-version = "py310"
+# src/webapp is its own repo (git submodule) with its own conventions.
+extend-exclude = ["src/webapp"]
+
+[tool.ruff.lint]
+# Bug-finding and dead-code rules only -- no formatting/style rules, so the
+# linter never asks for churn. Deliberately NOT enabled (each would change
+# behavior, not just spelling):
+#   B905  zip(strict=...) raises where zip silently truncates today.
+#   PLW0108  `lambda: f()` -> `f` swaps call-time name lookup for def-time
+#            binding, which breaks monkeypatching of f.
+#   PLW0603  the per-process module-global caches (build_pool etc.) are deliberate.
+select = ["E4", "E7", "E9", "F", "B", "PLE", "PLW", "C4", "PIE", "SIM", "RET5", "RUF100", "RUF019"]
+ignore = ["B905", "PLW0108", "PLW0603"]
+# BLE001 (blind except) isn't enabled, but `# noqa: BLE001` marks intentional broad excepts.
+external = ["BLE001"]
+
+[tool.ruff.lint.per-file-ignores]
+# Package __init__s aggregate their submodules on purpose (re-exports, star imports).
+"__init__.py" = ["F401", "F403"]
+# Mirrors drl_env's own star-import surface (the private _actions_* names under test).
+"tests/drl_env/test_action_table.py" = ["F403", "F405"]

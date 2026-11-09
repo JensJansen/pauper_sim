@@ -54,7 +54,7 @@ from ..effects.tokens import activate_blood_sac, activate_clue_sac, activate_map
 from ..effects.win_check import gain_life
 from ..mana import COLORS, float_mana
 from ..resolution import (
-    begin_choose_any_target, begin_choose_graveyard_card, begin_choose_mana_color, begin_choose_opponent_permanent,
+    begin_choose_any_target, begin_choose_graveyard_card, begin_choose_mana_color,
     begin_choose_permanent, begin_choose_target_player, begin_choose_up_to_graveyard, begin_may_cast, begin_pay_unless,
     begin_scry_surveil, begin_search_fetch, scry, surveil,
 )

@@ -2,7 +2,6 @@
 latter against REAL throwaway git repos (a bare remote, a parent repo with a
 submodule) -- never the real src/webapp (conftest stubs sync_async suite-wide)."""
 import json
-import os
 import subprocess
 import shutil
 import threading
@@ -71,7 +70,7 @@ def test_prune_checks_keeps_newest_ten_ticks_last_line_wins_and_skips_other_file
 # ---- git flow, against real throwaway repos ----
 
 def git(cwd, *args):
-    r = subprocess.run(["git", "-C", str(cwd), *args], capture_output=True, text=True)
+    r = subprocess.run(["git", "-C", str(cwd), *args], capture_output=True, text=True, check=False)
     assert r.returncode == 0, f"git {args} failed: {r.stderr}"
     return r.stdout.strip()
 
