@@ -708,8 +708,8 @@ def test_collect_rollout_league_stratifies_only_a_frozen_opponent_game():
     recorded seat (collect_rollout's own "len(recorded_seats) == 1" gate). A
     mirror or a live cross-deck opponent both record two seats, so the gate
     must keep blocking stratify even at stratify_0land_pct=1.0 -- this is
-    the "never the opposition" guarantee league_runner._run_session's
-    record_outcome-skip depends on, tested at this layer."""
+    the "never the opposition" guarantee league_runner._record_pool_outcomes'
+    stratified-game skip (called by _run_session) depends on, tested at this layer."""
     fx = _base_fixture()
     net_a, net_b, reward_fn, rng = fx["net_a"], fx["net_b"], fx["reward_fn"], fx["rng"]
     decklist_a, decklist_b = fx["decklist_a"], fx["decklist_b"]

@@ -212,59 +212,18 @@ def _next_batch_games(league_dir, total_games):
     return min(next_size, remaining)
 
 
-def _run_session(n_iterations, games_per_iteration, snapshot_every, executor, n_workers,
-                  league_dir=None, seed=None,
-                  train_deck=True, train_mulligan=True, train_decks=None,
-                  matchup=None, game_logs=None, checkpoint_rate=0.0, roster=None, pfsp=True,
-                  cumulative_games=0, ppo_hparams=None,
-                  pfsp_power=PFSP_POWER, trunk_hidden=TRUNK_HIDDEN, device="cpu", stratify_0land_pct=0.0):
-    # device: where the nets live, and where ppo_update's gradient work runs.
-    # Only the update moves -- collection always runs on CPU (inference over
-    # one game state at a time in worker processes), so eval paths and
-    # workers keep using CPU nets.
-    #
-    # cumulative_games: this league's games/deck already played before this
-    # session started -- batch_size_for_iteration and ent_coef_schedule ramp
-    # against cumulative_games + iteration * games_per_iteration, so the
-    # ramp grows smoothly within a session and resumes correctly across
-    # sessions.
-    #
-    # league_dir + seed let a benchmark harness drive this exact loop over a
-    # throwaway dir, reproducibly. Defaults preserve the real run.
-    #
-    # train_deck / train_mulligan gate which layer updates; train_decks (a
-    # subset, default the whole roster) gates which decks train -- the rest
-    # stay loaded as frozen opponents (still played, never updated or
-    # snapshotted).
-    league_dir = league_dir or LEAGUE_DIR
-    if seed is not None:
-        torch.manual_seed(seed)  # identical fresh stack + in-process sampling across benchmark configs
-        random.seed(seed)  # collect_rollout_league_parallel draws its worker seeds from the global random module
-    decklists, vocab, deck_ctxs, fixed_tables = build_pool()
-    deck_names = list(decklists)
-    # roster: a true isolated sub-league -- restricts the entire opponent
-    # pool (not just which decks train) to this subset. vocab/deck_ctxs/
-    # fixed_tables still come from the full build_pool() roster, preserving
-    # checkpoint/vocab compatibility, but this session never loads, trains,
-    # or pairs against anyone outside the subset. Unlike train_decks alone,
-    # which still samples opponents from the whole roster (for onboarding a
-    # new deck against an established field).
-    if roster is not None:
-        assert set(roster) <= set(deck_names), f"roster {roster} not all in the full pool roster {deck_names}"
-        deck_names = list(roster)
-    # matchup = (A, B): a fixed pairing instead of league sampling
-    # (snapshotting off); trains exactly those two decks.
-    if matchup is not None:
-        assert len(matchup) == 2, "matchup must name exactly two decks"
-        train_decks = list(matchup)
-    train_decks = list(train_decks) if train_decks is not None else deck_names
-    assert set(train_decks) <= set(deck_names), f"train_decks {train_decks} not all in roster {deck_names}"
-    train_set = set(train_decks)
-    # ppo_hparams: partial override of PPO_DEFAULTS. Unknown keys are a hard
-    # error, not a silent no-op.
-    hp = {**PPO_DEFAULTS, **(ppo_hparams or {})}
-    unknown = set(hp) - set(PPO_DEFAULTS)
-    assert not unknown, f"unknown ppo hyperparameter(s) {sorted(unknown)}; known: {sorted(PPO_DEFAULTS)}"
+# Mulligan transitions accumulate across iterations, flushed to a
+# REINFORCE update only every MULLIGAN_UPDATE_EVERY iterations rather
+# than on each iteration's small, correlated batch.
+MULLIGAN_UPDATE_EVERY = 8
+
+
+def _build_deck_stack(deck_names, vocab, fixed_tables, league_dir, hp, trunk_hidden, device):
+    """Builds (or resumes from league_dir) every deck's policy net + Adam and
+    its mulligan net + Adam. Returns (live_nets, optimizers, mulligan_nets,
+    mulligan_optimizers), each keyed by deck name. All the policy nets are
+    built before any mulligan net, so a seeded run draws its initial weights
+    in the same order it always has."""
     live_nets, optimizers = {}, {}
     for name in deck_names:
         # Trunk width: reused from an existing live.pt when resuming; the
@@ -295,11 +254,6 @@ def _run_session(n_iterations, games_per_iteration, snapshot_every, executor, n_
         live_nets[name] = net
         optimizers[name] = optimizer
 
-    # Fixed for the whole session -- computed once rather than re-derived on
-    # every collect_rollout_league_parallel call. The encoder isn't
-    # broadcast this way since it trains and ships fresh each call.
-    all_trunk_hidden = {name: tuple(layer.out_features for layer in net.trunk_layers) for name, net in live_nets.items()}
-
     # Per-deck mulligan model: owns the pregame keep/mulligan + bottoming,
     # trained by its own REINFORCE with a direct game-outcome reward,
     # decoupled from the main PPO above.
@@ -318,40 +272,259 @@ def _run_session(n_iterations, games_per_iteration, snapshot_every, executor, n_
             print(f"  [{name}] resumed mulligan optimizer lr={resumed_mull_lr} differs from config lr={hp['mulligan_lr']} (checkpoint's lr wins)")
         mulligan_nets[name] = mnet
         mulligan_optimizers[name] = mopt
+    return live_nets, optimizers, mulligan_nets, mulligan_optimizers
 
-    # CPU mirrors for every path that plays rather than trains (the
-    # sequential collect fallback, --matchup pairings, and the end-of-session
-    # eval checks all run through collect_rollout(device="cpu")). A
-    # GPU-resident net would be a device mismatch there, so on a GPU league
-    # these mirrors are refreshed from the training weights on demand. When
-    # device == "cpu" they're the same objects, not copies.
+
+def _make_cpu_mirrors(live_nets, mulligan_nets, device):
+    """CPU mirrors for every path that plays rather than trains (the
+    sequential collect fallback, --matchup pairings, and the end-of-session
+    eval checks all run through collect_rollout(device="cpu")). A
+    GPU-resident net would be a device mismatch there, so on a GPU league
+    these mirrors are refreshed from the training weights on demand
+    (_sync_cpu_mirrors). When device == "cpu" they're the same objects, not
+    copies. Returns (cpu_nets, cpu_mulligan_nets)."""
     if device == "cpu":
-        cpu_nets, cpu_mulligan_nets = live_nets, mulligan_nets
+        return live_nets, mulligan_nets
+    cpu_nets = {n: copy.deepcopy(net).cpu().eval() for n, net in live_nets.items()}
+    # MulliganNet holds its encoder as a plain reference, not a
+    # registered child, so nn.Module.cpu()/load_state_dict on a deepcopy
+    # leaves the mirror's trunk wired to the original CUDA encoder.
+    # Repointing at the mirrored deck net's encoder fixes it, mirroring
+    # the same shared-encoder relationship the live pair has.
+    cpu_mulligan_nets = {}
+    for n, m in mulligan_nets.items():
+        mirror = copy.deepcopy(m).cpu().eval()
+        # object.__setattr__, matching MulliganNet.__init__: a plain
+        # assignment would register the encoder as a child, and
+        # _sync_cpu_mirrors would then fail on missing encoder.* keys.
+        object.__setattr__(mirror, "encoder", cpu_nets[n].encoder)
+        cpu_mulligan_nets[n] = mirror
+    return cpu_nets, cpu_mulligan_nets
 
-        def sync_cpu_mirrors():
-            pass
-    else:
-        cpu_nets = {n: copy.deepcopy(net).cpu().eval() for n, net in live_nets.items()}
-        # MulliganNet holds its encoder as a plain reference, not a
-        # registered child, so nn.Module.cpu()/load_state_dict on a deepcopy
-        # leaves the mirror's trunk wired to the original CUDA encoder.
-        # Repointing at the mirrored deck net's encoder fixes it, mirroring
-        # the same shared-encoder relationship the live pair has.
-        cpu_mulligan_nets = {}
-        for n, m in mulligan_nets.items():
-            mirror = copy.deepcopy(m).cpu().eval()
-            # object.__setattr__, matching MulliganNet.__init__: a plain
-            # assignment would register the encoder as a child, and
-            # sync_cpu_mirrors below would then fail on missing encoder.* keys.
-            object.__setattr__(mirror, "encoder", cpu_nets[n].encoder)
-            cpu_mulligan_nets[n] = mirror
 
-        def sync_cpu_mirrors():
-            """Pull the current training weights down for the play paths."""
-            for n in deck_names:
-                cpu_nets[n].load_state_dict({k: v.cpu() for k, v in live_nets[n].state_dict().items()})
-                cpu_mulligan_nets[n].load_state_dict(
-                    {k: v.cpu() for k, v in mulligan_nets[n].state_dict().items()})
+def _sync_cpu_mirrors(ctx):
+    """Pull the current training weights down for the play paths. A no-op when
+    the mirrors ARE the live nets (device == "cpu")."""
+    if ctx["cpu_nets"] is ctx["live_nets"]:
+        return
+    for n in ctx["deck_names"]:
+        ctx["cpu_nets"][n].load_state_dict({k: v.cpu() for k, v in ctx["live_nets"][n].state_dict().items()})
+        ctx["cpu_mulligan_nets"][n].load_state_dict(
+            {k: v.cpu() for k, v in ctx["mulligan_nets"][n].state_dict().items()})
+
+
+def _collect_round(ctx, name, mulligan_state_dicts):
+    """One deck's collection: games_per_iteration games with `name` as the
+    training deck, via whichever play path this session uses (a fixed
+    --matchup pairing, the worker pool, or sequential in-process). Returns
+    (buffers_by_deck, mull_by_deck, games_played, outcomes); outcomes is empty
+    for a matchup, which has no pool to feed."""
+    matchup, executor = ctx["matchup"], ctx["executor"]
+    # Both CPU-playing collect paths read the mirrors, so refresh
+    # first. Not called on the parallel path, which ships state_dicts
+    # itself and never touches a mirror.
+    if matchup is not None or executor is None:
+        _sync_cpu_mirrors(ctx)
+    if matchup is not None:
+        # Fixed pairing: this deck vs the other named deck, both
+        # carrying their real mulligan models so logged games match
+        # training's pregame policy.
+        opp = matchup[1] if name == matchup[0] else matchup[0]
+        pairing = _constant_pairing(
+            [SeatAgent(ctx["cpu_nets"][name], ctx["cpu_mulligan_nets"][name], ctx["deck_ctxs"][name]),
+             SeatAgent(ctx["cpu_nets"][opp], ctx["cpu_mulligan_nets"][opp], ctx["deck_ctxs"][opp])],
+            [ctx["decklists"][name], ctx["decklists"][opp]], [ctx["reward_fn"], ctx["reward_fn"]], [name, opp])
+        buffers_by_deck, mull_by_deck, played = collect_rollout(
+            pairing, ctx["games_per_iteration"], ctx["horizon"], ctx["rng"], device="cpu", game_logs=ctx["game_logs"])
+        return buffers_by_deck, mull_by_deck, played, []
+    if executor is not None:
+        return collect_rollout_league_parallel(
+            name, ctx["live_nets"], ctx["reward_fn_name"], ctx["league_dir"], ctx["horizon"],
+            ctx["games_per_iteration"], executor, ctx["n_workers"], ctx["all_trunk_hidden"],
+            mulligan_state_dicts, game_logs=ctx["game_logs"], checkpoint_rate=ctx["checkpoint_rate"],
+            pfsp=ctx["pfsp"], pfsp_power=ctx["pfsp_power"], stratify_0land_pct=ctx["stratify_0land_pct"],
+        )
+    return collect_rollout_league(
+        name, ctx["cpu_nets"], ctx["cpu_mulligan_nets"], ctx["deck_ctxs"], ctx["decklists"], ctx["pool"],
+        ctx["reward_fn"], ctx["horizon"], ctx["games_per_iteration"], ctx["rng"], device="cpu",
+        game_logs=ctx["game_logs"], checkpoint_rate=ctx["checkpoint_rate"], pfsp=ctx["pfsp"],
+        stratify_0land_pct=ctx["stratify_0land_pct"],
+    )
+
+
+def _record_pool_outcomes(pool, name, outcomes):
+    """Feed every game's real outcome into the one authoritative
+    pool so PFSP weighting updates within the session, not
+    just across process invocations. A stratified game's
+    outcome is skipped here on purpose: its training seat's
+    opening hand was forced (see collect_rollout's
+    stratify_0land_pct), so a loss there reflects the rigged
+    hand, not the sampled opponent's real difficulty -- feeding
+    it to record_outcome would permanently bias that
+    opponent's PFSP weight for reasons unrelated to skill. The
+    game still counts toward `played`/checkpoint cadence;
+    only this pool-difficulty signal is skipped."""
+    for opp_name, snap_id, won, stratified in outcomes:
+        if stratified:
+            continue
+        pool.record_outcome(name, ("deck", opp_name), won)
+        if snap_id is not None:
+            pool.record_outcome(name, ("snapshot", opp_name, snap_id), won)
+
+
+def _update_round(ctx, name, buffers_by_deck, batch_size, ent_coef):
+    """PPO-updates every train deck that received transitions this
+    round: the training deck's own bucket, plus any live-opponent
+    bucket in train_set (buffers_by_deck only ever holds
+    live-opponent buckets; a frozen-snapshot opponent records
+    nothing). Returns (policy_loss, value_loss, entropy, approx_kl,
+    clip_fraction, epochs_run, explained_variance, adv_std, salvaged) --
+    the stats are `name`'s own update's, all zero if it didn't update."""
+    hp, live_nets, optimizers, device = ctx["hp"], ctx["live_nets"], ctx["optimizers"], ctx["device"]
+    # Reset every round, explained_variance/adv_std included: with
+    # train_deck=False (--train-mulligan-only) or an empty own bucket
+    # ppo_update never runs for `name`, and the metric would
+    # otherwise hit an unbound local (first round) or report the
+    # previous deck's stale value.
+    policy_loss = value_loss = entropy = approx_kl = clip_fraction = 0.0
+    explained_variance = adv_std = 0.0
+    epochs_run = 0
+    salvaged = 0
+    if ctx["train_deck"]:
+        for deck_name, buf in buffers_by_deck.items():
+            if not len(buf) or deck_name not in ctx["train_set"]:
+                continue
+            if deck_name == name:
+                (policy_loss, value_loss, entropy, approx_kl, clip_fraction,
+                 epochs_run, explained_variance, adv_std) = ppo_update(
+                    live_nets[name], optimizers[name], buf, device, batch_size=batch_size,
+                    ent_coef=ent_coef, gamma=hp["gamma"], gae_lambda=hp["gae_lambda"],
+                    target_kl=hp["target_kl"], n_epochs=hp["n_epochs"],
+                    adv_norm_floor=hp["adv_norm_floor"])
+            else:
+                ppo_update(live_nets[deck_name], optimizers[deck_name], buf, device,
+                           batch_size=batch_size, ent_coef=ent_coef, gamma=hp["gamma"],
+                           gae_lambda=hp["gae_lambda"], target_kl=hp["target_kl"],
+                           n_epochs=hp["n_epochs"], adv_norm_floor=hp["adv_norm_floor"])
+                salvaged += len(buf)
+    return (policy_loss, value_loss, entropy, approx_kl, clip_fraction, epochs_run,
+            explained_variance, adv_std, salvaged)
+
+
+def _flush_mulligan(ctx, mull_by_deck_accum, iteration, n_iterations, cumulative):
+    """Mulligan-model REINFORCE: one step per train deck on transitions
+    accumulated across the last MULLIGAN_UPDATE_EVERY iterations,
+    flushed early on the session's final iteration so nothing is
+    dropped at a session boundary. `cumulative` is the games/deck count
+    logged with each record."""
+    mull_stats = {}
+    is_mulligan_flush = (iteration + 1) % MULLIGAN_UPDATE_EVERY == 0 or iteration == n_iterations - 1
+    if ctx["train_mulligan"] and is_mulligan_flush:
+        for name in ctx["train_decks"]:
+            if mull_by_deck_accum[name]:
+                mull_stats[name] = mulligan_update(ctx["mulligan_nets"][name], ctx["mulligan_optimizers"][name],
+                                                   mull_by_deck_accum[name])
+                _append_metric(ctx["league_dir"], kind="mulligan", session=ctx["session"], iteration=iteration,
+                               deck=name, cumulative_games=cumulative,
+                               n=mull_stats[name]["n"], loss=mull_stats[name]["loss"])
+                mull_by_deck_accum[name] = []
+    if mull_stats:  # readout so the mulligan subsystem is visible while it trains
+        total_n = sum(s["n"] for s in mull_stats.values())
+        mean_loss = sum(s["loss"] for s in mull_stats.values()) / len(mull_stats)
+        print(f"  iter {iteration}: mulligan model -- {total_n} transitions across {len(mull_stats)} decks, "
+              f"mean REINFORCE loss {mean_loss:.4f}", flush=True)
+
+
+def _snapshot_if_due(ctx, iteration, snapshot_every):
+    """Snapshot cadence is cumulative, not session-local -- gated on
+    cumulative games crossing a multiple of snapshot_every_games
+    (should_snapshot). snapshot_every arrives in iterations;
+    multiplying back recovers the games-count. On a snapshot: registers a
+    new snapshot per train deck, saves the live checkpoints and opponent
+    stats, and advances progress.json."""
+    games_per_iteration, pool, league_dir = ctx["games_per_iteration"], ctx["pool"], ctx["league_dir"]
+    games_before = ctx["cumulative_games"] + iteration * games_per_iteration
+    crossed = should_snapshot(games_before, games_per_iteration, snapshot_every)
+    if ctx["matchup"] is None and crossed:  # matchup: no historical snapshots
+        for name in ctx["train_decks"]:  # only TRAIN decks change -> only they need new snapshots
+            pool.register_snapshot(name, ctx["live_nets"][name], ctx["mulligan_nets"][name])
+        _save_live_checkpoints(ctx["live_nets"], ctx["optimizers"], ctx["deck_names"], ctx["session"],
+                               ctx["session_path"], league_dir, ctx["mulligan_nets"], ctx["mulligan_optimizers"])
+        pool.save_opponent_stats()  # same cadence as the checkpoints above, not every iteration
+        # And the cumulative counter, so progress.json is never left
+        # behind the weights those two lines just wrote.
+        checkpoint_progress(league_dir, games_before + games_per_iteration)
+        print(f"  iter {iteration}: snapshotted {len(ctx['train_decks'])} train deck(s) + saved live checkpoints "
+              f"(counts now: { {n: len(pool.snapshots[n]) for n in ctx['deck_names']} })", flush=True)
+
+
+def _run_session(n_iterations, games_per_iteration, snapshot_every, executor, n_workers,
+                  league_dir=None, seed=None,
+                  train_deck=True, train_mulligan=True, train_decks=None,
+                  matchup=None, game_logs=None, checkpoint_rate=0.0, roster=None, pfsp=True,
+                  cumulative_games=0, ppo_hparams=None,
+                  pfsp_power=PFSP_POWER, trunk_hidden=TRUNK_HIDDEN, device="cpu", stratify_0land_pct=0.0):
+    # device: where the nets live, and where ppo_update's gradient work runs.
+    # Only the update moves -- collection always runs on CPU (inference over
+    # one game state at a time in worker processes), so eval paths and
+    # workers keep using CPU nets.
+    #
+    # cumulative_games: this league's games/deck already played before this
+    # session started -- batch_size_for_iteration and ent_coef_schedule ramp
+    # against cumulative_games + iteration * games_per_iteration, so the
+    # ramp grows smoothly within a session and resumes correctly across
+    # sessions.
+    #
+    # league_dir + seed let a benchmark harness drive this exact loop over a
+    # throwaway dir, reproducibly. Defaults preserve the real run.
+    #
+    # train_deck / train_mulligan gate which layer updates; train_decks (a
+    # subset, default the whole roster) gates which decks train -- the rest
+    # stay loaded as frozen opponents (still played, never updated or
+    # snapshotted).
+    #
+    # The body is the session skeleton; the work lives in the module-level
+    # helpers above (_build_deck_stack, _collect_round, _update_round, ...),
+    # which share the read-only session environment through the `ctx` dict
+    # built below.
+    league_dir = league_dir or LEAGUE_DIR
+    if seed is not None:
+        torch.manual_seed(seed)  # identical fresh stack + in-process sampling across benchmark configs
+        random.seed(seed)  # collect_rollout_league_parallel draws its worker seeds from the global random module
+    decklists, vocab, deck_ctxs, fixed_tables = build_pool()
+    deck_names = list(decklists)
+    # roster: a true isolated sub-league -- restricts the entire opponent
+    # pool (not just which decks train) to this subset. vocab/deck_ctxs/
+    # fixed_tables still come from the full build_pool() roster, preserving
+    # checkpoint/vocab compatibility, but this session never loads, trains,
+    # or pairs against anyone outside the subset. Unlike train_decks alone,
+    # which still samples opponents from the whole roster (for onboarding a
+    # new deck against an established field).
+    if roster is not None:
+        assert set(roster) <= set(deck_names), f"roster {roster} not all in the full pool roster {deck_names}"
+        deck_names = list(roster)
+    # matchup = (A, B): a fixed pairing instead of league sampling
+    # (snapshotting off); trains exactly those two decks.
+    if matchup is not None:
+        assert len(matchup) == 2, "matchup must name exactly two decks"
+        train_decks = list(matchup)
+    train_decks = list(train_decks) if train_decks is not None else deck_names
+    assert set(train_decks) <= set(deck_names), f"train_decks {train_decks} not all in roster {deck_names}"
+    train_set = set(train_decks)
+    # ppo_hparams: partial override of PPO_DEFAULTS. Unknown keys are a hard
+    # error, not a silent no-op.
+    hp = {**PPO_DEFAULTS, **(ppo_hparams or {})}
+    unknown = set(hp) - set(PPO_DEFAULTS)
+    assert not unknown, f"unknown ppo hyperparameter(s) {sorted(unknown)}; known: {sorted(PPO_DEFAULTS)}"
+    live_nets, optimizers, mulligan_nets, mulligan_optimizers = _build_deck_stack(
+        deck_names, vocab, fixed_tables, league_dir, hp, trunk_hidden, device)
+
+    # Fixed for the whole session -- computed once rather than re-derived on
+    # every collect_rollout_league_parallel call. The encoder isn't
+    # broadcast this way since it trains and ships fresh each call.
+    all_trunk_hidden = {name: tuple(layer.out_features for layer in net.trunk_layers) for name, net in live_nets.items()}
+
+    cpu_nets, cpu_mulligan_nets = _make_cpu_mirrors(live_nets, mulligan_nets, device)
 
     pool = LeaguePool(league_dir, deck_names, pfsp_power=pfsp_power)
     session_path = f"{league_dir}/session.txt"
@@ -368,6 +541,24 @@ def _run_session(n_iterations, games_per_iteration, snapshot_every, executor, n_
     reward_fn = deploy_reward_v6
     reward_fn_name = "deploy_reward_v6"
     horizon = HORIZON
+
+    # The session's read-only environment, shared by the round helpers. The
+    # nets/optimizers/pool/rng in it are mutated in place by training; the
+    # bindings themselves never change after this point.
+    ctx = {
+        "deck_names": deck_names, "train_decks": train_decks, "train_set": train_set,
+        "train_deck": train_deck, "train_mulligan": train_mulligan, "matchup": matchup,
+        "executor": executor, "n_workers": n_workers, "device": device, "league_dir": league_dir,
+        "hp": hp, "live_nets": live_nets, "optimizers": optimizers,
+        "mulligan_nets": mulligan_nets, "mulligan_optimizers": mulligan_optimizers,
+        "cpu_nets": cpu_nets, "cpu_mulligan_nets": cpu_mulligan_nets,
+        "deck_ctxs": deck_ctxs, "decklists": decklists, "pool": pool, "rng": rng,
+        "reward_fn": reward_fn, "reward_fn_name": reward_fn_name, "horizon": horizon,
+        "all_trunk_hidden": all_trunk_hidden, "game_logs": game_logs,
+        "checkpoint_rate": checkpoint_rate, "pfsp": pfsp, "pfsp_power": pfsp_power,
+        "stratify_0land_pct": stratify_0land_pct, "games_per_iteration": games_per_iteration,
+        "session": session, "session_path": session_path, "cumulative_games": cumulative_games,
+    }
 
     mode = []
     if not train_deck:
@@ -394,10 +585,6 @@ def _run_session(n_iterations, games_per_iteration, snapshot_every, executor, n_
     total_games = 0
     collect_time_total = 0.0
     update_time_total = 0.0
-    # Mulligan transitions accumulate across iterations, flushed to a
-    # REINFORCE update only every MULLIGAN_UPDATE_EVERY iterations rather
-    # than on each iteration's small, correlated batch.
-    MULLIGAN_UPDATE_EVERY = 8
     mull_by_deck_accum = {name: [] for name in train_decks}
     for iteration in range(n_iterations):
         iter_t0 = time.time()
@@ -421,53 +608,9 @@ def _run_session(n_iterations, games_per_iteration, snapshot_every, executor, n_
                                 for n in deck_names}
         for name in train_decks:  # only TRAIN decks get a round; the rest are frozen opponents
             t_collect0 = time.time()
-            # Both CPU-playing collect paths read the mirrors, so refresh
-            # first. Not called on the parallel path, which ships state_dicts
-            # itself and never touches a mirror.
-            if matchup is not None or executor is None:
-                sync_cpu_mirrors()
-            if matchup is not None:
-                # Fixed pairing: this deck vs the other named deck, both
-                # carrying their real mulligan models so logged games match
-                # training's pregame policy.
-                opp = matchup[1] if name == matchup[0] else matchup[0]
-                pairing = _constant_pairing(
-                    [SeatAgent(cpu_nets[name], cpu_mulligan_nets[name], deck_ctxs[name]),
-                     SeatAgent(cpu_nets[opp], cpu_mulligan_nets[opp], deck_ctxs[opp])],
-                    [decklists[name], decklists[opp]], [reward_fn, reward_fn], [name, opp])
-                buffers_by_deck, mull_by_deck, played = collect_rollout(
-                    pairing, games_per_iteration, horizon, rng, device="cpu", game_logs=game_logs)
-            elif executor is not None:
-                buffers_by_deck, mull_by_deck, played, outcomes = collect_rollout_league_parallel(
-                    name, live_nets, reward_fn_name, league_dir, horizon, games_per_iteration,
-                    executor, n_workers, all_trunk_hidden,
-                    mulligan_state_dicts, game_logs=game_logs, checkpoint_rate=checkpoint_rate, pfsp=pfsp,
-                    pfsp_power=pfsp_power, stratify_0land_pct=stratify_0land_pct,
-                )
-            else:
-                buffers_by_deck, mull_by_deck, played, outcomes = collect_rollout_league(
-                    name, cpu_nets, cpu_mulligan_nets, deck_ctxs, decklists, pool, reward_fn,
-                    horizon, games_per_iteration, rng, device="cpu", game_logs=game_logs,
-                    checkpoint_rate=checkpoint_rate, pfsp=pfsp, stratify_0land_pct=stratify_0land_pct,
-                )
+            buffers_by_deck, mull_by_deck, played, outcomes = _collect_round(ctx, name, mulligan_state_dicts)
             if matchup is None:
-                # Feed every game's real outcome into the one authoritative
-                # pool so PFSP weighting updates within the session, not
-                # just across process invocations. A stratified game's
-                # outcome is skipped here on purpose: its training seat's
-                # opening hand was forced (see collect_rollout's
-                # stratify_0land_pct), so a loss there reflects the rigged
-                # hand, not the sampled opponent's real difficulty -- feeding
-                # it to record_outcome would permanently bias that
-                # opponent's PFSP weight for reasons unrelated to skill. The
-                # game still counts toward `played`/checkpoint cadence above;
-                # only this pool-difficulty signal is skipped.
-                for opp_name, snap_id, won, stratified in outcomes:
-                    if stratified:
-                        continue
-                    pool.record_outcome(name, ("deck", opp_name), won)
-                    if snap_id is not None:
-                        pool.record_outcome(name, ("snapshot", opp_name, snap_id), won)
+                _record_pool_outcomes(pool, name, outcomes)
             collect_time_total += time.time() - t_collect0
             total_games += played
             games_this_iter += played
@@ -478,37 +621,8 @@ def _run_session(n_iterations, games_per_iteration, snapshot_every, executor, n_
                 if train_mulligan and deck_name in train_set:
                     mull_by_deck_accum[deck_name].extend(tr)
             t_update0 = time.time()
-            # PPO-updates every train deck that received transitions this
-            # round: the training deck's own bucket, plus any live-opponent
-            # bucket in train_set (buffers_by_deck only ever holds
-            # live-opponent buckets; a frozen-snapshot opponent records
-            # nothing).
-            # Reset every round, explained_variance/adv_std included: with
-            # train_deck=False (--train-mulligan-only) or an empty own bucket
-            # ppo_update never runs for `name`, and the metric below would
-            # otherwise hit an unbound local (first round) or report the
-            # previous deck's stale value.
-            policy_loss = value_loss = entropy = approx_kl = clip_fraction = 0.0
-            explained_variance = adv_std = 0.0
-            epochs_run = 0
-            salvaged = 0
-            if train_deck:
-                for deck_name, buf in buffers_by_deck.items():
-                    if not len(buf) or deck_name not in train_set:
-                        continue
-                    if deck_name == name:
-                        (policy_loss, value_loss, entropy, approx_kl, clip_fraction,
-                         epochs_run, explained_variance, adv_std) = ppo_update(
-                            live_nets[name], optimizers[name], buf, device, batch_size=batch_size,
-                            ent_coef=ent_coef, gamma=hp["gamma"], gae_lambda=hp["gae_lambda"],
-                            target_kl=hp["target_kl"], n_epochs=hp["n_epochs"],
-                            adv_norm_floor=hp["adv_norm_floor"])
-                    else:
-                        ppo_update(live_nets[deck_name], optimizers[deck_name], buf, device,
-                                   batch_size=batch_size, ent_coef=ent_coef, gamma=hp["gamma"],
-                                   gae_lambda=hp["gae_lambda"], target_kl=hp["target_kl"],
-                                   n_epochs=hp["n_epochs"], adv_norm_floor=hp["adv_norm_floor"])
-                        salvaged += len(buf)
+            (policy_loss, value_loss, entropy, approx_kl, clip_fraction, epochs_run,
+             explained_variance, adv_std, salvaged) = _update_round(ctx, name, buffers_by_deck, batch_size, ent_coef)
             update_time_total += time.time() - t_update0
             buffer_size = len(buffers_by_deck.get(name, ()))
             print(f"  iter {iteration} [{name}]: games={played} buf={buffer_size} "
@@ -528,43 +642,9 @@ def _run_session(n_iterations, games_per_iteration, snapshot_every, executor, n_
                            explained_variance=explained_variance, adv_std=adv_std,
                            target_kl=hp["target_kl"])
 
-        # Mulligan-model REINFORCE: one step per train deck on transitions
-        # accumulated across the last MULLIGAN_UPDATE_EVERY iterations,
-        # flushed early on the session's final iteration so nothing is
-        # dropped at a session boundary.
-        mull_stats = {}
-        is_mulligan_flush = (iteration + 1) % MULLIGAN_UPDATE_EVERY == 0 or iteration == n_iterations - 1
-        if train_mulligan and is_mulligan_flush:
-            for name in train_decks:
-                if mull_by_deck_accum[name]:
-                    mull_stats[name] = mulligan_update(mulligan_nets[name], mulligan_optimizers[name], mull_by_deck_accum[name])
-                    _append_metric(league_dir, kind="mulligan", session=session, iteration=iteration, deck=name,
-                                   cumulative_games=cumulative_games + games_so_far_this_session,
-                                   n=mull_stats[name]["n"], loss=mull_stats[name]["loss"])
-                    mull_by_deck_accum[name] = []
-        if mull_stats:  # readout so the mulligan subsystem is visible while it trains
-            total_n = sum(s["n"] for s in mull_stats.values())
-            mean_loss = sum(s["loss"] for s in mull_stats.values()) / len(mull_stats)
-            print(f"  iter {iteration}: mulligan model -- {total_n} transitions across {len(mull_stats)} decks, "
-                  f"mean REINFORCE loss {mean_loss:.4f}", flush=True)
-
-        # Snapshot cadence is cumulative, not session-local -- gated on
-        # cumulative games crossing a multiple of snapshot_every_games
-        # (should_snapshot). snapshot_every arrives in iterations;
-        # multiplying back recovers the games-count.
-        games_before = cumulative_games + iteration * games_per_iteration
-        crossed = should_snapshot(games_before, games_per_iteration, snapshot_every)
-        if matchup is None and crossed:  # matchup: no historical snapshots
-            for name in train_decks:  # only TRAIN decks change -> only they need new snapshots
-                pool.register_snapshot(name, live_nets[name], mulligan_nets[name])
-            _save_live_checkpoints(live_nets, optimizers, deck_names, session, session_path, league_dir,
-                                   mulligan_nets, mulligan_optimizers)
-            pool.save_opponent_stats()  # same cadence as the checkpoints above, not every iteration
-            # And the cumulative counter, so progress.json is never left
-            # behind the weights those two lines just wrote.
-            checkpoint_progress(league_dir, games_before + games_per_iteration)
-            print(f"  iter {iteration}: snapshotted {len(train_decks)} train deck(s) + saved live checkpoints "
-                  f"(counts now: { {n: len(pool.snapshots[n]) for n in deck_names} })", flush=True)
+        _flush_mulligan(ctx, mull_by_deck_accum, iteration, n_iterations,
+                        cumulative_games + games_so_far_this_session)
+        _snapshot_if_due(ctx, iteration, snapshot_every)
 
         iter_done_t = time.time()
         iter_elapsed_ms = (iter_done_t - iter_t0) * 1000
