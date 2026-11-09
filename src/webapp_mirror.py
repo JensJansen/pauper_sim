@@ -17,6 +17,11 @@ app.py's /checks routes only understand the new .jsonl shape now -- the
 pre-migration per-snapshot .json read path was retired once all leagues
 were migrated (see logs/validation/README.md).
 
+What happens to this data afterwards -- pruning each league to its newest 10 check
+ticks and replays, committing and pushing it to the replay repo, bumping the
+submodule pointer -- lives in webapp_sync.py, which shares WRITE_LOCK with the
+writers below.
+
 Every function here is a no-op when either guard fails:
   - webapp_ready(): src/webapp isn't a checked-out git submodule (a fresh
     clone with the submodule never `git submodule update --init`'d leaves
@@ -45,12 +50,27 @@ keeps this importable from a plain `python -c` sanity check.
 """
 import json
 import re
+import threading
 from pathlib import Path
 
 from repo_paths import CHECKPOINTS_DIR, SRC_DIR
 
 WEBAPP_DIR = SRC_DIR / "webapp"
 WEBAPP_VALIDATION_DIR = WEBAPP_DIR / "logs" / "validation"
+
+# Held around every write into the webapp's logs/validation/ (below) and by
+# webapp_sync while it `git add`s or rewrites those files, so a commit can never
+# snapshot a half-appended line (the stats API json.loads every metrics.jsonl
+# line) and a prune rewrite can never drop a concurrent append. Re-entrant; each
+# hold is a few milliseconds except webapp_sync's `git add` (about a second).
+WRITE_LOCK = threading.RLock()
+
+
+def review_replay_path(league_name, cumulative_games):
+    """Where primary_round_robin_review writes a tick's replay: one folder per
+    league, `logs/replays/<league>/round_robin_review_<N>games.json`. Resolved
+    from WEBAPP_DIR at call time (tests monkeypatch it)."""
+    return WEBAPP_DIR / "logs" / "replays" / league_name / f"round_robin_review_{cumulative_games}games.json"
 
 _CHECK_SNAPSHOT_RE = re.compile(r"^((?:.*/)?checks/)([^/]+)_\d+games\.json$")
 
@@ -115,7 +135,7 @@ def mirror_json(league_dir, relative_path, payload):
     try:
         dest = WEBAPP_VALIDATION_DIR / league_name / consolidated_rel
         dest.parent.mkdir(parents=True, exist_ok=True)
-        with open(dest, "a") as f:
+        with WRITE_LOCK, open(dest, "a") as f:
             f.write(json.dumps(payload) + "\n")
     except OSError as e:
         print(f"webapp_mirror: mirror_json({relative_path!r}) failed, dropping this data point: {e}",
@@ -132,7 +152,7 @@ def mirror_metrics_line(league_dir, fields):
     try:
         dest_dir = WEBAPP_VALIDATION_DIR / league_name
         dest_dir.mkdir(parents=True, exist_ok=True)
-        with open(dest_dir / "metrics.jsonl", "a") as f:
+        with WRITE_LOCK, open(dest_dir / "metrics.jsonl", "a") as f:
             f.write(json.dumps(fields) + "\n")
     except OSError as e:
         print(f"webapp_mirror: mirror_metrics_line failed, dropping this data point: {e}", flush=True)
@@ -148,7 +168,7 @@ def mirror_progress(league_dir, payload):
     try:
         dest_dir = WEBAPP_VALIDATION_DIR / league_name
         dest_dir.mkdir(parents=True, exist_ok=True)
-        with open(dest_dir / "progress.json", "w") as f:
+        with WRITE_LOCK, open(dest_dir / "progress.json", "w") as f:
             json.dump(payload, f)
     except OSError as e:
         print(f"webapp_mirror: mirror_progress failed: {e}", flush=True)

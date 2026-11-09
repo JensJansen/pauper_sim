@@ -50,6 +50,11 @@ pool of historical opponents. No framework dependencies beyond PyTorch.
 src/
   config_loader.py         Shared training-config JSON loader ("extends" merge).
   repo_paths.py             Stdlib-only repo-root path helper.
+  webapp_mirror.py          Mirrors validation output into src/webapp/logs/validation/
+                            as training writes it (best-effort, never raises).
+  webapp_sync.py            After each validation tick: prunes each league to its newest
+                            10 sets, commits + pushes the data to the replay repo, bumps
+                            this repo's submodule pointer. See "Automatic publishing".
   game/                    The engine (package). Zero ML deps.
     cards.py                 EffectId / CardType / CardDef — the card data model.
     state.py                 PlayerState + GameState: zones, turn/stack bookkeeping.
@@ -131,7 +136,7 @@ src/
     vs_history.py            vs_history.
     round_robin_review.py    primary_round_robin_review (2 games/pairing, for
                              human review -- writes to the webapp's own
-                             logs/replays/, not checkpoints/).
+                             logs/replays/<league>/, not checkpoints/).
   analysis/                Read-only inspection tools (never train, except
                            mulligan_retrain/, which writes a new
                            mulligan_bootstrap*.pt, never live.pt/mulligan.pt).
@@ -499,10 +504,11 @@ Five checks today:
   above) at a small, **fixed** 2 games/pairing, purely so a human has fresh
   real games to page through. Writes nothing under `checkpoints/` and no
   `metrics.jsonl` line -- its only output is a full event log dropped
-  straight into the webapp submodule's own `logs/replays/`
-  (`<league>_round_robin_review_<N>games.json`), so it shows up in the
+  straight into the webapp submodule's own `logs/replays/<league>/`
+  (`round_robin_review_<N>games.json`), so it shows up in the
   replay viewer's "Browse server logs" list automatically, no "Open new
-  file" needed. A clean no-op (skipped, not fatal) when `src/webapp` isn't a
+  file" needed. Only each league's newest 10 are kept (see "Automatic
+  publishing"). A clean no-op (skipped, not fatal) when `src/webapp` isn't a
   checked-out submodule.
 
 Output, at two levels: `checkpoints/<primary_league>/checks/` for
@@ -602,6 +608,43 @@ metrics instead, see `src/webapp_mirror.py`), e.g. from `src/`:
 python run_league.py --matchup deck_a deck_b --log webapp/logs/replays/<run-name>/event_log.json
 ```
 
+### Automatic publishing (`src/webapp_sync.py`)
+
+Every validation cadence tick (`checks_cadence_pct`), once the checks have run,
+`run_training_pipeline.py` starts `webapp_sync.sync_async(...)` on a background
+thread (training doesn't wait; the final sync still completes before the process
+exits). It never raises -- a git or network problem is printed and retried at the
+next tick. It does nothing if `src/webapp` isn't a checked-out submodule, and no
+test can reach it (`tests/conftest.py` stubs it; `tests/test_webapp_sync.py`
+drives it against throwaway git repos).
+
+1. **Prune.** A *set* is one tick for one league: its entry in every
+   `checks/<check>.jsonl` (league-level and per-deck) plus its replay
+   `logs/replays/<league>/round_robin_review_<N>games.json`. Each league keeps its
+   **newest 10 sets** (by game count, not file time); older ones are removed from
+   the webapp copy only -- `checkpoints/` keeps everything and git history keeps
+   whatever was ever committed. **`metrics.jsonl` and `progress.json` are never
+   pruned** (the full training curves). Hand-made replays in `logs/replays/` are
+   never touched. Legacy flat replays (`<league>_round_robin_review_<N>games.json`)
+   are moved into their league folder the first time it runs.
+2. **Commit + push, data only.** It commits `logs/replays/` and each
+   `logs/validation/<league>/` to the replay repo's `main` and pushes -- never
+   viewer code, never `logs/validation/README.md`, so a half-finished edit in the
+   submodule is never published. If the submodule is detached it checks out
+   `main`. Normal case is a plain push; only if the push is rejected (someone else
+   pushed) it rebases onto `origin/main` (`--autostash`, so uncommitted edits
+   survive). A rebase conflict is aborted and reported -- never forced -- and the
+   data is retried next tick.
+3. **Bump the pointer.** If the replay repo's head moved, it makes a **local**
+   commit in *this* repo touching only `src/webapp`, on whatever branch is checked
+   out. That commit is not pushed (`webapp_sync.PUSH_PARENT`), so this never
+   pushes unrelated unpushed work.
+
+Every push to the replay repo redeploys the public Render site. `.gitmodules`
+records `branch = main` for the submodule, so `git submodule update --remote`
+follows it. Writes into `logs/validation/` and the sync's `git add` share one lock
+(`webapp_mirror.WRITE_LOCK`), so a commit never captures a half-written line.
+
 ### Game replay viewer (`/replay`)
 
 Retroactive viewing of an already-completed `--log` file only (no live
@@ -615,7 +658,8 @@ game viewing).
   game list) without disturbing scrub position. File selection posts a
   picked file's content to the backend for reduction.
 - **Browse server logs** lists every `*.json` under the submodule's own
-  `logs/replays/` (`GET /api/replay/runs`, newest first) -- a sibling
+  `logs/replays/` (`GET /api/replay/runs`, grouped by league -- `main-league` first
+  -- and newest game count first, since a git checkout makes file times meaningless) -- a sibling
   `logs/validation/` holds unrelated validation metrics for `/stats` and is
   never scanned here; `app_public.py` has the same routes against its own
   `logs/replays/`. Games are labeled from `deck_a`/`deck_b` fields; older

@@ -2,6 +2,7 @@
 import pytest
 
 import webapp_mirror as wm
+import webapp_sync
 
 
 @pytest.fixture
@@ -18,3 +19,15 @@ def fake_webapp(tmp_path, monkeypatch):
     monkeypatch.setattr(wm, "WEBAPP_DIR", webapp_dir)
     monkeypatch.setattr(wm, "WEBAPP_VALIDATION_DIR", webapp_dir / "logs" / "validation")
     return webapp_dir / "logs" / "validation"
+
+
+@pytest.fixture(autouse=True)
+def _never_sync_the_real_replay_repo(monkeypatch, request):
+    """webapp_sync.sync_async commits and PUSHES src/webapp's data to a public
+    repo. The pipeline calls it after every validation tick, and src/webapp is a
+    real checked-out submodule on this machine, so no test may reach it: stub it
+    for the whole suite. tests/test_webapp_sync.py drives webapp_sync.sync()
+    directly against throwaway git repos instead."""
+    if request.module.__name__.endswith("test_webapp_sync"):
+        return  # its own tests need the real sync_async (with sync() replaced or aimed at throwaway repos)
+    monkeypatch.setattr(webapp_sync, "sync_async", lambda label: None)

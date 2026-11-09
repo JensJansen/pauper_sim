@@ -64,7 +64,7 @@ def test_writes_full_round_robin_straight_into_webapp_replays(tmp_path, monkeypa
     assert result["pairings"] == 3  # rakdos x rakdos, rakdos x dmir, dmir x dmir (mirrors included)
     assert result["games"] == 3 * round_robin_review.GAMES_PER_PAIRING
 
-    log_path = webapp_dir / "logs" / "replays" / "primary_round_robin_review_4200games.json"
+    log_path = webapp_dir / "logs" / "replays" / "primary" / "round_robin_review_4200games.json"
     doc = json.loads(log_path.read_text())
     assert len(doc["games"]) == result["games"]
     assert doc["meta"]["games_per_pairing"] == round_robin_review.GAMES_PER_PAIRING
