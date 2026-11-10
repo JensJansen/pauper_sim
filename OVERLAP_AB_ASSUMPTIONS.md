@@ -50,5 +50,5 @@ detectably, the test can only bound harm, not show learning parity; the report w
    I did NOT patch engine rules behaviour (RULES FAITHFULNESS MANDATE: the legality fix is the owner's call and the root
    cause is still unconfirmed). Instead the harness retries a crashed arm from the pristine start copy, up to 3 times,
    adding 0/1/2 to the arm's seed so a deterministic crash is not replayed. The crashed partial L1 was deleted. If L1 (or
-   S2) ends up with a bumped seed, that is stated in the results. The bug is rare (3 dumps over ~92k games/deck of
-   production training), so a bumped seed is unlikely to matter for the comparison.
+   S2) ends up with a bumped seed, that is stated in the results. The bug is rare (three production crashes over ~92k games/deck: 2026-08-27, ~08-31, and this one), so a bumped
+   seed is unlikely to matter for the comparison. Candidate causes are listed in `SAC_FIZZLE_HYPOTHESES.md` (not yet tested).
