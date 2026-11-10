@@ -17,8 +17,11 @@ age (and at least MIN_REF_GAMES old, below which the early-training noise swamps
   FLAT       no clear strength gain, policy probe unavailable.
   WARMUP     no deck has a reference old enough yet.
 
-THE THRESHOLDS ARE PROVISIONAL (REF_FRACTION, MIN_REF_GAMES, MOVING_FRACTION): chosen before seeing a league's
-history, they need tuning against real runs. The numbers behind the label are always printed and recorded, so the
+THE THRESHOLDS ARE PROVISIONAL (REF_FRACTION, MIN_REF_GAMES, MOVING_FRACTION). Replayed over the 4-deck history of the
+11-deck main-league run (92k games/deck), at 100 games per deck and cell, the label flickered between IMPROVING and
+CHURNING from ~70k on because the pooled score (400 games, +-5 points) sat within noise of 50 -- hence the larger
+reference cell (REF_GAMES_FACTOR). The policy ratio was 0.39-0.62 at every age of that run and the one-snapshot-apart
+step is ~0.13, so MOVING_FRACTION=0.25 separates "frozen" from "wandering" with room on both sides. The numbers behind the label are always printed and recorded, so the
 label can be re-derived under other thresholds from metrics.jsonl."""
 from evaluation import Tally, wilson_interval
 
@@ -29,6 +32,7 @@ NAME = "progress_indicator"
 REF_FRACTION = 0.6
 MIN_REF_GAMES = 10000
 MOVING_FRACTION = 0.25  # share of the current-vs-random policy distance the policy has moved from its reference self
+REF_GAMES_FACTOR = 4    # strength_history plays the reference cell with this many times its usual games (see there)
 
 
 def _ref_games(anchor_games, current_games):

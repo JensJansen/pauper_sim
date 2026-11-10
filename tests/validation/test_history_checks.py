@@ -139,3 +139,13 @@ def test_history_checks_skip_without_their_inputs(league):
     ctx.cumulative_games = 25  # nothing is two snapshot intervals older than that except snapshot 0 at 10 games
     assert strength_history.run(ctx).get("anchors", 0) <= 1
     assert "skipped" in progress_indicator.run(_ctx(league))  # strength_history has not run on this ctx
+
+
+@pytest.mark.slow
+def test_reference_cell_gets_extra_games(league, monkeypatch):
+    monkeypatch.setattr(progress_indicator, "MIN_REF_GAMES", 10)  # 0.6 x 70 games = 42: the 40-game anchor is the reference
+    ctx = _ctx(league)
+    strength_history.run(ctx)
+    games = {(r["deck"], r["anchor_games"]): r["games"] for r in ctx.extras["strength_history"]["own"]}
+    assert all(g == 2 * progress_indicator.REF_GAMES_FACTOR for (_d, a), g in games.items() if a == 40)
+    assert all(g == 2 for (_d, a), g in games.items() if a == 20)

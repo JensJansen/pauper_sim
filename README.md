@@ -561,7 +561,8 @@ under "Evaluating agents"). Each cadence point:
   (`history_ladder`, default 1k, 5k, 10k, 20k, 30k, 40k, 50k, 75k, 100k, 150k, 200k,
   300k, 400k, 500k games/deck, keeping those at least two snapshot intervals
   older than now), `history_checks_games` (100) and `field_checks_games` (40)
-  games per cell. Metrics: `strength_history` (per deck and anchor) and
+  games per cell (the reference anchor's cell, which `progress_indicator` reads,
+  gets 4x the games). Metrics: `strength_history` (per deck and anchor) and
   `strength_field` (per opponent deck and anchor).
 - `policy_movement` runs a fixed probe suite (`probe_states_dir`, recorded once
   with `src/policy_probe.py record`; `data/probe_states/small_league/` holds the

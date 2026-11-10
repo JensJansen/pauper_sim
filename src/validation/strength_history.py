@@ -14,11 +14,13 @@ The anchors are the ladder rungs (default 1k, 5k, 10k, 20k, 30k, 40k, 50k, 75k, 
 least two snapshot intervals older than the current point, mapped to the nearest snapshot. Unlike a
 round-robin, the cost per cadence point grows with the number of rungs, not quadratically with the history.
 
-ctx fields read: games_per_snapshot (required), history_ladder, history_games (games per `own` cell, default 100),
-field_games (games per `field` cell, default 40). Report only: nothing here changes training."""
+ctx fields read: games_per_snapshot (required), history_ladder, history_games (games per `own` cell, default 100;
+the cell progress_indicator reads, each deck's reference anchor, gets REF_GAMES_FACTOR times that), field_games (games
+per `field` cell, default 40). Report only: nothing here changes training."""
 from evaluation import AgentRef, Matchup, Tally, history, play_matchups, wilson_interval
 
 from . import _common
+from .progress_indicator import REF_GAMES_FACTOR, _ref_games
 
 NAME = "strength_history"
 DEFAULT_LADDER = (1000, 5000, 10000, 20000, 30000, 40000, 50000, 75000, 100000, 150000, 200000, 300000, 400000,
@@ -46,7 +48,16 @@ def run(ctx):
     field = [(Matchup(current[a], AgentRef(b, league, f"@{g}", sid)), a, b, g)
              for b in decks for g, sid in points[b] for a in decks if a != b]
     seed = 0 if ctx.seed is None else ctx.seed
-    own_results = play_matchups([m for m, *_ in own], ctx.history_games, seed=seed, executor=ctx.executor)
+    # The cell progress_indicator reads (each deck's reference anchor) gets REF_GAMES_FACTOR x the games: a label
+    # taken from 4 decks x 100 games flickers on noise alone.
+    refs = {d: _ref_games([g for g, _ in points[d]], ctx.cumulative_games) for d in decks}
+    boosted = [i for i, (_m, d, g) in enumerate(own) if g == refs[d]]
+    own_results = [None] * len(own)
+    for indices, games in (([i for i in range(len(own)) if i not in set(boosted)], ctx.history_games),
+                           (boosted, ctx.history_games * REF_GAMES_FACTOR)):
+        for i, r in zip(indices, play_matchups([own[i][0] for i in indices], games, seed=seed, executor=ctx.executor)
+                        if indices else []):
+            own_results[i] = r
     field_results = play_matchups([m for m, *_ in field], ctx.field_games, seed=seed + 1, executor=ctx.executor)
 
     def row(r, **keys):
