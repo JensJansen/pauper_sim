@@ -20,7 +20,8 @@ from rl.league.league import LeaguePool, PFSP_POWER
 from rl.roster import build_pool
 from rl.decision.agent import SeatAgent
 from rl.training.train import batch_size_for_iteration, collect_rollout, collect_rollout_league, _constant_pairing, ent_coef_schedule
-from rl.training.rollout_parallel import collect_rollout_league_parallel, _sanitize_events
+from rl.training.rollout_parallel import (
+    collect_rollout_league_parallel, gather_league_rollout, submit_league_rollout, _sanitize_events)
 from rl.training.ppo import ppo_update
 from rl.model.mulligan import MulliganNet, update as mulligan_update
 from rl import checkpoint as ckpt_io
@@ -352,6 +353,24 @@ def _collect_round(ctx, name, mulligan_state_dicts):
     )
 
 
+def _submit_collect_round(ctx, name, mulligan_state_dicts):
+    """The non-blocking half of _collect_round's worker-pool path: ships the
+    weights the live nets hold RIGHT NOW to the workers and returns the futures
+    for _gather_collect_round. Only meaningful with an executor (overlap_collect
+    requires one)."""
+    return submit_league_rollout(
+        name, ctx["live_nets"], ctx["reward_fn_name"], ctx["league_dir"], ctx["horizon"],
+        ctx["games_per_iteration"], ctx["executor"], ctx["n_workers"], ctx["all_trunk_hidden"],
+        mulligan_state_dicts, game_logs=ctx["game_logs"], checkpoint_rate=ctx["checkpoint_rate"],
+        pfsp=ctx["pfsp"], pfsp_power=ctx["pfsp_power"], stratify_0land_pct=ctx["stratify_0land_pct"])
+
+
+def _gather_collect_round(ctx, futures):
+    """The blocking half: same (buffers_by_deck, mull_by_deck, games_played,
+    outcomes) return as _collect_round."""
+    return gather_league_rollout(futures, ctx["game_logs"])
+
+
 def _record_pool_outcomes(pool, name, outcomes):
     """Feed every game's real outcome into the one authoritative
     pool so PFSP weighting updates within the session, not
@@ -411,6 +430,13 @@ def _update_round(ctx, name, buffers_by_deck, batch_size, ent_coef):
             explained_variance, adv_std, salvaged)
 
 
+def _mulligan_flush_due(ctx, iteration, n_iterations):
+    """Whether _flush_mulligan steps the mulligan models at the end of this
+    iteration: every MULLIGAN_UPDATE_EVERY iterations, and on the session's
+    last one so nothing is dropped at a session boundary."""
+    return ctx["train_mulligan"] and ((iteration + 1) % MULLIGAN_UPDATE_EVERY == 0 or iteration == n_iterations - 1)
+
+
 def _flush_mulligan(ctx, mull_by_deck_accum, iteration, n_iterations, cumulative):
     """Mulligan-model REINFORCE: one step per train deck on transitions
     accumulated across the last MULLIGAN_UPDATE_EVERY iterations,
@@ -418,8 +444,7 @@ def _flush_mulligan(ctx, mull_by_deck_accum, iteration, n_iterations, cumulative
     dropped at a session boundary. `cumulative` is the games/deck count
     logged with each record."""
     mull_stats = {}
-    is_mulligan_flush = (iteration + 1) % MULLIGAN_UPDATE_EVERY == 0 or iteration == n_iterations - 1
-    if ctx["train_mulligan"] and is_mulligan_flush:
+    if _mulligan_flush_due(ctx, iteration, n_iterations):
         for name in ctx["train_decks"]:
             if mull_by_deck_accum[name]:
                 mull_stats[name] = mulligan_update(ctx["mulligan_nets"][name], ctx["mulligan_optimizers"][name],
@@ -435,6 +460,12 @@ def _flush_mulligan(ctx, mull_by_deck_accum, iteration, n_iterations, cumulative
               f"mean REINFORCE loss {mean_loss:.4f}", flush=True)
 
 
+def _snapshot_due(ctx, iteration, snapshot_every):
+    """Whether _snapshot_if_due snapshots at the end of this iteration."""
+    games_before = ctx["cumulative_games"] + iteration * ctx["games_per_iteration"]
+    return ctx["matchup"] is None and should_snapshot(games_before, ctx["games_per_iteration"], snapshot_every)
+
+
 def _snapshot_if_due(ctx, iteration, snapshot_every):
     """Snapshot cadence is cumulative, not session-local -- gated on
     cumulative games crossing a multiple of snapshot_every_games
@@ -444,8 +475,7 @@ def _snapshot_if_due(ctx, iteration, snapshot_every):
     stats, and advances progress.json."""
     games_per_iteration, pool, league_dir = ctx["games_per_iteration"], ctx["pool"], ctx["league_dir"]
     games_before = ctx["cumulative_games"] + iteration * games_per_iteration
-    crossed = should_snapshot(games_before, games_per_iteration, snapshot_every)
-    if ctx["matchup"] is None and crossed:  # matchup: no historical snapshots
+    if _snapshot_due(ctx, iteration, snapshot_every):  # not for a matchup: no historical snapshots
         for name in ctx["train_decks"]:  # only TRAIN decks change -> only they need new snapshots
             pool.register_snapshot(name, ctx["live_nets"][name], ctx["mulligan_nets"][name])
         _save_live_checkpoints(ctx["live_nets"], ctx["optimizers"], ctx["deck_names"], ctx["session"],
@@ -463,7 +493,19 @@ def _run_session(n_iterations, games_per_iteration, snapshot_every, executor, n_
                   train_deck=True, train_mulligan=True, train_decks=None,
                   matchup=None, game_logs=None, checkpoint_rate=0.0, roster=None, pfsp=True,
                   cumulative_games=0, ppo_hparams=None,
-                  pfsp_power=PFSP_POWER, trunk_hidden=TRUNK_HIDDEN, device="cpu", stratify_0land_pct=0.0):
+                  pfsp_power=PFSP_POWER, trunk_hidden=TRUNK_HIDDEN, device="cpu", stratify_0land_pct=0.0,
+                  overlap_collect=False):
+    # overlap_collect: pipeline the collect and update stages. While the PPO
+    # update for round k runs here, the workers already collect round k+1 --
+    # from the weights as they stood just BEFORE update k, i.e. one update
+    # older than the sequential schedule would use (an off-policy lag the PPO
+    # ratio/clip handles; measured, not assumed, see README). Everything else
+    # is exactly as current as in the sequential schedule: a round is only
+    # prefetched across an iteration boundary when neither a mulligan flush
+    # nor a snapshot is due there, so the workers never see stale mulligan
+    # nets or a stale snapshot list. Needs a worker pool (executor) and no
+    # --matchup.
+    #
     # device: where the nets live, and where ppo_update's gradient work runs.
     # Only the update moves -- collection always runs on CPU (inference over
     # one game state at a time in worker processes), so eval paths and
@@ -511,6 +553,9 @@ def _run_session(n_iterations, games_per_iteration, snapshot_every, executor, n_
     train_decks = list(train_decks) if train_decks is not None else deck_names
     assert set(train_decks) <= set(deck_names), f"train_decks {train_decks} not all in roster {deck_names}"
     train_set = set(train_decks)
+    assert not overlap_collect or (executor is not None and matchup is None), (
+        "overlap_collect pipelines the worker-pool collection against the update: it needs an executor and "
+        "no matchup")
     # ppo_hparams: partial override of PPO_DEFAULTS. Unknown keys are a hard
     # error, not a silent no-op.
     hp = {**PPO_DEFAULTS, **(ppo_hparams or {})}
@@ -567,6 +612,8 @@ def _run_session(n_iterations, games_per_iteration, snapshot_every, executor, n_
         mode.append("mulligan FROZEN")
     if train_set != set(deck_names):
         mode.append(f"train_decks={train_decks}")
+    if overlap_collect:
+        mode.append("collect/update OVERLAPPED")
     print(f"League session {session}: n_iterations={n_iterations} games_per_iteration={games_per_iteration} "
           f"snapshot_every={snapshot_every} checkpoint_rate={checkpoint_rate} decks={deck_names} n_workers={n_workers} "
           f"stratify_0land_pct={stratify_0land_pct}"
@@ -580,12 +627,14 @@ def _run_session(n_iterations, games_per_iteration, snapshot_every, executor, n_
                    n_iterations=n_iterations, games_per_iteration=games_per_iteration,
                    snapshot_every=snapshot_every, checkpoint_rate=checkpoint_rate,
                    pfsp=pfsp, n_workers=n_workers, horizon=horizon,
-                   pfsp_power=pfsp_power, stratify_0land_pct=stratify_0land_pct, **hp)
+                   pfsp_power=pfsp_power, stratify_0land_pct=stratify_0land_pct,
+                   overlap_collect=overlap_collect, **hp)
     t0 = time.time()
     total_games = 0
     collect_time_total = 0.0
     update_time_total = 0.0
     mull_by_deck_accum = {name: [] for name in train_decks}
+    pending = None  # overlap_collect: futures of the round collecting while the previous round updates
     for iteration in range(n_iterations):
         iter_t0 = time.time()
         games_this_iter = 0
@@ -606,11 +655,28 @@ def _run_session(n_iterations, games_per_iteration, snapshot_every, executor, n_
         # process boundary to CPU-only workers.
         mulligan_state_dicts = {n: {k: v.cpu() for k, v in mulligan_nets[n].state_dict().items()}
                                 for n in deck_names}
-        for name in train_decks:  # only TRAIN decks get a round; the rest are frozen opponents
+        for deck_idx, name in enumerate(train_decks):  # only TRAIN decks get a round; the rest are frozen opponents
             t_collect0 = time.time()
-            buffers_by_deck, mull_by_deck, played, outcomes = _collect_round(ctx, name, mulligan_state_dicts)
+            if pending is not None:  # prefetched during the previous round's update
+                buffers_by_deck, mull_by_deck, played, outcomes = _gather_collect_round(ctx, pending)
+                pending = None
+            else:
+                buffers_by_deck, mull_by_deck, played, outcomes = _collect_round(ctx, name, mulligan_state_dicts)
             if matchup is None:
                 _record_pool_outcomes(pool, name, outcomes)
+            if overlap_collect:
+                # Weights are shipped NOW, before this round's update below. The next round is the next deck in
+                # this iteration or, across the boundary, the first deck of the next one -- unless the boundary
+                # runs a mulligan flush or a snapshot, which must land before anything is collected after it.
+                if deck_idx + 1 < len(train_decks):
+                    next_name = train_decks[deck_idx + 1]
+                elif (iteration + 1 < n_iterations and not _mulligan_flush_due(ctx, iteration, n_iterations)
+                      and not _snapshot_due(ctx, iteration, snapshot_every)):
+                    next_name = train_decks[0]
+                else:
+                    next_name = None
+                if next_name is not None:
+                    pending = _submit_collect_round(ctx, next_name, mulligan_state_dicts)
             collect_time_total += time.time() - t_collect0
             total_games += played
             games_this_iter += played

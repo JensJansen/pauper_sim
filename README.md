@@ -390,10 +390,21 @@ Key flags:
 - `--pfsp` / `--no-pfsp` — PFSP-weight opponent sampling instead of uniform
   (default True).
 
-`create_training_league`/`checks_cadence_pct`/`checks_games`/`stratify_0land_pct`
+`create_training_league`/`checks_cadence_pct`/`checks_games`/`stratify_0land_pct`/`overlap_collect`
 are config-only fields (no `run_league.py` flag) — they're read by
 `run_training_pipeline.py`, not `run_league.py` itself. See **Validation
 checks** below.
+
+`overlap_collect` (default `false`) pipelines the two stages of a round: while
+the PPO update for deck *k* runs on the GPU, the workers already collect deck
+*k+1*, from the weights as they stood just before update *k* (one update older
+than the sequential schedule uses). Measured on the production config (11 decks
+× 60 games, 6 workers): 11.98 → 9.06 s/round (24.4% faster; the ceiling is the
+28% the update takes). The cost is that one-update policy lag, which is
+off-policy data for PPO's ratio/clip to absorb — its effect on long-run learning
+is being tested by a paired A/B on the `exp/overlap-l1-ab` branch, so the flag
+stays off until that reports. A round is only prefetched across an iteration
+boundary when no mulligan flush or snapshot is due there. Needs `n_workers > 1`.
 
 `--games-per-iteration` isn't a flag — defaults to `max(1, n_workers)`,
 overridable via the run-config's `games_per_iteration`.

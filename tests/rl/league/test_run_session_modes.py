@@ -74,13 +74,13 @@ def _seed(seed=5):
     np.random.seed(seed)  # ppo_update shuffles with the global numpy RNG
 
 
-def _session(league_dir, iters=1, gpi=2, executor=None, n_workers=1, seed=5, **kw):
+def _session(league_dir, iters=1, gpi=2, executor=None, n_workers=1, seed=5, snapshot_every=1, **kw):
     """Runs one seeded session; returns that session's metrics.jsonl records (from its session_start on)."""
     _seed(seed)
     kw.setdefault("roster", ROSTER)
     kw.setdefault("trunk_hidden", TRUNK)
     kw.setdefault("ppo_hparams", {"n_epochs": 1})  # these tests check which things move, not how well PPO fits
-    league_runner._run_session(iters, gpi, 1, executor, n_workers, league_dir=str(league_dir), seed=seed, **kw)
+    league_runner._run_session(iters, gpi, snapshot_every, executor, n_workers, league_dir=str(league_dir), seed=seed, **kw)
     with open(league_dir / "metrics.jsonl") as f:
         records = [json.loads(ln) for ln in f if ln.strip()]
     last_start = max(i for i, r in enumerate(records) if r["kind"] == "session_start")
@@ -233,3 +233,69 @@ def test_a_real_process_pool_runs_a_session(tmp_path):
     ppo = _ppo(records)
     assert sorted(r["deck"] for r in ppo) == sorted(ROSTER) and all(r["games"] == 2 for r in ppo)
     assert all(r["buffer_size"] > 0 for r in ppo), "workers must return real transitions"
+
+
+class RecordingExecutor(InProcessExecutor):
+    """An in-process executor that logs each collection submit ("C") into a shared event list, with a
+    fingerprint of the first deck's weights as shipped to the workers."""
+
+    def __init__(self, events, fingerprints):
+        self.events, self.fingerprints = events, fingerprints
+
+    def submit(self, fn, *args, **kwargs):
+        self.events.append("C")
+        shipped = args[1][ROSTER[0]]  # all_state_dicts[deck] of the first train deck
+        self.fingerprints.append(float(sum(v.double().sum() for v in shipped.values() if v.is_floating_point())))
+        return super().submit(fn, *args, **kwargs)
+
+
+def _schedule(tmp_path, monkeypatch, overlap_collect, iters, snapshot_every, n_workers=1):
+    """Runs a session and returns (events, shipped-weight fingerprints): "C" per collection submit
+    (one per worker per round), "U" per round's update, in the order they happened."""
+    events, fingerprints = [], []
+    real_update = league_runner._update_round
+
+    def update(*a, **kw):
+        events.append("U")
+        return real_update(*a, **kw)
+
+    monkeypatch.setattr(league_runner, "_update_round", update)
+    # one worker => one "C" per round, so the event string reads as the round schedule
+    _session(tmp_path, iters=iters, snapshot_every=snapshot_every, executor=RecordingExecutor(events, fingerprints),
+             n_workers=n_workers, overlap_collect=overlap_collect, checkpoint_rate=0.3)
+    return "".join(events), fingerprints
+
+
+def test_overlap_collect_ships_the_weights_from_before_the_previous_update(tmp_path, monkeypatch):
+    """The documented one-update lag, pinned: round 2 is submitted before round 1's update, so the
+    workers get round 1's weights; the sequential schedule ships the updated ones."""
+    seq_events, seq_fp = _schedule(tmp_path / "s", monkeypatch, False, iters=1, snapshot_every=100)
+    ovl_events, ovl_fp = _schedule(tmp_path / "o", monkeypatch, True, iters=1, snapshot_every=100)
+    assert seq_events == "CUCU" and ovl_events == "CCUU"
+    assert seq_fp[1] != seq_fp[0], "sequential: round 2 collects from the weights round 1's update produced"
+    assert ovl_fp[1] == ovl_fp[0], "overlap: round 2 collects from the weights round 1 collected with"
+
+
+def test_overlap_collect_prefetches_across_an_iteration_boundary_only_when_nothing_is_due(tmp_path, monkeypatch):
+    # no snapshot, and the mulligan flush is only due on the session's last iteration: the boundary prefetches
+    events, _ = _schedule(tmp_path / "a", monkeypatch, True, iters=2, snapshot_every=100)
+    assert events == "CCUCUCUU"
+    # a snapshot at the boundary must land before anything is collected after it: no prefetch there
+    events, _ = _schedule(tmp_path / "b", monkeypatch, True, iters=2, snapshot_every=1)
+    assert events == "CCUUCCUU"
+
+
+def test_overlap_collect_session_trains_like_a_normal_one(tmp_path):
+    records = _session(tmp_path, iters=2, executor=InProcessExecutor(), n_workers=2, gpi=2, checkpoint_rate=0.5,
+                       overlap_collect=True)
+    assert records[0]["kind"] == "session_start" and records[0]["overlap_collect"] is True
+    ppo = _ppo(records)
+    assert sorted((r["iteration"], r["deck"]) for r in ppo) == [(i, d) for i in range(2) for d in sorted(ROSTER)]
+    assert all(r["games"] == 2 and r["buffer_size"] > 0 for r in ppo)
+
+
+def test_overlap_collect_needs_a_worker_pool_and_no_matchup(tmp_path):
+    with pytest.raises(AssertionError, match="overlap_collect"):
+        _session(tmp_path, overlap_collect=True)
+    with pytest.raises(AssertionError, match="overlap_collect"):
+        _session(tmp_path, executor=InProcessExecutor(), n_workers=2, matchup=("elves", "boggles"), overlap_collect=True)

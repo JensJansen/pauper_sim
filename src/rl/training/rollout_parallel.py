@@ -2,7 +2,9 @@
 rl.training.train so the game-loop/attribution code doesn't carry the
 ProcessPoolExecutor/pickling-boundary concerns. _league_rollout_worker (run
 in each spawned worker) and collect_rollout_league_parallel (the
-main-process orchestrator) both build on rl.training.train.collect_rollout_league
+main-process orchestrator, split into submit_league_rollout /
+gather_league_rollout so the training loop can overlap a collection with
+a PPO update) both build on rl.training.train.collect_rollout_league
 -- the same game loop the sequential path uses, re-entered fresh per
 worker."""
 
@@ -137,17 +139,21 @@ def _league_rollout_worker(training_deck_name, all_state_dicts, all_trunk_hidden
     return entries_by_deck, mull_by_deck, worker_logs, played, outcomes
 
 
-def collect_rollout_league_parallel(training_deck_name, live_nets, reward_fn_name, league_root_dir, horizon, n_games,
-                                     executor, n_workers, all_trunk_hidden,
-                                     mulligan_state_dicts=None, game_logs=None, checkpoint_rate=0.0, pfsp=True,
-                                     pfsp_power=None, stratify_0land_pct=0.0):
-    """Orchestrator (runs in the MAIN process): splits n_games across
-    n_workers, submits one _league_rollout_worker task per worker via the
-    given (reused-across-calls) ProcessPoolExecutor, so process-spawn/import
-    overhead is paid once, not once per collection round. Every deck's live
-    net crosses the boundary, not just training_deck_name's own, since a
-    worker needs the same opponent-sampling capability the in-process path
-    has.
+def submit_league_rollout(training_deck_name, live_nets, reward_fn_name, league_root_dir, horizon, n_games,
+                          executor, n_workers, all_trunk_hidden,
+                          mulligan_state_dicts=None, game_logs=None, checkpoint_rate=0.0, pfsp=True,
+                          pfsp_power=None, stratify_0land_pct=0.0):
+    """The non-blocking half of collect_rollout_league_parallel (runs in the
+    MAIN process): splits n_games across n_workers and submits one
+    _league_rollout_worker task per worker via the given
+    (reused-across-calls) ProcessPoolExecutor, so process-spawn/import
+    overhead is paid once, not once per collection round. Returns the
+    futures for gather_league_rollout. Every deck's live net crosses the
+    boundary, not just training_deck_name's own, since a worker needs the
+    same opponent-sampling capability the in-process path has -- and the
+    weights shipped are the ones live_nets holds AT THIS CALL, which is what
+    lets the training loop submit a round's collection before the previous
+    round's PPO update has run (see league_runner's overlap_collect).
 
     all_trunk_hidden: every live net's trunk widths, computed once by the
     caller (rl.league.league_runner._run_session) rather than re-derived
@@ -157,12 +163,7 @@ def collect_rollout_league_parallel(training_deck_name, live_nets, reward_fn_nam
 
     checkpoint_rate, pfsp, stratify_0land_pct: forwarded to every worker's
     collect_rollout_league call verbatim (checkpoint_rate/pfsp on to
-    pool.sample_opponent; stratify_0land_pct on to collect_rollout).
-
-    Returns (buffers_by_deck, mull_by_deck, games_played, outcomes) --
-    outcomes merges every worker's own outcomes list; the caller applies
-    these to the real pool via record_outcome, since each worker's pool is
-    a separate-process, read-only replica."""
+    pool.sample_opponent; stratify_0land_pct on to collect_rollout)."""
     # .cpu(): workers are separate processes with no CUDA context, and they
     # always play on CPU regardless of where training runs. A no-op when
     # training is already on CPU.
@@ -174,7 +175,7 @@ def collect_rollout_league_parallel(training_deck_name, live_nets, reward_fn_nam
     chunks = [base + (1 if i < remainder else 0) for i in range(n_workers)]
 
     collect_logs = game_logs is not None
-    futures = [
+    return [
         # Trailing args passed by keyword (not positionally, unlike the
         # leading required ones above): _league_rollout_worker declares them
         # keyword-with-defaults, so a purely-positional tail is one
@@ -187,6 +188,16 @@ def collect_rollout_league_parallel(training_deck_name, live_nets, reward_fn_nam
                          stratify_0land_pct=stratify_0land_pct)
         for chunk in chunks if chunk > 0
     ]
+
+
+def gather_league_rollout(futures, game_logs=None):
+    """The blocking half of collect_rollout_league_parallel: waits for the
+    futures submit_league_rollout returned and merges the workers' results.
+
+    Returns (buffers_by_deck, mull_by_deck, games_played, outcomes) --
+    outcomes merges every worker's own outcomes list; the caller applies
+    these to the real pool via record_outcome, since each worker's pool is
+    a separate-process, read-only replica."""
     buffers_by_deck = {}   # deck name -> merged RolloutBuffer across workers
     mull_by_deck = {}      # deck name -> merged mulligan transitions across workers
     outcomes = []          # (opponent_deck_name, snapshot_id_or_None, training_deck_won, was_stratified), merged across workers
@@ -202,3 +213,17 @@ def collect_rollout_league_parallel(training_deck_name, live_nets, reward_fn_nam
             game_logs.extend(worker_logs)
         outcomes.extend(worker_outcomes)
     return buffers_by_deck, mull_by_deck, games_played, outcomes
+
+
+def collect_rollout_league_parallel(training_deck_name, live_nets, reward_fn_name, league_root_dir, horizon, n_games,
+                                     executor, n_workers, all_trunk_hidden,
+                                     mulligan_state_dicts=None, game_logs=None, checkpoint_rate=0.0, pfsp=True,
+                                     pfsp_power=None, stratify_0land_pct=0.0):
+    """Orchestrator (runs in the MAIN process): submit_league_rollout, then
+    gather_league_rollout -- one blocking collection round. See those two for
+    the argument and return contracts."""
+    futures = submit_league_rollout(
+        training_deck_name, live_nets, reward_fn_name, league_root_dir, horizon, n_games, executor, n_workers,
+        all_trunk_hidden, mulligan_state_dicts=mulligan_state_dicts, game_logs=game_logs,
+        checkpoint_rate=checkpoint_rate, pfsp=pfsp, pfsp_power=pfsp_power, stratify_0land_pct=stratify_0land_pct)
+    return gather_league_rollout(futures, game_logs)

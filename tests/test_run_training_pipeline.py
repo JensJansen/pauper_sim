@@ -52,6 +52,12 @@ def test_resolve_options_reads_config_overrides():
     assert opts["seed"] == 7
 
 
+def test_resolve_options_overlap_collect_is_opt_in():
+    base = {"league_name": "x", "total_games": 1000}
+    assert pipeline._resolve_options(base)["overlap_collect"] is False
+    assert pipeline._resolve_options({**base, "overlap_collect": True})["overlap_collect"] is True
+
+
 def test_resolve_options_training_league_name_is_none_when_toggle_is_off():
     opts = pipeline._resolve_options({"league_name": "x", "total_games": 1000, "create_training_league": False})
     assert opts["training_league_name"] is None
@@ -60,7 +66,8 @@ def test_resolve_options_training_league_name_is_none_when_toggle_is_off():
 def _fake_train_to_opts():
     return {"cadence_games": 40, "games_per_iteration": 10, "snapshot_every": 1, "n_workers": 1,
             "seed": None, "roster": None, "pfsp": True, "checkpoint_rate": 0.0, "ppo_hparams": None,
-            "pfsp_power": 0.5, "trunk_hidden": (1,), "stratify_0land_pct": 0.0}
+            "pfsp_power": 0.5, "trunk_hidden": (1,), "stratify_0land_pct": 0.0,
+            "overlap_collect": False}
 
 
 def test_train_to_chunks_until_target_and_invokes_on_chunk_per_chunk(monkeypatch):

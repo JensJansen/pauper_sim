@@ -83,6 +83,7 @@ def _resolve_options(cfg):
     checks_cadence_pct = cfg.get("checks_cadence_pct", 5)
     checkpoint_rate = cfg.get("checkpoint_opponent_rate", 0.0)
     stratify_0land_pct = cfg.get("stratify_0land_pct", 0.0)
+    overlap_collect = bool(cfg.get("overlap_collect", False))
     create_training_league = bool(cfg.get("create_training_league", False))
     if stratify_0land_pct > 0 and checkpoint_rate <= 0:
         # stratify only ever fires against a frozen-snapshot opponent (see
@@ -107,6 +108,7 @@ def _resolve_options(cfg):
         "snapshot_every": max(1, cfg.get("snapshot_every_games", 200) // games_per_iteration),
         "checkpoint_rate": checkpoint_rate,
         "stratify_0land_pct": stratify_0land_pct,
+        "overlap_collect": overlap_collect,
         "pfsp": cfg.get("pfsp", True),
         "pfsp_power": cfg.get("pfsp_power", PFSP_POWER),
         "device": cfg.get("device", "cpu"),
@@ -144,7 +146,7 @@ def _train_to(league_dir, target_games, opts, executor, device, on_chunk=None, c
                     pfsp=opts["pfsp"], checkpoint_rate=opts["checkpoint_rate"],
                     cumulative_games=progress["cumulative_games_per_deck"], ppo_hparams=opts["ppo_hparams"],
                     pfsp_power=opts["pfsp_power"], trunk_hidden=opts["trunk_hidden"], device=device,
-                    stratify_0land_pct=opts["stratify_0land_pct"])
+                    stratify_0land_pct=opts["stratify_0land_pct"], overlap_collect=opts["overlap_collect"])
 
         # auto_sizing=False: fixed cadence-sized chunks, not the doubling
         # ladder -- last_batch_size is meaningless here and left untouched.
