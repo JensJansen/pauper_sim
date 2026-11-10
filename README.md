@@ -608,6 +608,99 @@ into `metrics.jsonl` (`kind` matching the check's own name above) for
 `report_metrics.py`'s existing trend tooling -- except `primary_round_robin_review`,
 which (see above) writes only to the webapp's `logs/replays/`, nothing here.
 
+### Metrics reference (`rl/league/metrics.py`)
+
+`checkpoints/<league>/metrics.jsonl` is the one append-only record of a run: one JSON object per line, always with a `kind` and (except `session_start`'s header fields) a `cumulative_games` stamp. `metrics.append` is the only writer (it also mirrors the line to the web app) and `metrics.read` the only reader; `metrics.KINDS` is the schema this section is generated from, and `tests/rl/league/test_metrics.py` fails if code emits an unregistered kind or this list omits one. Training writes `session_start`, `ppo` and `mulligan`; each validation check writes the kind(s) named after it. Readers must use `.get` -- the file is append-only across many schema revisions.
+
+- `session_start` -- league_runner._run_session
+  - `session`: session number
+  - `reward_fn`: reward function name
+  - `roster`: all decks in the pool
+  - `train_decks`: decks being trained
+  - `n_iterations`: iterations this session
+  - `games_per_iteration`: games/deck per iteration
+  - `snapshot_every`: iterations between snapshots
+  - `checkpoint_rate`: share of games against a frozen snapshot
+  - `pfsp`: PFSP opponent sampling
+  - `n_workers`: collection workers
+  - `horizon`: turn horizon
+  - `pfsp_power`: PFSP exponent
+  - `stratify_0land_pct`: forced 0-land hand rate
+  - `overlap_collect`: collect/update overlapped
+  - `lr / mulligan_lr / gamma / gae_lambda / target_kl / n_epochs / adv_norm_floor / ent_coef`: PPO hyper-parameters in force
+  - `seq_batch_size_start / seq_batch_size_cap`: minibatch ramp
+- `ppo` -- league_runner._run_session (per deck per iteration)
+  - `deck`: deck
+  - `games`: games collected
+  - `buffer_size`: transitions in the update
+  - `batch_size`: episodes per minibatch
+  - `salvaged`: transitions salvaged from other decks' games
+  - `ent_coef`: entropy coefficient
+  - `policy_loss`
+  - `value_loss`
+  - `entropy`: mean policy entropy (nats)
+  - `approx_kl`: k3 estimate after the update
+  - `clip_fraction`: share of ratios clipped
+  - `epochs_run`: epochs before target_kl stopped it
+  - `explained_variance`: critic fit before the update
+  - `adv_std`: raw advantage spread
+  - `target_kl`: the early-stop threshold in force
+- `mulligan` -- league_runner._run_session (per deck per REINFORCE flush)
+  - `deck`: deck
+  - `n`: mulligan decisions in the flush
+  - `loss`: REINFORCE loss
+- `mulligan_audit` -- validation.mulligan_audit
+  - `deck`: deck or ALL
+  - `decisions`: mulligan decisions audited
+  - `mulligan_rate`: share mulliganed
+  - `by_land_count`: keep/mulligan by land count (natural games)
+  - `probe_hands`: P(mulligan) on synthetic hands of every land count
+- `primary_vs_primary_round_robin` -- validation.round_robin_primary
+  - `deck`: deck
+  - `games`: games vs OTHER decks (mirrors excluded since 2026-11-10; older lines counted each mirror game as a win)
+  - `wins`
+  - `win_rate`
+- `primary_vs_training_round_robin` -- validation.round_robin_training
+  - `deck`: deck
+  - `games`: games vs the independently trained twin league
+  - `wins`
+  - `win_rate`
+  - `mana_burnt_by_deck`: diagnostic, on this kind only
+- `strength_history` -- validation.strength_history (own)
+  - `deck`: deck
+  - `anchor_games`: age (games/deck) of the deck's own snapshot played
+  - `games`: games in the cell
+  - `score`: current agent's score against that snapshot
+- `strength_field` -- validation.strength_history (field)
+  - `deck`: OPPONENT deck B
+  - `anchor_games`: B's snapshot age
+  - `games`: games, pooled over the other decks' current agents
+  - `score`: their pooled score against B@age
+- `policy_movement` -- validation.policy_movement
+  - `deck`: deck
+  - `anchor_games`: age of the snapshot compared with
+  - `js`: mean Jensen-Shannon divergence, current vs that snapshot, on the probe suite (nats)
+  - `top1`: share of probe decisions with the same favourite action
+- `policy_scale` -- validation.policy_movement
+  - `deck`: deck
+  - `entropy`: current policy entropy on the probe suite
+  - `adjacent_js`: JS between the newest two snapshots (one interval apart)
+  - `random_js`: JS between a random net and the current policy
+- `progress_indicator` -- validation.progress_indicator
+  - `deck`: ALL
+  - `label`: IMPROVING / CHURNING / STUCK / FLAT / WARMUP (provisional thresholds)
+  - `score`: pooled score of current vs ~0.6x-age selves
+  - `lo / hi`: 95% interval
+  - `games`: games behind the score
+  - `policy_ratio`: policy distance as a fraction of the random distance
+- `vs_history` -- (retired 2026-11-10; legacy records only)
+  - `deck`: deck
+  - `label`: archive_oldest | active_oldest
+  - `snapshot_id`
+  - `games`
+  - `live_wins`
+  - `win_rate`
+
 ### Evaluating agents (`src/evaluation/`, `python -m evaluation`)
 
 `validation/` checks one league inside its own directory. `evaluation/` answers

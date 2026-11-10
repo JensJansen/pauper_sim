@@ -16,6 +16,7 @@ import torch
 from rl.rewards import deploy_reward_v6
 from rl.model.arch import SetTransformer
 from rl.model.deck import DeckNetwork
+from rl.league import metrics
 from rl.league.league import LeaguePool, PFSP_POWER
 from rl.roster import build_pool
 from rl.decision.agent import SeatAgent
@@ -26,7 +27,7 @@ from rl.training.ppo import ppo_update
 from rl.model.mulligan import MulliganNet, update as mulligan_update
 from rl import checkpoint as ckpt_io
 from repo_paths import CHECKPOINTS_DIR
-from webapp_publish.mirror import mirror_metrics_line, mirror_progress
+from webapp_publish.mirror import mirror_progress
 
 LEAGUE_DIR = CHECKPOINTS_DIR / "league"
 D_MODEL = 64  # SetTransformer width; must match rl.model.arch.SetTransformer's own d_model default
@@ -122,15 +123,9 @@ def _save_progress(league_dir, last_batch_size, cumulative_games_per_deck):
 
 
 def _append_metric(league_dir, **fields):
-    """Appends one JSON line to checkpoints/<league>/metrics.jsonl -- every
-    call site tags its own `kind` ("ppo" / "mulligan" / a validation check's name) so
-    report_metrics.py can group by it. Does not create league_dir itself --
-    the caller's LeaguePool(league_dir, ...) construction already does. Also
-    best-effort mirrors the line into the webapp submodule's logs/validation/
-    if it's checked out -- see webapp_mirror.mirror_metrics_line."""
-    with open(f"{league_dir}/metrics.jsonl", "a") as f:
-        f.write(json.dumps(fields) + "\n")
-    mirror_metrics_line(league_dir, fields)  # best-effort webapp copy, see webapp_publish/mirror.py
+    """Appends one record to checkpoints/<league>/metrics.jsonl (and mirrors it to the web app) -- every call
+    site tags its own `kind`; the schema of every kind lives in rl.league.metrics.KINDS."""
+    metrics.append(league_dir, **fields)
 
 
 def should_snapshot(games_before, games_per_iteration, snapshot_every):
