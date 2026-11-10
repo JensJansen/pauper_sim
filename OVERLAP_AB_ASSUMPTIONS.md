@@ -9,7 +9,7 @@ every judgement call made while running it unattended. Results go in `OVERLAP_AB
 
 - Start: the saved `checkpoints/main-league` state at 92,340 games/deck (lean private copy in `C:\pauper_ab\start`;
   the real directory is never written; the driver asserts its `live.pt` hashes and `vocab.json` are unchanged).
-- Arms, each a private copy of the start, one 50-iteration session (3,000 games/deck), production
+- Arms, each a private copy of the start, one 167-iteration session (10,020 games/deck; owner asked for 10,000), production
   `training_configs/main_league.json` settings read through `_resolve_options` (6 workers, 60 games/iteration,
   checkpoint rate 0.3, stratify 0.33, PFSP 0.5, CUDA, mulligan training on), run one after another:
   - **S**: sequential, seed 1001.  **L1**: `overlap_collect`, seed 1001.  **S2**: sequential, seed 2002.
@@ -35,3 +35,11 @@ detectably, the test can only bound harm, not show learning parity; the report w
 ## Judgement calls made unattended
 
 (appended during the run; each entry says what happened, what I chose, and why)
+
+1. **Length raised to 10,000 games/deck (owner request, after the first launch).** 167 iterations x 60 games = 10,020. At the
+   measured round times this is ~6.1 h (S), ~4.7 h (L1), ~6.1 h (S2) of training, i.e. ~17 h + evaluation, longer than
+   the owner's 12 h absence (the owner said waiting longer is acceptable). The first launch (50 iterations) was killed
+   a few iterations in and its partial arm deleted.
+2. **Staged order to get the primary answer first:** S, L1 -> evaluate (start/S/L1 gauntlet + S-vs-L1 head-to-head) -> S2 ->
+   evaluate S2 (same gauntlet seed, so its scores are directly comparable) + S-vs-S2 and L1-vs-S2 head-to-heads. The
+   S2 noise floor therefore arrives last; the L1-vs-S verdict is only provisional until it does.
