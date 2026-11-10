@@ -8,10 +8,12 @@ import torch
 
 from rl import checkpoint as ckpt_io
 from rl.decision.agent import SeatAgent
-from rl.league import league_runner
+from rl.league import league, league_runner
 from rl.model.mulligan import MulliganNet
 from rl.roster import build_pool
 from rl.training.train import _constant_pairing, collect_rollout
+
+from . import history
 
 CHUNK_GAMES = 20  # games per work unit: small enough to balance across workers, big enough to amortize the dispatch
 
@@ -36,7 +38,8 @@ def matchup_seed(seed, deck_a, deck_b, chunk):
 
 
 _pool_cache = None  # (decklists, vocab, deck_ctxs, fixed_tables), built once per process
-_agent_cache = {}   # (league_dir, deck) -> (deck net, mulligan net), loaded once per process
+_agent_cache = {}   # (league_dir, deck, snapshot) -> (deck net, mulligan net), loaded once per process
+_pool_by_dir = {}   # (league_dir, deck) -> LeaguePool, only used for its snapshot loader
 
 
 def _pool():
@@ -46,10 +49,16 @@ def _pool():
     return _pool_cache
 
 
-def _load(league_dir, deck):
-    key = (league_dir, deck)
+def _load(league_dir, deck, snapshot=None):
+    """(deck net, mulligan net) for the deck's live weights, or for snapshot `snapshot` (an id)."""
+    key = (league_dir, deck, snapshot)
     if key not in _agent_cache:
-        _decklists, vocab, _ctxs, fixed_tables = _pool()
+        _decklists, vocab, deck_ctxs, fixed_tables = _pool()
+        if snapshot is not None:
+            pool = _pool_by_dir.setdefault((league_dir, deck), league.LeaguePool(league_dir, [deck]))
+            agent = pool.load_snapshot_agent(history.snapshot_path(league_dir, deck, snapshot), deck_ctxs[deck])
+            _agent_cache[key] = (agent.main, agent.mulligan)
+            return _agent_cache[key]
         live_path = f"{league_dir}/{deck}/live.pt"
         net = league_runner.build_deck_net(vocab.size, len(fixed_tables[deck]),
                                            ckpt_io.trunk_hidden_from_deck_checkpoint(live_path))
@@ -64,12 +73,12 @@ def _load(league_dir, deck):
 
 def _play_chunk(task):
     """Runs in a worker (or in-process). Plays n games of one matchup; returns (a_wins, b_wins, no_winner)."""
-    (dir_a, deck_a), (dir_b, deck_b), n, seed, greedy, horizon = task
+    (dir_a, deck_a, *snap_a), (dir_b, deck_b, *snap_b), n, seed, greedy, horizon = task  # snap_*: [] or [snapshot id]
     torch.set_num_threads(1)
     decklists, _vocab, deck_ctxs, _tables = _pool()
     agents = []
-    for league_dir, deck in ((dir_a, deck_a), (dir_b, deck_b)):
-        net, mnet = _load(league_dir, deck)
+    for league_dir, deck, snap in ((dir_a, deck_a, snap_a), (dir_b, deck_b, snap_b)):
+        net, mnet = _load(league_dir, deck, *snap)
         agents.append(SeatAgent(net, mnet, deck_ctxs[deck]))
     winners = []
     pairing = _constant_pairing(agents, [decklists[deck_a], decklists[deck_b]], [None, None], [None, None])
@@ -89,7 +98,7 @@ def play_matchups(matchups, games, seed=0, greedy=True, executor=None, horizon=N
     for i, m in enumerate(matchups):
         for chunk in range(math.ceil(games / CHUNK_GAMES)):
             n = min(CHUNK_GAMES, games - chunk * CHUNK_GAMES)
-            tasks.append(((m.a.league_dir, m.a.deck), (m.b.league_dir, m.b.deck), n,
+            tasks.append(((m.a.league_dir, m.a.deck, m.a.snapshot), (m.b.league_dir, m.b.deck, m.b.snapshot), n,
                           matchup_seed(seed, m.a.deck, m.b.deck, chunk), greedy, horizon))
             owner.append(i)
     outputs = list(executor.map(_play_chunk, tasks)) if executor is not None else [_play_chunk(t) for t in tasks]

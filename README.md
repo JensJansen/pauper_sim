@@ -131,9 +131,16 @@ src/
                            sides can come from different leagues/training arms:
                            matchups.py (gauntlet / head_to_head / round_robin),
                            play.py (play_matchups), stats.py (Wilson + difference
-                           intervals). CLI: evaluate_agents.py.
+                           intervals), history.py (a league's archived snapshots
+                           addressed by games trained), probe.py (policy-movement
+                           probe). CLI: evaluate_agents.py.
   evaluate_agents.py       `gauntlet` / `head2head` / `roundrobin` over arbitrary
                            checkpoint dirs; see "Evaluating agents" below.
+  retro_sweep.py           Strength over a league's history: `matrix` (each age vs
+                           every older age) and `field` (final agents vs every
+                           deck's history); see "Evaluating agents" below.
+  policy_probe.py          `record` / `run`: how far each deck's policy moves over
+                           a fixed set of mid-game decisions across its history.
     __init__.py              CHECKS registry + run_all(ctx) (log-and-continue on
                              a check that raises).
     _common.py               ValidationContext + shared net-loading/output-
@@ -574,6 +581,33 @@ the same opponent (a paired comparison), and `gauntlet` reports each later
 subject's score difference from the first with a 95% interval. The same pieces
 are importable (`from evaluation import AgentRef, gauntlet, play_matchups`) for
 designs the CLI does not cover, e.g. a hand-built reference field.
+
+**Training history.** Every snapshot a deck ever took is kept (the active window
+plus `archive/`), one per `snapshot_every * games_per_iteration` games per deck
+(180 for main-league), so a finished run can be evaluated at any earlier age
+with no extra storage: an `AgentRef` takes an optional `snapshot` id, and
+`evaluation.history` maps ids to games trained (`(id + 1) * 180`, checked
+against `progress.json`). Two sweeps build on it:
+
+```
+python src/retro_sweep.py matrix --league DIR --games 100   # each age vs every older age
+python src/retro_sweep.py field  --league DIR --games 40    # final agents vs every deck's history
+python src/policy_probe.py record --league DIR --probes PROBES_DIR
+python src/policy_probe.py run    --league DIR --probes PROBES_DIR --out probe.json
+```
+
+`matrix` reads as a steady-improvement curve: the newer agent's score against
+ever-older selves, and a plateau is rows that stop changing. `field` plays each
+deck's final agent against every deck's agent at each age, so a column's fall
+with age is that deck's improvement as seen by a fixed yardstick. The probe is
+not a strength measure: `record` plays fixed-seed reference games and stores the
+network inputs at each decision, and `run` replays those games through each
+checkpoint (the recorded actions fed back in, so the GRU sees the same history)
+and compares the action distributions it gives at the mid-game decisions
+(turn >= 5, >= 6 permanents, >= 3 legal actions). Read its distances against the
+two scale lines it prints: snapshots one interval apart (a normal step) and a
+randomly initialised net (unrelated policies). A flat strength curve with a
+still-moving policy is churning; with a frozen one, stuck.
 
 ### Direct matchup (no league sampling)
 

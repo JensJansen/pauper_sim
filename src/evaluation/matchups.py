@@ -6,18 +6,21 @@ from dataclasses import dataclass
 
 @dataclass(frozen=True)
 class AgentRef:
-    """The agent for `deck` stored under `league_dir`/<deck>/ (live.pt + mulligan.pt). `label` only names the
-    agent in reports (e.g. "S", "L1", "start"); it never affects play."""
+    """The agent for `deck` stored under `league_dir`/<deck>/ (live.pt + mulligan.pt), or, when `snapshot` is an id,
+    that deck's frozen snapshot_<id>.pt (active window or archive/, with its era-matched mulligan net -- see
+    evaluation.history). `label` only names the agent in reports (e.g. "S", "L1", "start"); it never affects play."""
     deck: str
     league_dir: str
     label: str = ""
+    snapshot: int | None = None
 
     def __post_init__(self):
         object.__setattr__(self, "league_dir", os.path.abspath(self.league_dir))
 
     @property
     def name(self):
-        return f"{self.label or os.path.basename(self.league_dir)}/{self.deck}"
+        at = "" if self.snapshot is None else f"@{self.snapshot}"
+        return f"{self.label or os.path.basename(self.league_dir)}/{self.deck}{at}"
 
 
 @dataclass(frozen=True)
