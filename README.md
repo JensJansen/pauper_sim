@@ -486,7 +486,11 @@ statistically-meaningful win rate.
 
 Five checks today:
 - **`primary_vs_primary_round_robin`** — every training deck plays every
-  other, mirrors included, on current live weights. Its own output file
+  other, mirrors included, on current live weights. A deck's recorded win
+  rate is its record against the *other* decks (mirror games are played and
+  listed under `pairings` but excluded from `deck_totals`/`win_rate`; metrics
+  lines written before 2026-11-10 counted each mirror as a guaranteed win, so
+  they sit a flat 1/11 higher and are not comparable). Its own output file
   (`checkpoints/<league>/checks/primary_vs_primary_round_robin_<N>games.json`)
   embeds every one of those games' full event log (a `"games"` key)
   alongside the aggregate win/loss summary, so that exact file opens

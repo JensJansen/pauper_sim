@@ -1,6 +1,9 @@
 """Check: primary_vs_primary_round_robin -- every training deck in the
 primary league plays every other, mirrors included, ctx.games_per_check
-games per pairing, greedy, on current live weights.
+games per pairing, greedy, on current live weights. A deck's win-rate total
+is its record against the OTHER decks (mirrors excluded, see
+deck_win_totals); the mirror games are still played and still listed in
+"pairings".
 
 Reuses rl.league.league_runner._run_eval (the same round-robin-with-mirrors
 core run_league.py --eval exposes standalone for a manual --matchup check)
@@ -23,6 +26,26 @@ from rl.league.league_runner import _run_eval
 from . import _common
 
 NAME = "primary_vs_primary_round_robin"
+
+
+def deck_win_totals(decks, by_pairing):
+    """Each deck's record against the OTHER decks: {deck: {"wins", "games"}}.
+
+    Mirror pairings (a == b) are left out. A mirror game has no winner from the deck's point of view -- one side of
+    it always wins, so counting it for the deck made every deck's win rate carry a guaranteed win in 1 of every
+    len(decks) pairings (a flat +1/len(decks) offset, and a pooled win rate that was the same constant at every
+    cadence point). The mirror's own results stay in the output's "pairings"; metrics lines written before this
+    fix (games = len(decks) * games_per_pairing, win_rate inflated by that offset) are not comparable with ones
+    written after (games = (len(decks) - 1) * games_per_pairing)."""
+    totals = {d: {"wins": 0, "games": 0} for d in decks}
+    for (a, b), p in by_pairing.items():
+        if a == b:
+            continue
+        totals[a]["wins"] += p["a_wins"]
+        totals[a]["games"] += p["games"]
+        totals[b]["wins"] += p["b_wins"]
+        totals[b]["games"] += p["games"]
+    return totals
 
 
 def run(ctx):
@@ -49,18 +72,8 @@ def run(ctx):
         ctx.collected_game_logs.append(ev)
         ctx.collected_deck_league.append({0: ("primary", a), 1: ("primary", b)})
 
-    win_totals = {d: {"wins": 0, "games": 0} for d in decks}
-    pairing_results = []
-    for (a, b), p in by_pairing.items():
-        pairing_results.append({"deck_a": a, "deck_b": b, **p})
-        if a == b:  # mirror: both sides are the same deck, count games once
-            win_totals[a]["wins"] += p["a_wins"] + p["b_wins"]
-            win_totals[a]["games"] += p["games"]
-        else:
-            win_totals[a]["wins"] += p["a_wins"]
-            win_totals[a]["games"] += p["games"]
-            win_totals[b]["wins"] += p["b_wins"]
-            win_totals[b]["games"] += p["games"]
+    pairing_results = [{"deck_a": a, "deck_b": b, **p} for (a, b), p in by_pairing.items()]
+    win_totals = deck_win_totals(decks, by_pairing)
 
     # Same shape rl.league.league_runner._write_event_log produces (and
     # replay_engine.list_games/reduce_game expect): one entry per game, its

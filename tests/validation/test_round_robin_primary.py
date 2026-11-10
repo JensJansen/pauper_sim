@@ -66,3 +66,17 @@ def test_embeds_one_games_entry_per_game_aligned_with_pairings(tmp_path, monkeyp
     embedded_pairs = {(g["deck_a"], g["deck_b"]) for g in games}
     aggregate_pairs = {(p["deck_a"], p["deck_b"]) for p in payload["pairings"]}
     assert embedded_pairs == aggregate_pairs
+
+
+def test_deck_win_totals_leave_out_mirrors():
+    """A mirror game always has a winner, so counting it for the deck handed every deck a guaranteed win in
+    1/len(decks) of its games (pooled win rate pinned at 6/11 for 11 decks). Mirrors must not enter the totals."""
+    by_pairing = {
+        ("a", "a"): {"games": 10, "a_wins": 6, "b_wins": 4, "no_winner": 0},
+        ("a", "b"): {"games": 10, "a_wins": 7, "b_wins": 3, "no_winner": 0},
+        ("b", "b"): {"games": 10, "a_wins": 5, "b_wins": 5, "no_winner": 0},
+    }
+    totals = round_robin_primary.deck_win_totals(["a", "b"], by_pairing)
+    assert totals == {"a": {"wins": 7, "games": 10}, "b": {"wins": 3, "games": 10}}
+    # zero-sum without mirrors: the pooled win rate is exactly 50%
+    assert sum(t["wins"] for t in totals.values()) * 2 == sum(t["games"] for t in totals.values())
