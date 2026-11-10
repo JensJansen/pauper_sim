@@ -11,8 +11,8 @@ cannot express.
   history.py   a league's archived snapshots addressed by games trained (AgentRef.snapshot)
   probe.py     policy-movement probe: how far a checkpoint's decisions move over a fixed set of mid-game states
 
-CLI: src/evaluate_agents.py (strength), src/retro_sweep.py (strength over a league's history),
-src/policy_probe.py (policy movement). A typical use is a paired comparison of training variants: evaluate each variant's
+CLI: `python -m evaluation strength|history|probe` (cli_strength.py: strength; cli_history.py: strength over a
+league's history; cli_probe.py: policy movement). A typical use is a paired comparison of training variants: evaluate each variant's
 decks against the SAME frozen field with the SAME seed (common random numbers -- see play.matchup_seed), then
 compare the variants' scores with stats.diff_interval.
 """

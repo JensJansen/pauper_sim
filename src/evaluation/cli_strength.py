@@ -1,13 +1,13 @@
 """Evaluate trained agents from any checkpoint directories against each other.
 
-  python evaluate_agents.py gauntlet --subject S=DIR [--subject L1=DIR ...] --field DIR [--field-label start]
+  python -m evaluation strength gauntlet --subject S=DIR [--subject L1=DIR ...] --field DIR [--field-label start]
       Every subject deck plays every field deck (mirrors included), --games games per pairing. Each subject's
       per-deck score is pooled over the field; with several subjects, every later one is also compared with the
       first (score difference + 95% interval). All subjects face the same field with the same seeds, so the
       comparison is paired (see evaluation.play.matchup_seed).
-  python evaluate_agents.py head2head --a LABEL=DIR --b LABEL=DIR
+  python -m evaluation strength head2head --a LABEL=DIR --b LABEL=DIR
       The same deck from two directories against itself, for each deck both have.
-  python evaluate_agents.py roundrobin --league DIR
+  python -m evaluation strength roundrobin --league DIR
       Every pair from one directory, mirrors included.
 
 Common options: --subject-decks/--field-decks/--decks (comma lists, default: every deck found), --games N (100),
@@ -128,6 +128,3 @@ def main(argv=None):
                         "no_winner": r.no_winner} for r in results], f, indent=1)
         print(f"wrote {out}")
 
-
-if __name__ == "__main__":
-    main()

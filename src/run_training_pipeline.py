@@ -50,7 +50,7 @@ from rl.league.league import PFSP_POWER
 from rl.league.league_runner import TRUNK_HIDDEN, _load_progress, _run_session, advance_progress
 from rl.roster import build_pool
 from run_league import _resolve_device
-import webapp_sync
+from webapp_publish import sync as webapp_sync
 from validation import ValidationContext, run_all
 
 # Fixed regardless of the primary league's own total_games -- see
@@ -233,7 +233,7 @@ def main():
             run_all(ctx)
             # Prune each league to its newest 10 sets, commit + push the data to the replay
             # repo, bump the submodule pointer -- background thread, never raises
-            # (see webapp_sync.py). No-op when the submodule isn't checked out.
+            # (see webapp_publish/sync.py). No-op when the submodule isn't checked out.
             webapp_sync.sync_async(f"{opts['league_name']} through "
                                    f"{new_progress['cumulative_games_per_deck']} games/deck")
 

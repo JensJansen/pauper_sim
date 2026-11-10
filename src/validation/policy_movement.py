@@ -1,6 +1,6 @@
 """Check: policy_movement -- how far each deck's CURRENT policy has moved from its own past policies, measured on a
 fixed suite of mid-game decisions (evaluation/probe.py has the what and the why; the suite is recorded once with
-`src/policy_probe.py record` and kept under ctx.probe_states_dir, e.g. data/probe_states/small_league/).
+`python -m evaluation probe record` and kept under ctx.probe_states_dir, e.g. data/probe_states/small_league/).
 
 Per deck: mean Jensen-Shannon divergence (nats; 0 identical .. ln 2 disjoint) and top-1 agreement between the current
 policy and its snapshots at the strength_history ladder ages, plus the policy's entropy and two scale references --

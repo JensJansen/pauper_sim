@@ -14,7 +14,7 @@ from rl import checkpoint as ckpt_io
 from rl.decision.agent import SeatAgent
 from rl.league.league_runner import _append_metric, build_deck_net
 from rl.model.mulligan import MulliganNet
-from webapp_mirror import mirror_json
+from webapp_publish.mirror import mirror_json
 
 
 @dataclass
@@ -60,7 +60,7 @@ class ValidationContext:
     # strength_history / policy_movement / progress_indicator (all optional: a check that needs a field it was not
     # given skips itself). games_per_snapshot = snapshot_every * games_per_iteration, which maps a snapshot id to
     # the games it was taken at (evaluation.history); probe_states_dir holds the recorded probe suite (src/
-    # policy_probe.py record); extras carries one check's results to a later one (progress_indicator).
+    # python -m evaluation probe record); extras carries one check's results to a later one (progress_indicator).
     games_per_snapshot: int = None
     history_ladder: tuple = None
     history_games: int = 100

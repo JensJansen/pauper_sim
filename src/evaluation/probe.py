@@ -10,7 +10,7 @@ choice), not the forced or opening moves. Only the first decision at each state 
 to a checkpoint's choices never enter: the states are frozen.
 
 Compare two checkpoints by how far apart their distributions are over the probe decisions (mean Jensen-Shannon
-divergence, top-1 agreement). Movement is not progress -- read it next to the strength curves (retro_sweep.py): a
+divergence, top-1 agreement). Movement is not progress -- read it next to the strength curves (`python -m evaluation history`): a
 flat strength curve with a still-moving policy is churning, with a frozen one it is stuck. The scale needs a floor
 and a ceiling: two snapshots one snapshot-interval apart (how much it moves in a normal step) and a randomly
 initialised net (how far apart unrelated policies are)."""

@@ -1,8 +1,8 @@
 """Shared pytest fixtures across the test suite."""
 import pytest
 
-import webapp_mirror as wm
-import webapp_sync
+from webapp_publish import mirror as wm
+from webapp_publish import sync as webapp_sync
 
 
 @pytest.fixture

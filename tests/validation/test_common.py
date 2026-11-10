@@ -5,7 +5,7 @@ real smoke run instead, same as the checks that call them)."""
 import json
 from pathlib import Path
 
-import webapp_mirror as wm
+from webapp_publish import mirror as wm
 from validation import _common
 
 

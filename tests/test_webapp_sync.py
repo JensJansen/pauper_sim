@@ -10,7 +10,7 @@ import time
 import pytest
 from pathlib import Path
 
-import webapp_sync as ws
+from webapp_publish import sync as ws
 
 
 # ---- retention ----

@@ -1,16 +1,16 @@
 """Policy-movement probe over a league's archived snapshots (see evaluation/probe.py for what it measures).
 
-  python policy_probe.py record --league DIR --probes OUTDIR [--decks a,b] [--games 60] [--seed 3]
+  python -m evaluation probe record --league DIR --probes OUTDIR [--decks a,b] [--games 60] [--seed 3]
                                 [--ref-ages 10000,40000,final] [--workers 6]
       Plays fixed-seed reference games of each deck (the deck at each reference age against random decks at random
       reference ages) and stores them as probe_<deck>.pkl.gz in OUTDIR. Done once; the same set is used for every
       checkpoint, forever.
-  python policy_probe.py run --league DIR --probes OUTDIR [--ages 1000,...,final] [--out FILE.json] [--workers 6]
+  python -m evaluation probe run --league DIR --probes OUTDIR [--ages 1000,...,final] [--out FILE.json] [--workers 6]
       For each deck and age: the policy's action distribution over the probe decisions, then its distance (mean
       Jensen-Shannon divergence, nats; top-1 agreement) to the previous age and to the final policy, and its entropy.
       Scale references per deck: the same measure between two snapshots ONE snapshot interval apart (the normal
       step), and between a randomly initialised net and the final policy (unrelated policies).
-  python policy_probe.py report --in FILE.json   re-print a saved run.
+  python -m evaluation probe report --in FILE.json   re-print a saved run.
 """
 import argparse
 import json
@@ -186,7 +186,3 @@ def main(argv=None):
             json.dump(result, f)
         print(f"wrote {out}", flush=True)
     report(result)
-
-
-if __name__ == "__main__":
-    main()

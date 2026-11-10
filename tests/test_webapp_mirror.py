@@ -1,10 +1,10 @@
-"""Self-check for webapp_mirror.py's two guards (_real_league_name,
+"""Self-check for webapp_publish/mirror.py's two guards (_real_league_name,
 webapp_ready) and the three mirror_* writers -- covers both "does the write
 land" and "does it silently skip" without ever touching the real
 checkpoints/ or src/webapp/."""
 import json
 
-import webapp_mirror as wm
+from webapp_publish import mirror as wm
 
 
 def _make_webapp(tmp_path, with_git=True, with_logs=True):

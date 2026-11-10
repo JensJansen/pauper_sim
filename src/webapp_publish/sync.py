@@ -45,7 +45,7 @@ import subprocess
 import threading
 from pathlib import Path
 
-import webapp_mirror
+from webapp_publish import mirror as webapp_mirror
 from repo_paths import REPO_ROOT
 
 KEEP_SETS = 10

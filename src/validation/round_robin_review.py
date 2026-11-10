@@ -11,7 +11,7 @@ into the webapp submodule's own logs/replays/<league>/ (browsable there
 automatically, no "Open new file" needed -- see webapp/README.md, "Browse
 server logs"), via the same _write_event_log run_league.py --log/--eval
 already use. webapp_sync keeps only each league's newest 10 of these and
-commits/pushes them (see webapp_sync.py). A no-op entirely when the webapp submodule isn't checked out
+commits/pushes them (see webapp_publish/sync.py). A no-op entirely when the webapp submodule isn't checked out
 (webapp_mirror.webapp_ready()) -- there'd be nowhere to put the file.
 
 Deliberately doesn't feed ctx.collected_game_logs/collected_deck_league:
@@ -22,7 +22,7 @@ source).
 """
 import time
 
-import webapp_mirror
+from webapp_publish import mirror as webapp_mirror
 from rl.league.league_runner import _run_eval, _write_event_log
 
 NAME = "primary_round_robin_review"
@@ -30,7 +30,7 @@ GAMES_PER_PAIRING = 2
 
 
 def run(ctx):
-    # Module-attribute access (not `from webapp_mirror import WEBAPP_DIR`) so
+    # Module-attribute access (not `from webapp_publish.mirror import WEBAPP_DIR`) so
     # a test's monkeypatch.setattr(webapp_mirror, "WEBAPP_DIR", ...) is seen
     # here -- same reasoning as _common.py's own webapp_mirror usage.
     if not webapp_mirror.webapp_ready():

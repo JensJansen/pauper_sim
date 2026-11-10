@@ -1,15 +1,15 @@
 """Retrospective strength sweeps over a league's archived snapshots (see evaluation/history.py).
 
-  python retro_sweep.py matrix --league DIR [--decks a,b] [--ages 1000,5000,...,final] [--games 100]
+  python -m evaluation history matrix --league DIR [--decks a,b] [--ages 1000,5000,...,final] [--games 100]
       Metric 1. Per deck, every older snapshot (age a) against every newer one (age t > a): the newer agent's score.
       A steadily improving deck beats older and older selves ever more clearly; a plateau is rows of the matrix that
       stop changing (the agent at 80k beats every anchor exactly as the agent at 40k does).
-  python retro_sweep.py field --league DIR [--ages ...] [--games 40]
+  python -m evaluation history field --league DIR [--ages ...] [--games 40]
       Metric 2. Each deck's FINAL agent against every deck's historical agent (age a): A_final vs B@a. As B ages its
       curve falls to where B stops improving; a deck whose final agent beats its own history but not the others'
       is not generalizing. Read it from both sides: by B (how each deck's history looks to the final field) and
       by A (how each final agent does against history).
-  python retro_sweep.py report --in FILE    re-print a saved sweep's tables.
+  python -m evaluation history report --in FILE    re-print a saved sweep's tables.
 
 Common options: --seed N (0), --workers N (6; 1 = in-process), --out FILE (raw counts as JSON), --games-per-snapshot
 (180). Greedy play; paired seeds (evaluation.play.matchup_seed), so cells that share decks share their deals.
@@ -155,7 +155,3 @@ def main(argv=None):
             json.dump({"mode": args.mode, "league": league, "games": games, "seed": args.seed, "rows": rows}, f)
         print(f"wrote {out}", flush=True)
     report(args.mode, rows)
-
-
-if __name__ == "__main__":
-    main()

@@ -1,12 +1,12 @@
-"""Snapshot-history addressing, the retro_sweep designs, and the policy probe's arithmetic."""
+"""Snapshot-history addressing, the history sweeps' designs, and the policy probe's arithmetic."""
 import json
 import math
 
 import numpy as np
 import pytest
 
-import retro_sweep
 from evaluation import AgentRef, Matchup, history, play, probe
+from evaluation import cli_history as retro_sweep
 
 
 def _league(tmp_path, n_snapshots=4, decks=("d1", "d2"), games_per_snapshot=180):

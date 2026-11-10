@@ -19,7 +19,7 @@ were migrated (see logs/validation/README.md).
 
 What happens to this data afterwards -- pruning each league to its newest 10 check
 ticks and replays, committing and pushing it to the replay repo, bumping the
-submodule pointer -- lives in webapp_sync.py, which shares WRITE_LOCK with the
+submodule pointer -- lives in sync.py, which shares WRITE_LOCK with the
 writers below.
 
 Every function here is a no-op when either guard fails:

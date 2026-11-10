@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-import webapp_mirror
+from webapp_publish import mirror as webapp_mirror
 from rl import checkpoint as ckpt_io
 from rl.league import league_runner
 from rl.model.mulligan import MulliganNet

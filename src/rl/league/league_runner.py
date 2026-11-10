@@ -26,7 +26,7 @@ from rl.training.ppo import ppo_update
 from rl.model.mulligan import MulliganNet, update as mulligan_update
 from rl import checkpoint as ckpt_io
 from repo_paths import CHECKPOINTS_DIR
-from webapp_mirror import mirror_metrics_line, mirror_progress
+from webapp_publish.mirror import mirror_metrics_line, mirror_progress
 
 LEAGUE_DIR = CHECKPOINTS_DIR / "league"
 D_MODEL = 64  # SetTransformer width; must match rl.model.arch.SetTransformer's own d_model default
@@ -118,7 +118,7 @@ def _save_progress(league_dir, last_batch_size, cumulative_games_per_deck):
     payload = {"last_batch_size": last_batch_size, "cumulative_games_per_deck": cumulative_games_per_deck}
     with open(f"{league_dir}/progress.json", "w") as f:
         json.dump(payload, f)
-    mirror_progress(league_dir, payload)  # best-effort webapp copy, see webapp_mirror.py
+    mirror_progress(league_dir, payload)  # best-effort webapp copy, see webapp_publish/mirror.py
 
 
 def _append_metric(league_dir, **fields):
@@ -130,7 +130,7 @@ def _append_metric(league_dir, **fields):
     if it's checked out -- see webapp_mirror.mirror_metrics_line."""
     with open(f"{league_dir}/metrics.jsonl", "a") as f:
         f.write(json.dumps(fields) + "\n")
-    mirror_metrics_line(league_dir, fields)  # best-effort webapp copy, see webapp_mirror.py
+    mirror_metrics_line(league_dir, fields)  # best-effort webapp copy, see webapp_publish/mirror.py
 
 
 def should_snapshot(games_before, games_per_iteration, snapshot_every):
