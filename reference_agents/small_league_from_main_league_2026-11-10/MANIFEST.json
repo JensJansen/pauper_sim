@@ -1,0 +1,66 @@
+{
+ "source": "checkpoints/main-league (11-deck league, 92,340 games/deck at copy time)",
+ "snapshots": {
+  "rakdos_madness/snapshot_55.pt": {
+   "games_per_deck": 10080,
+   "label": "10000",
+   "sha256": "631006ed6689242534e815669c5edf53832c08c411b7bed3bb5cc16993719900"
+  },
+  "rakdos_madness/snapshot_221.pt": {
+   "games_per_deck": 39960,
+   "label": "40000",
+   "sha256": "2e558629acb80e0f4914581dfdeca41dc4400cdde59e86689e47929a334c5ba6"
+  },
+  "rakdos_madness/snapshot_512.pt": {
+   "games_per_deck": 92340,
+   "label": "final",
+   "sha256": "70ac06288d56c58e549e618bd6ab22982bf1e87a39f867e5f862b2d0569b4034"
+  },
+  "dmir_terror/snapshot_55.pt": {
+   "games_per_deck": 10080,
+   "label": "10000",
+   "sha256": "56819f3f3946bfad75991fe9534b5d4706714ef53ba9b6e9c123dfd7d8fa54bc"
+  },
+  "dmir_terror/snapshot_221.pt": {
+   "games_per_deck": 39960,
+   "label": "40000",
+   "sha256": "59df7a40380f7b299c8795cdfcbae8333d1a34e0278dfee156803b877b739b4b"
+  },
+  "dmir_terror/snapshot_512.pt": {
+   "games_per_deck": 92340,
+   "label": "final",
+   "sha256": "291fb48b6b89e233acd965a0925ae0c858c4846668c5e6b1fe41c78f2cf34e51"
+  },
+  "elves/snapshot_55.pt": {
+   "games_per_deck": 10080,
+   "label": "10000",
+   "sha256": "d2748e512dacdfb214b658c99093227d26226b285486531c3fe9547a10d0bd7a"
+  },
+  "elves/snapshot_221.pt": {
+   "games_per_deck": 39960,
+   "label": "40000",
+   "sha256": "327734a9eb3d72ea7e1e64745cab292e4173fc96d3f6bab831653d860d4f0ced"
+  },
+  "elves/snapshot_512.pt": {
+   "games_per_deck": 92340,
+   "label": "final",
+   "sha256": "78e34cac5126009b565a64d6927876ba485c7b8022caf9cdc22068c8a1d0a656"
+  },
+  "mono_red_rally/snapshot_55.pt": {
+   "games_per_deck": 10080,
+   "label": "10000",
+   "sha256": "69145b787f480671e3b37760c361eb9272f325097950e2bd9c3be3b19705ad6c"
+  },
+  "mono_red_rally/snapshot_221.pt": {
+   "games_per_deck": 39960,
+   "label": "40000",
+   "sha256": "88b52f28a775d711df5e440ce99ce40a65db81f236d350323a3635c75ea9f8c1"
+  },
+  "mono_red_rally/snapshot_512.pt": {
+   "games_per_deck": 92340,
+   "label": "final",
+   "sha256": "fdc5f1e0f7ba4d661961f07795646de0b14e5a6660241937455932c84c2530d3"
+  }
+ },
+ "how_to_load": "evaluation.play / LeaguePool.load_snapshot_agent (snapshot carries its own encoder and era-matched mulligan net); games = (id+1)*180"
+}
