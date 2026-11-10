@@ -54,13 +54,13 @@ def _write_jsonl(path, ns, dup_last=False):
 
 def test_prune_checks_keeps_newest_ten_ticks_last_line_wins_and_skips_other_files(tmp_path):
     league = tmp_path / "main-league"
-    _write_jsonl(league / "checks" / "vs_history.jsonl", list(range(1, 15)), dup_last=True)
+    _write_jsonl(league / "checks" / "strength_history.jsonl", list(range(1, 15)), dup_last=True)
     _write_jsonl(league / "elves" / "checks" / "mulligan_audit.jsonl", list(range(1, 4)))
     (league / "metrics.jsonl").write_text('{"kind": "ppo", "cumulative_games": 1}\n' * 50)
 
     assert ws.prune_checks(league) == 1                      # only the 14-tick file needed a rewrite
 
-    rows = [json.loads(line) for line in (league / "checks" / "vs_history.jsonl").read_text().splitlines()]
+    rows = [json.loads(line) for line in (league / "checks" / "strength_history.jsonl").read_text().splitlines()]
     assert [r["cumulative_games"] for r in rows] == list(range(5, 15))
     assert rows[-1]["v"] == "rewrite"                         # the replayed point's last write survives
     assert len((league / "elves" / "checks" / "mulligan_audit.jsonl").read_text().splitlines()) == 3
@@ -114,7 +114,7 @@ def _clone_remote(repos, name="check"):
 def _fill_data(webapp, ticks=12):
     for n in range(1, ticks + 1):
         _touch(webapp / "logs" / "replays" / "main-league" / f"round_robin_review_{n * 1000}games.json")
-    _write_jsonl(webapp / "logs" / "validation" / "main-league" / "checks" / "vs_history.jsonl",
+    _write_jsonl(webapp / "logs" / "validation" / "main-league" / "checks" / "strength_history.jsonl",
                  [n * 1000 for n in range(1, ticks + 1)])
     (webapp / "logs" / "validation" / "main-league" / "metrics.jsonl").write_text(
         '{"kind": "ppo", "cumulative_games": 1}\n' * 20)
@@ -132,7 +132,7 @@ def test_sync_commits_pushes_only_data_and_bumps_the_parent_pointer(repos):
     assert result["git"]["error"] is None and result["git"]["committed"] and result["git"]["pushed"]
     remote = _clone_remote(repos)
     assert len(list((remote / "logs" / "replays" / "main-league").glob("round_robin_review_*"))) == 10
-    checks = (remote / "logs" / "validation" / "main-league" / "checks" / "vs_history.jsonl").read_text().splitlines()
+    checks = (remote / "logs" / "validation" / "main-league" / "checks" / "strength_history.jsonl").read_text().splitlines()
     assert len(checks) == 10
     assert len((remote / "logs" / "validation" / "main-league" / "metrics.jsonl").read_text().splitlines()) == 20
     assert (remote / "app.py").read_text() == "viewer v1"                           # code edit not pushed

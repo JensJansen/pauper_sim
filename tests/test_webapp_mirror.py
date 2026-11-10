@@ -71,9 +71,9 @@ def test_mirror_json_appends_to_a_consolidated_jsonl_not_a_new_file_per_snapshot
 def test_mirror_json_consolidates_a_per_deck_relative_path_the_same_way(tmp_path, monkeypatch):
     checkpoints_dir = _ready(tmp_path, monkeypatch)
     league_dir = str(checkpoints_dir / "main-league")
-    wm.mirror_json(league_dir, "elves/checks/vs_history_100games.json", {"cumulative_games": 100, "deck": "elves"})
+    wm.mirror_json(league_dir, "elves/checks/strength_history_100games.json", {"cumulative_games": 100, "deck": "elves"})
 
-    dest = tmp_path / "webapp" / "logs" / "validation" / "main-league" / "elves" / "checks" / "vs_history.jsonl"
+    dest = tmp_path / "webapp" / "logs" / "validation" / "main-league" / "elves" / "checks" / "strength_history.jsonl"
     assert json.loads(dest.read_text().strip()) == {"cumulative_games": 100, "deck": "elves"}
 
 

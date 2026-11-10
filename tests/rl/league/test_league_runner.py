@@ -161,49 +161,6 @@ def test_run_eval_parallel_is_deterministic_for_a_given_seed(tmp_path, monkeypat
 
 
 @pytest.mark.slow
-def test_run_eval_vs_history_finds_archived_and_active_milestones(tmp_path, monkeypatch):
-    """_run_eval_vs_history measures "does the live net beat its own past
-    selves": confirms it (a) returns [] with no history yet, (b) finds the
-    active pool's oldest snapshot once one exists, and (c) finds an archived
-    one too once register_snapshot has evicted past the window."""
-    monkeypatch.chdir(_SRC_DIR)
-    monkeypatch.setattr(
-        league_runner, "build_pool",
-        lambda: _real_build_pool(vocab_path=str(tmp_path / "vocab.json")),
-    )
-    from rl.league.league import LeaguePool
-    from rl.model.mulligan import MulliganNet
-
-    league_dir = str(tmp_path / "league")
-    decklists, vocab, deck_ctxs, fixed_tables = _real_build_pool(vocab_path=str(tmp_path / "vocab.json"))
-    deck_name = "rakdos_madness"
-    net = league_runner.build_deck_net(vocab.size, len(fixed_tables[deck_name]))
-    mnet = MulliganNet(net.encoder)
-
-    # No snapshots at all yet -- nothing to compare against.
-    assert league_runner._run_eval_vs_history(
-        deck_name, net, mnet, deck_ctxs[deck_name], decklists[deck_name], league_dir, horizon=20,
-    ) == []
-
-    pool = LeaguePool(league_dir, [deck_name], max_snapshots_per_deck=2)
-    for _ in range(3):  # 3rd registration evicts snapshot_0 into archive/ (cap=2)
-        pool.register_snapshot(deck_name, net, mnet)
-
-    results = league_runner._run_eval_vs_history(
-        deck_name, net, mnet, deck_ctxs[deck_name], decklists[deck_name], league_dir,
-        horizon=20, games_per_snapshot=2, seed=0,
-    )
-    labels = {r["label"] for r in results}
-    assert labels == {"archive_oldest", "active_oldest"}, f"expected both milestones, got {labels}"
-    for r in results:
-        assert r["games"] == 2
-        assert r["live_wins"] + r["snapshot_wins"] + r["no_winner"] == r["games"]
-
-
-# --- eval instrumentation ---
-
-
-@pytest.mark.slow
 def test_paired_eval_balances_the_play_exactly_not_just_on_average():
     """_play_paired_eval_games replays the SAME seed with the seats exchanged,
     so collect_rollout's per-game starting_idx draw hands the play to the other

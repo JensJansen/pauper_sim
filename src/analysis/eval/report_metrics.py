@@ -1,5 +1,5 @@
 """Summarizes checkpoints/<league>/metrics.jsonl -- the per-iteration "ppo" /
-"mulligan" / "mulligan_audit" / "vs_history" / "primary_vs_primary_round_robin" /
+"mulligan" / "mulligan_audit" / "vs_history" (retired check, legacy records) / "primary_vs_primary_round_robin" /
 "primary_vs_training_round_robin" records
 rl.league.league_runner's _run_session appends during every training run.
 Plain-text, stdlib only.

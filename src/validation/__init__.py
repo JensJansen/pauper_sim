@@ -22,11 +22,10 @@ from . import (
     round_robin_review,
     round_robin_training,
     strength_history,
-    vs_history,
 )
 from ._common import ValidationContext  # re-exported for run_training_pipeline.py
 
-CHECKS = [round_robin_primary, round_robin_training, mulligan_audit, vs_history, round_robin_review,
+CHECKS = [round_robin_primary, round_robin_training, mulligan_audit, round_robin_review,
           strength_history, policy_movement, progress_indicator]
 
 

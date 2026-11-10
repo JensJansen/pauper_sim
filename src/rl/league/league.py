@@ -27,7 +27,7 @@ from rl import checkpoint as ckpt_io
 
 # ponytail: fixed rolling window per deck (32), oldest evicted (archived, see
 # register_snapshot) first -- a real cap, so most of a deck's history stays
-# reachable only via the vs_history eval spot-check.
+# reachable only through evaluation/history.py (every snapshot is archived, never deleted).
 DEFAULT_MAX_SNAPSHOTS_PER_DECK = 32
 
 # PFSP weighting: weight(win_rate) = PFSP_FLOOR + (1 - win_rate) ** PFSP_POWER.
@@ -133,8 +133,8 @@ class LeaguePool:
         while len(self.snapshots[deck_name]) > self.max_snapshots_per_deck:
             evicted_id, evicted_path = self.snapshots[deck_name].pop(0)
             # Moved into deck_dir/archive/, not deleted -- lets
-            # league_runner._run_eval_vs_history measure a deck against its
-            # own older selves after they age out of the active window.
+            # evaluation.history measure a deck against its own older selves
+            # after they age out of the active window.
             archive_dir = os.path.join(deck_dir, "archive")
             os.makedirs(archive_dir, exist_ok=True)
             os.replace(evicted_path, os.path.join(archive_dir, f"snapshot_{evicted_id}.pt"))

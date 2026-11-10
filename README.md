@@ -148,7 +148,6 @@ src/
     round_robin_primary.py   primary_vs_primary_round_robin.
     round_robin_training.py  primary_vs_training_round_robin (full cross product).
     mulligan_audit.py        mulligan_audit (per-deck + league rollup).
-    vs_history.py            vs_history.
     strength_history.py      strength_history: current agents vs their own and
                              every deck's snapshots at a ladder of ages.
     policy_movement.py       policy_movement: how far the policy has moved on a
@@ -467,9 +466,12 @@ JSON line per record:
   (so a saturated minibatch ramp is visible), `cumulative_games`.
 - `kind: "mulligan"` — per deck per iteration REINFORCE loss/n.
 
-`vs_history`/the primary-vs-training-league comparison no
-longer append here automatically every session -- they're validation/'s
-checks now, on their own much coarser cadence. See **Validation checks**.
+The primary-vs-training-league comparison and the other quality checks don't
+append here automatically every session -- they're validation/'s checks, on
+their own much coarser cadence. See **Validation checks**. (`vs_history`, a
+2-anchor "current vs old self" check, was retired 2026-11-10 in favour of
+`strength_history`'s ladder; its old `kind: "vs_history"` lines stay readable
+in archived `metrics.jsonl` files and in `analysis/eval/report_metrics.py`.)
 
 Every game also gets one `game_over` event (`winner`, `turn_won`) appended
 to its own `event_log`.
@@ -497,7 +499,7 @@ and skipped; training itself is never aborted by a bad check.
 games/pairing, since it exists for human review rather than a
 statistically-meaningful win rate.
 
-Eight checks today (the last three are the *history checks*, described after the list):
+Seven checks today (the last three are the *history checks*, described after the list):
 - **`primary_vs_primary_round_robin`** — every training deck plays every
   other, mirrors included, on current live weights. A deck's recorded win
   rate is its record against the *other* decks (mirror games are played and
@@ -534,12 +536,6 @@ Eight checks today (the last three are the *history checks*, described after the
   hands covering every land count 0-7 on demand, filling in the buckets
   natural self-play rarely or never draws. Both report keep/mulligan rate
   plus an entropy figure for the decision.
-- **`vs_history`** — each deck's current live net vs. its own frozen old
-  self (the oldest still-active snapshot, and once one exists, the oldest
-  **archived** snapshot). The one check immune to the "everyone is
-  improving together" confound the two round robins both have, since the
-  opponent here can never change -- any win-rate movement is unambiguously
-  this deck's own progress.
 - **`primary_round_robin_review`** — the odd one out: a full primary-vs-primary
   round robin (mirrors included, same pairing set as `primary_vs_primary_round_robin`
   above) at a small, **fixed** 2 games/pairing, purely so a human has fresh
@@ -583,7 +579,7 @@ under "Evaluating agents"). Each cadence point:
 Output, at two levels: `checkpoints/<primary_league>/checks/` for
 league-wide results (both round robins; a league-wide rollup for the other
 two), `checkpoints/<primary_league>/<deck>/checks/` for a single deck's
-own results (`mulligan_audit`/`vs_history`). Every file is
+own results (`mulligan_audit`). Every file is
 stamped with the games/deck count at that cadence point
 (`<check>_<games>games.json`) and never overwritten, so a whole run's
 history stays on disk. Each check also drops a compact per-deck summary
