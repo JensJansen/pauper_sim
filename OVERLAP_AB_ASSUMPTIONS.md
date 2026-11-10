@@ -52,3 +52,13 @@ detectably, the test can only bound harm, not show learning parity; the report w
    adding 0/1/2 to the arm's seed so a deterministic crash is not replayed. The crashed partial L1 was deleted. If L1 (or
    S2) ends up with a bumped seed, that is stated in the results. The bug is rare (three production crashes over ~92k games/deck: 2026-08-27, ~08-31, and this one), so a bumped
    seed is unlikely to matter for the comparison. Candidate causes are listed in `SAC_FIZZLE_HYPOTHESES.md` (not yet tested).
+4. **S2 cut short at 3,960 games/deck (owner decision, option 3).** From about iteration 45 the S2 arm slowed from ~2.5 to
+   8-15 min/iteration (GPU at 100% and 14.8 of 16.3 GB VRAM in use, ours the only compute process; cause not confirmed),
+   projecting 20+ h more. The owner chose to stop it and compare at the shorter length. I stopped it at an iteration
+   boundary (iteration 67 finished 16:06). The weights on disk are the last periodic save, 66 iterations =
+   3,960 games/deck (`progress.json` cumulative 96,300; all 11 decks saved together at 15:50). Consequences, which the
+   results must carry: S2 is NOT the same length as S and L1 (167 iterations), so S2 - S is not a pure-seed noise gap
+   and the decision rule's "within S2 - S noise" clause cannot be applied as pre-registered. S2 can only show (a) how far
+   a seed-different run is from START after 3,960 games and (b) the size of between-run spread at that length. The
+   verdict therefore rests on the primary L1 - S interval and the S-vs-L1 head-to-head, and is stated as provisional on
+   the noise clause.
