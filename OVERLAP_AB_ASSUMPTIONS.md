@@ -43,3 +43,12 @@ detectably, the test can only bound harm, not show learning parity; the report w
 2. **Staged order to get the primary answer first:** S, L1 -> evaluate (start/S/L1 gauntlet + S-vs-L1 head-to-head) -> S2 ->
    evaluate S2 (same gauntlet seed, so its scores are directly comparable) + S-vs-S2 and L1-vs-S2 head-to-heads. The
    S2 noise floor therefore arrives last; the L1-vs-S verdict is only provisional until it does.
+3. **L1 crashed at iteration 6 on a pre-existing engine bug (not caused by overlap).** S finished all 167 iterations
+   (6.29 h). L1's first attempt died in a worker: `_sac_artifact_or_creature._on_chosen` received `choice=None`
+   (Eviscerator's Insight cast with no creature/artifact to sacrifice; the caster's board was only tapped Swamps). This is
+   the open "sac-fizzle" investigation (`_dump_sac_fizzle_diagnostic`, commit f068b00; the dump gained one more record).
+   I did NOT patch engine rules behaviour (RULES FAITHFULNESS MANDATE: the legality fix is the owner's call and the root
+   cause is still unconfirmed). Instead the harness retries a crashed arm from the pristine start copy, up to 3 times,
+   adding 0/1/2 to the arm's seed so a deterministic crash is not replayed. The crashed partial L1 was deleted. If L1 (or
+   S2) ends up with a bumped seed, that is stated in the results. The bug is rare (3 dumps over ~92k games/deck of
+   production training), so a bumped seed is unlikely to matter for the comparison.
