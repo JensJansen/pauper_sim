@@ -442,10 +442,13 @@ the PPO update for deck *k* runs on the GPU, the workers already collect deck
 than the sequential schedule uses). Measured on the production config (11 decks
 × 60 games, 6 workers): 11.98 → 9.06 s/round (24.4% faster; the ceiling is the
 28% the update takes). The cost is that one-update policy lag, which is
-off-policy data for PPO's ratio/clip to absorb — its effect on long-run learning
-is being tested by a paired A/B on the `exp/overlap-l1-ab` branch, so the flag
-stays off until that reports. A round is only prefetched across an iteration
-boundary when no mulligan flush or snapshot is due there. Needs `n_workers > 1`.
+off-policy data for PPO's ratio/clip to absorb. A paired A/B over 10,020
+games/deck on the 11-deck league (`OVERLAP_AB_RESULTS.md`) found no detectable cost
+to learning (L1 − S = +0.10 score points, 95% interval [−1.05, +1.25], head-to-head
+51.6% for the sequential arm, indistinguishable PPO statistics) for 24% less wall
+time, so `small_league.json` turns it on; the code default stays `false`. A round
+is only prefetched across an iteration boundary when no mulligan flush or snapshot
+is due there. Needs `n_workers > 1`.
 
 `--games-per-iteration` isn't a flag — defaults to `max(1, n_workers)`,
 overridable via the run-config's `games_per_iteration`.
@@ -607,6 +610,20 @@ history stays on disk. Each check also drops a compact per-deck summary
 into `metrics.jsonl` (`kind` matching the check's own name above) for
 `report_metrics.py`'s existing trend tooling -- except `primary_round_robin_review`,
 which (see above) writes only to the webapp's `logs/replays/`, nothing here.
+
+### Run manifest (`rl/league/manifest.py`)
+
+One league directory is one run: its weights, `metrics.jsonl`, `checks/` and
+`manifest.json` travel together, so archiving or discarding a run is one
+operation. `run_training_pipeline.py` writes the manifest at the start of every
+invocation and closes it at the end (a failure to write it never stops training;
+it is mirrored to the web app like `progress.json`). It records the resolved
+`config` and the network architecture (`model`: trunk widths, encoder size,
+parameter count, a hash of the module structure, vocabulary and action-table
+sizes), each with a `*_history` of what a later session replaced -- so a model
+change between runs, or mid-run, is explicit -- plus the git commit / branch /
+dirty flag per session, the python / torch / CUDA environment, and one `sessions`
+entry per invocation (start and end games/deck, argv).
 
 ### Metrics reference (`rl/league/metrics.py`)
 

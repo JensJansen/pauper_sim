@@ -46,8 +46,9 @@ from contextlib import nullcontext
 
 from config_loader import load_config
 from repo_paths import CHECKPOINTS_DIR, REPO_ROOT
+from rl.league import manifest
 from rl.league.league import PFSP_POWER
-from rl.league.league_runner import TRUNK_HIDDEN, _load_progress, _run_session, advance_progress
+from rl.league.league_runner import TRUNK_HIDDEN, _load_progress, _run_session, advance_progress, build_deck_net
 from rl.roster import build_pool
 from run_league import _resolve_device
 from webapp_publish import sync as webapp_sync
@@ -196,6 +197,16 @@ def main():
           f"checks_games={opts['checks_games']} training_league={opts['training_league_name']!r} "
           f"device={device} n_workers={opts['n_workers']}")
 
+    try:  # the run manifest is a record, never a reason not to train
+        example = train_decks[0]
+        manifest.start_session(
+            str(league_dir), opts,
+            manifest.model_info(build_deck_net(vocab.size, len(fixed_tables[example]), opts["trunk_hidden"]),
+                                vocab.size, opts["trunk_hidden"], {d: len(fixed_tables[d]) for d in train_decks}),
+            _load_progress(str(league_dir))["cumulative_games_per_deck"], REPO_ROOT)
+    except Exception as e:  # noqa: BLE001
+        print(f"manifest: not written ({type(e).__name__}: {e})", flush=True)
+
     executor_cm = ProcessPoolExecutor(max_workers=opts["n_workers"]) if opts["n_workers"] > 1 else nullcontext(None)
     with executor_cm as executor:
         if opts["create_training_league"]:
@@ -239,8 +250,12 @@ def main():
 
         _train_to(league_dir, opts["total_games"], opts, executor, device, on_chunk=_validate)
 
-    print(f"training pipeline done: {opts['league_name']!r} reached "
-          f"{_load_progress(str(league_dir))['cumulative_games_per_deck']}/{opts['total_games']} games/deck")
+    final_games = _load_progress(str(league_dir))["cumulative_games_per_deck"]
+    try:
+        manifest.finish_session(str(league_dir), final_games)
+    except Exception as e:  # noqa: BLE001
+        print(f"manifest: not finalised ({type(e).__name__}: {e})", flush=True)
+    print(f"training pipeline done: {opts['league_name']!r} reached {final_games}/{opts['total_games']} games/deck")
 
 
 if __name__ == "__main__":

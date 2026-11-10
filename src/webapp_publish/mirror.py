@@ -1,7 +1,8 @@
 """Best-effort mirror of validation output into the webapp submodule's
 logs/validation/, so /stats (src/webapp/README.md) shows real data without
 the manual copy step it needed before this module existed. Used by
-rl/league/league_runner.py (metrics.jsonl, progress.json) and
+rl/league/league_runner.py (progress.json), rl/league/metrics.py (metrics.jsonl), rl/league/manifest.py
+(manifest.json) and
 validation/_common.py (checks/*.json) -- the two places that already write
 checkpoints/<league>/, so mirroring rides along with those writes rather
 than becoming every caller's own responsibility.
@@ -156,6 +157,21 @@ def mirror_metrics_line(league_dir, fields):
             f.write(json.dumps(fields) + "\n")
     except OSError as e:
         print(f"webapp_mirror: mirror_metrics_line failed, dropping this data point: {e}", flush=True)
+
+
+def mirror_manifest(league_dir, payload):
+    """Mirror of manifest.json (already written by the caller, rl.league.manifest) into
+    logs/validation/<league>/manifest.json -- overwritten, like progress.json."""
+    league_name = _real_league_name(league_dir)
+    if league_name is None or not webapp_ready():
+        return
+    try:
+        dest_dir = WEBAPP_VALIDATION_DIR / league_name
+        dest_dir.mkdir(parents=True, exist_ok=True)
+        with WRITE_LOCK, open(dest_dir / "manifest.json", "w") as f:
+            json.dump(payload, f, indent=2)
+    except OSError as e:
+        print(f"webapp_mirror: mirror_manifest failed: {e}", flush=True)
 
 
 def mirror_progress(league_dir, payload):

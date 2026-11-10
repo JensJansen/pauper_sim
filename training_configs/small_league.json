@@ -11,5 +11,6 @@
   ],
   "total_games": 600000,
   "create_training_league": true,
+  "overlap_collect": true,
   "probe_states_dir": "data/probe_states/small_league"
 }
