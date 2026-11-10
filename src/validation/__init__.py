@@ -10,12 +10,24 @@ _common.append_metric), then add it to CHECKS below.
 
 Registry order matters: mulligan_audit is a post-hoc analysis of games the
 two round-robin checks already played (ctx.collected_game_logs), not a
-separate batch of its own, so it must run after both.
+separate batch of its own, so it must run after both. Likewise
+progress_indicator summarises what strength_history and policy_movement just
+measured (ctx.extras), so it runs after both of them.
 """
-from . import mulligan_audit, round_robin_primary, round_robin_review, round_robin_training, vs_history
+from . import (
+    mulligan_audit,
+    policy_movement,
+    progress_indicator,
+    round_robin_primary,
+    round_robin_review,
+    round_robin_training,
+    strength_history,
+    vs_history,
+)
 from ._common import ValidationContext  # re-exported for run_training_pipeline.py
 
-CHECKS = [round_robin_primary, round_robin_training, mulligan_audit, vs_history, round_robin_review]
+CHECKS = [round_robin_primary, round_robin_training, mulligan_audit, vs_history, round_robin_review,
+          strength_history, policy_movement, progress_indicator]
 
 
 def run_all(ctx):

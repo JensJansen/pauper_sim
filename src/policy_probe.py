@@ -3,7 +3,7 @@
   python policy_probe.py record --league DIR --probes OUTDIR [--decks a,b] [--games 60] [--seed 3]
                                 [--ref-ages 10000,40000,final] [--workers 6]
       Plays fixed-seed reference games of each deck (the deck at each reference age against random decks at random
-      reference ages) and stores them as probe_<deck>.pkl in OUTDIR. Done once; the same set is used for every
+      reference ages) and stores them as probe_<deck>.pkl.gz in OUTDIR. Done once; the same set is used for every
       checkpoint, forever.
   python policy_probe.py run --league DIR --probes OUTDIR [--ages 1000,...,final] [--out FILE.json] [--workers 6]
       For each deck and age: the policy's action distribution over the probe decisions, then its distance (mean
@@ -15,7 +15,6 @@
 import argparse
 import json
 import os
-import pickle
 import sys
 from concurrent.futures import ProcessPoolExecutor
 
@@ -40,20 +39,19 @@ def _record_deck(job):
     league, deck, decks, ref_ages, n_games, seed, outdir, games_per_snapshot = job
     from evaluation import history, play
     from rl.league import league_runner
-    from evaluation.probe import record_probe_set
+    from evaluation.probe import record_probe_set, save_probe
 
     torch.set_num_threads(1)
     torch.manual_seed(seed)
-    decklists, _vocab, deck_ctxs, _tables = play._pool()
+    decklists, vocab, deck_ctxs, tables = play._pool()
     factories = {}
     for d in decks:
         for label, sid, _games in history.at_ages(league, d, ref_ages, games_per_snapshot):
             factories[(d, label)] = _agent_factory(league, d, sid)
     probe = record_probe_set(deck, factories, decklists, deck_ctxs, n_games, seed, league_runner.HORIZON)
-    path = os.path.join(outdir, f"probe_{deck}.pkl")
-    with open(path, "wb") as f:
-        pickle.dump(probe, f)
+    path = os.path.join(outdir, f"probe_{deck}.pkl.gz")
     n_probe = sum(sum(e["probe"]) for e in probe["episodes"])
+    save_probe(path, probe, vocab, tables[deck])
     return deck, len(probe["episodes"]), sum(len(e["action"]) for e in probe["episodes"]), n_probe
 
 
@@ -61,12 +59,12 @@ def _run_deck(job):
     import torch
     league, deck, probes_dir, ages, games_per_snapshot = job
     from evaluation import history, play
-    from evaluation.probe import compare, mean_entropy, probe_distributions
+    from evaluation.probe import compare, load_probe, mean_entropy, probe_distributions
     from rl.league import league_runner
 
     torch.set_num_threads(1)
-    with open(os.path.join(probes_dir, f"probe_{deck}.pkl"), "rb") as f:
-        probe = pickle.load(f)
+    _decklists, vocab, _ctxs, tables = play._pool()
+    probe = load_probe(os.path.join(probes_dir, f"probe_{deck}.pkl.gz"), vocab, tables[deck])
 
     def dists(snapshot):
         net, _mnet = play._load(league, deck, snapshot)
@@ -89,7 +87,6 @@ def _run_deck(job):
         if sid + 1 <= final_sid:
             adjacent.append({"age": history.games_at(sid, games_per_snapshot),
                              **dict(zip(("js", "top1"), compare(dists(sid), dists(sid + 1))))})
-    _decklists, vocab, _ctxs, tables = play._pool()
     torch.manual_seed(0)
     random_net = league_runner.build_deck_net(vocab.size, len(tables[deck]))
     rnd_js, rnd_top1 = compare(probe_distributions(random_net, probe), final)

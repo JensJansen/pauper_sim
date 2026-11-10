@@ -10,5 +10,6 @@
     "mono_red_rally"
   ],
   "total_games": 600000,
-  "create_training_league": true
+  "create_training_league": true,
+  "probe_states_dir": "data/probe_states/small_league"
 }

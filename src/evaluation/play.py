@@ -1,6 +1,7 @@
 """Playing matchups between agents loaded from arbitrary checkpoint directories."""
 import hashlib
 import math
+import os
 import random
 from dataclasses import dataclass
 
@@ -38,7 +39,7 @@ def matchup_seed(seed, deck_a, deck_b, chunk):
 
 
 _pool_cache = None  # (decklists, vocab, deck_ctxs, fixed_tables), built once per process
-_agent_cache = {}   # (league_dir, deck, snapshot) -> (deck net, mulligan net), loaded once per process
+_agent_cache = {}   # (league_dir, deck, snapshot, live-file mtimes) -> (deck net, mulligan net), loaded once per process
 _pool_by_dir = {}   # (league_dir, deck) -> LeaguePool, only used for its snapshot loader
 
 
@@ -50,8 +51,13 @@ def _pool():
 
 
 def _load(league_dir, deck, snapshot=None):
-    """(deck net, mulligan net) for the deck's live weights, or for snapshot `snapshot` (an id)."""
-    key = (league_dir, deck, snapshot)
+    """(deck net, mulligan net) for the deck's live weights, or for snapshot `snapshot` (an id).
+
+    A snapshot never changes, so it is cached for the life of the process. live.pt/mulligan.pt do change (a
+    training pipeline's worker processes outlive many cadence points), so their cache key carries the files' mtimes."""
+    live = None if snapshot is not None else tuple(
+        os.stat(f"{league_dir}/{deck}/{name}").st_mtime_ns for name in ("live.pt", "mulligan.pt"))
+    key = (league_dir, deck, snapshot, live)
     if key not in _agent_cache:
         _decklists, vocab, deck_ctxs, fixed_tables = _pool()
         if snapshot is not None:

@@ -63,3 +63,19 @@ def at_ages(league_dir, deck, ages, games_per_snapshot=GAMES_PER_SNAPSHOT):
             seen.add(sid)
             out.append((str(age), sid, games_at(sid, games_per_snapshot)))
     return out
+
+
+def ladder_points(league_dir, deck, current_games, ladder, games_per_snapshot=GAMES_PER_SNAPSHOT):
+    """[(games at the snapshot, snapshot id)] -- the deck's snapshot nearest each rung of `ladder` (games/deck),
+    keeping only rungs at least two snapshot intervals older than `current_games` (anything closer is the agent
+    against itself) and dropping duplicates. For a periodic check: the anchors an agent at `current_games` is
+    measured against."""
+    out, seen = [], set()
+    for rung in ladder:
+        if rung > current_games - 2 * games_per_snapshot:
+            break
+        (_label, sid, games), = at_ages(league_dir, deck, [rung], games_per_snapshot)
+        if sid not in seen and games <= current_games - 2 * games_per_snapshot:
+            seen.add(sid)
+            out.append((games, sid))
+    return out

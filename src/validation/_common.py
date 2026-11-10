@@ -57,6 +57,16 @@ class ValidationContext:
     collected_deck_league: list = field(default_factory=list)
     executor: object = None
     n_workers: int = 1
+    # strength_history / policy_movement / progress_indicator (all optional: a check that needs a field it was not
+    # given skips itself). games_per_snapshot = snapshot_every * games_per_iteration, which maps a snapshot id to
+    # the games it was taken at (evaluation.history); probe_states_dir holds the recorded probe suite (src/
+    # policy_probe.py record); extras carries one check's results to a later one (progress_indicator).
+    games_per_snapshot: int = None
+    history_ladder: tuple = None
+    history_games: int = 100
+    field_games: int = 40
+    probe_states_dir: str = None
+    extras: dict = field(default_factory=dict)
 
     @property
     def primary_league_dir(self):

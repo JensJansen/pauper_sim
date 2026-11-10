@@ -16,7 +16,13 @@ validation.run_all -- training itself is never aborted by a bad check.
 Config (--config, e.g. training_configs/main_league.json): the same schema
 run_league.py reads (run-mechanics + league identity, "extends"-composable
 via config_loader), plus create_training_league (bool, default False),
-checks_cadence_pct (default 5), checks_games (default 50).
+checks_cadence_pct (default 5), checks_games (default 50), and the history
+checks' knobs (validation.strength_history / policy_movement / progress_indicator):
+history_checks (default true; false skips all three), history_checks_games (games per
+current-vs-own-snapshot cell, default 100),
+field_checks_games (per current-vs-other-deck-snapshot cell, default 40),
+history_ladder (anchor ages in games/deck; default validation.strength_history.DEFAULT_LADDER),
+probe_states_dir (repo-relative directory of recorded probe suites; unset skips policy_movement).
 --matchup training and one-off debug runs still go through run_league.py
 directly -- this script is league training only.
 
@@ -39,7 +45,7 @@ from concurrent.futures import ProcessPoolExecutor
 from contextlib import nullcontext
 
 from config_loader import load_config
-from repo_paths import CHECKPOINTS_DIR
+from repo_paths import CHECKPOINTS_DIR, REPO_ROOT
 from rl.league.league import PFSP_POWER
 from rl.league.league_runner import TRUNK_HIDDEN, _load_progress, _run_session, advance_progress
 from rl.roster import build_pool
@@ -103,6 +109,11 @@ def _resolve_options(cfg):
         "training_league_name": f"{league_name}-training" if create_training_league else None,
         "checks_cadence_pct": checks_cadence_pct,
         "checks_games": cfg.get("checks_games", 50),
+        "history_checks": bool(cfg.get("history_checks", True)),
+        "history_games": cfg.get("history_checks_games", 100),
+        "field_games": cfg.get("field_checks_games", 40),
+        "history_ladder": tuple(cfg["history_ladder"]) if cfg.get("history_ladder") else None,
+        "probe_states_dir": str(REPO_ROOT / cfg["probe_states_dir"]) if cfg.get("probe_states_dir") else None,
         "n_workers": n_workers,
         "games_per_iteration": games_per_iteration,
         "snapshot_every": max(1, cfg.get("snapshot_every_games", 200) // games_per_iteration),
@@ -214,6 +225,10 @@ def main():
                 # whole duration of run_all, since it only runs between training chunks, never
                 # concurrently with one. Checks reuse opts["n_workers"], the same knob training uses.
                 executor=executor, n_workers=opts["n_workers"],
+                games_per_snapshot=(opts["snapshot_every"] * opts["games_per_iteration"]
+                                    if opts["history_checks"] else None),  # None: the three history checks skip themselves
+                history_ladder=opts["history_ladder"], history_games=opts["history_games"],
+                field_games=opts["field_games"], probe_states_dir=opts["probe_states_dir"],
             )
             run_all(ctx)
             # Prune each league to its newest 10 sets, commit + push the data to the replay

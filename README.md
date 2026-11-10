@@ -149,6 +149,12 @@ src/
     round_robin_training.py  primary_vs_training_round_robin (full cross product).
     mulligan_audit.py        mulligan_audit (per-deck + league rollup).
     vs_history.py            vs_history.
+    strength_history.py      strength_history: current agents vs their own and
+                             every deck's snapshots at a ladder of ages.
+    policy_movement.py       policy_movement: how far the policy has moved on a
+                             fixed probe suite (evaluation/probe.py).
+    progress_indicator.py    progress_indicator: the report-only label (IMPROVING /
+                             CHURNING / STUCK / FLAT / WARMUP) built from the two above.
     round_robin_review.py    primary_round_robin_review (2 games/pairing, for
                              human review -- writes to the webapp's own
                              logs/replays/<league>/, not checkpoints/).
@@ -491,7 +497,7 @@ and skipped; training itself is never aborted by a bad check.
 games/pairing, since it exists for human review rather than a
 statistically-meaningful win rate.
 
-Five checks today:
+Eight checks today (the last three are the *history checks*, described after the list):
 - **`primary_vs_primary_round_robin`** — every training deck plays every
   other, mirrors included, on current live weights. A deck's recorded win
   rate is its record against the *other* decks (mirror games are played and
@@ -545,6 +551,33 @@ Five checks today:
   file" needed. Only each league's newest 10 are kept (see "Automatic
   publishing"). A clean no-op (skipped, not fatal) when `src/webapp` isn't a
   checked-out submodule.
+
+**History checks** (`strength_history`, `policy_movement`, `progress_indicator`;
+report only -- they never stop or change training). They answer "is the league
+still learning?" from the league's archived snapshots (see "Training history"
+under "Evaluating agents"). Each cadence point:
+- `strength_history` plays each deck's *current* agent against (`own`) its own
+  snapshots and (`field`) every other deck's snapshots at the ladder ages
+  (`history_ladder`, default 1k, 5k, 10k, 20k, 30k, 40k, 50k, 75k, 100k, 150k, 200k,
+  300k, 400k, 500k games/deck, keeping those at least two snapshot intervals
+  older than now), `history_checks_games` (100) and `field_checks_games` (40)
+  games per cell. Metrics: `strength_history` (per deck and anchor) and
+  `strength_field` (per opponent deck and anchor).
+- `policy_movement` runs a fixed probe suite (`probe_states_dir`, recorded once
+  with `src/policy_probe.py record`; `data/probe_states/small_league/` holds the
+  4-deck suite) through the current policy and its anchors: JS divergence and
+  top-1 agreement, entropy, and two scale references (snapshots one interval
+  apart; a random net). Skipped without `probe_states_dir`. Metrics:
+  `policy_movement`, `policy_scale`.
+- `progress_indicator` prints a banner and records `kind=progress_indicator`:
+  the pooled score of the current agents against their own ~0.6x-age selves
+  (at least 10k games old), and how far the policy has moved from them as a
+  fraction of the distance to a random net. IMPROVING = the score's 95%
+  interval is above 50%; otherwise CHURNING (policy still moving), STUCK
+  (policy frozen), FLAT (no probe) or WARMUP. **The thresholds are provisional**
+  (`REF_FRACTION`, `MIN_REF_GAMES`, `MOVING_FRACTION` in
+  `validation/progress_indicator.py`); the numbers behind the label are always
+  printed and recorded. `history_checks: false` turns all three off.
 
 Output, at two levels: `checkpoints/<primary_league>/checks/` for
 league-wide results (both round robins; a league-wide rollup for the other

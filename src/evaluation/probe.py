@@ -14,6 +14,10 @@ divergence, top-1 agreement). Movement is not progress -- read it next to the st
 flat strength curve with a still-moving policy is churning, with a frozen one it is stuck. The scale needs a floor
 and a ceiling: two snapshots one snapshot-interval apart (how much it moves in a normal step) and a randomly
 initialised net (how far apart unrelated policies are)."""
+import gzip
+import hashlib
+import pickle
+
 import numpy as np
 import torch
 
@@ -81,6 +85,50 @@ def record_probe_set(deck, agents_by_deck, decklists, deck_ctxs, n_games, seed, 
                              "probe": [_selected(meta[j], buf.mask[j]) for j in range(start, i + 1)]})
             start = i + 1
     return {"deck": deck, "episodes": episodes, "seed": seed, "n_games": n_games}
+
+
+def _trim(episodes):
+    """Drops episodes with no probe decision and everything after an episode's last one (the replay never reads it)."""
+    out = []
+    for e in episodes:
+        last = max((i for i, s in enumerate(e["probe"]) if s), default=-1) + 1
+        if last:
+            out.append({k: v[:last] for k, v in e.items()})
+    return out
+
+
+def table_fingerprint(fixed_table):
+    """Hash of a deck's fixed action table's labels, in order: the probe's stored action indices only mean
+    anything against the same table."""
+    return hashlib.sha256("\n".join(row[0] for row in fixed_table).encode()).hexdigest()
+
+
+def save_probe(path, probe, vocab, fixed_table):
+    """Writes the probe set gzip-compressed (~3 MB for 80 games). Card vocabulary indices are replaced by card names
+    (vocab.json is append-only, so its indices depend on the order decks were first seen and are not stable across
+    a rebuilt vocab); load_probe maps them back through whatever vocab it is given."""
+    by_index = {i: name for name, i in vocab.name_to_index.items()}
+    episodes = []
+    for e in _trim(probe["episodes"]):
+        tokens = [[(by_index.get(idx, idx), row, None) for idx, row, _identity in step] for step in e["tokens"]]
+        episodes.append({**e, "tokens": tokens})
+    saved = {**probe, "episodes": episodes, "table_sha": table_fingerprint(fixed_table)}
+    with gzip.open(path, "wb", compresslevel=5) as f:
+        pickle.dump(saved, f, protocol=4)
+
+
+def load_probe(path, vocab, fixed_table):
+    """Reads a save_probe file for the given vocab and the deck's current fixed action table. Raises ValueError if the
+    table's labels changed since it was recorded (the stored actions would mean something else) or a stored card is
+    missing from the vocab."""
+    with gzip.open(path, "rb") as f:
+        probe = pickle.load(f)
+    if probe["table_sha"] != table_fingerprint(fixed_table):
+        raise ValueError(f"{path}: the deck's action table changed since the probe set was recorded")
+    for e in probe["episodes"]:
+        e["tokens"] = [[(vocab.name_to_index[name] if isinstance(name, str) else name, row, None)
+                        for name, row, _identity in step] for step in e["tokens"]]
+    return probe
 
 
 def probe_distributions(net, probe, device="cpu", batch_episodes=16):
