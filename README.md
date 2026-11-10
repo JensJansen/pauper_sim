@@ -126,6 +126,14 @@ src/
                            check, run through by run_training_pipeline.py.
                            To add a new check: write a module (NAME + run(ctx)),
                            register it in __init__.py's CHECKS list.
+  evaluation/              Strength evaluation of agents from ANY checkpoint
+                           directories (AgentRef = deck + league dir), so the two
+                           sides can come from different leagues/training arms:
+                           matchups.py (gauntlet / head_to_head / round_robin),
+                           play.py (play_matchups), stats.py (Wilson + difference
+                           intervals). CLI: evaluate_agents.py.
+  evaluate_agents.py       `gauntlet` / `head2head` / `roundrobin` over arbitrary
+                           checkpoint dirs; see "Evaluating agents" below.
     __init__.py              CHECKS registry + run_all(ctx) (log-and-continue on
                              a check that raises).
     _common.py               ValidationContext + shared net-loading/output-
@@ -537,6 +545,31 @@ history stays on disk. Each check also drops a compact per-deck summary
 into `metrics.jsonl` (`kind` matching the check's own name above) for
 `report_metrics.py`'s existing trend tooling -- except `primary_round_robin_review`,
 which (see above) writes only to the webapp's `logs/replays/`, nothing here.
+
+### Evaluating agents (`src/evaluation/`, `src/evaluate_agents.py`)
+
+`validation/` checks one league inside its own directory. `evaluation/` answers
+the cross-directory questions instead -- is arm L1 as strong as arm S? is today's
+`elves` better than last month's? -- because an agent is just a deck plus the
+directory its `live.pt`/`mulligan.pt` sit in.
+
+```
+python src/evaluate_agents.py gauntlet --subject S=DIR_S --subject L1=DIR_L1 --field DIR_START --games 200
+python src/evaluate_agents.py head2head --a S=DIR_S --b L1=DIR_L1 --games 200
+python src/evaluate_agents.py roundrobin --league DIR
+```
+
+Play is greedy by default (`--sampled` samples from the policy), `--workers`
+spreads it over processes (results never depend on the worker count), and
+`--out` writes every matchup's raw counts. A game's starting player is a
+per-game coin flip, so neither side is systematically on the play. Every score is
+`wins + 0.5 * timeouts` over games, shown with a Wilson 95% interval. Each
+chunk's seed depends only on the seed, the two deck names and the chunk index --
+not on the directories -- so variants of one deck face identical deals against
+the same opponent (a paired comparison), and `gauntlet` reports each later
+subject's score difference from the first with a 95% interval. The same pieces
+are importable (`from evaluation import AgentRef, gauntlet, play_matchups`) for
+designs the CLI does not cover, e.g. a hand-built reference field.
 
 ### Direct matchup (no league sampling)
 
