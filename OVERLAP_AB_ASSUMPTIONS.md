@@ -29,7 +29,7 @@ for the paired design). Margin of concern: **-1.5 score points**.
 Secondary: per-deck differences (11 comparisons: expect ~1 chance exceedance at 95%, so a single deck is not
 evidence), head-to-head matrices, per-update PPO diagnostics from each arm's `metrics.jsonl` (approx_kl, clip
 fraction, epochs_run, explained variance), and the arms' wall-clock (a secondary timing check).
-Also reported: START vs arms, to show whether 3,000 games moves strength at all. If neither S nor S2 beats START
+Also reported: START vs arms, to show whether 10,000 games moves strength at all. If neither S nor S2 beats START
 detectably, the test can only bound harm, not show learning parity; the report will say so plainly.
 
 ## Judgement calls made unattended
