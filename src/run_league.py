@@ -41,7 +41,7 @@ Usage:
 
 This script is a thin CLI wrapper: every reusable piece (session driving,
 eval-mode functions, checkpoint/progress helpers) lives in
-rl.league.league_runner -- benchmarking/training_run.py imports that
+rl.league.league_runner -- speed_benchmarks/training_run.py imports that
 directly rather than importing this script for its side-effect-free
 functions.
 """

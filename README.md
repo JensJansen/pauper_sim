@@ -44,17 +44,39 @@ pool of historical opponents. No framework dependencies beyond PyTorch.
 
 ---
 
+## Where measurement code lives
+
+Five packages touch "how good is the agent / how fast is training"; they do
+different jobs and are kept apart on purpose:
+
+| Package | Question it answers | Runs | Reads / writes |
+|---|---|---|---|
+| `rl/league` (`league_runner`) | what is training doing right now? | every iteration, inside training | writes `metrics.jsonl` (`ppo`, `mulligan`, `session_start`) |
+| `validation/` | is the league getting stronger? | in-run, every `checks_cadence_pct` of `total_games` (called by `run_training_pipeline.py`) | writes `checks/*.json` + `metrics.jsonl`, mirrors to the web app |
+| `evaluation/` | how strong is agent X against agent Y, from ANY checkpoint dirs? | on demand (`python -m evaluation ...`), and as the engine the checks use | reads checkpoints/snapshots; plays games; no training-loop coupling |
+| `speed_benchmarks/` | how fast is training (seconds per round), not how good? | on demand | throwaway checkpoint dirs; touches no real league |
+| `analysis/` | one-off research scripts (mulligan retraining, snapshot transitivity, GPU-vs-CPU timing, `report_metrics.py`) | on demand | read-only over `checkpoints/` |
+| `webapp_publish/` | get the data in front of the web app | called by the writers above | writes into the `src/webapp` submodule |
+
+Rule of thumb: `validation/` checks are thin wrappers that call `evaluation/`
+and record the result; anything that plays games between agents belongs in
+`evaluation/`; anything that measures wall-clock belongs in `speed_benchmarks/`.
+The only files left loose in `src/` are the three training entry points
+(`run_training_pipeline.py`, `run_league.py`, `run_rollback.py`) and two shared
+helpers (`config_loader.py`, `repo_paths.py`).
+
 ## Repository layout
 
 ```
 src/
   config_loader.py         Shared training-config JSON loader ("extends" merge).
   repo_paths.py             Stdlib-only repo-root path helper.
-  webapp_mirror.py          Mirrors validation output into src/webapp/logs/validation/
-                            as training writes it (best-effort, never raises).
-  webapp_sync.py            After each validation tick: prunes each league to its newest
-                            10 sets, commits + pushes the data to the replay repo, bumps
-                            this repo's submodule pointer. See "Automatic publishing".
+  webapp_publish/           Publishing to the replay web app: mirror.py copies what a run
+                            writes into src/webapp/logs/validation/ as training writes it
+                            (best-effort, never raises); sync.py, after each validation
+                            tick, prunes each league to its newest 10 sets, commits + pushes
+                            the data to the replay repo, bumps this repo's submodule
+                            pointer. See "Automatic publishing".
   game/                    The engine (package). Zero ML deps.
     cards.py                 EffectId / CardType / CardDef — the card data model.
     state.py                 PlayerState + GameState: zones, turn/stack bookkeeping.
@@ -108,7 +130,7 @@ src/
                                sampling, eviction/archival, disk persistence.
       league_runner.py         run_league.py's core: _run_session, eval-mode
                                functions, checkpoint/progress helpers. Imported
-                               directly by benchmarking/training_run.py.
+                               directly by speed_benchmarks/training_run.py.
     roster.py                Builds shared vocab + per-deck action tables from
                              data/league_decks.json.
     rewards.py                deploy_reward_v6: win/loss reward + dense mana-burn shaping.
@@ -133,14 +155,12 @@ src/
                            play.py (play_matchups), stats.py (Wilson + difference
                            intervals), history.py (a league's archived snapshots
                            addressed by games trained), probe.py (policy-movement
-                           probe). CLI: evaluate_agents.py.
-  evaluate_agents.py       `gauntlet` / `head2head` / `roundrobin` over arbitrary
-                           checkpoint dirs; see "Evaluating agents" below.
-  retro_sweep.py           Strength over a league's history: `matrix` (each age vs
-                           every older age) and `field` (final agents vs every
-                           deck's history); see "Evaluating agents" below.
-  policy_probe.py          `record` / `run`: how far each deck's policy moves over
-                           a fixed set of mid-game decisions across its history.
+                           probe). CLI: `python -m evaluation strength|history|probe`
+                           (cli_strength.py: gauntlet / head2head / roundrobin over
+                           arbitrary checkpoint dirs; cli_history.py: `matrix` and
+                           `field` over a league's archived snapshots; cli_probe.py:
+                           `record` / `run` the policy-movement probe); see
+                           "Evaluating agents" below.
     __init__.py              CHECKS registry + run_all(ctx) (log-and-continue on
                              a check that raises).
     _common.py               ValidationContext + shared net-loading/output-
@@ -180,7 +200,8 @@ src/
                                (validation/mulligan_audit.py extends
                                audit_land_counts from here with per-deck
                                attribution rather than reimplementing it).
-  benchmarking/            training_run.py benchmarks the real league loop under
+  speed_benchmarks/        Speed only (seconds/round), never agent quality:
+                           training_run.py benchmarks the real league loop under
                            different collection configs.
   webapp/                  GIT SUBMODULE (github.com/JensJansen/pauper-sim-replay)
                            — `git submodule update --init` after a plain clone.
@@ -197,7 +218,7 @@ logs/                      Game event logs from --log runs (gitignored).
 ```
 
 **Run scripts from `src/`.** `run_training_pipeline.py`, `run_league.py`, and
-`benchmarking/*` use relative paths like `../data`, `../checkpoints`, and
+`speed_benchmarks/*` use relative paths like `../data`, `../checkpoints`, and
 `../training_configs`, and the `rl.*`/`validation.*` modules import each
 other and `game`/`drl_env` by name — both resolve when run from `src/`.
 `game/` is a proper importable package.
@@ -561,7 +582,7 @@ under "Evaluating agents"). Each cadence point:
   gets 4x the games). Metrics: `strength_history` (per deck and anchor) and
   `strength_field` (per opponent deck and anchor).
 - `policy_movement` runs a fixed probe suite (`probe_states_dir`, recorded once
-  with `src/policy_probe.py record`; `data/probe_states/small_league/` holds the
+  with `python -m evaluation probe record`; `data/probe_states/small_league/` holds the
   4-deck suite) through the current policy and its anchors: JS divergence and
   top-1 agreement, entropy, and two scale references (snapshots one interval
   apart; a random net). Skipped without `probe_states_dir`. Metrics:
@@ -587,17 +608,19 @@ into `metrics.jsonl` (`kind` matching the check's own name above) for
 `report_metrics.py`'s existing trend tooling -- except `primary_round_robin_review`,
 which (see above) writes only to the webapp's `logs/replays/`, nothing here.
 
-### Evaluating agents (`src/evaluation/`, `src/evaluate_agents.py`)
+### Evaluating agents (`src/evaluation/`, `python -m evaluation`)
 
 `validation/` checks one league inside its own directory. `evaluation/` answers
 the cross-directory questions instead -- is arm L1 as strong as arm S? is today's
 `elves` better than last month's? -- because an agent is just a deck plus the
 directory its `live.pt`/`mulligan.pt` sit in.
 
+Run the commands below from `src/`.
+
 ```
-python src/evaluate_agents.py gauntlet --subject S=DIR_S --subject L1=DIR_L1 --field DIR_START --games 200
-python src/evaluate_agents.py head2head --a S=DIR_S --b L1=DIR_L1 --games 200
-python src/evaluate_agents.py roundrobin --league DIR
+python -m evaluation strength gauntlet --subject S=DIR_S --subject L1=DIR_L1 --field DIR_START --games 200
+python -m evaluation strength head2head --a S=DIR_S --b L1=DIR_L1 --games 200
+python -m evaluation strength roundrobin --league DIR
 ```
 
 Play is greedy by default (`--sampled` samples from the policy), `--workers`
@@ -620,10 +643,10 @@ with no extra storage: an `AgentRef` takes an optional `snapshot` id, and
 against `progress.json`). Two sweeps build on it:
 
 ```
-python src/retro_sweep.py matrix --league DIR --games 100   # each age vs every older age
-python src/retro_sweep.py field  --league DIR --games 40    # final agents vs every deck's history
-python src/policy_probe.py record --league DIR --probes PROBES_DIR
-python src/policy_probe.py run    --league DIR --probes PROBES_DIR --out probe.json
+python -m evaluation history matrix --league DIR --games 100   # each age vs every older age
+python -m evaluation history field  --league DIR --games 40    # final agents vs every deck's history
+python -m evaluation probe record --league DIR --probes PROBES_DIR
+python -m evaluation probe run    --league DIR --probes PROBES_DIR --out probe.json
 ```
 
 `matrix` reads as a steady-improvement curve: the newer agent's score against
@@ -720,15 +743,15 @@ python app.py          # http://127.0.0.1:5000 -- localhost only, no auth
 `--log` output needs to land inside the submodule's own checkout for the
 server-side log browser to find it (`logs/replays/` resolves relative to
 `src/webapp/` -- a sibling `logs/validation/` holds mirrored validation
-metrics instead, see `src/webapp_mirror.py`), e.g. from `src/`:
+metrics instead, see `src/webapp_publish/mirror.py`), e.g. from `src/`:
 ```
 python run_league.py --matchup deck_a deck_b --log webapp/logs/replays/<run-name>/event_log.json
 ```
 
-### Automatic publishing (`src/webapp_sync.py`)
+### Automatic publishing (`src/webapp_publish/sync.py`)
 
 Every validation cadence tick (`checks_cadence_pct`), once the checks have run,
-`run_training_pipeline.py` starts `webapp_sync.sync_async(...)` on a background
+`run_training_pipeline.py` starts `webapp_publish.sync.sync_async(...)` on a background
 thread (training doesn't wait; the final sync still completes before the process
 exits). It never raises -- a git or network problem is printed and retried at the
 next tick. It does nothing if `src/webapp` isn't a checked-out submodule, and no
@@ -912,7 +935,7 @@ once per clone:
 git config core.hooksPath .githooks
 ```
 
-`benchmarking/training_run.py` measures the real league loop under
+`speed_benchmarks/training_run.py` measures the real league loop under
 different collection configs (`seq`, `mp<N>`) over a fresh untrained stack
 — a benchmark, not a test.
 

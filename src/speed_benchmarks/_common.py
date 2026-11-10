@@ -1,4 +1,4 @@
-"""Path/stdout bootstrap for the benchmarking scripts.
+"""Path/stdout bootstrap for the speed-benchmark scripts.
 
 Imported first by every benchmark (before any rl.*/game import) so it can put
 src/ on sys.path and chdir into src/, making the `../data` and

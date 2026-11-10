@@ -3,7 +3,7 @@ functions (_run_eval --
 imported by validation/'s checks, which also cover a full cross-league
 round robin _run_session never did itself), checkpoint/progress helpers,
 and the per-deck network builder. Extracted so other callers (e.g.
-benchmarking/training_run.py) can import these side-effect-free functions
+speed_benchmarks/training_run.py) can import these side-effect-free functions
 without importing the run_league.py CLI script."""
 import copy
 import json

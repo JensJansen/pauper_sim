@@ -16,7 +16,7 @@ Configs:
   seq        1 process, batch-of-1 collection (the sequential path)
   mp<N>      N worker processes (collect_rollout_league_parallel)
 
-    python src/benchmarking/training_run.py [--iterations N] [--games-per-iter N] \
+    python src/speed_benchmarks/training_run.py [--iterations N] [--games-per-iter N] \
         [--configs seq,mp6] [--seed 0] [--snapshot-every N] [--roster A,B,...]
 """
 
