@@ -129,3 +129,14 @@ def test_mirror_progress_overwrites_not_appends(tmp_path, monkeypatch):
 
     dest = tmp_path / "webapp" / "logs" / "validation" / "main-league" / "progress.json"
     assert json.loads(dest.read_text()) == {"cumulative_games_per_deck": 200}
+
+
+def test_mirror_opponent_stats_overwrites_not_appends(tmp_path, monkeypatch):
+    checkpoints_dir = _ready(tmp_path, monkeypatch)
+    league_dir = str(checkpoints_dir / "main-league")
+
+    wm.mirror_opponent_stats(league_dir, {"elves": {"deck:elves": [1, 2]}})
+    wm.mirror_opponent_stats(league_dir, {"elves": {"deck:elves": [3, 4]}})
+
+    dest = tmp_path / "webapp" / "logs" / "validation" / "main-league" / "opponent_stats.json"
+    assert json.loads(dest.read_text()) == {"elves": {"deck:elves": [3, 4]}}

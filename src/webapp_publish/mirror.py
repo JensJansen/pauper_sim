@@ -174,6 +174,22 @@ def mirror_manifest(league_dir, payload):
         print(f"webapp_mirror: mirror_manifest failed: {e}", flush=True)
 
 
+def mirror_opponent_stats(league_dir, payload):
+    """Mirror of every deck's PFSP tallies (rl.league.league.LeaguePool.save_opponent_stats; one
+    opponent_stats.json per deck on the checkpoints side) into ONE logs/validation/<league>/opponent_stats.json,
+    {training_deck: {"deck:<name>" | "snapshot:<name>:<id>": [wins, games]}} -- overwritten, like progress.json."""
+    league_name = _real_league_name(league_dir)
+    if league_name is None or not webapp_ready():
+        return
+    try:
+        dest_dir = WEBAPP_VALIDATION_DIR / league_name
+        dest_dir.mkdir(parents=True, exist_ok=True)
+        with WRITE_LOCK, open(dest_dir / "opponent_stats.json", "w") as f:
+            json.dump(payload, f)
+    except OSError as e:
+        print(f"webapp_mirror: mirror_opponent_stats failed: {e}", flush=True)
+
+
 def mirror_progress(league_dir, payload):
     """Mirror of progress.json (already written by the caller,
     league_runner._save_progress) into

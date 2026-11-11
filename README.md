@@ -636,7 +636,7 @@ One league directory is one run: its weights, `metrics.jsonl`, `checks/` and
 `manifest.json` travel together, so archiving or discarding a run is one
 operation. `run_training_pipeline.py` writes the manifest at the start of every
 invocation and closes it at the end (a failure to write it never stops training;
-it is mirrored to the web app like `progress.json`). It records the resolved
+it is mirrored to the web app like `progress.json`; the PFSP tallies in each deck's `opponent_stats.json` are mirrored the same way, combined into one file, and shown on the `/stats` Opponents tab). It records the resolved
 `config` and the network architecture (`model`: trunk widths, encoder size,
 parameter count, a hash of the module structure, vocabulary and action-table
 sizes), each with a `*_history` of what a later session replaced -- so a model

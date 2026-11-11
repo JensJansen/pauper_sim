@@ -24,6 +24,7 @@ from rl.model.deck import DeckNetwork
 from rl.decision.agent import AlwaysKeep, SeatAgent
 from rl.model.mulligan import MulliganNet
 from rl import checkpoint as ckpt_io
+from webapp_publish.mirror import mirror_opponent_stats
 
 # ponytail: fixed rolling window per deck (32), oldest evicted (archived, see
 # register_snapshot) first -- a real cap, so most of a deck's history stays
@@ -91,13 +92,17 @@ class LeaguePool:
         per deck). Called by league_runner._run_session at the same cadence
         as its other checkpoints, not every game -- without this, PFSP
         weighting would reset to its cold-start prior every session instead
-        of accumulating across a run."""
+        of accumulating across a run. Also mirrors all decks' tallies, combined, to the web app's /stats
+        (webapp_publish.mirror.mirror_opponent_stats)."""
+        mirrored = {}
         for name in self.deck_names:
             path = self._stats_path(name)
             os.makedirs(os.path.dirname(path), exist_ok=True)
             raw = {_format_opponent_key(k): list(v) for k, v in self.opponent_stats[name].items()}
             with open(path, "w") as f:
                 json.dump(raw, f)
+            mirrored[name] = raw
+        mirror_opponent_stats(self.root_dir, mirrored)
 
     def record_outcome(self, training_deck_name, opponent_key, won):
         """Updates training_deck_name's running (wins, games) tally against
