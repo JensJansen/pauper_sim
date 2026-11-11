@@ -18,9 +18,9 @@ ctx fields read: games_per_snapshot (required), history_ladder, history_games (g
 the cell progress_indicator reads, each deck's reference anchor, gets REF_GAMES_FACTOR times that), field_games (games
 per `field` cell, default 40). Report only: nothing here changes training."""
 from evaluation import AgentRef, Matchup, Tally, history, play_matchups, wilson_interval
+from evaluation.verdicts import REF_GAMES_FACTOR, ref_games
 
 from . import _common
-from .progress_indicator import REF_GAMES_FACTOR, _ref_games
 
 NAME = "strength_history"
 DEFAULT_LADDER = (1000, 5000, 10000, 20000, 30000, 40000, 50000, 75000, 100000, 150000, 200000, 300000, 400000,
@@ -50,7 +50,7 @@ def run(ctx):
     seed = 0 if ctx.seed is None else ctx.seed
     # The cell progress_indicator reads (each deck's reference anchor) gets REF_GAMES_FACTOR x the games: a label
     # taken from 4 decks x 100 games flickers on noise alone.
-    refs = {d: _ref_games([g for g, _ in points[d]], ctx.cumulative_games) for d in decks}
+    refs = {d: ref_games([g for g, _ in points[d]], ctx.cumulative_games) for d in decks}
     boosted = [i for i, (_m, d, g) in enumerate(own) if g == refs[d]]
     own_results = [None] * len(own)
     for indices, games in (([i for i in range(len(own)) if i not in set(boosted)], ctx.history_games),

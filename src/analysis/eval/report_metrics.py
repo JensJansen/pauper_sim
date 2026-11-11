@@ -2,7 +2,9 @@
 "mulligan" / "mulligan_audit" / "vs_history" (retired check, legacy records) / "primary_vs_primary_round_robin" /
 "primary_vs_training_round_robin" records
 rl.league.league_runner's _run_session appends during every training run.
-Plain-text, stdlib only.
+Plain-text. The verdict statistics live in evaluation/verdicts.py (shared with the in-run
+progress_indicator check), and the history checks' records (strength_history / strength_field per anchor age,
+policy_movement / policy_scale) are read here too, plus a league-wide progress label per cadence tick.
 
 Leads with the per-record sequence (most recent last), then pools:
 
@@ -22,12 +24,16 @@ Usage: python analysis/eval/report_metrics.py <league_dir> [--window N]
   e.g. python analysis/eval/report_metrics.py ../checkpoints/4_deck_subleague_test
 """
 import json
-import math
 import sys
 from collections import defaultdict
-from statistics import NormalDist
+from pathlib import Path
 
-SATURATED_AT = 0.95
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))  # src/
+from evaluation.verdicts import (  # noqa: F401 -- shared with the in-run progress_indicator; re-exported (tests use them)
+    SATURATED_AT, assess_ticks, min_detectable_effect, peak_comparison, series_verdict as _verdict, trend_z,
+    two_proportion_z, wilson, wins_of,
+)
+
 TREND_WINDOW = 24  # per-record values shown; older ones are pooled into "early"
 
 
@@ -41,104 +47,6 @@ def load(path):
     return records
 
 
-def wilson(wins, n, z=1.96):
-    """(point estimate, lo, hi) as fractions. Wilson interval, not normal
-    approximation, since rates near 0/1 would otherwise run off [0, 1]."""
-    if not n:
-        return float("nan"), 0.0, 1.0
-    p = wins / n
-    d = 1 + z * z / n
-    centre = (p + z * z / (2 * n)) / d
-    half = z * math.sqrt(p * (1 - p) / n + z * z / (4 * n * n)) / d
-    return p, max(0.0, centre - half), min(1.0, centre + half)
-
-
-def two_proportion_z(w1, n1, w2, n2):
-    """z for (group 2 - group 1) under a pooled-proportion null. Returns 0.0
-    when either group is empty or the pooled rate is degenerate."""
-    if not n1 or not n2:
-        return 0.0
-    pooled = (w1 + w2) / (n1 + n2)
-    se = math.sqrt(pooled * (1 - pooled) * (1 / n1 + 1 / n2))
-    return ((w2 / n2) - (w1 / n1)) / se if se else 0.0
-
-
-def trend_z(rows):
-    """Cochran-Armitage trend test across ordered records: z for a linear
-    change in win rate with record index. This is the verdict statistic, not
-    an early-vs-late split (which discards ordering and is underpowered
-    against a monotone drift); the split is still printed as a readable
-    summary but does not decide the verdict.
-
-    Positive z = improving over time. 0.0 when there is no variation to
-    regress against (one record, or an all-wins/all-losses series)."""
-    pts = [(i, r.get("live_wins", r.get("wins", 0)), r.get("games", 0)) for i, r in enumerate(rows) if r.get("games")]
-    if len(pts) < 2:
-        return 0.0
-    total_n = sum(n for _, _, n in pts)
-    total_w = sum(w for _, w, _ in pts)
-    p = total_w / total_n
-    if p in (0.0, 1.0):
-        return 0.0
-    x_bar = sum(x * n for x, _, n in pts) / total_n
-    num = sum((x - x_bar) * (w - n * p) for x, w, n in pts)
-    den = math.sqrt(p * (1 - p) * sum(n * (x - x_bar) ** 2 for x, _, n in pts))
-    return num / den if den else 0.0
-
-
-def min_detectable_effect(n_per_group, power_z=0.84, alpha_z=1.96):
-    """Smallest difference in proportions (around 50%) this many games per
-    group could detect at ~80% power. Reported whenever the verdict is FLAT,
-    since "no change" and "cannot tell" are different claims."""
-    if not n_per_group:
-        return 1.0
-    return (alpha_z + power_z) * math.sqrt(2 * 0.25 / n_per_group)
-
-
-def peak_comparison(rows, group=5):
-    """(z of last window vs best window, index of that window's last record,
-    selection-corrected |z| threshold). Negative z = the current policy is
-    worse than one this run already had on disk.
-
-    This is the verdict's primary test: a linear trend test cannot see
-    rise-then-fall, and an early-vs-late split discards ordering and is
-    underpowered. The question this answers is whether the policy about to
-    keep training is worse than something already saved, not whether it has
-    changed since the start.
-    """
-    pts = [r for r in rows if r.get("games")]
-    if len(pts) < 2 * group:
-        return 0.0, None, 2.0
-    windows = [(i, pts[i:i + group]) for i in range(len(pts) - group + 1)]
-    def pool(g):
-        return (sum(r.get("live_wins", r.get("wins", 0)) for r in g), sum(r.get("games", 0) for r in g))
-    rates = [(pool(w), i + group - 1) for i, w in windows]
-    (best_w, best_n), best_end = max(rates, key=lambda t: t[0][0] / t[0][1])
-    (last_w, last_n), last_end = rates[-1]
-    # Sidak-correct the threshold by the number of windows searched: the best
-    # of W noisy windows is high by construction, so an uncorrected threshold
-    # fires on pure noise.
-    crit = NormalDist().inv_cdf(1 - 0.05 / max(1, len(windows)))
-    if best_end == last_end:
-        return 0.0, best_end, crit  # the most recent window IS the best one
-    return two_proportion_z(best_w, best_n, last_w, last_n), best_end, crit
-
-
-def _verdict(rows, w_late, n_late):
-    """(label, trend z, peak z, peak index)."""
-    z = trend_z(rows)
-    peak_z, peak_at, crit = peak_comparison(rows)
-    if n_late and w_late / n_late >= SATURATED_AT:
-        return "SATURATED", z, peak_z, peak_at
-    if peak_z <= -crit:
-        return "PAST PEAK", z, peak_z, peak_at
-    if z <= -2:
-        return "REGRESSING", z, peak_z, peak_at
-    if z >= 2:
-        return "IMPROVING", z, peak_z, peak_at
-    return "FLAT", z, peak_z, peak_at
-
-
 def _win_rate_lines(deck, tag, rows, window):
     """Trend-first summary for one (deck, instrument) win-rate series."""
     rows = sorted(rows, key=lambda r: (r.get("session", 0), r.get("iteration", 0)))
@@ -147,11 +55,11 @@ def _win_rate_lines(deck, tag, rows, window):
         return [f"  [{tag}] no completed games"]
 
     shown = rows[-window:]
-    trend = " ".join(f"{100 * r.get('live_wins', r.get('wins', 0)) / r['games']:.0f}" for r in shown if r.get("games"))
+    trend = " ".join(f"{100 * wins_of(r) / r['games']:.0f}" for r in shown if r.get("games"))
     half = max(1, len(rows) // 2)
     early, late = rows[:half], rows[half:]
     def pool(g):
-        return (sum(r.get("live_wins", r.get("wins", 0)) for r in g), sum(r.get("games", 0) for r in g))
+        return (sum(wins_of(r) for r in g), sum(r.get("games", 0) for r in g))
     we, ne = pool(early)
     wl, nl = pool(late)
     verdict, z, peak_z, peak_at = _verdict(rows, wl, nl)
@@ -203,6 +111,37 @@ def _ppo_lines(deck, rows):
     return lines
 
 
+def _movement_lines(tag, rows):
+    """policy_movement: JS divergence (nats) of the current policy from its snapshot at one anchor age, per tick."""
+    rows = sorted(rows, key=lambda r: r.get("cumulative_games", 0))
+    js = " ".join(f"{r['js']:.2f}" for r in rows[-8:])
+    return [f"  [{tag}] {len(rows)} ticks, JS from that snapshot (last 8): {js}   latest top-1 agreement "
+            f"{rows[-1]['top1']:.2f}"]
+
+
+def _scale_lines(rows):
+    rows = sorted(rows, key=lambda r: r.get("cumulative_games", 0))
+    last = rows[-1]
+    return [f"  [policy_scale] entropy {rows[0]['entropy']:.2f} -> {last['entropy']:.2f}; latest JS one snapshot apart "
+            f"{last.get('adjacent_js') or float('nan'):.3f}, random-vs-current {last['random_js']:.3f}"]
+
+
+def _tick_lines(records):
+    """The league-wide progress label at every cadence tick, re-derived from the records (evaluation.verdicts.assess)."""
+    ticks = assess_ticks(records)
+    if not ticks:
+        return []
+    lines = ["=== progress indicator by cadence tick (provisional thresholds, re-derived from the records) ==="]
+    for tick, r in ticks.items():
+        if r["label"] == "WARMUP":
+            lines.append(f"  {tick:>9} games/deck  WARMUP")
+            continue
+        ratio = "n/a" if r["policy_ratio"] is None else f"{100 * r['policy_ratio']:.0f}%"
+        lines.append(f"  {tick:>9} games/deck  {r['label']:<9} score {100 * r['score']:.1f}% "
+                     f"[{100 * r['lo']:.1f}, {100 * r['hi']:.1f}] n={r['games']}  policy moved {ratio} of the way to random")
+    return lines
+
+
 def report(records, window=TREND_WINDOW):
     """Returns the report as a list of printed lines (also prints them)."""
     by_deck = defaultdict(lambda: defaultdict(list))
@@ -215,6 +154,10 @@ def report(records, window=TREND_WINDOW):
             continue
         # vs_history's label is part of the series identity, never pooled away.
         tag = f"{kind}:{r['label']}" if kind == "vs_history" and "label" in r else kind
+        if kind in ("strength_history", "strength_field"):  # one series per anchor age: the SAME older self, tick after tick
+            tag = f"{kind}@{r['anchor_games']}"
+        elif kind == "policy_movement":
+            tag = f"policy_movement@{r['anchor_games']}"
         by_deck[r.get("deck", "?")][tag].append(r)
 
     lines = []
@@ -230,12 +173,19 @@ def report(records, window=TREND_WINDOW):
             rows = by_deck[deck][tag]
             if tag == "ppo":
                 lines.extend(_ppo_lines(deck, rows))
+            elif tag.startswith("policy_movement@"):
+                lines.extend(_movement_lines(tag, rows))
+            elif tag == "policy_scale":
+                lines.extend(_scale_lines(rows))
+            elif tag == "progress_indicator":
+                continue  # re-derived for every tick below, under the current thresholds
             elif tag == "mulligan":
                 tail = sorted(rows, key=lambda r: (r.get("session", 0), r.get("iteration", 0)))[-1]
                 lines.append(f"  [mulligan] {len(rows)} updates -- latest loss={tail.get('loss', float('nan')):.4f} "
                              f"(n={tail.get('n', '?')})")
             elif any(r.get("games") is not None for r in rows):
                 lines.extend(_win_rate_lines(deck, tag, rows, window))
+    lines.extend(_tick_lines(records))
     for line in lines:
         print(line)
     return lines

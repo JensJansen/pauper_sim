@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 import torch
 
-from evaluation import play
+from evaluation import play, verdicts
 from evaluation.probe import record_probe_set, save_probe
 from rl import checkpoint as ckpt_io
 from rl.decision.agent import SeatAgent
@@ -143,7 +143,7 @@ def test_history_checks_skip_without_their_inputs(league):
 
 @pytest.mark.slow
 def test_reference_cell_gets_extra_games(league, monkeypatch):
-    monkeypatch.setattr(progress_indicator, "MIN_REF_GAMES", 10)  # 0.6 x 70 games = 42: the 40-game anchor is the reference
+    monkeypatch.setattr(verdicts, "MIN_REF_GAMES", 10)  # 0.6 x 70 games = 42: the 40-game anchor is the reference
     ctx = _ctx(league)
     strength_history.run(ctx)
     games = {(r["deck"], r["anchor_games"]): r["games"] for r in ctx.extras["strength_history"]["own"]}

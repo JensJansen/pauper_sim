@@ -128,8 +128,9 @@ src/
     league/                   Opponent pool + session orchestration.
       league.py                LeaguePool: historical snapshots, PFSP-weighted
                                sampling, eviction/archival, disk persistence.
-      league_runner.py         run_league.py's core: _run_session, eval-mode
-                               functions, checkpoint/progress helpers. Imported
+      league_runner.py         run_league.py's core: _run_session, checkpoint/
+                               progress helpers (playing agents against each other
+                               lives in evaluation/). Imported
                                directly by speed_benchmarks/training_run.py.
     roster.py                Builds shared vocab + per-deck action tables from
                              data/league_decks.json.
@@ -155,7 +156,11 @@ src/
                            play.py (play_matchups), stats.py (Wilson + difference
                            intervals), history.py (a league's archived snapshots
                            addressed by games trained), probe.py (policy-movement
-                           probe). CLI: `python -m evaluation strength|history|probe`
+                           probe), roundrobin.py (run_round_robin: a league's live
+                           agents round-robin, used by run_league --eval and the
+                           validation round robins), verdicts.py (the shared "is it
+                           still improving" rule: series verdicts + the per-tick
+                           progress label). CLI: `python -m evaluation strength|history|probe`
                            (cli_strength.py: gauntlet / head2head / roundrobin over
                            arbitrary checkpoint dirs; cli_history.py: `matrix` and
                            `field` over a league's archived snapshots; cli_probe.py:

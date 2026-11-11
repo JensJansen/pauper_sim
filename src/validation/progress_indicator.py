@@ -17,79 +17,16 @@ age (and at least MIN_REF_GAMES old, below which the early-training noise swamps
   FLAT       no clear strength gain, policy probe unavailable.
   WARMUP     no deck has a reference old enough yet.
 
-THE THRESHOLDS ARE PROVISIONAL (REF_FRACTION, MIN_REF_GAMES, MOVING_FRACTION). Replayed over the 4-deck history of the
-11-deck main-league run (92k games/deck), at 100 games per deck and cell, the label flickered between IMPROVING and
-CHURNING from ~70k on because the pooled score (400 games, +-5 points) sat within noise of 50 -- hence the larger
-reference cell (REF_GAMES_FACTOR). The policy ratio was 0.39-0.62 at every age of that run and the one-snapshot-apart
-step is ~0.13, so MOVING_FRACTION=0.25 separates "frozen" from "wandering" with room on both sides. The numbers behind the label are always printed and recorded, so the
-label can be re-derived under other thresholds from metrics.jsonl."""
-from evaluation import Tally, wilson_interval
+The rule (assess/banner and the PROVISIONAL thresholds REF_FRACTION, MIN_REF_GAMES, MOVING_FRACTION) lives in
+evaluation/verdicts.py, shared with analysis/eval/report_metrics.py, which re-derives this label for every tick of a
+finished run from metrics.jsonl. The numbers behind the label are always printed and recorded, so it can be
+re-derived under other thresholds."""
+from evaluation import verdicts
+from evaluation.verdicts import MOVING_FRACTION, REF_FRACTION, REF_GAMES_FACTOR, MIN_REF_GAMES, assess, banner  # noqa: F401
 
 from . import _common
 
 NAME = "progress_indicator"
-
-REF_FRACTION = 0.6
-MIN_REF_GAMES = 10000
-MOVING_FRACTION = 0.25  # share of the current-vs-random policy distance the policy has moved from its reference self
-REF_GAMES_FACTOR = 4    # strength_history plays the reference cell with this many times its usual games (see there)
-
-
-def _ref_games(anchor_games, current_games):
-    ok = [g for g in anchor_games if MIN_REF_GAMES <= g <= REF_FRACTION * current_games]
-    return max(ok) if ok else None
-
-
-def assess(own_rows, policy_by_deck, current_games):
-    """Pure function of the two checks' results. own_rows: strength_history's "own" rows; policy_by_deck:
-    policy_movement's {deck: result} (may be empty). Returns {"label", "score", "lo", "hi", "games", "policy_ratio",
-    "decks": {deck: {...}}}."""
-    tally, per_deck, ratios = Tally(), {}, []
-    for deck in sorted({r["deck"] for r in own_rows}):
-        rows = [r for r in own_rows if r["deck"] == deck]
-        ref = _ref_games([r["anchor_games"] for r in rows], current_games)
-        if ref is None:
-            continue
-        r = next(r for r in rows if r["anchor_games"] == ref)
-        t = Tally(r["wins"], r["no_winner"], r["games"])
-        tally += t
-        entry = {"ref_games": ref, "score": t.score, "games": t.games}
-        pol = policy_by_deck.get(deck)
-        if pol and pol["random"]["js"] > 0:
-            a = next((a for a in pol["anchors"] if a["anchor_games"] == ref), None)
-            if a is not None:
-                entry["policy_ratio"] = a["js"] / pol["random"]["js"]
-                ratios.append(entry["policy_ratio"])
-        per_deck[deck] = entry
-    if not tally.games:
-        return {"label": "WARMUP", "decks": per_deck}
-    lo, hi = wilson_interval(tally)
-    ratio = sum(ratios) / len(ratios) if ratios else None
-    if lo > 0.5:
-        label = "IMPROVING"
-    elif ratio is None:
-        label = "FLAT"
-    else:
-        label = "CHURNING" if ratio >= MOVING_FRACTION else "STUCK"
-    return {"label": label, "score": tally.score, "lo": lo, "hi": hi, "games": tally.games, "policy_ratio": ratio,
-            "decks": per_deck}
-
-
-def banner(result, current_games):
-    rule = "=" * 76
-    lines = [rule, f" PROGRESS INDICATOR (provisional thresholds) at {current_games} games/deck: {result['label']}"]
-    if result["label"] != "WARMUP":
-        refs = sorted({d["ref_games"] for d in result["decks"].values()})
-        lines.append(f"   strength: current agents beat their own ~{refs[0]}..{refs[-1]}-game-old selves "
-                     f"{100 * result['score']:.1f}% [{100 * result['lo']:.1f}, {100 * result['hi']:.1f}] "
-                     f"over {result['games']} games (50 = no progress)")
-        if result["policy_ratio"] is not None:
-            lines.append(f"   policy:   moved {100 * result['policy_ratio']:.0f}% of the way to an unrelated policy "
-                         f"(moving above {100 * MOVING_FRACTION:.0f}%)")
-        else:
-            lines.append("   policy:   probe not available")
-    lines.append(rule)
-    return "\n".join(lines)
 
 
 def run(ctx):
@@ -99,8 +36,8 @@ def run(ctx):
     result = assess(own, ctx.extras.get("policy_movement", {}), ctx.cumulative_games)
     print(banner(result, ctx.cumulative_games), flush=True)
     payload = {"check": NAME, "primary_league": ctx.primary_league_name, "cumulative_games": ctx.cumulative_games,
-               "provisional": True, "ref_fraction": REF_FRACTION, "min_ref_games": MIN_REF_GAMES,
-               "moving_fraction": MOVING_FRACTION, **result}
+               "provisional": True, "ref_fraction": verdicts.REF_FRACTION,
+               "min_ref_games": verdicts.MIN_REF_GAMES, "moving_fraction": verdicts.MOVING_FRACTION, **result}
     write_path = _common.write_league_json(ctx, NAME, payload)
     _common.append_metric(ctx, kind=NAME, deck="ALL", label=result["label"], score=result.get("score"),
                           lo=result.get("lo"), hi=result.get("hi"), games=result.get("games"),
