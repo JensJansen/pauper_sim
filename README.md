@@ -195,6 +195,11 @@ src/
                                whole-run analysis (not per-checkpoint), so it stays
                                a standalone tool rather than a validation/ check.
       bench_gpu_vs_cpu.py      CPU-vs-GPU A/B timing for ppo_update.
+      run_best_response.py     Best-response diagnostic: trains a from-scratch agent for one deck against the
+                               other decks' frozen final agents (checkpoints/br_<deck>/); see
+                               docs/TRAINING_IMPROVEMENT_PLAN.md.
+      check_best_response.py   Plays that fresh agent's snapshots against the frozen agent (head-to-head and
+                               vs the frozen field).
     mulligan_retrain/        Rebuilding the mulligan model against a frozen main
                              policy — an open investigation.
       train_mulligan.py        --opponent-mode twin | self-mirror: two ablations
