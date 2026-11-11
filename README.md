@@ -602,7 +602,9 @@ under "Evaluating agents"). Each cadence point:
   interval is above 50%; otherwise CHURNING (policy still moving), STUCK
   (policy frozen), FLAT (no probe) or WARMUP. **The thresholds are provisional**
   (`REF_FRACTION`, `MIN_REF_GAMES`, `MOVING_FRACTION` in
-  `validation/progress_indicator.py`); the numbers behind the label are always
+  `evaluation/verdicts.py`, the one shared "is it still improving" rule, which
+  `analysis/eval/report_metrics.py` also uses to re-derive the label for every
+  tick of a finished run); the numbers behind the label are always
   printed and recorded. `history_checks: false` turns all three off.
 
 Output, at two levels: `checkpoints/<primary_league>/checks/` for
