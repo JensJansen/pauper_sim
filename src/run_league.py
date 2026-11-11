@@ -55,8 +55,9 @@ from rl.league.league import PFSP_POWER
 from rl.league_cli_spec import build_arg_parser
 from rl.league.league_runner import (
     TRUNK_HIDDEN, advance_progress,
-    _load_progress, _next_batch_games, _run_eval, _run_session, _write_event_log,
+    _load_progress, _next_batch_games, _run_session, _write_event_log,
 )
+from evaluation.roundrobin import run_round_robin
 
 
 def _resolve_device(name):
@@ -111,10 +112,10 @@ def main():
                 "lives in validation.round_robin_primary, run via run_training_pipeline.py's own cadence. "
                 "--eval remains available for a single --matchup DECK_A DECK_B pairing."
             )
-        resolved_decks, game_pairings = _run_eval(train_decks, args.games, not args.sampled, args.seed, game_logs,
-                                                    matchup=matchup, league_dir=league_dir)
+        resolved_decks, game_pairings = run_round_robin(league_dir, train_decks, args.games, not args.sampled,
+                                                        args.seed, game_logs, matchup=matchup)
         if args.log:
-            # resolved_decks is the roster _run_eval actually played, not
+            # resolved_decks is the roster run_round_robin actually played, not
             # train_decks (which may be None even though decks were played).
             _write_event_log(args.log, game_logs, {"mode": "eval", "matchup": list(matchup) if matchup else None,
                                                    "decks": resolved_decks, "greedy": not args.sampled, "games_logged": len(game_logs)},
@@ -224,7 +225,7 @@ def main():
     if args.log:
         meta = {"mode": "matchup" if matchup else "league", "matchup": list(matchup) if matchup else None,
                 "train_decks": train_decks, "games_logged": len(game_logs)}
-        # One fixed pairing for the whole run -- same schema as _run_eval's
+        # One fixed pairing for the whole run -- same schema as run_round_robin's
         # per-game pairings, just constant.
         game_pairings = [matchup] * len(game_logs) if matchup else None
         _write_event_log(args.log, game_logs, meta, game_pairings=game_pairings)

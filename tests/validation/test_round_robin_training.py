@@ -1,12 +1,13 @@
 """Self-check for validation.round_robin_training's parallel path (executor/
 n_workers on ValidationContext). Marked slow: real game engine + torch, same
-as rl.league.league_runner's own _run_eval tests this mirrors."""
+as tests/evaluation/test_roundrobin.py, whose pattern this follows."""
 import json
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
 
+from evaluation import play
 from rl import checkpoint as ckpt_io
 from rl.league import league_runner
 from rl.model.mulligan import MulliganNet
@@ -40,9 +41,9 @@ def _make_ctx(tmp_path, monkeypatch, primary_decks, seed, executor=None, n_worke
     per call: collected_game_logs/collected_deck_league must not leak
     between the runs being compared."""
     monkeypatch.chdir(_SRC_DIR)
-    monkeypatch.setattr(round_robin_training, "build_pool",
-                        lambda: _real_build_pool(vocab_path=str(tmp_path / "vocab.json")))
-    monkeypatch.setattr(round_robin_training, "_worker_pool_cache", None)
+    monkeypatch.setattr(play, "build_pool", lambda: _real_build_pool(vocab_path=str(tmp_path / "vocab.json")))
+    monkeypatch.setattr(play, "_pool_cache", None)
+    monkeypatch.setattr(play, "_agent_cache", {})
     monkeypatch.setattr(_common, "CHECKPOINTS_DIR", tmp_path)
 
     decklists, vocab, deck_ctxs, fixed_tables = _real_build_pool(vocab_path=str(tmp_path / "vocab.json"))
@@ -60,8 +61,7 @@ def test_sequential_and_parallel_agree_on_pairing_results(tmp_path, monkeypatch)
     stand-in for a real process pool, sharing this test's monkeypatched
     build_pool()) must produce the SAME per-pairing win/burn accounting as
     the sequential path -- not just the same shape, the same numbers, since
-    _pairing_worker is the identical function either way (see its own
-    docstring)."""
+    both paths run the same evaluation.play_matchups."""
     monkeypatch.chdir(_SRC_DIR)
     decklists, vocab, deck_ctxs, fixed_tables = _real_build_pool(vocab_path=str(tmp_path / "vocab.json"))
     _save_fixed_checkpoints(tmp_path, vocab, fixed_tables, ["rakdos_madness", "dmir_terror"], ["rakdos_madness"])
@@ -92,8 +92,8 @@ def test_sequential_and_parallel_agree_on_pairing_results(tmp_path, monkeypatch)
 @pytest.mark.slow
 def test_parallel_path_is_deterministic_for_a_given_seed(tmp_path, monkeypatch):
     """Seeds are pre-drawn sequentially (itertools.product order) before
-    dispatch -- see round_robin_training._pairing_worker's own docstring --
-    so a given ctx.seed must reproduce identical outcomes regardless of
+    dispatch -- each pairing is seeded from (seed, deck names), see
+    evaluation.play.matchup_seed -- so a given ctx.seed must reproduce identical outcomes regardless of
     worker scheduling, given the SAME fixed weights both times."""
     monkeypatch.chdir(_SRC_DIR)
     decklists, vocab, deck_ctxs, fixed_tables = _real_build_pool(vocab_path=str(tmp_path / "vocab.json"))

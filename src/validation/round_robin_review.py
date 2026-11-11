@@ -23,7 +23,8 @@ source).
 import time
 
 from webapp_publish import mirror as webapp_mirror
-from rl.league.league_runner import _run_eval, _write_event_log
+from evaluation.roundrobin import run_round_robin
+from rl.league.league_runner import _write_event_log
 
 NAME = "primary_round_robin_review"
 GAMES_PER_PAIRING = 2
@@ -38,9 +39,9 @@ def run(ctx):
 
     game_logs = []
     t0 = time.time()
-    decks, game_pairings = _run_eval(ctx.train_decks, GAMES_PER_PAIRING, greedy=True, seed=ctx.seed,
-                                     game_logs=game_logs, league_dir=ctx.primary_league_dir,
-                                     executor=ctx.executor, n_workers=ctx.n_workers)
+    decks, game_pairings = run_round_robin(ctx.primary_league_dir, ctx.train_decks, GAMES_PER_PAIRING, greedy=True,
+                                           seed=ctx.seed, game_logs=game_logs, executor=ctx.executor,
+                                           n_workers=ctx.n_workers)
     elapsed_ms = (time.time() - t0) * 1000
 
     log_path = webapp_mirror.review_replay_path(ctx.primary_league_name, ctx.cumulative_games)

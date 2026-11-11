@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 
+from evaluation import play
 from rl import checkpoint as ckpt_io
 from rl.league import league_runner
 from rl.model.mulligan import MulliganNet
@@ -23,8 +24,9 @@ def _save_fixed_checkpoints(tmp_path, vocab, fixed_tables, decks):
 
 def _make_ctx(tmp_path, monkeypatch, decks, games_per_check=2, seed=1, cumulative_games=100):
     monkeypatch.chdir(_SRC_DIR)
-    monkeypatch.setattr(league_runner, "build_pool",
-                        lambda: _real_build_pool(vocab_path=str(tmp_path / "vocab.json")))
+    monkeypatch.setattr(play, "build_pool", lambda: _real_build_pool(vocab_path=str(tmp_path / "vocab.json")))
+    monkeypatch.setattr(play, "_pool_cache", None)
+    monkeypatch.setattr(play, "_agent_cache", {})
     monkeypatch.setattr(_common, "CHECKPOINTS_DIR", tmp_path)
     decklists, vocab, deck_ctxs, fixed_tables = _real_build_pool(vocab_path=str(tmp_path / "vocab.json"))
     return _common.ValidationContext(

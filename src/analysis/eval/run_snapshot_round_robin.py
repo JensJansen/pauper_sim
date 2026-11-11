@@ -16,8 +16,8 @@ and ask three questions of the resulting matrix.
      curve on a transitive matrix means the deck is sitting still; a rising
      one means it genuinely improved.
 
-Every pair is played with sides swapped, half the games each way, so seat
-assignment cancels rather than being averaged over.
+Every pair is played through evaluation.play_matchups (greedy, paired seeds; who
+starts is each game's own coin flip, so neither side is systematically on the play).
 
 Evaluation-only: loads frozen snapshots, trains nothing, writes no checkpoint.
 
@@ -34,13 +34,11 @@ import itertools
 import json
 import math
 import time
+from concurrent.futures import ProcessPoolExecutor
 
+from evaluation import AgentRef, Matchup, play_matchups
+from evaluation.matchups import available_decks
 from repo_paths import CHECKPOINTS_DIR
-from rl.league.league import LeaguePool
-from rl.roster import build_pool
-from rl.league.league_runner import (HORIZON, league_roster, load_vintage_agent,
-                                     _play_paired_eval_games)
-
 
 
 def _fit_bradley_terry(labels, pair_wins, iters=500, prior=1.0):
@@ -103,29 +101,22 @@ def _analyze(labels, pair_wins):
     return elo, raw, sig, sum(resid) / len(resid), sum(floor) / len(floor)
 
 
-def _play_pair(agent_a, agent_b, decklist, games, seed):
-    """a's (wins, games) over b, sides swapped half way -- seat assignment
-    cancels instead of being averaged over."""
-    result = _play_paired_eval_games(agent_a, agent_b, decklist, games, HORIZON, seed, "opp_wins")
-    return result["live_wins"], result["games"]
-
-
 def main():
     p = argparse.ArgumentParser(description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--league", default="4_deck_subleague_test")
     p.add_argument("--snapshots", default="0,58,116,174,232,289",
                    help="comma-separated snapshot ids and/or 'live', spanning the run")
-    p.add_argument("--games", type=int, default=100, help="games per pair (split evenly by side)")
+    p.add_argument("--games", type=int, default=100, help="games per pair")
+    p.add_argument("--workers", type=int, default=1, help="processes to spread the games over (1 = in-process)")
     p.add_argument("--decks", default="", help="comma-separated subset; default all")
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--out", default="../logs/snapshot_round_robin.json")
     args = p.parse_args()
 
-    decklists, vocab, deck_ctxs, _fixed = build_pool()
     league_dir = str(CHECKPOINTS_DIR / args.league)
     labels = args.snapshots.split(",")
-    decks = args.decks.split(",") if args.decks else league_roster(league_dir)
+    decks = args.decks.split(",") if args.decks else available_decks(league_dir)
     assert decks, f"no trained decks (no live.pt) under {league_dir}"
     pairs = list(itertools.combinations(labels, 2))
 
@@ -134,14 +125,13 @@ def main():
     print(f"vintages: {', '.join(labels)}  (snapshot N ~ N*200 games/deck)\n")
 
     t0, out = time.time(), {}
+    executor = ProcessPoolExecutor(max_workers=args.workers) if args.workers > 1 else None
     for deck in decks:
-        deck_ctx = deck_ctxs[deck]
-        pool = LeaguePool(league_dir, [deck])  # cached by path: each snapshot loads once
-        agents = {v: load_vintage_agent(league_dir, deck, v, deck_ctx, pool=pool) for v in labels}
-
-        pair_wins = {}
-        for a, b in pairs:
-            pair_wins[(a, b)] = _play_pair(agents[a], agents[b], decklists[deck], args.games, args.seed)
+        # a vintage is a snapshot id, or "live" for the current checkpoint pair
+        refs = {v: AgentRef(deck, league_dir, v, None if v == "live" else int(v)) for v in labels}
+        results = play_matchups([Matchup(refs[a], refs[b]) for a, b in pairs], args.games, seed=args.seed,
+                                executor=executor)
+        pair_wins = {pair: (r.a_wins, r.games) for pair, r in zip(pairs, results)}
         elo, raw, sig, resid, floor = _analyze(labels, pair_wins)
 
         print(f"=== {deck} ===")
@@ -170,6 +160,8 @@ def main():
                      "residual_pp": 100 * resid, "noise_floor_pp": 100 * floor,
                      "pairs": {f"{a}|{b}": pair_wins[(a, b)] for a, b in pairs}}
 
+    if executor is not None:
+        executor.shutdown()
     with open(args.out, "w") as f:
         json.dump({"league": args.league, "games_per_pair": args.games, "decks": out}, f, indent=1)
     print(f"done in {(time.time() - t0) * 1000:,.0f}ms -> {args.out}")

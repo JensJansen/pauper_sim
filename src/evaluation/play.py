@@ -12,6 +12,7 @@ from rl.decision.agent import SeatAgent
 from rl.league import league, league_runner
 from rl.model.mulligan import MulliganNet
 from rl.roster import build_pool
+from rl.training.rollout_parallel import _sanitize_events
 from rl.training.train import _constant_pairing, collect_rollout
 
 from . import history
@@ -27,6 +28,7 @@ class MatchupResult:
     a_wins: int
     b_wins: int
     no_winner: int  # horizon timeouts
+    logs: object = None  # play_matchups(collect_logs=True): one sanitized engine event log per game, in game order
 
 
 def matchup_seed(seed, deck_a, deck_b, chunk):
@@ -78,8 +80,10 @@ def _load(league_dir, deck, snapshot=None):
 
 
 def _play_chunk(task):
-    """Runs in a worker (or in-process). Plays n games of one matchup; returns (a_wins, b_wins, no_winner)."""
-    (dir_a, deck_a, *snap_a), (dir_b, deck_b, *snap_b), n, seed, greedy, horizon = task  # snap_*: [] or [snapshot id]
+    """Runs in a worker (or in-process). Plays n games of one matchup; returns (a_wins, b_wins, no_winner), or that
+    plus the sanitized per-game event logs when the task's optional trailing collect_logs flag is true."""
+    (dir_a, deck_a, *snap_a), (dir_b, deck_b, *snap_b), n, seed, greedy, horizon, *flags = task  # snap_*: [] or [id]
+    logs = [] if flags and flags[0] else None
     torch.set_num_threads(1)
     decklists, _vocab, deck_ctxs, _tables = _pool()
     agents = []
@@ -89,15 +93,18 @@ def _play_chunk(task):
     winners = []
     pairing = _constant_pairing(agents, [decklists[deck_a], decklists[deck_b]], [None, None], [None, None])
     collect_rollout(pairing, n, horizon, random.Random(seed), device="cpu", record=False, greedy=greedy,
-                    on_game_end=lambda state: winners.append(state.winner))
-    return winners.count(0), winners.count(1), winners.count(None)
+                    game_logs=logs, on_game_end=lambda state: winners.append(state.winner))
+    counts = (winners.count(0), winners.count(1), winners.count(None))
+    return counts if logs is None else (*counts, _sanitize_events(logs))  # a raw event can hold an unpicklable closure
 
 
-def play_matchups(matchups, games, seed=0, greedy=True, executor=None, horizon=None):
+def play_matchups(matchups, games, seed=0, greedy=True, executor=None, horizon=None, collect_logs=False):
     """Plays `games` games of every matchup and returns one MatchupResult per matchup, in order.
 
     greedy: argmax play (what validation/ uses); False samples from the policy like training does.
     executor: an existing ProcessPoolExecutor to spread the work over; None plays in this process.
+    collect_logs: also return every game's full engine event log (MatchupResult.logs; what the replay viewer and
+    mulligan_audit read), at the cost of holding them all in memory.
     Results depend only on (matchups, games, seed, greedy), never on the executor or its size."""
     horizon = horizon if horizon is not None else league_runner.HORIZON
     tasks, owner = [], []
@@ -105,11 +112,15 @@ def play_matchups(matchups, games, seed=0, greedy=True, executor=None, horizon=N
         for chunk in range(math.ceil(games / CHUNK_GAMES)):
             n = min(CHUNK_GAMES, games - chunk * CHUNK_GAMES)
             tasks.append(((m.a.league_dir, m.a.deck, m.a.snapshot), (m.b.league_dir, m.b.deck, m.b.snapshot), n,
-                          matchup_seed(seed, m.a.deck, m.b.deck, chunk), greedy, horizon))
+                          matchup_seed(seed, m.a.deck, m.b.deck, chunk), greedy, horizon, collect_logs))
             owner.append(i)
     outputs = list(executor.map(_play_chunk, tasks)) if executor is not None else [_play_chunk(t) for t in tasks]
     totals = [[0, 0, 0] for _ in matchups]
+    logs = [[] for _ in matchups]
     for i, out in zip(owner, outputs):
         for k in range(3):
             totals[i][k] += out[k]
-    return [MatchupResult(m.a, m.b, games, *t) for m, t in zip(matchups, totals)]
+        if collect_logs:
+            logs[i].extend(out[3])
+    return [MatchupResult(m.a, m.b, games, *t, logs=lg if collect_logs else None)
+            for m, t, lg in zip(matchups, totals, logs)]

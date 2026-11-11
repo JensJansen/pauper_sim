@@ -32,7 +32,9 @@ class Matchup:
 
 
 def available_decks(league_dir):
-    """Decks that have a saved live.pt under league_dir, sorted."""
+    """Decks that have a saved live.pt under league_dir, sorted ([] if the directory does not exist)."""
+    if not os.path.isdir(league_dir):
+        return []
     return sorted(d for d in os.listdir(league_dir) if os.path.exists(os.path.join(league_dir, d, "live.pt")))
 
 

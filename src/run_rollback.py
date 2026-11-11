@@ -25,7 +25,8 @@ import shutil
 from repo_paths import CHECKPOINTS_DIR
 from rl.model.mulligan import MulliganNet
 from rl.roster import build_pool
-from rl.league.league_runner import build_deck_net, league_roster
+from evaluation.matchups import available_decks
+from rl.league.league_runner import build_deck_net
 from rl import checkpoint as ckpt_io
 
 BACKUP_SUFFIX = ".before_rollback"
@@ -33,7 +34,7 @@ BACKUP_SUFFIX = ".before_rollback"
 
 def _snapshot_path(deck_dir, snapshot_id):
     """Snapshots live in the active pool dir until evicted, then under
-    archive/ -- tries both, same as league_runner.load_vintage_agent."""
+    archive/ -- tries both, same as evaluation.history.snapshot_path."""
     for sub in ("", "archive"):
         path = os.path.join(deck_dir, sub, f"snapshot_{snapshot_id}.pt")
         if os.path.exists(path):
@@ -103,7 +104,7 @@ def main():
         targets = {args.deck: args.snapshot}
 
     league_dir = str(CHECKPOINTS_DIR / args.league)
-    roster = league_roster(league_dir)
+    roster = available_decks(league_dir)
     unknown = set(targets) - set(roster)
     assert not unknown, f"deck(s) {sorted(unknown)} not in {args.league} (has {roster})"
 

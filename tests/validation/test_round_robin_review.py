@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 
 from webapp_publish import mirror as webapp_mirror
+from evaluation import play
 from rl import checkpoint as ckpt_io
 from rl.league import league_runner
 from rl.model.mulligan import MulliganNet
@@ -26,13 +27,12 @@ def _save_fixed_checkpoints(tmp_path, vocab, fixed_tables, decks):
 
 
 def _make_ctx(tmp_path, monkeypatch, decks, cumulative_games=100):
-    # round_robin_review reuses league_runner._run_eval as-is (no build_pool
-    # import of its own, unlike round_robin_training) -- _run_eval calls
-    # build_pool() via league_runner's own module namespace, so that's what
-    # needs patching, same as test_league_runner.py's own _run_eval tests.
+    # round_robin_review plays through evaluation.roundrobin -> evaluation.play, which builds the pool
+    # (and caches loaded nets) itself, so that is what needs patching.
     monkeypatch.chdir(_SRC_DIR)
-    monkeypatch.setattr(league_runner, "build_pool",
-                        lambda: _real_build_pool(vocab_path=str(tmp_path / "vocab.json")))
+    monkeypatch.setattr(play, "build_pool", lambda: _real_build_pool(vocab_path=str(tmp_path / "vocab.json")))
+    monkeypatch.setattr(play, "_pool_cache", None)
+    monkeypatch.setattr(play, "_agent_cache", {})
     monkeypatch.setattr(_common, "CHECKPOINTS_DIR", tmp_path)
     decklists, vocab, deck_ctxs, fixed_tables = _real_build_pool(vocab_path=str(tmp_path / "vocab.json"))
     return _common.ValidationContext(

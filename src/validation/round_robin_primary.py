@@ -5,7 +5,7 @@ is its record against the OTHER decks (mirrors excluded, see
 deck_win_totals); the mirror games are still played and still listed in
 "pairings".
 
-Reuses rl.league.league_runner._run_eval (the same round-robin-with-mirrors
+Reuses evaluation.roundrobin.run_round_robin (the same round-robin-with-mirrors
 core run_league.py --eval exposes standalone for a manual --matchup check)
 rather than re-implementing the pairing/collection loop. The check's own
 output file embeds every one of those games' full event log (payload
@@ -21,7 +21,7 @@ MB) while staying in the real, local checkpoints/ copy untouched.
 import time
 from collections import defaultdict
 
-from rl.league.league_runner import _run_eval
+from evaluation.roundrobin import run_round_robin
 
 from . import _common
 
@@ -51,9 +51,9 @@ def deck_win_totals(decks, by_pairing):
 def run(ctx):
     game_logs = []
     t0 = time.time()
-    decks, game_pairings = _run_eval(ctx.train_decks, ctx.games_per_check, greedy=True, seed=ctx.seed,
-                                     game_logs=game_logs, league_dir=ctx.primary_league_dir,
-                                     executor=ctx.executor, n_workers=ctx.n_workers)
+    decks, game_pairings = run_round_robin(ctx.primary_league_dir, ctx.train_decks, ctx.games_per_check, greedy=True,
+                                           seed=ctx.seed, game_logs=game_logs, executor=ctx.executor,
+                                           n_workers=ctx.n_workers)
     elapsed_ms = (time.time() - t0) * 1000
 
     by_pairing = defaultdict(lambda: {"games": 0, "a_wins": 0, "b_wins": 0, "no_winner": 0})
