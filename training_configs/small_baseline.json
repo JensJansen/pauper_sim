@@ -1,0 +1,6 @@
+{
+  "_note": "Control run for the 2026-11 methodology experiments (lr decay / batch size / gamma-lambda / net size / shared network): the 4-deck small league under the CURRENT methodology, from scratch, to 50,000 games/deck (past the entropy/batch schedule horizon of 50k). Everything else is inherited from small_league.json (overlap_collect, training-league twin, history checks + probe suite). total_games can be raised later; the pipeline resumes.",
+  "extends": "small_league.json",
+  "league_name": "small_baseline",
+  "total_games": 50000
+}
