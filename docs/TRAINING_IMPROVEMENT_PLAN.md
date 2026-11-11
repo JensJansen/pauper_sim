@@ -26,7 +26,7 @@ against this run with the same history checks.
 
 ## 2. Mechanisms
 
-### 2.1 Best-response diagnostic -- RUNNING (elves first)
+### 2.1 Best-response diagnostic -- DONE for elves
 *Question:* is the league's own deck agent close to the best possible play against its frozen field, or is there
 headroom that self-play is not finding?
 *Method:* `src/analysis/eval/run_best_response.py` trains a from-scratch agent for one deck against the other three
@@ -42,9 +42,43 @@ opponent-pool design / training schedule the lever.
 does not adapt, so it is a headroom probe, not a reproduction of league conditions.
 *Stop rule (owner, 2026-11-11):* run elves only. If it shows no improvement over the frozen version, do **not** run
 the other three decks unless a specific reason to is documented here first.
-*Status:* started 2026-11-11 10:04, ~5.6 s/iteration, 2,083 iterations, estimated finish ~13:30. Early reading
-(~1k games trained): frozen elves scores 46.7% [38.0,55.6] against the field; the fresh agent is at 31% and rising.
-Checkpoint plan: read at ~5k, 10k, 20k, 30k, 50k games.
+*Status:* DONE for elves (2026-11-11, 10:04 -> 13:29; ~4.8 s/iteration, 50k games). Other three decks NOT run (stop rule).
+*Result* (greedy, 300 games per matchup; frozen = `small_baseline` elves at 50,016 games/deck; field = the other three frozen decks):
+
+| agent | vs frozen field | head-to-head vs frozen elves |
+|---|---|---|
+| frozen baseline elves | 47.8% [44.5, 51.0] (n=900) | n/a |
+| fresh @ 5k games | 29.0% | 35.3% |
+| fresh @ 10k | 40.0% | 46.0% |
+| fresh @ 15k | 36.0% | 44.0% |
+| fresh @ 18k (n=300 cells) | 39.7% | 45.0% |
+| fresh @ 25k | 40.2% [37.1, 43.5] | 47.3% [44.1, 50.6] |
+| fresh @ 35k | 45.9% [42.7, 49.2] | 53.4% [50.2, 56.7] |
+| fresh @ 42k | 44.0% [40.8, 47.3] | 46.3% [43.1, 49.6] |
+| last 6 snapshots (45.9k-46.8k) | 46.3-50.3% | 53.7-55.7% (all six lower bounds >= 50.4%) |
+| final live net (49,992) | 46.6% [43.3, 49.8] | 52.1% [48.8, 55.4] |
+| **pooled, last 6 snapshots + live (n=6,300)** | **47.6% [46.4, 48.9]** | **54.2% [52.9, 55.4]** |
+
+(The pooled intervals treat the seven agents as independent; they are adjacent snapshots 192 games apart, so the real
+intervals are wider. The head-to-head edge is nevertheless consistent across all seven.)
+*Reading:*
+- **Against the field -- the best-response question -- the fresh agent only ties the frozen one** (47.6% vs 47.8%). It
+  needed ~35-45k games to get there from scratch (about 40% by 10k, flat through ~25k, then up).
+- It beats the frozen elves head-to-head by ~4 points (54.2%). That edge is probably mirror specialisation, not
+  headroom: the fresh agent's only same-deck opponent in training was itself, whereas the frozen agent trained against
+  a mixed population. It is not evidence of better play against the other decks.
+- So for elves the league agent is at about the best-response level against its field, and nothing here says the
+  league's opponent-pool dynamics cost it strength. That moves weight toward the optimisation / capacity / critic
+  levers in section 2.5 and away from the opponent-pool lever.
+- Snapshot-to-snapshot variation (53 / 46 / 55% head-to-head between ages) is larger than single-cell sampling noise:
+  never read one snapshot.
+*Caveats:* one deck, one field; elves is a deck whose frozen agent scores below 50% against this field, so "ties the
+frozen agent" says little about how much a stronger deck could gain. The fresh agent trained 50k games against a field
+that never adapts, which is an easier problem than the league's.
+*Decision:* by the owner's stop rule (no clear improvement over the frozen agent against the field), the other three
+decks were not run. Re-open only with a specific reason recorded here.
+*Tools:* `check_best_response.py --live` also tests the final live net and prints the pooled row when more than one agent is tested.
+Raw logs: `logs/br_elves.log`, `logs/br_elves_pooled_check.log`; weights `checkpoints/br_elves/`.
 
 ### 2.2 Mulligan model -- QUEUED FOR LATER, NOT ACTIONED (owner, 2026-11-11)
 *Recorded as candidate improvements only: nothing below is to be run while the best-response test is in motion. Scope note: the owner's
@@ -117,7 +151,7 @@ runs of the survivors is the likely shape; one change per arm, same seed family,
 | progress indicator (current vs ~0.6x-age selves, Wilson) | built, report-only, thresholds provisional | gain per fixed age gap | flickers IMPROVING/CHURNING near 50% once per-interval gain is below what ~1,600 games resolve |
 | strength-vs-age ladder, own + field | built | shape of the learning curve, not just a label | self-referential: all selves are the league's own |
 | policy-movement probe | built | moving vs frozen policy | movement is not progress |
-| **best-response gap** (2.1) | running | headroom against a fixed field | one deck, one field |
+| **best-response gap** (2.1) | done for elves: gap ~0 against the field | headroom against a fixed field | one deck, one field; took ~35-45k games to reach parity |
 | **fixed external yardstick** | proposed | strength vs agents that never train (e.g. `reference_agents/`, the old main-league nets, or a scripted bot) | needs agents that are not trivially beaten, or it saturates |
 | **continue-vs-stop A/B** | done once (old league), proposed as a periodic gate | direct test of "does more training pay": branch from a checkpoint, train further, head-to-head | costs a training branch per test |
 | stagnation rule | **deferred by owner** | would turn the above into an automatic stop | needs the ladder data from several runs before picking thresholds |
@@ -127,4 +161,5 @@ includes 50% at **two consecutive** ticks *and* the continue-vs-stop A/B gain's 
 
 ## 4. Change log
 - 2026-11-11: created; baseline finished; best-response (elves) started; mulligan hypothesis written up, unverified.
+- 2026-11-11: best-response (elves) finished: ties the frozen agent against the field (47.6% vs 47.8%), +4 head-to-head (mirror effect); other three decks not run.
 - 2026-11-11: owner: scope is the whole agent, not the mulligan net; mulligan work recorded as queued (2.2); added the whole-agent lever table (2.5). No arm other than best-response to run until it reports.

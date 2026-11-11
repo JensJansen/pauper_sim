@@ -30,6 +30,7 @@ def main():
     ap.add_argument("--deck", required=True)
     ap.add_argument("--source", default="small_baseline")
     ap.add_argument("--ages", default="", help="comma list of games/deck; default: ~5 evenly spaced up to the newest")
+    ap.add_argument("--live", action="store_true", help="also test the final live net")
     ap.add_argument("--games", type=int, default=200)
     ap.add_argument("--workers", type=int, default=3)
     args = ap.parse_args()
@@ -41,7 +42,9 @@ def main():
         ids = [min(ids, key=lambda i: abs(history.games_at(i) - a)) for a in wanted]
     else:
         ids = sorted({ids[round(k * (len(ids) - 1) / 5)] for k in range(1, 6)})
+    ids = ids + [None] * args.live  # None = the final live net
     frozen = AgentRef(args.deck, src, "frozen")
+    pooled_field, pooled_h2h = [], []
     with ProcessPoolExecutor(max_workers=args.workers) as ex:
         base = play_matchups([Matchup(frozen, AgentRef(f, br)) for f in field], args.games, executor=ex)
         print(f"frozen {args.deck} vs frozen field {field}: {_fmt(base)}")
@@ -49,8 +52,14 @@ def main():
             fresh = AgentRef(args.deck, br, "fresh", snapshot=i)
             vs_field = play_matchups([Matchup(fresh, AgentRef(f, br)) for f in field], args.games, executor=ex)
             h2h = play_matchups([Matchup(fresh, frozen)], args.games * len(field), executor=ex)
-            print(f"fresh@{history.games_at(i):>6} games/deck  vs field {_fmt(vs_field)}  |  head-to-head vs frozen {_fmt(h2h)}",
+            pooled_field += vs_field
+            pooled_h2h += h2h
+            age = "live" if i is None else f"{history.games_at(i):>6}"
+            print(f"fresh@{age} games/deck  vs field {_fmt(vs_field)}  |  head-to-head vs frozen {_fmt(h2h)}",
                   flush=True)
+
+        if len(ids) > 1:
+            print(f"POOLED over {len(ids)} fresh agents: vs field {_fmt(pooled_field)}  |  head-to-head {_fmt(pooled_h2h)}")
 
 
 if __name__ == "__main__":
