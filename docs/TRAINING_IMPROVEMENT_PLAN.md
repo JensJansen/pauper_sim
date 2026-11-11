@@ -46,7 +46,9 @@ the other three decks unless a specific reason to is documented here first.
 (~1k games trained): frozen elves scores 46.7% [38.0,55.6] against the field; the fresh agent is at 31% and rising.
 Checkpoint plan: read at ~5k, 10k, 20k, 30k, 50k games.
 
-### 2.2 Mulligan model -- HYPOTHESIS, NOT YET VERIFIED
+### 2.2 Mulligan model -- QUEUED FOR LATER, NOT ACTIONED (owner, 2026-11-11)
+*Recorded as candidate improvements only: nothing below is to be run while the best-response test is in motion. Scope note: the owner's
+interest is the whole agent (section 2.5 lists the rest); the mulligan net is one candidate among them, not the focus.*
 *Hypothesis (owner):* the mulligan net is a bottleneck / variance source, and not fruitful early in training.
 *What the code and data already say (facts, not yet tests):*
 - The mulligan net (`rl/model/mulligan.py`) is trained by its own REINFORCE on a +/-1 game outcome, flushed every 8
@@ -60,7 +62,7 @@ Checkpoint plan: read at ~5k, 10k, 20k, 30k, 50k games.
   Early on it is a different story: a random-init net mulligans often, which lowers hand size and raises game-outcome
   noise for the deck net's PPO signal (pregame decisions are not in PPO; their effect is environment noise to it).
   The baseline's audit starts at the first validation tick (~5k games), so the early period is unmeasured.
-*Planned verification (cheap first, training last):*
+*Candidate verification, if/when picked up (cheap first, training last):*
 1. **Early behaviour, no training:** run the mulligan audit on the baseline's archived snapshots at ages 192 ... 5k
    (snapshots carry their era-matched mulligan net): mulligan rate and keep-by-land-count vs age.
 2. **Value of the learned mulligan at the end, no training:** play the final baseline agents with their learned
@@ -69,6 +71,7 @@ Checkpoint plan: read at ~5k, 10k, 20k, 30k, 50k games.
 3. **Variance / early-training arm (training):** 4-deck arm with a fixed mulligan rule and no mulligan training for the
    first N games vs the baseline; read with the history checks, and evaluate both arms' deck nets under the same
    fixed rule so the comparison is not confounded by the mulligan itself.
+*Open question for the owner before step 3:* is a fixed mulligan rule acceptable as a training policy? (Not a game rule; the engine's London mulligan is unchanged.)
 *Rules note:* a fixed mulligan rule is a training-policy choice, not a game rule, but evaluation of an arm must say
 which mulligan policy played. Nothing here changes the engine's London-mulligan implementation.
 
@@ -83,6 +86,29 @@ One change per arm on the 4-deck league, each read against the baseline with the
 - one shared FiLM-conditioned network across decks instead of one net per deck.
 Any structural change invalidates the recorded probe-state suite (`data/probe_states/small_league`, it refuses to
 load on an action-table mismatch) and needs re-recording first.
+
+### 2.5 Whole-agent levers -- CANDIDATES, QUEUED (none run yet)
+Ordered by how much existing evidence points at them. Evidence is from the old 11-deck run and the 4-deck baseline;
+"?" means we have no measurement yet.
+
+| lever | baseline value | why it is a candidate | evidence status |
+|---|---|---|---|
+| learning rate | flat 2e-4 all run | late approx_kl and clip fraction rise while gains shrink -> updates may be too large near convergence | seen in old run; no decay arm yet |
+| games per update (`games_per_iteration`, minibatch) | 24 games/deck/iter, batch ramps 4 -> 16 by ~50k | larger batches cut gradient noise; the ramp ends by 50k and nothing grows after | ? |
+| gamma / lambda | gamma-lambda product 0.9405 | games are ~100 decision steps; terminal reward may barely reach early decisions | zero horizon timeouts; effect unmeasured |
+| value fit | explained variance ~0.82, flat | a flat critic ceiling can cap advantage quality; shared-trunk value head, value-loss weight, separate critic are all untried | EV flat across the run |
+| entropy schedule | 0.02 -> 0.005 by 50k, then flat; policy entropy 0.5 -> 0.28 | exploration pressure ends exactly when gains thin out; either too early or irrelevant | ? |
+| PPO epochs / clip / target_kl | 4 epochs, early-stopped by target_kl | clip fraction rising late suggests the trust region is binding | seen in old run |
+| reward | `deploy_reward_v6` (shaped) | shaping can bias play away from winning; a flat win/loss arm tests it | ? (the mulligan net already uses +/-1) |
+| opponent pool | PFSP, rate-0.15 frozen-snapshot opponents, 32-snapshot window, PFSP power default | cycling decks on a rising population; pool design decides what the agent is forced to beat | best-response test (2.1) bears on this |
+| network capacity | d_model 64, 2 layers, 4 heads, trunk 128x128 | EV flat and slow late gains could be capacity-limited | ? (queued, 2.4) |
+| shared FiLM network across decks | one net per deck | 4x the data per parameter set; transfer between decks; also changes the "decks cycle" dynamic | ? (queued, 2.4) |
+| sequence model | GRU over own previous actions | longer or attention memory might matter for combo decks | ? |
+| data efficiency | salvaged transitions from other decks' games | check the salvage is not skewing the training distribution | ? |
+
+Method note: each arm costs ~9 h at 50k games/deck on this machine, and the history checks resolve only a few points of
+strength. A cheaper screening pass (e.g. 20-25k games/deck, where the baseline gained the most) followed by full-length
+runs of the survivors is the likely shape; one change per arm, same seed family, read against `small_baseline`. Not scheduled.
 
 ## 3. Detecting that more training no longer helps
 
@@ -101,3 +127,4 @@ includes 50% at **two consecutive** ticks *and* the continue-vs-stop A/B gain's 
 
 ## 4. Change log
 - 2026-11-11: created; baseline finished; best-response (elves) started; mulligan hypothesis written up, unverified.
+- 2026-11-11: owner: scope is the whole agent, not the mulligan net; mulligan work recorded as queued (2.2); added the whole-agent lever table (2.5). No arm other than best-response to run until it reports.
