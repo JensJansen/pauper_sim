@@ -115,6 +115,18 @@ One change per arm on the 4-deck league, each read against the baseline with the
 - larger `games_per_iteration` (fewer, less noisy updates);
 - `gamma = 1`, `lambda ~= 0.97` (baseline gamma-lambda is 0.9405, short for ~100-step games).
 
+#### 2.3a Learning-rate decay -- FIRST ARM, DESIGN AGREED 2026-11-11 (not started)
+*Decided (owner):* decay target **2e-4 -> 2e-5, linear**, over the run's length; control replicate wanted; twin league skipped.
+*Arms (4-deck league, from scratch, 25k games/deck each, run one after the other, ~5 h each):*
+`small_lrdecay` (decay) and `small_control` (identical to `small_baseline`, no seed -- runs are unseeded, so it differs from the baseline by chance only).
+The 25k decay horizon ends at 25k, so the arm is not a prefix of a 50k run; a 50k-horizon arm is a later run if this wins.
+Twin skipped by config only (`create_training_league: false` in the arm configs); no code change for that.
+*Reading (rule fixed before looking):* each arm's 25k snapshot vs the baseline's 25k snapshot head-to-head, pooled over the 4 decks
+(900 games per deck); the control-vs-baseline number is the noise floor. Decay wins only if its lower bound is above 50%, above the
+control's value, and the sign agrees in >= 3 of 4 decks. Secondary: each arm's decks vs the frozen baseline-final field;
+mechanism check from `metrics.jsonl` (late `approx_kl` / clip fraction / entropy trend vs baseline).
+*Needs:* an lr schedule in the training loop (not present: lr is a flat 2e-4), logged per iteration.
+
 ### 2.4 Capacity -- QUEUED (after 2.1-2.3)
 - larger network (the baseline: d_model 64, 2 layers, trunk 128x128);
 - one shared FiLM-conditioned network across decks instead of one net per deck.
@@ -162,4 +174,5 @@ includes 50% at **two consecutive** ticks *and* the continue-vs-stop A/B gain's 
 ## 4. Change log
 - 2026-11-11: created; baseline finished; best-response (elves) started; mulligan hypothesis written up, unverified.
 - 2026-11-11: best-response (elves) finished: ties the frozen agent against the field (47.6% vs 47.8%), +4 head-to-head (mirror effect); other three decks not run.
+- 2026-11-11: owner agreed the first arm: lr decay 2e-4 -> 2e-5 linear, with a control replicate, no twin league (2.3a).
 - 2026-11-11: owner: scope is the whole agent, not the mulligan net; mulligan work recorded as queued (2.2); added the whole-agent lever table (2.5). No arm other than best-response to run until it reports.
