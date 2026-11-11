@@ -25,6 +25,7 @@ import shutil
 from repo_paths import CHECKPOINTS_DIR
 from rl.model.mulligan import MulliganNet
 from rl.roster import build_pool
+from evaluation import history
 from evaluation.matchups import available_decks
 from rl.league.league_runner import build_deck_net
 from rl import checkpoint as ckpt_io
@@ -32,21 +33,11 @@ from rl import checkpoint as ckpt_io
 BACKUP_SUFFIX = ".before_rollback"
 
 
-def _snapshot_path(deck_dir, snapshot_id):
-    """Snapshots live in the active pool dir until evicted, then under
-    archive/ -- tries both, same as evaluation.history.snapshot_path."""
-    for sub in ("", "archive"):
-        path = os.path.join(deck_dir, sub, f"snapshot_{snapshot_id}.pt")
-        if os.path.exists(path):
-            return path
-    raise FileNotFoundError(f"no snapshot_{snapshot_id}.pt under {deck_dir} or its archive/")
-
-
 def rollback_deck(league_dir, deck, snapshot_id, deck_ctx, force=False, dry_run=False):
     """Returns a one-line description of what was (or would be) done."""
     vocab, fixed_table = deck_ctx
     deck_dir = os.path.join(league_dir, deck)
-    src = _snapshot_path(deck_dir, snapshot_id)
+    src = history.snapshot_path(league_dir, deck, snapshot_id)  # active window, else archive/
     live_path = os.path.join(deck_dir, "live.pt")
     mull_path = os.path.join(deck_dir, "mulligan.pt")
     if dry_run:

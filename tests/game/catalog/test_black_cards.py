@@ -748,7 +748,7 @@ def test_eviscerators_insight_extra_legal_both_branches():
 
 def test_sac_cost_fodder_dying_mid_payment_crashes_the_resolve():
     """PROOF of the 2026-08-27 production crash's underlying mechanism (see
-    traceback at logs_main_league.log around the jund_wildfire iter-19
+    traceback at logs/logs_main_league.log around the jund_wildfire iter-19
     failure), isolated from game.turn._run_priority_round_gen's own SBA
     scheduling (see test_sac_cost_fodder_survives_mid_payment_via_the_
     real_priority_loop below for the fix, driven through that real loop).

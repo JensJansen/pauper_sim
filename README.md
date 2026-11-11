@@ -216,7 +216,11 @@ src/
                            entrypoint with the same routes. See its own section
                            below.
 
-data/                      Decklists (*.txt) + league_decks.json roster.
+data/                      Decklists (*.txt) + league_decks.json roster, probe_states/ (fixed
+                           mid-game decision suites for the policy-movement check).
+docs/                      Experiment write-ups and work lists (overlap A/B, sac-cost crash
+                           hypotheses, TODO, cleanup checklist).
+reference_agents/          Frozen reference agents kept from earlier runs (see its MANIFEST.json).
 training_configs/          Run-mechanics + league-identity JSON configs.
 checkpoints/               Trained weights + vocab.json (gitignored; see below).
 logs/                      Game event logs from --log runs (gitignored).
@@ -448,7 +452,7 @@ than the sequential schedule uses). Measured on the production config (11 decks
 × 60 games, 6 workers): 11.98 → 9.06 s/round (24.4% faster; the ceiling is the
 28% the update takes). The cost is that one-update policy lag, which is
 off-policy data for PPO's ratio/clip to absorb. A paired A/B over 10,020
-games/deck on the 11-deck league (`OVERLAP_AB_RESULTS.md`) found no detectable cost
+games/deck on the 11-deck league (`docs/OVERLAP_AB_RESULTS.md`) found no detectable cost
 to learning (L1 − S = +0.10 score points, 95% interval [−1.05, +1.25], head-to-head
 51.6% for the sequential arm, indistinguishable PPO statistics) for 24% less wall
 time, so `small_league.json` turns it on; the code default stays `false`. A round
