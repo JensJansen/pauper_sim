@@ -200,6 +200,9 @@ src/
                                docs/TRAINING_IMPROVEMENT_PLAN.md.
       check_best_response.py   Plays that fresh agent's snapshots against the frozen agent (head-to-head and
                                vs the frozen field).
+      run_lr_decay.py          Runs run_training_pipeline.py unchanged with a linear lr decay on the deck
+                               nets (wraps ppo_update in-process; the stock loop has no lr schedule);
+                               see docs/TRAINING_IMPROVEMENT_PLAN.md 2.3a.
     mulligan_retrain/        Rebuilding the mulligan model against a frozen main
                              policy — an open investigation.
       train_mulligan.py        --opponent-mode twin | self-mirror: two ablations

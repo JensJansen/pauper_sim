@@ -115,7 +115,7 @@ One change per arm on the 4-deck league, each read against the baseline with the
 - larger `games_per_iteration` (fewer, less noisy updates);
 - `gamma = 1`, `lambda ~= 0.97` (baseline gamma-lambda is 0.9405, short for ~100-step games).
 
-#### 2.3a Learning-rate decay -- FIRST ARM, DESIGN AGREED 2026-11-11 (not started)
+#### 2.3a Learning-rate decay -- FIRST ARM, RUNNING (started 2026-11-11 ~15:10; decay arm then control)
 *Decided (owner):* decay target **2e-4 -> 2e-5, linear**, over the run's length; control replicate wanted; twin league skipped.
 *Arms (4-deck league, from scratch, 25k games/deck each, run one after the other, ~5 h each):*
 `small_lrdecay` (decay) and `small_control` (identical to `small_baseline`, no seed -- runs are unseeded, so it differs from the baseline by chance only).
@@ -125,7 +125,11 @@ Twin skipped by config only (`create_training_league: false` in the arm configs)
 (900 games per deck); the control-vs-baseline number is the noise floor. Decay wins only if its lower bound is above 50%, above the
 control's value, and the sign agrees in >= 3 of 4 decks. Secondary: each arm's decks vs the frozen baseline-final field;
 mechanism check from `metrics.jsonl` (late `approx_kl` / clip fraction / entropy trend vs baseline).
-*Needs:* an lr schedule in the training loop (not present: lr is a flat 2e-4), logged per iteration.
+*Implementation (owner priority: do not alter the main pipeline):* the stock loop has no lr schedule, so `src/analysis/eval/run_lr_decay.py` runs the unchanged
+`run_training_pipeline.main()` after wrapping `league_runner.ppo_update` in-process to set the deck optimizers' lr from `progress.json`'s cumulative games
+(constant within a ~192-game snapshot interval; mulligan lr not decayed); lr changes are logged to `logs/lr_<league>.jsonl`. Smoke-tested 2026-11-11:
+lr 2e-4 -> 9.2e-5 at 144 of 240 games, saved checkpoints carry the decayed lr. Arms use configs `small_lrdecay.json` / `small_control.json`
+(history checks off in-run to save ~1.5 h each; the arms are read afterwards head-to-head, checks every 5k like the baseline; webapp publishing left at its default).
 
 ### 2.4 Capacity -- QUEUED (after 2.1-2.3)
 - larger network (the baseline: d_model 64, 2 layers, trunk 128x128);

@@ -1,0 +1,9 @@
+{
+  "_note": "Arm 1 of the 2026-11 methodology screen (docs/TRAINING_IMPROVEMENT_PLAN.md 2.3a): the small_baseline methodology with the deck nets' learning rate decayed linearly 2e-4 -> 2e-5 over these 25,000 games/deck. Run via analysis/eval/run_lr_decay.py (the stock pipeline has no lr schedule, so the decay is applied by that wrapper, not by this config). No twin league; in-run history checks off (the arm is read afterwards, head-to-head vs small_baseline's 25k snapshots); checks every 20% = 5,000 games to line up with the baseline's ticks.",
+  "extends": "small_league.json",
+  "league_name": "small_lrdecay",
+  "total_games": 25000,
+  "create_training_league": false,
+  "history_checks": false,
+  "checks_cadence_pct": 20
+}

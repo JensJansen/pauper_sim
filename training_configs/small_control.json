@@ -1,0 +1,9 @@
+{
+  "_note": "Control replicate for the lr-decay arm (docs/TRAINING_IMPROVEMENT_PLAN.md 2.3a): identical to small_baseline (flat lr, unseeded) but 25,000 games/deck, no twin, history checks off, checks every 5,000. Its head-to-head vs small_baseline's 25k snapshots is the run-to-run noise floor.",
+  "extends": "small_league.json",
+  "league_name": "small_control",
+  "total_games": 25000,
+  "create_training_league": false,
+  "history_checks": false,
+  "checks_cadence_pct": 20
+}
