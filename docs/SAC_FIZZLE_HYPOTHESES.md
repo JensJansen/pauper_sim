@@ -14,7 +14,7 @@ would confirm or refute it. "Rank" is my plausibility estimate after reading the
 
 `logs/sac_fizzle_diagnostics.jsonl` has 16 records, but **15 are noise**: identical single-player records (one player, two tapped
 Swamps, empty hand). They are the unit test `test_sac_cost_fodder_dying_mid_payment_crashes_the_resolve`
-([test_black_cards.py:757](tests/game/catalog/test_black_cards.py#L757)) writing the dump each time it deliberately provokes the
+([test_black_cards.py:757](tests/unit/game/catalog/test_black_cards.py#L757)) writing the dump each time it deliberately provokes the
 crash; that test pollutes the production log. (Correction to my earlier note, which counted 3 production dumps: there is **one**
 real record, from the 2026-11-10 L1 crash. The dump only exists since 09-01, so the two earlier crashes left none.)
 

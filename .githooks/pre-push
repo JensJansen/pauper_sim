@@ -1,0 +1,7 @@
+#!/bin/sh
+# Pre-push: the unit tier must pass (tests/unit, ~2 minutes). Component and integration tiers are run on demand.
+# Enable once per clone:  git config core.hooksPath .githooks      (the same setting that enables pre-commit)
+python -m pytest tests/unit -q -p no:cacheprovider -x || {
+    echo "pre-push: unit tests failed -- push blocked (git push --no-verify to override)." >&2
+    exit 1
+}

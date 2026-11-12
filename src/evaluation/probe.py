@@ -22,6 +22,7 @@ import numpy as np
 import torch
 
 from rl.model.arch import pad_token_batch
+from rl.model.deck import previous_pointer_inputs
 
 MID_TURN = 5       # state.turn_number at the decision (the engine counts both players' turns)
 MID_PERMANENTS = 6  # permanents on both battlefields together
@@ -158,7 +159,8 @@ def probe_distributions(net, probe, device="cpu", batch_episodes=16):
             mine, theirs, reps = net.encoder(vocab_idx, features, pad, features[:, :, -1])
             scalar = torch.as_tensor(np.array(flat_scalar), dtype=torch.float32, device=device)
             logits, _value, _h = net(mine, theirs, scalar, reps, mask[:, n_fixed:], seq=(len(chunk), max_steps),
-                                     prev_action=net.prev_action_symbols(prev, device))
+                                     prev_action=net.prev_action_symbols(prev, device),
+                                     prev_pointer=previous_pointer_inputs(vocab_idx, features, prev, (len(chunk), max_steps), n_fixed))
             probs = torch.softmax(logits.masked_fill(~mask, -1e8), dim=-1)
             for row, e in enumerate(chunk):
                 for step, selected in enumerate(e["probe"]):

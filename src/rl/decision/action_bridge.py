@@ -44,7 +44,7 @@ def build_fixed_action_table(decklist, token_card_defs=(), extra_choosable_names
     dropped regardless.
 
     ROW ORDER IS LOAD-BEARING: the policy's action head is indexed by this
-    table -- see tests/drl_env/test_action_table_order.py."""
+    table -- see tests/component/action_space/test_action_table_order.py."""
     full_table = drl_env.build_action_table(
         decklist, game.EFFECT_REGISTRY, token_card_defs=token_card_defs,
         opponent_decklist=None, extra_choosable_names=extra_choosable_names,

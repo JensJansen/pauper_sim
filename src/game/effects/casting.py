@@ -241,8 +241,16 @@ def enters_battlefield(state, card_def, force_tapped=False, from_zone=None):
     permanent.flags["entered_tapped"] = tapped
     # Pooled slot assignment: lowest number not already in use among this
     # player's currently-live permanents of the same name, so slots free up
-    # as copies leave rather than growing with turns played.
-    used_slots = {p.slot for p in state.battlefield if p.card_def.name == card_def.name}
+    # as copies leave rather than growing with turns played. A transformed
+    # permanent keeps its slot under its BACK-face name, so its slot counts as
+    # taken for the front-face name too: otherwise a second Delver entering
+    # after the first flipped would reuse the slot, and once it flipped as
+    # well two "Insectile Aberration, slot 1" would share one (name, slot)
+    # address -- which the action space and the replay log use to tell
+    # permanents apart.
+    used_slots = {p.slot for p in state.battlefield
+                  if p.card_def.name == card_def.name
+                  or ("front_card_def" in p.flags and p.flags["front_card_def"].name == card_def.name)}
     slot = 1
     while slot in used_slots:
         slot += 1

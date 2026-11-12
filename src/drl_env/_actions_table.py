@@ -9,7 +9,7 @@ Categories, in table order (each is built by one row builder below; see
 _actions_cast/_actions_cast_altzone/_combat/_resolution/_mana for the
 legal/execute factories and the category boundaries themselves). THE ORDER
 IS LOAD-BEARING -- a trained policy's action head is indexed by it; see
-tests/drl_env/test_action_table_order.py:
+tests/component/action_space/test_action_table_order.py:
   1. Play land: <name>            -- one per distinct land name
   2. Tap <name> [for <color>]     -- mana abilities: one no-color row per
      fixed/Tron/count source, one row per producible color for a
@@ -855,7 +855,7 @@ def build_action_table(decklist, registry, token_card_defs=(),
     this table, so reordering or relabelling rows (even at the same length)
     silently scrambles every saved checkpoint. The rows below are emitted in
     the exact order the categories are listed in the module docstring;
-    tests/drl_env/test_action_table_order.py pins it."""
+    tests/component/action_space/test_action_table_order.py pins it."""
     deck = _deck_context(decklist, registry, token_card_defs)
     distinct_names, choosable_names = deck["distinct_names"], deck["choosable_names"]
     qty_by_name, card_type_by_name = deck["qty_by_name"], deck["card_type_by_name"]

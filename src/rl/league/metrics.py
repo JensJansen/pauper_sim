@@ -4,7 +4,7 @@ Every line is a JSON object with a `kind`. Training writes `session_start`, `ppo
 league_runner.py); each validation check writes the kind(s) named after it (validation/<check>.py). `append`
 is the single writer (it also mirrors the line to the web app, see webapp_publish/mirror.py) and `read` the
 single reader. KINDS below is the schema: kind -> (who writes it, what its fields mean). A kind not listed here is
-still written (telemetry must never stop training) but prints a warning once, and tests/rl/league/test_metrics.py
+still written (telemetry must never stop training) but prints a warning once, and tests/unit/rl/league/test_metrics.py
 fails if code emits a kind that is not registered or the README's metrics reference omits one.
 
 Fields shared by every kind: `kind`, `cumulative_games` (games/deck trained when it was written). Training kinds also

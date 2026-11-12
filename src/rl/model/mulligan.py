@@ -54,7 +54,7 @@ ENTROPY_COEF = 1.0  # 2026-08-24: 0.01 -- tiny-league's keep/mull head kept re-c
 # rides state_dict()/load_state_dict() -- an old checkpoint lacking the key
 # fails strict loading loudly instead of silently loading weights trained
 # against a different input distribution.
-HAND_REPR_VERSION = 2
+HAND_REPR_VERSION = 3  # 3: tokens gained copy-count columns and the summary gained a sum-pooled half
 
 
 def mulligan_reward(won):
@@ -86,7 +86,7 @@ class MulliganNet(nn.Module):
         object.__setattr__(self, "encoder", encoder)
         d = encoder.d_model
         self.trunk = nn.Sequential(
-            nn.Linear(d + self.N_SCALAR, hidden), nn.Tanh(),
+            nn.Linear(encoder.summary_dim + self.N_SCALAR, hidden), nn.Tanh(),
             nn.Linear(hidden, hidden), nn.Tanh(),
         )
         self.keep_head = nn.Linear(hidden, 2)     # [keep, mulligan]
@@ -97,7 +97,7 @@ class MulliganNet(nn.Module):
 
     def encode(self, vocab_idx, features, key_padding_mask, side_flag):
         """Runs this deck's shared encoder forward, wrapped in no_grad (see
-        class docstring). Returns (mine_summary [B,d], token_reps [B,T,d]);
+        class docstring). Returns (mine_summary [B,summary_dim], token_reps [B,T,d]);
         theirs_summary is discarded -- pregame there is no opponent board/
         hand to summarize."""
         with torch.no_grad():

@@ -196,7 +196,7 @@ class LeaguePool:
         vocab, fixed_table = deck_ctx
         saved = ckpt_io.load_snapshot(snapshot_path)
         encoder = SetTransformer(vocab.size, **encoder_kwargs_from_state_dict(saved["state_dict"]))
-        net = DeckNetwork(encoder, film_condition_dim=encoder.d_model, non_targeting_n_actions=len(fixed_table),
+        net = DeckNetwork(encoder, non_targeting_n_actions=len(fixed_table),
                            trunk_hidden=saved["trunk_hidden"])
         net.load_state_dict(saved["state_dict"])
         net.eval()

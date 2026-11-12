@@ -18,17 +18,27 @@ independent pieces per token:
    per card would separate the residual duplicate pairs -- add if that's
    shown to cost real play strength.
 
+What the card DOES beyond that -- the engine primitives its code reaches, the amounts in its own code, and categorical
+extras such as tron_type -- comes from rl.model.card_behavior, derived from the code itself (so Cast Down and Unexpected
+Fangs, or Lightning Bolt and Galvanic Blast, no longer share a vector).
+
 Dynamic per-instance state (tapped, damage, blocked-as-attacker, targeted by
 something on the stack, etc.) is a separate per-token concern -- see
 _token_row, combined with the static vector into one row by build_token_set.
+
+Multiplicity: attention is a weighted mean, so identical tokens would be invisible as a COUNT (6 Mountains = 1
+Mountain). Every token also carries how many copies of itself the observation holds (MULTIPLICITY, filled by
+_fill_multiplicity as build_token_set's last step); tokens are never merged, so each copy stays pointer-addressable.
 """
 
 import json
+import math
 import os
 
 import numpy as np
 
 import game
+from rl.model.card_behavior import BEHAVIOR_FEATURE_DIM, behavior_features
 
 # Keyword vocabulary, scanned from the registry rather than hand-listed, so a
 # keyword added to a future card is covered without editing this file.
@@ -70,7 +80,9 @@ EXTRA_FLAG_VOCAB = ("artifact", "basic", "defender", "indestructible", "devoid")
 # ("count"/"count_all" scale with a creature count, "tron" with Urza pieces).
 _BOARD_SCALED_MANA = ("count", "count_all", "tron")
 
-MANA_PIP_CAP = 6
+# Derived from the card pool, not a magic number: the largest single cost component any card has (8 generic today), so
+# no printed cost saturates and a cost-reduction delta (<= the printed generic) is always within [0, 1].
+MANA_PIP_CAP = max([n for cd in game.CARD_DEFS.values() for n in (cd.cast_cost or {}).values()] + [1])
 POWER_TOUGHNESS_CAP = 10
 
 MANA_FEATURE_DIM = 1 + len(game.POOL_COLORS) + 3
@@ -78,6 +90,7 @@ STATIC_FEATURE_DIM = (
     len(game.POOL_COLORS) + 1 + len(CARD_TYPES) + 2 + len(KEYWORD_VOCAB)
     + MANA_FEATURE_DIM + len(SPEC_KEY_VOCAB) + len(PENDING_KIND_VOCAB)
     + len(EXTRA_FLAG_VOCAB) + len(SUBTYPE_VOCAB)
+    + BEHAVIOR_FEATURE_DIM
 )
 
 
@@ -205,6 +218,7 @@ def static_card_features(card_def):
     subtypes = card_def.extra.get("subtypes", ())
     for subtype in SUBTYPE_VOCAB:
         out.append(1.0 if subtype in subtypes else 0.0)
+    out += behavior_features(card_def)  # what the card's code DOES: primitives, amounts, categorical extras
     assert len(out) == STATIC_FEATURE_DIM
     return out
 
@@ -244,7 +258,8 @@ COUNTER_VOCAB = ("+1/+1", "-0/-1", "charge", "lifelink")
 COUNTER_CAP = 8  # covers Everflowing Chalice's animate threshold of 7 charge counters
 AURA_COUNT_CAP = 3
 
-# cost_reduction_delta (1, own-hand tokens only), untapped, tapped,
+# cost_reduction_delta (1, own-hand tokens only), then MULTIPLICITY_FEATURE_DIM copy-count features (how many
+# identical cards the observation holds -- see MULTIPLICITY below), untapped, tapped,
 # effective_power, effective_toughness, blocked_as_attacker,
 # committed_as_blocker, is_attacking, summoning_sick, auras_attached,
 # is_attached, targeted_by_mine, targeted_by_theirs, three "revealed"
@@ -252,7 +267,36 @@ AURA_COUNT_CAP = 3
 # counters (len(COUNTER_VOCAB) + 1 catch-all), zone one-hot, side flag --
 # see _token_row for what each slot means.
 HAND_FEATURE_DIM = 1
-DYNAMIC_FEATURE_DIM = HAND_FEATURE_DIM + 12 + 3 + len(COUNTER_VOCAB) + 1 + len(ZONES) + 1
+
+# MULTIPLICITY. Attention (self-attention and the pooling heads alike) is a weighted MEAN over tokens, and identical
+# tokens have identical rows, so without help n copies of a card are indistinguishable from one copy: the policy
+# could not tell 6 Mountains from 1, or 4 Elves from 1. Each token therefore carries how many copies of itself the
+# observation holds, two ways:
+#   copies_same_card   tokens with the same card (same static identity, vocab index, zone and side), whatever their
+#                      state -- the card's total count (3 tapped + 2 untapped Mountains: every Mountain reads 5)
+#   copies_same_state  tokens identical in EVERY feature -- how many are in exactly this state (the 3 tapped read 3)
+# Encoded as log(n)/log(COPIES_CAP), so a lone card reads 0 and resolution is finest at the small counts that decide
+# games. Tokens are NOT merged: each copy stays individually addressable by the pointer head. build_token_set fills
+# the columns in a final pass over the whole set (they depend on the other tokens); _token_row leaves zeros.
+MULTIPLICITY_FEATURE_DIM = 2
+COPIES_CAP = 20
+MULTIPLICITY_START = STATIC_FEATURE_DIM + HAND_FEATURE_DIM  # first copy-count column in a token row
+
+# LINKS. A token set has no edges: an Aura on creature A looks the same as one on creature B (each creature only
+# knows "I have an aura"), two spells on the stack don't say which target belongs to which, and which blocker blocks
+# which attacker is invisible. Each such relationship -- aura -> host, stack entry -> target, blocker -> attacker --
+# becomes an EDGE that is given a SLOT: the edge's source token carries a one-hot in link_src[slot], its destination
+# token the same slot in link_dst[slot]; a token in several edges carries several. Matching slots is how attention can
+# tell which pairs belong together. Slots are assigned by a canonical sort of the edges on perspective-free token
+# content, never by token order or object id, so the encoding stays order-invariant and identical from either seat
+# (identical edges tie, but a tie is a symmetric position: swapping their slots gives the same multiset of rows).
+# More than LINK_SLOTS edges saturate into the last slot. A player target has no token: the stack entry gets
+# targets_player_mine / targets_player_theirs instead (relative to the viewer).
+LINK_SLOTS = 12
+LINK_FEATURE_DIM = 2 * LINK_SLOTS + 2
+LINK_START = MULTIPLICITY_START + MULTIPLICITY_FEATURE_DIM  # link_src[0..L), link_dst[0..L), targets_player x2
+DYNAMIC_FEATURE_DIM = (HAND_FEATURE_DIM + MULTIPLICITY_FEATURE_DIM + LINK_FEATURE_DIM + 12 + 3 + len(COUNTER_VOCAB)
+                       + 1 + len(ZONES) + 1)
 
 # Slot count AFTER the targeted_by_mine/targeted_by_theirs pair (revealed-
 # disposition bits + counters block + zone one-hot + side flag). Two test
@@ -303,6 +347,8 @@ def _token_row(name, zone, is_mine, vocab, permanent=None, owner_idx=None, encha
     vs. already-sorted vs. not-yet-reached. Mutually exclusive."""
     row = list(cached_static_card_features(name, vocab))
     row.append(cost_reduction_delta)
+    row += [0.0] * MULTIPLICITY_FEATURE_DIM  # filled by _fill_multiplicity once the whole token set exists
+    row += [0.0] * LINK_FEATURE_DIM          # filled by _fill_links, likewise
     untapped = tapped = eff_power = eff_toughness = blocked_attacker = committed_blocker = 0.0
     attacking = sick = auras_attached = is_attached = 0.0
     if permanent is not None:
@@ -311,8 +357,10 @@ def _token_row(name, zone, is_mine, vocab, permanent=None, owner_idx=None, encha
         own_blocked_by = state.players[owner_idx].blocked_by
         # gang-blocking: blocked_by values are lists of blockers; flatten to a flat set.
         other_committed_blockers = {b for bs in state.players[1 - owner_idx].blocked_by.values() for b in bs}
-        eff_power = min(game.permanent_power(state, permanent, enchanting_auras=enchanting_auras),
-                         PER_CREATURE_POWER_CAP) / PER_CREATURE_POWER_CAP
+        # SIGNED, in [-1, 1]: power can go below zero (-3/-0 effects) and a later pump acts on the true value, so the
+        # sign is kept rather than clamped to 0 (the only token feature that is not in [0, 1]).
+        eff_power = max(min(game.permanent_power(state, permanent, enchanting_auras=enchanting_auras),
+                            PER_CREATURE_POWER_CAP), -PER_CREATURE_POWER_CAP) / PER_CREATURE_POWER_CAP
         remaining_t = max(game.permanent_toughness(state, permanent, enchanting_auras=enchanting_auras)
                            - permanent.damage_marked, 0)
         eff_toughness = min(remaining_t, PER_CREATURE_TOUGHNESS_CAP) / PER_CREATURE_TOUGHNESS_CAP
@@ -341,6 +389,88 @@ def _token_row(name, zone, is_mine, vocab, permanent=None, owner_idx=None, encha
     # float32 array, not the built-up list: one array per token instead of
     # TOKEN_FEATURE_DIM separate float objects keeps pickling/IPC cheap.
     return np.asarray(row, dtype=np.float32)
+
+
+def _fill_multiplicity(tokens):
+    """Final pass of build_token_set: writes each token's copies_same_card / copies_same_state (see MULTIPLICITY)
+    into its row, in place. Rows are float32 arrays; a None row (include_rows=False) is skipped."""
+    rows = [row for _idx, row, _ident in tokens if row is not None]
+    if not rows:
+        return
+    tail = len(ZONES) + 1  # zone one-hot + side flag: with the static block and vocab index, a card's "who and where"
+    end = MULTIPLICITY_START + MULTIPLICITY_FEATURE_DIM
+    card_keys, state_keys = [], []
+    for (idx, row, _ident) in (t for t in tokens if t[1] is not None):
+        card_keys.append((idx, row[:STATIC_FEATURE_DIM].tobytes(), row[-tail:].tobytes()))
+        masked = row.copy()
+        masked[MULTIPLICITY_START:end] = 0.0
+        state_keys.append((idx, masked.tobytes()))
+    card_n, state_n = {}, {}
+    for k in card_keys:
+        card_n[k] = card_n.get(k, 0) + 1
+    for k in state_keys:
+        state_n[k] = state_n.get(k, 0) + 1
+    scale = math.log(COPIES_CAP)
+    for row, ck, sk in zip(rows, card_keys, state_keys):
+        row[MULTIPLICITY_START] = min(math.log(card_n[ck]) / scale, 1.0)
+        row[MULTIPLICITY_START + 1] = min(math.log(state_n[sk]) / scale, 1.0)
+
+
+def _link_edges(state, my_seat_idx, by_identity):
+    """[(kind, source token index, destination token index)] for every relationship that has a token at both ends,
+    plus {token index: set of 'mine'/'theirs'} for stack entries targeting a PLAYER.
+    kinds: 0 aura -> host, 1 stack entry -> target, 2 blocker -> attacker."""
+    edges, player_targets = [], {}
+    for player in state.players:
+        for perm in player.battlefield:
+            host = perm.flags.get("enchanting")
+            if host is not None and id(perm) in by_identity and id(host) in by_identity:
+                edges.append((0, by_identity[id(perm)], by_identity[id(host)]))
+    for entry in state.stack:
+        src = by_identity.get(id(entry))
+        for kind, obj in entry.get("targets", ()):
+            if kind == "player":
+                if src is not None:
+                    player_targets.setdefault(src, set()).add("mine" if obj == my_seat_idx else "theirs")
+            elif src is not None and id(obj) in by_identity:
+                edges.append((1, src, by_identity[id(obj)]))
+    for owner in state.players:
+        for attacker, blockers in owner.blocked_by.items():
+            for blocker in blockers:
+                if id(blocker) in by_identity and id(attacker) in by_identity:
+                    edges.append((2, by_identity[id(blocker)], by_identity[id(attacker)]))
+    return edges, player_targets
+
+
+def _fill_links(state, my_seat_idx, tokens):
+    """Final pass of build_token_set (after _fill_multiplicity): writes link slots and player-target flags, in place."""
+    by_identity = {id(ident): i for i, (_idx, row, ident) in enumerate(tokens) if ident is not None and row is not None}
+    edges, player_targets = _link_edges(state, my_seat_idx, by_identity)
+    # Edges are numbered by sorting on token CONTENT, never token order. Primary key: content with the
+    # perspective-dependent columns (side flag, targeted-by bits; counted from the row's end, see
+    # SLOTS_AFTER_TARGETING) blanked, so both seats order the same edges identically. Secondary key: the rows as they
+    # are, so edges that differ only in perspective (my aura on my creature vs. an identical aura on theirs) are still
+    # ordered by content instead of by whichever token happens to come first. What remains tied is truly identical
+    # edges, and swapping those changes nothing.
+    targeted_mine_col, targeted_theirs_col = -SLOTS_AFTER_TARGETING - 2, -SLOTS_AFTER_TARGETING - 1
+
+    def content(row, neutral):
+        r = row.copy()
+        r[LINK_START:LINK_START + LINK_FEATURE_DIM] = 0.0
+        if neutral:
+            r[-1] = 0.0
+            r[targeted_mine_col] = r[targeted_theirs_col] = 0.0
+        return r.tobytes()
+
+    keyed = sorted(((kind, content(tokens[s][1], True), content(tokens[d][1], True),
+                     content(tokens[s][1], False), content(tokens[d][1], False)), s, d) for kind, s, d in edges)
+    for rank, (_key, s, d) in enumerate(keyed):
+        slot = min(rank, LINK_SLOTS - 1)
+        tokens[s][1][LINK_START + slot] = 1.0
+        tokens[d][1][LINK_START + LINK_SLOTS + slot] = 1.0
+    for src, who in player_targets.items():
+        tokens[src][1][LINK_START + 2 * LINK_SLOTS] = 1.0 if "mine" in who else 0.0
+        tokens[src][1][LINK_START + 2 * LINK_SLOTS + 1] = 1.0 if "theirs" in who else 0.0
 
 
 def _stack_target_map(state):
@@ -397,6 +527,10 @@ def build_token_set(state, my_seat_idx, vocab, include_rows=True, hand_cost_redu
     choose_graveyard_card/choose_cast_copy/choose_stack_target, since a
     stack entry is an unhashable dict), so same-named graveyard copies or
     simultaneous same-named spells are each individually addressable.
+
+    Every token's rows also carry copies_same_card / copies_same_state, filled in a last pass over the whole set
+    (_fill_multiplicity; skipped with include_rows=False) and the link slots that pair up auras with hosts, stack entries
+    with their targets and blockers with attackers (_fill_links, see LINKS).
 
     Every token also carries dynamic targeted-by-mine/targeted-by-theirs
     bits (_token_row, _stack_target_map). A player-targeted burn spell has
@@ -511,4 +645,7 @@ def build_token_set(state, my_seat_idx, vocab, include_rows=True, hand_cost_redu
                 # indistinguishable, acceptable since no pool card reveals such a pair.
                 row = _token_row(card_def.name, "hand", hand_owner == my_seat_idx, vocab) if include_rows else None
                 tokens.append((vocab.index(card_def.name), row, card_def))
+    if include_rows:
+        _fill_multiplicity(tokens)
+        _fill_links(state, my_seat_idx, tokens)
     return tokens

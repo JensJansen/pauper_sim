@@ -6,6 +6,7 @@ import numpy as np
 import torch
 
 from rl.model.arch import pad_token_batch
+from rl.model.deck import previous_pointer_inputs
 
 
 def _compute_gae(rewards_, values_, dones_, gamma, gae_lambda):
@@ -162,9 +163,13 @@ def ppo_update(net, optimizer, buf, device, n_epochs=4, batch_size=64, gamma=0.9
             pointer_mask_mb = full_mask_mb[:, n_fixed:]
             # hidden=None -> zeros: every episode replays from the same
             # start state used during collection, avoiding stale hidden state.
+            # What the previous recorded action pointed at (card + feature row), read from the previous step's own
+            # tokens -- identical to what the rollout agent carried (rl.decision.agent._seat_step).
+            prev_pointer_mb = previous_pointer_inputs(vocab_idx, features, prev_grid.reshape(-1).tolist(),
+                                                      (n_seq, max_steps), n_fixed)
             logits, values_pred, _h = net(mine_summary, theirs_summary, scalar_mb, token_reps,
                                           pointer_mask_mb, seq=(n_seq, max_steps),
-                                          prev_action=prev_action_mb)
+                                          prev_action=prev_action_mb, prev_pointer=prev_pointer_mb)
             masked_logits = logits.masked_fill(~full_mask_mb, -1e8)
             dist = torch.distributions.Categorical(logits=masked_logits)
             new_logp = dist.log_prob(act_mb)

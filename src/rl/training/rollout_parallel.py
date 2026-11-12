@@ -98,7 +98,7 @@ def _league_rollout_worker(training_deck_name, all_state_dicts, all_trunk_hidden
     live_nets = {}
     for name, state_dict in all_state_dicts.items():
         encoder = SetTransformer(vocab.size, **encoder_kwargs_from_state_dict(state_dict))
-        net = DeckNetwork(encoder, film_condition_dim=encoder.d_model,
+        net = DeckNetwork(encoder,
                            non_targeting_n_actions=len(fixed_tables[name]),
                            trunk_hidden=all_trunk_hidden[name])
         net.load_state_dict(state_dict)

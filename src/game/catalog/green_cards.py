@@ -75,6 +75,9 @@ GREEN_CARD_CATALOG = {
     # --- boggles deck ---
     "Gladecover Scout": CardDef(
         "Gladecover Scout", CardType.CREATURE, {"G": 1}, EffectId.GLADECOVER_SCOUT, power=1, toughness=1,
+        # Real type line is "Creature -- Elf Scout"; it carried no subtypes here, so Elf-counting cards (Priest of
+        # Titania / Wellwisher / Timberwatch Elf) ignored it. Corrected 2026-11-12 (repo owner).
+        subtypes=("Elf", "Scout"),
     ),
     "Silhana Ledgewalker": CardDef(
         "Silhana Ledgewalker", CardType.CREATURE, {"generic": 1, "G": 1}, EffectId.SILHANA_LEDGEWALKER,

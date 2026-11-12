@@ -1,8 +1,19 @@
-"""Shared pytest fixtures across the test suite."""
+"""Shared pytest fixtures across the test suite, and the tier markers.
+
+Tiers are folders (tests/unit, tests/component, tests/integration); the matching marker is applied from the path, so
+`pytest -m unit` and `pytest tests/unit` mean the same thing."""
 import pytest
 
 from webapp_publish import mirror as wm
 from webapp_publish import sync as webapp_sync
+
+
+def pytest_collection_modifyitems(items):
+    for item in items:
+        parts = item.path.parts
+        for tier in ("unit", "component", "integration"):
+            if tier in parts[parts.index("tests") + 1:parts.index("tests") + 2]:
+                item.add_marker(getattr(pytest.mark, tier))
 
 
 @pytest.fixture

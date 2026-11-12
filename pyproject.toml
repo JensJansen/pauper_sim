@@ -2,10 +2,15 @@
 # src/ modules use package-relative imports (e.g. `from . import registry`),
 # so tests need src/ on sys.path the same way run_league.py and the
 # speed-benchmark scripts do -- pythonpath does that without a conftest.py.
-pythonpath = ["src"]
+# tests/ is on the path too so every tier can `from support import ...`.
+pythonpath = ["src", "tests"]
 testpaths = ["tests"]
+# importlib: test files with the same basename may live in different tiers/components, and nothing needs sibling imports.
+addopts = "--import-mode=importlib"
 markers = [
-    "slow: exercises the real game engine + torch (RL self-checks) -- excluded via `-m \"not slow\"` for a fast, deterministic tier",
+    "unit: one card / function / rule with fabricated inputs -- tests/unit (applied automatically from the folder)",
+    "component: a subsystem against its contract over real games -- tests/component (applied automatically)",
+    "integration: components wired together, the pipeline scripts -- tests/integration (applied automatically)",
 ]
 
 [tool.ruff]
@@ -30,4 +35,4 @@ external = ["BLE001"]
 # Package __init__s aggregate their submodules on purpose (re-exports, star imports).
 "__init__.py" = ["F401", "F403"]
 # Mirrors drl_env's own star-import surface (the private _actions_* names under test).
-"tests/drl_env/test_action_table.py" = ["F403", "F405"]
+"tests/component/action_space/test_action_table.py" = ["F403", "F405"]

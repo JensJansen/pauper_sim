@@ -1,0 +1,261 @@
+"""Tests for rl.model.deck.DeckNetwork: combined fixed-table + pointer action head."""
+import torch
+
+import game as _game
+from game.state import GameState, Permanent, PlayerState
+from rl.model.arch import SetTransformer, pad_token_batch
+from rl.model.deck import SCALAR_FEATURE_DIM, DeckNetwork
+from rl.model.features import CardVocab, build_token_set
+
+
+def _fixture():
+    decklist_a = _game.parse_decklist_file("../data/mono_red_madness.txt")
+    decklist_b = _game.parse_decklist_file("../data/rakdos_madness.txt")
+    vocab = CardVocab([decklist_a, decklist_b])
+
+    seat0 = PlayerState(on_the_play=True)
+    seat0.battlefield = [Permanent(_game.CARD_DEFS["Guttersnipe"]), Permanent(_game.CARD_DEFS["Voldaren Epicure"])]
+    seat1 = PlayerState(on_the_play=False)
+    seat1.battlefield = [Permanent(_game.CARD_DEFS["Kitchen Imp"])]
+    state = GameState(on_the_play=True, players=[seat0, seat1])
+
+    tokens = build_token_set(state, 0, vocab)
+    vocab_idx, features, mask, identities = pad_token_batch([tokens])
+    side_flag = features[:, :, -1]
+
+    shared = SetTransformer(vocab.size, d_model=16, n_heads=2, n_layers=1, dim_feedforward=32)
+    mine_summary, theirs_summary, token_reps = shared(vocab_idx, features, mask, side_flag)
+
+    n_fixed_actions = 12  # arbitrary stand-in for a real per-deck fixed table's size
+    net = DeckNetwork(shared, non_targeting_n_actions=n_fixed_actions, trunk_hidden=(32, 32))
+
+    scalar_features = torch.zeros(1, SCALAR_FEATURE_DIM)
+    # Only my own two battlefield permanents are legal pointer targets here;
+    # the opponent's Kitchen Imp and padded slots are masked out.
+    pointer_mask = torch.zeros_like(mask)
+    for t, ident in enumerate(identities[0]):
+        pointer_mask[0, t] = ident is not None and ident in seat0.battlefield
+
+    return net, mine_summary, theirs_summary, scalar_features, token_reps, pointer_mask, n_fixed_actions, vocab_idx
+
+
+def test_deck_network_output_shapes():
+    net, mine_summary, theirs_summary, scalar_features, token_reps, pointer_mask, n_fixed_actions, vocab_idx = _fixture()
+    logits, value, hidden = net(mine_summary, theirs_summary, scalar_features, token_reps, pointer_mask)
+    assert logits.shape == (1, n_fixed_actions + vocab_idx.shape[1])
+    assert value.shape == (1,)
+    assert torch.isfinite(value).all()
+
+
+def test_deck_network_pointer_masking():
+    net, mine_summary, theirs_summary, scalar_features, token_reps, pointer_mask, n_fixed_actions, _vocab_idx = _fixture()
+    logits, _value, _hidden = net(mine_summary, theirs_summary, scalar_features, token_reps, pointer_mask)
+
+    # The two legal pointer positions must be finite; the opponent's
+    # Kitchen Imp position must be masked to -inf.
+    pointer_logits = logits[0, n_fixed_actions:]
+    legal_positions = pointer_mask[0].nonzero(as_tuple=True)[0]
+    illegal_positions = (~pointer_mask[0]).nonzero(as_tuple=True)[0]
+    assert torch.isfinite(pointer_logits[legal_positions]).all()
+    assert (pointer_logits[illegal_positions] <= -1e7).all(), "masked pointer positions must be effectively -inf"
+
+
+def test_deck_network_masked_categorical_only_samples_legal_actions():
+    net, mine_summary, theirs_summary, scalar_features, token_reps, pointer_mask, n_fixed_actions, _vocab_idx = _fixture()
+    logits, _value, _hidden = net(mine_summary, theirs_summary, scalar_features, token_reps, pointer_mask)
+
+    # A masked-categorical sample over the combined action set must only
+    # ever land on a legal fixed action or legal pointer target.
+    fixed_mask = torch.zeros(1, n_fixed_actions, dtype=torch.bool)
+    fixed_mask[0, 0] = True  # pretend exactly one fixed action ("Pass") is legal too
+    full_mask = torch.cat([fixed_mask, pointer_mask], dim=-1)
+    masked_logits = logits.masked_fill(~full_mask, -1e8)
+    dist = torch.distributions.Categorical(logits=masked_logits)
+    for _ in range(50):
+        action = dist.sample()
+        assert full_mask[0, action.item()], f"sampled an illegal combined action index {action.item()}"
+
+
+def test_the_league_gives_every_deck_its_own_encoder():
+    """Pins rl.model.deck's one-encoder-per-DeckNetwork invariant. Sharing a
+    SetTransformer instance across two DeckNetworks would put it in two Adam
+    instances tracking separate momentum for the same tensors. build_deck_net
+    is the one construction site."""
+    from rl.league.league_runner import build_deck_net
+
+    a, b = build_deck_net(12, 4), build_deck_net(12, 4)
+    assert a.encoder is not b.encoder, "two decks must never be handed the same encoder instance"
+    assert not any(pa is pb for pa in a.parameters() for pb in b.parameters()), \
+        "no parameter tensor may be reachable from both decks' nets"
+
+    # Independent random init, not a shared seed.
+    assert not torch.equal(a.encoder.embedding.weight, b.encoder.embedding.weight)
+
+    # A step on one deck leaves the other's perception untouched.
+    before = b.encoder.embedding.weight.clone()
+    opt = torch.optim.Adam(a.parameters(), lr=1e-2)
+    a.encoder.embedding.weight.sum().backward()
+    opt.step()
+    assert torch.equal(b.encoder.embedding.weight, before), \
+        "training one deck must not move another deck's encoder"
+
+
+def _recurrent_fixture(n_rows, seed=0):
+    """n_rows independent single-step inputs for a small DeckNetwork."""
+    torch.manual_seed(seed)
+    d_model, n_tokens, n_fixed = 16, 5, 4
+    encoder = SetTransformer(vocab_size=8, d_model=d_model, n_heads=2, n_layers=1, dim_feedforward=32)
+    net = DeckNetwork(encoder, non_targeting_n_actions=n_fixed, trunk_hidden=(24, 24))
+    mine = torch.randn(n_rows, encoder.summary_dim)  # summaries are attention-pool | sum-pool wide
+    theirs = torch.randn(n_rows, encoder.summary_dim)
+    scalar = torch.randn(n_rows, SCALAR_FEATURE_DIM)
+    reps = torch.randn(n_rows, n_tokens, d_model)
+    pmask = torch.ones(n_rows, n_tokens, dtype=torch.bool)
+    return net, mine, theirs, scalar, reps, pmask
+
+
+def test_sequence_batch_is_episode_major_not_step_major():
+    """ppo_update hands DeckNetwork.forward a flat [B*T, ...] batch plus
+    seq=(B, T), and forward does `.reshape(B, T, -1)` before the GRU -- only
+    correct if the flat batch is episode-major (all T steps of episode 0,
+    then episode 1, ...). Pinned by equivalence: running the flat batch as
+    sequences must match replaying each episode step by step, threading the
+    hidden state."""
+    n_seq, n_steps = 2, 3
+    net, mine, theirs, scalar, reps, pmask = _recurrent_fixture(n_seq * n_steps)
+    net.eval()
+
+    with torch.no_grad():
+        seq_logits, seq_values, _h = net(mine, theirs, scalar, reps, pmask, seq=(n_seq, n_steps))
+
+        step_logits, step_values = [], []
+        for episode in range(n_seq):
+            hidden = None  # every episode starts from the same zero state
+            for step in range(n_steps):
+                row = episode * n_steps + step  # episode-major indexing
+                logits, value, hidden = net(mine[row:row + 1], theirs[row:row + 1], scalar[row:row + 1],
+                                            reps[row:row + 1], pmask[row:row + 1], hidden=hidden)
+                step_logits.append(logits)
+                step_values.append(value)
+
+    assert torch.allclose(seq_logits, torch.cat(step_logits), atol=1e-5), (
+        "sequence-batched logits must match step-by-step replay -- they do not, so the flat batch "
+        "is not being reshaped episode-major"
+    )
+    assert torch.allclose(seq_values, torch.cat(step_values), atol=1e-5)
+
+
+def test_the_recurrent_state_actually_changes_the_policy():
+    """A GRU wired in but never consulted would pass every shape test in this
+    file. The same observation must produce a different distribution
+    depending on what came before it."""
+    net, mine, theirs, scalar, reps, pmask = _recurrent_fixture(2, seed=3)
+    net.eval()
+    with torch.no_grad():
+        # The same observation (row 0), once fresh and once after seeing row 1.
+        fresh, _v, _h = net(mine[:1], theirs[:1], scalar[:1], reps[:1], pmask[:1])
+        _first, _v2, carried = net(mine[1:], theirs[1:], scalar[1:], reps[1:], pmask[1:])
+        after_history, _v3, _h3 = net(mine[:1], theirs[:1], scalar[:1], reps[:1], pmask[:1], hidden=carried)
+    assert not torch.allclose(fresh, after_history), (
+        "an identical board must be evaluated differently once the agent has a history -- "
+        "the recurrent state is not reaching the heads"
+    )
+
+
+def test_ppo_update_handles_ragged_episodes_and_ignores_padding():
+    """Episodes have different lengths, so every minibatch is padded by
+    repeating the last real transition, which must be masked out of every
+    loss term or it silently upweights whatever transition ended each
+    episode. Checked by construction: a buffer of ragged episodes must train
+    (params move, losses finite)."""
+    import numpy as np
+    from rl.training.ppo import ppo_update
+    from rl.training.train import RolloutBuffer
+
+    net, *_rest = _recurrent_fixture(1, seed=7)
+    n_fixed = net.non_targeting_head.out_features
+    buf = RolloutBuffer()
+    # Three episodes of lengths 4, 1, 3; the middle one is a single-step episode.
+    for length in (4, 1, 3):
+        for step in range(length):
+            buf.add([], np.zeros(SCALAR_FEATURE_DIM, dtype=np.float32), np.ones(n_fixed, dtype=bool),
+                    0, -0.5, 0.0, 1.0 if step == length - 1 else 0.0, step == length - 1)
+    before = [p.clone() for p in net.parameters()]
+    pl, vl, ent, akl, cf, epochs, ev, astd = ppo_update(
+        net, torch.optim.Adam(net.parameters(), lr=1e-3), buf, "cpu", n_epochs=2, batch_size=2)
+
+    assert all(np.isfinite(x) for x in (pl, vl, ent, akl, cf, ev, astd)), "ragged episodes must not produce NaN"
+    assert any(not torch.equal(a, b) for a, b in zip(before, net.parameters())), "the update must actually train"
+    assert epochs >= 1
+
+
+def test_previous_action_reaches_the_policy_and_pointer_actions_collapse():
+    """The agent's own last action is fed in alongside the observation. Two
+    properties: it must actually change the policy (a forward that ignored
+    prev_action would pass every shape test), and every pointer action must
+    map to one symbol (a pointer index names a different token each state,
+    so embedding it per-index would be learning noise)."""
+    net, mine, theirs, scalar, reps, pmask = _recurrent_fixture(1, seed=11)
+    net.eval()
+    n_fixed = net.n_fixed
+
+    # Fixed actions keep their index, every pointer action collapses to
+    # n_fixed, and "no previous action" is n_fixed + 1.
+    symbols = net.prev_action_symbols([0, n_fixed - 1, n_fixed, n_fixed + 50, None, -1])
+    assert symbols.tolist() == [0, n_fixed - 1, n_fixed, n_fixed, n_fixed + 1, n_fixed + 1]
+
+    with torch.no_grad():
+        no_prev, _v, _h = net(mine, theirs, scalar, reps, pmask,
+                              prev_action=net.prev_action_symbols([None]))
+        after_a, _v, _h = net(mine, theirs, scalar, reps, pmask,
+                              prev_action=net.prev_action_symbols([0]))
+        after_b, _v, _h = net(mine, theirs, scalar, reps, pmask,
+                              prev_action=net.prev_action_symbols([1]))
+        ptr_1, _v, _h = net(mine, theirs, scalar, reps, pmask,
+                            prev_action=net.prev_action_symbols([n_fixed]))
+        ptr_2, _v, _h = net(mine, theirs, scalar, reps, pmask,
+                            prev_action=net.prev_action_symbols([n_fixed + 7]))
+
+    assert not torch.allclose(no_prev, after_a), "prev_action must reach the heads at all"
+    assert not torch.allclose(after_a, after_b), "different fixed actions must be distinguishable"
+    assert torch.allclose(ptr_1, ptr_2), "two different pointer actions must collapse to one symbol"
+
+
+# --- the previous POINTER pick: which token was chosen, not just that one was -----------------------------------------
+
+
+def test_previous_pointer_inputs_pick_the_previous_steps_chosen_token():
+    from rl.model.deck import previous_pointer_inputs
+    n_seq, steps, width, feat, n_fixed = 2, 3, 4, 5, 10
+    vocab_idx = torch.arange(n_seq * steps * width).reshape(n_seq * steps, width) + 1
+    features = torch.arange(n_seq * steps * width * feat, dtype=torch.float32).reshape(n_seq * steps, width, feat)
+    # episode 0: step 1 follows a pointer pick of token 2; step 2 follows a FIXED action
+    # episode 1: step 1 follows nothing; step 2 follows a pointer pick of token 1
+    prev = [-1, n_fixed + 2, 3, -1, -1, n_fixed + 1]
+    v, f = previous_pointer_inputs(vocab_idx, features, prev, (n_seq, steps), n_fixed)
+    assert v.tolist() == [0, int(vocab_idx[0, 2]), 0, 0, 0, int(vocab_idx[4, 1])]
+    assert torch.equal(f[1], features[0, 2]) and torch.equal(f[5], features[4, 1])
+    assert f[[0, 2, 3, 4]].abs().sum() == 0, "no pointer pick -> a zero row"
+
+
+def test_which_token_was_pointed_at_reaches_the_policy():
+    """Two different pointer picks used to collapse to one symbol and be indistinguishable; with the chosen token's card
+    and features fed in they must now change what the network does next."""
+    from rl.model.features import TOKEN_FEATURE_DIM
+    net, mine, theirs, scalar, reps, pmask = _recurrent_fixture(1, seed=21)
+    net.eval()
+    n_fixed = net.n_fixed
+
+    def pick(vocab, value):
+        return (torch.tensor([vocab]), torch.full((1, TOKEN_FEATURE_DIM), float(value)))
+
+    with torch.no_grad():
+        sym = net.prev_action_symbols([n_fixed])
+        none, _v, _h = net(mine, theirs, scalar, reps, pmask, prev_action=sym)
+        a, _v, _h = net(mine, theirs, scalar, reps, pmask, prev_action=sym, prev_pointer=pick(3, 0.2))
+        b, _v, _h = net(mine, theirs, scalar, reps, pmask, prev_action=sym, prev_pointer=pick(4, 0.9))
+        zero, _v, _h = net(mine, theirs, scalar, reps, pmask, prev_action=sym,
+                           prev_pointer=(torch.tensor([0]), torch.zeros(1, TOKEN_FEATURE_DIM)))
+    assert not torch.allclose(a, b), "pointing at different tokens must be distinguishable"
+    assert not torch.allclose(a, none), "the chosen token must reach the heads at all"
+    assert torch.allclose(none, zero), "vocab 0 means 'no pointer pick', same as passing nothing"

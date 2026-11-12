@@ -76,8 +76,8 @@ def build_deck_net(vocab_size, n_actions, trunk_hidden=None, encoder=None):
     """One deck's full network: its own perception encoder (rl.model.arch)
     plus the trunk/critic/pointer heads built over it. Every construction
     site goes through here so no caller has to remember that the encoder is
-    built from the pool vocab size and film_condition_dim tracks its
-    d_model.
+    built from the pool vocab size (the net sizes its trunk and FiLM from the
+    encoder's own summary width).
 
     Each deck gets its own encoder rather than sharing one -- a checkpoint
     carries its own, so cross-population comparison is valid by
@@ -85,7 +85,7 @@ def build_deck_net(vocab_size, n_actions, trunk_hidden=None, encoder=None):
     dim_feedforward, n_heads); None is the default 64-wide, 2-layer encoder.
     Loaders read it off the checkpoint (checkpoint.encoder_from_deck_checkpoint)."""
     encoder = SetTransformer(vocab_size, **(encoder or {}))
-    return DeckNetwork(encoder, film_condition_dim=encoder.d_model, non_targeting_n_actions=n_actions,
+    return DeckNetwork(encoder, non_targeting_n_actions=n_actions,
                        trunk_hidden=trunk_hidden or TRUNK_HIDDEN)
 
 

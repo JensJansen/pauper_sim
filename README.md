@@ -324,20 +324,34 @@ card *does* — derived from `EFFECT_REGISTRY`/`CardDef.extra` rather than
 hand-authored, so a new card is described the moment it's registered: mana
 production, an effect-capability multi-hot over every registry spec key,
 pending-resolution kinds the card can create, type flags, creature
-subtypes. This is the cheap end (presence/absence, auto-derived); a
-hand-authored semantic vector per card is the upgrade path noted in
-`rl/model/features.py`.
+subtypes. A **behavior block** (`rl/model/card_behavior.py`) then reads what a
+card's *code* does, so cards that print alike but act differently (Cast Down vs
+Unexpected Fangs, Lightning Bolt vs Galvanic Blast, Dispel vs Mental Note, the
+three Urza lands) no longer share a vector: the shared engine primitives its code
+reaches (kept when 2–40 cards reach them), the small constants in its own code
+(damage amounts, mill counts), and categorical `extra` values such as
+`tron_type`. Only three pairs still collide, and they are the same card as
+implemented (Llanowar/Fyndhorn Elves, Gladecover Scout/Slippery Bogle,
+Contaminated Aquifer/Ice Tunnel) — pinned in
+`tests/component/encoder/test_l3_static_and_vocab.py`.
 
 Dynamic half: `cost_reduction_delta` (own-hand only), tapped, effective
 P/T, combat commitments, Aura count/attached flag, per-kind counters,
-whether currently targeted by anything on the stack, zone, mine/theirs.
+whether currently targeted by anything on the stack, zone, mine/theirs, and
+two **copy counts** (how many identical cards, and how many identical-state
+cards, the observation holds — see *Counting* below), and **link slots** that
+pair tokens up: an Aura with its host, a spell on the stack with its target,
+a blocker with the attacker it blocks (source and destination share a slot;
+slots come from a canonical, order-independent sort of the edges), plus which
+player a spell targets.
 
 Second, a **scalar vector** (`rl/decision/agent.py`'s `_scalar_features`):
 turn number, lands played, mulligans taken, whose turn, floating mana pool
-by colour, phase, life totals, library sizes, opponent's hand size, and
-whether the stack targets either player directly. All public knowledge in
-real Magic. The agent's own hand size is omitted (redundant with its hand
-tokens).
+by colour, phase, life totals (capped at 200), library sizes, opponent's hand size, and
+whether the stack targets either player directly, plus **exact counts** per
+side (permanents by card type, untapped permanents by type, graveyard, exile,
+stack entries) and the agent's own hand size — cardinalities the token encoder
+cannot recover by itself. All public knowledge in real Magic.
 
 Every deck has its own network, encoder included — nothing is shared
 between decks but the card index mapping:
@@ -351,11 +365,26 @@ between decks but the card index mapping:
   `d_model // 16`) sizes FRESH decks' encoders, and every loader reads a saved net's
   shape off its checkpoint (`rl.model.arch.encoder_kwargs_from_state_dict`), so nets of
   different sizes can play each other. `trunk_hidden` sizes the trunk the same way.
+  A side with no tokens (e.g. the opponent's empty board early in a game) pools to an
+  exact zero summary — never to whichever token happens to come first.
+  **Counting.** Attention is a weighted mean, so identical cards add nothing to it: n
+  copies would encode like one (6 Mountains = 1 Mountain). That is closed three ways,
+  so the policy has the information however it prefers to read it: (1) every token
+  carries `copies_same_card` / `copies_same_state` (log-scaled counts of identical
+  cards and of identical-state cards — tokens are never merged, each copy stays
+  pointer-addressable); (2) each side's summary is the attention pool **concatenated
+  with a plain sum** of its tokens' representations (`summary_dim = 2 * d_model`);
+  (3) the scalar block carries exact per-side counts (permanents by card type,
+  untapped by type, graveyard, exile, stack entries) plus my hand size
+  (`rl.model.deck.COUNT_SCALARS_DIM`). Checked in
+  `tests/component/encoder/test_l11_counting.py`.
 - **`FiLM`** — turns the "theirs" summary into per-layer (gamma, beta)
   trunk modulation.
 - **A `GRU`** between trunk and every head, making the critic, fixed-action
   head, and pointer query history-aware (the raw observation is otherwise
-  Markov). Keyed **by seat** (a mirror pairing puts one `SeatAgent` on both
+  Markov). Its input includes the previous action and — for a pointer pick —
+  **which token** was picked (its card identity and feature row), since every
+  pointer pick shares one action symbol. Keyed **by seat** (a mirror pairing puts one `SeatAgent` on both
   seats) and cleared **per game**.
 - **`DeckNetwork` (`rl/model/deck.py`)** — small trunk + critic + a
   pointer-network action head. Action space = a **fixed table**
@@ -366,7 +395,7 @@ between decks but the card index mapping:
   softmax. **The fixed table's row order is load-bearing:** the action head
   has one logit per row, so reordering or relabelling rows (even at the same
   length) silently scrambles every saved checkpoint.
-  `tests/drl_env/test_action_table_order.py` pins it; regenerate its snapshot
+  `tests/component/action_space/test_action_table_order.py` pins it; regenerate its snapshot
   only for a deliberate change that retrains the affected decks.
 - **Pregame mulligan model (`rl/model/mulligan.py`)** — separate small head
   for every pregame keep/mulligan/bottom decision, reading its own deck's
@@ -650,7 +679,7 @@ entry per invocation (start and end games/deck, argv).
 
 ### Metrics reference (`rl/league/metrics.py`)
 
-`checkpoints/<league>/metrics.jsonl` is the one append-only record of a run: one JSON object per line, always with a `kind` and (except `session_start`'s header fields) a `cumulative_games` stamp. `metrics.append` is the only writer (it also mirrors the line to the web app) and `metrics.read` the only reader; `metrics.KINDS` is the schema this section is generated from, and `tests/rl/league/test_metrics.py` fails if code emits an unregistered kind or this list omits one. Training writes `session_start`, `ppo` and `mulligan`; each validation check writes the kind(s) named after it. Readers must use `.get` -- the file is append-only across many schema revisions.
+`checkpoints/<league>/metrics.jsonl` is the one append-only record of a run: one JSON object per line, always with a `kind` and (except `session_start`'s header fields) a `cumulative_games` stamp. `metrics.append` is the only writer (it also mirrors the line to the web app) and `metrics.read` the only reader; `metrics.KINDS` is the schema this section is generated from, and `tests/unit/rl/league/test_metrics.py` fails if code emits an unregistered kind or this list omits one. Training writes `session_start`, `ppo` and `mulligan`; each validation check writes the kind(s) named after it. Readers must use `.get` -- the file is append-only across many schema revisions.
 
 - `session_start` -- league_runner._run_session
   - `session`: session number
@@ -888,7 +917,7 @@ Every validation cadence tick (`checks_cadence_pct`), once the checks have run,
 thread (training doesn't wait; the final sync still completes before the process
 exits). It never raises -- a git or network problem is printed and retried at the
 next tick. It does nothing if `src/webapp` isn't a checked-out submodule, and no
-test can reach it (`tests/conftest.py` stubs it; `tests/test_webapp_sync.py`
+test can reach it (`tests/conftest.py` stubs it; `tests/integration/scripts/test_webapp_sync.py`
 drives it against throwaway git repos).
 
 1. **Prune.** A *set* is one tick for one league: its entry in every
@@ -1023,23 +1052,26 @@ dependency: `flask`.
 
 ## Tests
 
-A `pytest` suite lives under `tests/`, mirroring `src/`'s layout (e.g.
-`src/game/mana.py` -> `tests/game/test_mana.py`). `pyproject.toml` sets
-`pythonpath = ["src"]` and `testpaths = ["tests"]`, so `pytest` runs from
-the repo root, no `cd src` needed.
+Three tiers, each a folder under `tests/`: **unit** (one card/function/rule; mirrors `src/`), **component** (a subsystem
+stress-tested against its contract over real games: today `encoder`, `action_space`, `training`, `validation`) and
+**integration** (components wired together, the pipeline scripts). `pyproject.toml` puts `src/` and `tests/` on the path,
+so everything runs from the repo root.
 
 ```
 pip install -r requirements.txt   # pytest included
-pytest                             # whole suite
-pytest -m "not slow"               # fast tier: engine/catalog/effects,
-                                    # deterministic, no torch, sub-second
-pytest -m slow                     # rl/ tier: imports torch, plays real
-                                    # mini-games, runs PPO/REINFORCE updates
+pytest tests/unit                  # ~2 min -- also the pre-push gate
+pytest tests/component/encoder     # one component (~3 min)
+pytest tests/component             # every component (~6 min)
+pytest tests/integration           # ~3 min
+pytest tests                       # everything, ~12 min
+python tests/support/mutation_sweep.py encoder   # plant deliberate bugs, report any the suite misses
 ```
 
-The fast tier (`-m "not slow"`) runs in about 15 s; the whole suite takes
-about 4-5 minutes. Only the linter is wired into a pre-commit hook (below);
-running the suite is manual.
+Budgets: a single component under 1 hour, the whole suite under 12. There is no nightly tier. Policies (push gate, golden
+pins needing owner sign-off, jointly maintained planted-bug lists) and how to build a component suite are in
+[`tests/README.md`](tests/README.md); each component documents its own contract and gaps (e.g.
+[`tests/component/encoder/README.md`](tests/component/encoder/README.md)). The unit tier gates `git push` through
+`.githooks/pre-push`; the linter gates commits (below).
 
 ### Lint
 
@@ -1061,7 +1093,7 @@ files may re-export and star-import their submodules. `src/webapp` is its own
 repo and is excluded.
 
 A pre-commit hook (`.githooks/pre-commit`) runs the same `ruff check` and
-refuses the commit if it fails. Git doesn't version hook config, so enable it
+refuses the commit if it fails; `.githooks/pre-push` runs the unit tier and blocks the push on a failure. Git doesn't version hook config, so enable it
 once per clone:
 
 ```

@@ -15,6 +15,7 @@ This module also owns the decision-side primitives (_seat_step and the
 token/mask/feature builders it needs), kept out of rl.training.train to avoid
 a circular import."""
 
+import math
 from collections import namedtuple
 
 import numpy as np
@@ -24,11 +25,32 @@ import drl_env
 import game
 from rl.decision.action_bridge import any_pointer_legal, execute_pointer_choice, pointer_kind, pointer_legal_mask
 from rl.model.arch import pad_token_batch
+from rl.model.deck import COUNT_CAP
 from rl.model.features import MANA_PIP_CAP, _stack_target_map, build_token_set
 from rl.model import mulligan as mulligan_mod
 
+LIFE_CAP = 200  # life totals above this saturate; below it the ratio is exact, so every scalar is in [0, 1]
 DECK_SIZE_CAP = 60  # every decklist in data/ is exactly 60 cards (see rl.model.features's own cap-then-normalize idiom)
 OPPONENT_HAND_SIZE_CAP = 12  # generous headroom over the 7-card cleanup limit for a mid-turn multi-draw hand
+
+
+def _count_scalar(n):
+    return math.log1p(n) / math.log1p(COUNT_CAP)
+
+
+def _side_counts(state, player_idx):
+    """The exact-count block for one side (layout: rl.model.deck.COUNT_SCALARS_PER_SIDE): permanents of each card
+    type, untapped permanents of each card type, graveyard, exile, stack entries it controls. The type is the
+    permanent's CURRENT type (Station/Bestow overrides honored via Permanent.card_type)."""
+    pl = state.players[player_idx]
+    out = []
+    for only_untapped in (False, True):
+        for t in game.CardType:
+            out.append(_count_scalar(sum(1 for p in pl.battlefield if p.card_type == t and not (only_untapped and p.tapped))))
+    out.append(_count_scalar(len(pl.graveyard)))
+    out.append(_count_scalar(len(pl.exile)))
+    out.append(_count_scalar(sum(1 for e in state.stack if e["controller"] == player_idx)))
+    return out
 
 
 def _scalar_features(state, seat_idx, horizon):
@@ -36,8 +58,9 @@ def _scalar_features(state, seat_idx, horizon):
     turn-player, my/opponent floating mana pool, phase one-hot, my/opponent
     life, my/opponent library size, opponent's hand size, whether the stack
     currently targets me/the opponent as a player, am-I-on-the-play, and the
-    opponent's mulligans-taken / cleanup-discard-turns. Length matches
-    rl.model.deck.SCALAR_FEATURE_DIM.
+    opponent's mulligans-taken / cleanup-discard-turns, then the exact
+    zone/type counts (_side_counts for me, for the opponent, and my hand
+    size). Length matches rl.model.deck.SCALAR_FEATURE_DIM.
 
     state.mana_pool proxies to state.players[state.active_idx]; read
     unconditionally since _for_player guarantees active_idx == seat_idx for
@@ -60,8 +83,8 @@ def _scalar_features(state, seat_idx, horizon):
             out.append(min(other.mana_pool.get(color, 0), 8) / 8)
         for phase in game.turn.Phase:
             out.append(1.0 if phase == s.phase else 0.0)
-        out.append(max(me.life_total, 0) / game.state.STARTING_LIFE)
-        out.append(max(other.life_total, 0) / game.state.STARTING_LIFE)
+        out.append(min(max(me.life_total, 0), LIFE_CAP) / LIFE_CAP)
+        out.append(min(max(other.life_total, 0), LIFE_CAP) / LIFE_CAP)
         out.append(min(len(me.library), DECK_SIZE_CAP) / DECK_SIZE_CAP)
         out.append(min(len(other.library), DECK_SIZE_CAP) / DECK_SIZE_CAP)
         out.append(min(len(other.hand), OPPONENT_HAND_SIZE_CAP) / OPPONENT_HAND_SIZE_CAP)
@@ -73,6 +96,8 @@ def _scalar_features(state, seat_idx, horizon):
         out.append(1.0 if me.on_the_play else 0.0)
         out.append(min(other.mulligans_taken, 7) / 7)
         out.append(min(other.cleanup_discard_turns, 7) / 7)
+        # exact counts the token encoder cannot recover on its own (rl.model.deck's EXACT COUNTS note)
+        out += _side_counts(s, seat_idx) + _side_counts(s, 1 - seat_idx) + [_count_scalar(len(me.hand))]
         return out
     return drl_env._for_player(state, seat_idx, _read)
 
@@ -256,23 +281,35 @@ def _log_decision_weights(state, dec, dist, value, action_idx, full_mask_t):
     )
 
 
-def _seat_step(state, seat, deck_ctx, net, horizon, device, greedy=False, hidden=None, prev_action=None):
+def _prev_pointer_tensors(prev_pointer, device):
+    """(vocab_idx [1], row [1, F]) tensors for DeckNetwork's prev_pointer, or None when there is none."""
+    if prev_pointer is None:
+        return None
+    vocab_idx, row = prev_pointer
+    return (torch.as_tensor([vocab_idx], dtype=torch.long, device=device),
+            torch.as_tensor(row, dtype=torch.float32, device=device).unsqueeze(0))
+
+
+def _seat_step(state, seat, deck_ctx, net, horizon, device, greedy=False, hidden=None, prev_action=None,
+               prev_pointer=None):
     """One seat's main-policy decision, batch-of-1. Builds the decision (mask
     first), takes the sole legal action without a forward when forced, else
     runs this deck's encoder + net, masks, and samples (or argmaxes when
-    greedy). Returns (executor, buffer_entry, is_pass, hidden, prev_action);
-    buffer_entry is None for a forced move.
+    greedy). Returns (executor, buffer_entry, is_pass, hidden, prev_action,
+    prev_pointer); buffer_entry is None for a forced move.
 
     hidden: this seat's recurrent state (DeckNetwork's GRU), threaded in and
     returned advanced. prev_action: this seat's previous recorded action
     index, or None at game start. A forced decision returns both unchanged --
     it runs no forward and is recorded in no buffer, so ppo_update's replay
     (which derives prev_action from the preceding recorded one) must not
-    advance either for it."""
+    advance either for it. prev_pointer: (card index, feature row) of the token
+    this seat's previous recorded action pointed at, or None -- threaded like
+    prev_action, and advanced exactly when it is."""
     dec = _build_decision(state, seat, deck_ctx, horizon)
     if dec.sole_action is not None:
         return (_executor_for(state, dec.sole_action, dec.fixed_table, dec.identities), None,
-                _is_pass(dec.sole_action, dec.fixed_table), hidden, prev_action)
+                _is_pass(dec.sole_action, dec.fixed_table), hidden, prev_action, prev_pointer)
 
     vocab_idx, features, key_padding_mask, _identities = pad_token_batch([dec.tokens], device=device)
     side_flag = features[:, :, -1]
@@ -282,7 +319,8 @@ def _seat_step(state, seat, deck_ctx, net, horizon, device, greedy=False, hidden
         scalar_t = torch.as_tensor(dec.scalar, dtype=torch.float32, device=device).unsqueeze(0)
         logits, value, hidden = net(mine_summary, theirs_summary, scalar_t, token_reps,
                                     full_mask[:, dec.n_fixed:], hidden=hidden,
-                                    prev_action=net.prev_action_symbols([prev_action], device))
+                                    prev_action=net.prev_action_symbols([prev_action], device),
+                                    prev_pointer=_prev_pointer_tensors(prev_pointer, device))
         masked_logits = logits.masked_fill(~full_mask, -1e8)
         dist = torch.distributions.Categorical(logits=masked_logits)
         action = masked_logits.argmax(dim=-1) if greedy else dist.sample()
@@ -295,8 +333,12 @@ def _seat_step(state, seat, deck_ctx, net, horizon, device, greedy=False, hidden
     hidden = hidden.clone()
 
     buffer_entry = (dec.tokens, dec.scalar, dec.full_mask, action_idx, float(logp.item()), float(value.item()))
+    chosen_pointer = None
+    if action_idx >= dec.n_fixed:  # a pointer pick: remember WHICH token, not just that it was a pointer
+        chosen_vocab, chosen_row, _identity = dec.tokens[action_idx - dec.n_fixed]
+        chosen_pointer = (int(chosen_vocab), np.asarray(chosen_row, dtype=np.float32))
     return (_executor_for(state, action_idx, dec.fixed_table, dec.identities), buffer_entry,
-            _is_pass(action_idx, dec.fixed_table), hidden, action_idx)
+            _is_pass(action_idx, dec.fixed_table), hidden, action_idx, chosen_pointer)
 
 
 # --- the agent: one dispatch, no attribution ---
@@ -387,6 +429,7 @@ class SeatAgent:
         self.vocab = deck_ctx[0]
         self.hidden = {}            # seat -> that seat's GRU state this game; see reset()
         self.prev_action = {}       # seat -> its own last RECORDED action index this game
+        self.prev_pointer = {}      # seat -> (card index, feature row) of the token that action pointed at, or None
 
     def reset(self):
         """Clears the recurrent state. Must be called at the start of every
@@ -397,6 +440,7 @@ class SeatAgent:
         state -- would recompute hidden states that never occurred."""
         self.hidden = {}
         self.prev_action = {}
+        self.prev_pointer = {}
 
     def decide(self, state, seat, horizon, device, greedy=False):
         pend = state.pending_resolution
@@ -415,7 +459,8 @@ class SeatAgent:
         # same object on both seats, and a single shared state would leak
         # seat 0's hidden information into seat 1's conditioning and break
         # ppo_update's per-seat episode replay.
-        executor, ppo_entry, is_pass, self.hidden[seat], self.prev_action[seat] = _seat_step(
+        executor, ppo_entry, is_pass, self.hidden[seat], self.prev_action[seat], self.prev_pointer[seat] = _seat_step(
             state, seat, self.deck_ctx, self.main, horizon, device, greedy=greedy,
-            hidden=self.hidden.get(seat), prev_action=self.prev_action.get(seat))
+            hidden=self.hidden.get(seat), prev_action=self.prev_action.get(seat),
+            prev_pointer=self.prev_pointer.get(seat))
         return DecisionResult(executor, ppo_entry, None, is_pass)
