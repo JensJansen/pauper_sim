@@ -115,7 +115,7 @@ One change per arm on the 4-deck league, each read against the baseline with the
 - larger `games_per_iteration` (fewer, less noisy updates);
 - `gamma = 1`, `lambda ~= 0.97` (baseline gamma-lambda is 0.9405, short for ~100-step games).
 
-#### 2.3a Learning-rate decay -- FIRST ARM, RUNNING (started 2026-11-11 ~15:10; decay arm then control)
+#### 2.3a Learning-rate decay -- FIRST ARM, TRAINED; first readout 2026-11-12 (see Result)
 *Decided (owner):* decay target **2e-4 -> 2e-5, linear**, over the run's length; control replicate wanted; twin league skipped.
 *Arms (4-deck league, from scratch, 25k games/deck each, run one after the other, ~5 h each):*
 `small_lrdecay` (decay) and `small_control` (identical to `small_baseline`, no seed -- runs are unseeded, so it differs from the baseline by chance only).
@@ -130,6 +130,23 @@ mechanism check from `metrics.jsonl` (late `approx_kl` / clip fraction / entropy
 (constant within a ~192-game snapshot interval; mulligan lr not decayed); lr changes are logged to `logs/lr_<league>.jsonl`. Smoke-tested 2026-11-11:
 lr 2e-4 -> 9.2e-5 at 144 of 240 games, saved checkpoints carry the decayed lr. Arms use configs `small_lrdecay.json` / `small_control.json`
 (history checks off in-run to save ~1.5 h each; the arms are read afterwards head-to-head, checks every 5k like the baseline; webapp publishing left at its default).
+
+*Result (2026-11-12; `analysis/eval/compare_arms.py`, snapshots 127/128/129 = 24.6k/24.8k/25.0k games/deck, 300 games per deck per snapshot, A's score):*
+
+| A vs B | dmir_terror | elves | mono_red_rally | rakdos_madness | pooled (n=3600) |
+|---|---|---|---|---|---|
+| control vs baseline (noise floor) | 48.7 | 45.3 | 44.9 | 44.9 | **45.9** [44.3, 47.6] |
+| lr-decay vs baseline | 52.2 | 52.8 | 50.0 | 52.3 | **51.8** [50.2, 53.5] |
+| lr-decay vs control | 56.1 | 56.8 | 54.1 | 56.8 | **55.9** [54.3, 57.6] |
+
+*Reading:* by the rule written above, decay passes (lower bound 50.2% > 50%, above the control's value, sign >= 50% in 4 of 4 decks). **But the
+control -- identical settings to the baseline -- lost to the baseline by 4.1 points, as large as the effect being measured.** So run-to-run
+variation between identical runs is ~4 points, and the pooled intervals (which treat games as independent) understate the real uncertainty,
+which is at the level of the run. Three runs, decay highest: by chance alone that happens 1 time in 3. What the data supports: decay is not harmful and
+is probably neutral-to-mildly-positive at 25k; it does not establish a real gain. (Caveat: a decay that ends at 25k anneals into the
+comparison point; it says nothing about 50k, where the baseline's lr is still 2e-4.)
+Not yet done: each arm's decks vs the frozen baseline-final field (an absolute yardstick independent of the baseline's 25k draw); a second
+control/decay seed to measure run-level variance directly.
 
 ### 2.4 Capacity -- QUEUED (after 2.1-2.3)
 - larger network (the baseline: d_model 64, 2 layers, trunk 128x128);
@@ -178,5 +195,6 @@ includes 50% at **two consecutive** ticks *and* the continue-vs-stop A/B gain's 
 ## 4. Change log
 - 2026-11-11: created; baseline finished; best-response (elves) started; mulligan hypothesis written up, unverified.
 - 2026-11-11: best-response (elves) finished: ties the frozen agent against the field (47.6% vs 47.8%), +4 head-to-head (mirror effect); other three decks not run.
+- 2026-11-12: lr-decay arm and control finished; decay 51.8% vs baseline, control 45.9% vs baseline (noise ~4 pts); decay vs control 55.9%. Not yet conclusive (2.3a).
 - 2026-11-11: owner agreed the first arm: lr decay 2e-4 -> 2e-5 linear, with a control replicate, no twin league (2.3a).
 - 2026-11-11: owner: scope is the whole agent, not the mulligan net; mulligan work recorded as queued (2.2); added the whole-agent lever table (2.5). No arm other than best-response to run until it reports.
