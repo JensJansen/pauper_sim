@@ -19,7 +19,7 @@ prior."""
 import json
 import os
 
-from rl.model.arch import SetTransformer
+from rl.model.arch import SetTransformer, encoder_kwargs_from_state_dict
 from rl.model.deck import DeckNetwork
 from rl.decision.agent import AlwaysKeep, SeatAgent
 from rl.model.mulligan import MulliganNet
@@ -195,16 +195,7 @@ class LeaguePool:
             return self._net_cache[snapshot_path]
         vocab, fixed_table = deck_ctx
         saved = ckpt_io.load_snapshot(snapshot_path)
-        encoder = SetTransformer(vocab.size)
-        # SetTransformer's default architecture is the only one this repo
-        # ever trains. Checked explicitly so a mismatch fails with a clear
-        # message instead of a wall of unrelated torch size-mismatch errors.
-        saved_d_model = saved["state_dict"]["encoder.embedding.weight"].shape[1]
-        assert saved_d_model == encoder.d_model, (
-            f"{snapshot_path} was saved with a d_model={saved_d_model} encoder, but SetTransformer's "
-            f"current default is {encoder.d_model} -- the architecture changed since this snapshot was "
-            f"written, so its weights cannot be loaded"
-        )
+        encoder = SetTransformer(vocab.size, **encoder_kwargs_from_state_dict(saved["state_dict"]))
         net = DeckNetwork(encoder, film_condition_dim=encoder.d_model, non_targeting_n_actions=len(fixed_table),
                            trunk_hidden=saved["trunk_hidden"])
         net.load_state_dict(saved["state_dict"])

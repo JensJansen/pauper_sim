@@ -82,7 +82,7 @@ def _league_rollout_worker(training_deck_name, all_state_dicts, all_trunk_hidden
     otherwise wasted, every worker, every round)."""
     torch.set_num_threads(1)  # avoid oversubscribing cores: this worker IS the unit of parallelism
     import rl.rewards as rewards_module
-    from rl.model.arch import SetTransformer
+    from rl.model.arch import SetTransformer, encoder_kwargs_from_state_dict
     from rl.model.deck import DeckNetwork
     from rl.league.league import LeaguePool
     from rl.roster import build_pool
@@ -97,7 +97,7 @@ def _league_rollout_worker(training_deck_name, all_state_dicts, all_trunk_hidden
     # deck's own state_dict (a registered child of DeckNetwork).
     live_nets = {}
     for name, state_dict in all_state_dicts.items():
-        encoder = SetTransformer(vocab.size)
+        encoder = SetTransformer(vocab.size, **encoder_kwargs_from_state_dict(state_dict))
         net = DeckNetwork(encoder, film_condition_dim=encoder.d_model,
                            non_targeting_n_actions=len(fixed_tables[name]),
                            trunk_hidden=all_trunk_hidden[name])

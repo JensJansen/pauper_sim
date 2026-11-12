@@ -66,7 +66,7 @@ def test_resolve_options_training_league_name_is_none_when_toggle_is_off():
 def _fake_train_to_opts():
     return {"cadence_games": 40, "games_per_iteration": 10, "snapshot_every": 1, "n_workers": 1,
             "seed": None, "roster": None, "pfsp": True, "checkpoint_rate": 0.0, "ppo_hparams": None,
-            "pfsp_power": 0.5, "trunk_hidden": (1,), "stratify_0land_pct": 0.0,
+            "pfsp_power": 0.5, "trunk_hidden": (1,), "encoder": None, "stratify_0land_pct": 0.0,
             "overlap_collect": False}
 
 

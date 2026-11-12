@@ -23,6 +23,7 @@ import os
 import shutil
 
 from repo_paths import CHECKPOINTS_DIR
+from rl.model.arch import encoder_kwargs_from_state_dict
 from rl.model.mulligan import MulliganNet
 from rl.roster import build_pool
 from evaluation import history
@@ -56,7 +57,8 @@ def rollback_deck(league_dir, deck, snapshot_id, deck_ctx, force=False, dry_run=
             shutil.copy2(path, backup)
 
     saved = ckpt_io.load_snapshot(src)
-    net = build_deck_net(vocab.size, len(fixed_table), saved["trunk_hidden"])
+    net = build_deck_net(vocab.size, len(fixed_table), saved["trunk_hidden"],
+                         encoder_kwargs_from_state_dict(saved["state_dict"]))
     net.load_state_dict(saved["state_dict"])
     ckpt_io.save_deck_checkpoint(live_path, net)  # optimizer=None -> re-warms fresh
 

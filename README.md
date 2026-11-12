@@ -346,7 +346,11 @@ between decks but the card index mapping:
   joint self-attention over both sides' tokens, pools with two
   learned-query heads: a "mine" summary (trunk input) and a "theirs"
   summary (FiLM conditioning input). Pre-norm, `torch.nn.MultiheadAttention`
-  / `TransformerEncoderLayer`.
+  / `TransformerEncoderLayer`. Default 64-wide, 2 layers, 4 heads, feed-forward 128;
+  a config's `encoder` key (`d_model`, `n_layers`, `dim_feedforward`; heads are always
+  `d_model // 16`) sizes FRESH decks' encoders, and every loader reads a saved net's
+  shape off its checkpoint (`rl.model.arch.encoder_kwargs_from_state_dict`), so nets of
+  different sizes can play each other. `trunk_hidden` sizes the trunk the same way.
 - **`FiLM`** — turns the "theirs" summary into per-layer (gamma, beta)
   trunk modulation.
 - **A `GRU`** between trunk and every head, making the critic, fixed-action

@@ -22,6 +22,8 @@ history_checks (default true; false skips all three), history_checks_games (game
 current-vs-own-snapshot cell, default 100),
 field_checks_games (per current-vs-other-deck-snapshot cell, default 40),
 history_ladder (anchor ages in games/deck; default validation.strength_history.DEFAULT_LADDER),
+encoder (SetTransformer kwargs d_model / n_layers / dim_feedforward for FRESH decks; default is the 64/2/128 encoder;
+a resumed deck keeps the shape of its own live.pt; trunk widths: trunk_hidden),
 probe_states_dir (repo-relative directory of recorded probe suites; unset skips policy_movement).
 --matchup training and one-off debug runs still go through run_league.py
 directly -- this script is league training only.
@@ -125,6 +127,7 @@ def _resolve_options(cfg):
         "pfsp_power": cfg.get("pfsp_power", PFSP_POWER),
         "device": cfg.get("device", "cpu"),
         "trunk_hidden": tuple(cfg.get("trunk_hidden", TRUNK_HIDDEN)),
+        "encoder": cfg.get("encoder"),  # SetTransformer kwargs for FRESH decks only (None = default 64-wide, 2 layers)
         "ppo_hparams": cfg.get("ppo"),
         "seed": cfg.get("seed"),
         "cadence_games": max(1, round(total_games * checks_cadence_pct / 100)),
@@ -158,7 +161,8 @@ def _train_to(league_dir, target_games, opts, executor, device, on_chunk=None, c
                     pfsp=opts["pfsp"], checkpoint_rate=opts["checkpoint_rate"],
                     cumulative_games=progress["cumulative_games_per_deck"], ppo_hparams=opts["ppo_hparams"],
                     pfsp_power=opts["pfsp_power"], trunk_hidden=opts["trunk_hidden"], device=device,
-                    stratify_0land_pct=opts["stratify_0land_pct"], overlap_collect=opts["overlap_collect"])
+                    stratify_0land_pct=opts["stratify_0land_pct"], overlap_collect=opts["overlap_collect"],
+                    encoder=opts["encoder"])
 
         # auto_sizing=False: fixed cadence-sized chunks, not the doubling
         # ladder -- last_batch_size is meaningless here and left untouched.
@@ -201,7 +205,7 @@ def main():
         example = train_decks[0]
         manifest.start_session(
             str(league_dir), opts,
-            manifest.model_info(build_deck_net(vocab.size, len(fixed_tables[example]), opts["trunk_hidden"]),
+            manifest.model_info(build_deck_net(vocab.size, len(fixed_tables[example]), opts["trunk_hidden"], opts["encoder"]),
                                 vocab.size, opts["trunk_hidden"], {d: len(fixed_tables[d]) for d in train_decks}),
             _load_progress(str(league_dir))["cumulative_games_per_deck"], REPO_ROOT)
     except Exception as e:  # noqa: BLE001

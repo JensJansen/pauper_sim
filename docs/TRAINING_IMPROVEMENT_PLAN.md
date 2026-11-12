@@ -148,7 +148,18 @@ comparison point; it says nothing about 50k, where the baseline's lr is still 2e
 Not yet done: each arm's decks vs the frozen baseline-final field (an absolute yardstick independent of the baseline's 25k draw); a second
 control/decay seed to measure run-level variance directly.
 
-### 2.4 Capacity -- QUEUED (after 2.1-2.3)
+### 2.4 Capacity -- ARM A PREPARED, NOT STARTED (awaiting owner approval to launch)
+*Owner 2026-11-12:* go with option A; if it helps, try B and C next; lr stays flat 2e-4. Do NOT launch until the owner approves again.
+*Option A* (`training_configs/small_bigA.json`, league `small_bigA`, 25k games/deck, no twin, history checks off): encoder d_model 128, 4 layers, feed-forward 512,
+8 heads (always d_model // 16), trunk 256x256 -> 1.64M parameters/deck net vs 0.32M. B = d 192 / 6 layers / ff 768 / trunk 384x384 (4.4M); C = d 256 / 6 / 1024 / 512x512 (7.8M).
+*Code change (default-preserving, owner-approved):* the encoder shape is now configurable (`encoder` config key; fresh decks only) and every loader (rollout workers,
+opponent pool, evaluation, validation, rollback) reads it off the checkpoint's tensor shapes (`rl.model.arch.encoder_kwargs_from_state_dict`). A default net is
+byte-for-byte the same module (structure hash 4a8b63ef2ce2462d, 322,815 parameters, before and after); full suite 1110 passed. Smoke run (2 decks, d128/3 layers, CPU)
+trained, snapshotted, ran the validation checks and the probe check through spawned workers without error.
+*Unmeasured:* speed on the real (GPU) config. The encoder dominates a decision's CPU cost (~8x per decision for A), so expect 2-4x slower collection; measure the first iterations before committing a full run.
+*Reading:* each arm's 25k snapshots vs baseline / control / decay at matched ages, pooled over the 4 decks (`compare_arms.py`), plus each arm vs the frozen baseline-final field.
+
+### 2.4b Capacity -- other (queued)
 - larger network (the baseline: d_model 64, 2 layers, trunk 128x128);
 - one shared FiLM-conditioned network across decks instead of one net per deck.
 Any structural change invalidates the recorded probe-state suite (`data/probe_states/small_league`, it refuses to

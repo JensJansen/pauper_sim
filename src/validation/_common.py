@@ -148,7 +148,8 @@ def load_deck_net(league_dir, name, vocab, fixed_table):
     needs a deck's current weights -- eval only ever needs inference, so no
     optimizer is loaded."""
     live_path = f"{league_dir}/{name}/live.pt"
-    net = build_deck_net(vocab.size, len(fixed_table), ckpt_io.trunk_hidden_from_deck_checkpoint(live_path))
+    net = build_deck_net(vocab.size, len(fixed_table), ckpt_io.trunk_hidden_from_deck_checkpoint(live_path),
+                         ckpt_io.encoder_from_deck_checkpoint(live_path))
     ckpt_io.load_deck_checkpoint(live_path, net)
     net.eval()
     mnet = MulliganNet(net.encoder)

@@ -49,6 +49,22 @@ def pad_token_batch(token_lists, device="cpu"):
     return vocab_idx, features, key_padding_mask, identities
 
 
+HEAD_DIM = 16  # attention heads are d_model // HEAD_DIM (the default 64 -> 4 heads), so a checkpoint's head count is implied by its d_model
+
+
+def encoder_kwargs_from_state_dict(state_dict):
+    """The SetTransformer constructor kwargs (d_model, n_layers, dim_feedforward, n_heads) a DeckNetwork state_dict was
+    saved with, read off its tensor shapes -- the encoder analogue of checkpoint.trunk_hidden_from_deck_checkpoint.
+    A default-sized checkpoint yields exactly SetTransformer's own defaults."""
+    d_model = state_dict["encoder.embedding.weight"].shape[1]
+    n_layers = 0
+    while f"encoder.encoder.layers.{n_layers}.linear1.weight" in state_dict:
+        n_layers += 1
+    assert n_layers, "state_dict has no encoder.encoder.layers.* -- not a DeckNetwork state_dict?"
+    return {"d_model": d_model, "n_layers": n_layers, "n_heads": d_model // HEAD_DIM,
+            "dim_feedforward": state_dict["encoder.encoder.layers.0.linear1.weight"].shape[0]}
+
+
 class SetTransformer(nn.Module):
     """Card-identity embedding + linear projection into d_model, a stack of
     self-attention encoder layers (tokens attend to each other, so an
@@ -92,7 +108,9 @@ class SetTransformer(nn.Module):
 
         A batch element with ALL tokens padded would give MultiheadAttention
         an all-True padding row, producing a NaN softmax -- guarded by
-        unmasking one dummy position for any such row before pooling."""
+        unmasking one dummy position for any such row before pooling. The same
+        goes for a side (mine/theirs) with no tokens: its pooled summary is
+        overwritten with zeros, so it never depends on which token sits first."""
         x = self.embedding(vocab_idx)
         x = torch.cat([x, features], dim=-1)
         x = self.input_proj(x)
@@ -120,6 +138,11 @@ class SetTransformer(nn.Module):
         theirs_q = self.theirs_query.expand(batch_size, -1, -1)
         mine_summary, _ = self.mine_pool(mine_q, encoded, encoded, key_padding_mask=mine_mask)
         theirs_summary, _ = self.theirs_pool(theirs_q, encoded, encoded, key_padding_mask=theirs_mask)
+        # A side with no tokens (e.g. the opponent's empty board early on) was unmasked at position 0 above only to
+        # keep the softmax finite; that position is whichever token happens to be first, so the pooled value is an
+        # order-dependent summary of the WRONG side. Its summary is zero instead: "nothing there".
+        mine_summary = mine_summary.masked_fill(mine_all_masked[:, None, None], 0.0)
+        theirs_summary = theirs_summary.masked_fill(theirs_all_masked[:, None, None], 0.0)
         return mine_summary.squeeze(1), theirs_summary.squeeze(1), encoded
 
 

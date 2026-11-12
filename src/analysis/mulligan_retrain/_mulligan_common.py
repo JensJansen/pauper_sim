@@ -26,7 +26,8 @@ def load_frozen_nets(league_dir, deck_names, vocab, fixed_tables):
         if not os.path.exists(live_path):
             raise SystemExit(f"no live.pt for {name} in {league_dir}")
         net = build_deck_net(vocab.size, len(fixed_tables[name]),
-                             ckpt_io.trunk_hidden_from_deck_checkpoint(live_path))
+                             ckpt_io.trunk_hidden_from_deck_checkpoint(live_path),
+                             ckpt_io.encoder_from_deck_checkpoint(live_path))
         ckpt_io.load_deck_checkpoint(live_path, net)
         net.eval()
         for p in net.parameters():

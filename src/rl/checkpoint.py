@@ -136,6 +136,15 @@ def load_snapshot(path):
     return torch.load(path, weights_only=True, map_location="cpu")
 
 
+def encoder_from_deck_checkpoint(path):
+    """SetTransformer kwargs a live.pt was saved with (see rl.model.arch.encoder_kwargs_from_state_dict); None if the
+    file does not exist. Pass to league_runner.build_deck_net(encoder=...) alongside trunk_hidden_from_deck_checkpoint."""
+    if not os.path.exists(path):
+        return None
+    from rl.model.arch import encoder_kwargs_from_state_dict
+    return encoder_kwargs_from_state_dict(torch.load(path, map_location="cpu", weights_only=False)["net"])
+
+
 def trunk_hidden_from_deck_checkpoint(path):
     """The DeckNetwork trunk widths a live.pt was saved with, read off its
     tensor shapes. Returns None if the file does not exist. Needed because

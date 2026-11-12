@@ -69,7 +69,8 @@ def _load(league_dir, deck, snapshot=None):
             return _agent_cache[key]
         live_path = f"{league_dir}/{deck}/live.pt"
         net = league_runner.build_deck_net(vocab.size, len(fixed_tables[deck]),
-                                           ckpt_io.trunk_hidden_from_deck_checkpoint(live_path))
+                                           ckpt_io.trunk_hidden_from_deck_checkpoint(live_path),
+                                           ckpt_io.encoder_from_deck_checkpoint(live_path))
         ckpt_io.load_deck_checkpoint(live_path, net)
         net.eval()
         mnet = MulliganNet(net.encoder)

@@ -134,7 +134,8 @@ def bench_broadcast(reps=200):
     for name in roster:
         p = f"../checkpoints/4_deck_bench/{name}/live.pt"
         net = league_runner.build_deck_net(vocab.size, len(fixed_tables[name]),
-                                           ckpt_io.trunk_hidden_from_deck_checkpoint(p))
+                                           ckpt_io.trunk_hidden_from_deck_checkpoint(p),
+                                           ckpt_io.encoder_from_deck_checkpoint(p))
         ckpt_io.load_deck_checkpoint(p, net)
         cpu_nets[name] = net
         if torch.cuda.is_available():

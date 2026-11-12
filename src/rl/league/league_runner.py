@@ -72,7 +72,7 @@ PPO_DEFAULTS = {
 }
 
 
-def build_deck_net(vocab_size, n_actions, trunk_hidden=None):
+def build_deck_net(vocab_size, n_actions, trunk_hidden=None, encoder=None):
     """One deck's full network: its own perception encoder (rl.model.arch)
     plus the trunk/critic/pointer heads built over it. Every construction
     site goes through here so no caller has to remember that the encoder is
@@ -81,8 +81,10 @@ def build_deck_net(vocab_size, n_actions, trunk_hidden=None):
 
     Each deck gets its own encoder rather than sharing one -- a checkpoint
     carries its own, so cross-population comparison is valid by
-    construction."""
-    encoder = SetTransformer(vocab_size)
+    construction. `encoder`: SetTransformer kwargs (d_model, n_layers,
+    dim_feedforward, n_heads); None is the default 64-wide, 2-layer encoder.
+    Loaders read it off the checkpoint (checkpoint.encoder_from_deck_checkpoint)."""
+    encoder = SetTransformer(vocab_size, **(encoder or {}))
     return DeckNetwork(encoder, film_condition_dim=encoder.d_model, non_targeting_n_actions=n_actions,
                        trunk_hidden=trunk_hidden or TRUNK_HIDDEN)
 
@@ -208,7 +210,7 @@ def _next_batch_games(league_dir, total_games):
 MULLIGAN_UPDATE_EVERY = 8
 
 
-def _build_deck_stack(deck_names, vocab, fixed_tables, league_dir, hp, trunk_hidden, device):
+def _build_deck_stack(deck_names, vocab, fixed_tables, league_dir, hp, trunk_hidden, device, encoder=None):
     """Builds (or resumes from league_dir) every deck's policy net + Adam and
     its mulligan net + Adam. Returns (live_nets, optimizers, mulligan_nets,
     mulligan_optimizers), each keyed by deck name. All the policy nets are
@@ -221,7 +223,8 @@ def _build_deck_stack(deck_names, vocab, fixed_tables, league_dir, hp, trunk_hid
         # can't shape-mismatch a league already on disk.
         live_path = f"{league_dir}/{name}/live.pt"
         width = ckpt_io.trunk_hidden_from_deck_checkpoint(live_path) or trunk_hidden
-        net = build_deck_net(vocab.size, len(fixed_tables[name]), width)
+        enc = ckpt_io.encoder_from_deck_checkpoint(live_path) or encoder  # same rule as the width: a resumed net keeps its own shape
+        net = build_deck_net(vocab.size, len(fixed_tables[name]), width, enc)
         # .to(device) must happen before the optimizer is built and before
         # the checkpoint load: Adam's state tensors are created lazily on
         # the param's device, so building the optimizer first would strand
@@ -483,7 +486,7 @@ def _run_session(n_iterations, games_per_iteration, snapshot_every, executor, n_
                   matchup=None, game_logs=None, checkpoint_rate=0.0, roster=None, pfsp=True,
                   cumulative_games=0, ppo_hparams=None,
                   pfsp_power=PFSP_POWER, trunk_hidden=TRUNK_HIDDEN, device="cpu", stratify_0land_pct=0.0,
-                  overlap_collect=False):
+                  overlap_collect=False, encoder=None):
     # overlap_collect: pipeline the collect and update stages. While the PPO
     # update for round k runs here, the workers already collect round k+1 --
     # from the weights as they stood just BEFORE update k, i.e. one update
@@ -551,7 +554,7 @@ def _run_session(n_iterations, games_per_iteration, snapshot_every, executor, n_
     unknown = set(hp) - set(PPO_DEFAULTS)
     assert not unknown, f"unknown ppo hyperparameter(s) {sorted(unknown)}; known: {sorted(PPO_DEFAULTS)}"
     live_nets, optimizers, mulligan_nets, mulligan_optimizers = _build_deck_stack(
-        deck_names, vocab, fixed_tables, league_dir, hp, trunk_hidden, device)
+        deck_names, vocab, fixed_tables, league_dir, hp, trunk_hidden, device, encoder)
 
     # Fixed for the whole session -- computed once rather than re-derived on
     # every collect_rollout_league_parallel call. The encoder isn't

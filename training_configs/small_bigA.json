@@ -1,0 +1,11 @@
+{
+  "_note": "Arm 3 of the 2026-11 methodology screen (docs/TRAINING_IMPROVEMENT_PLAN.md 2.4): the control's methodology with a larger network, option A: encoder d_model 128, 4 layers, feed-forward 512 (8 heads), trunk 256x256 -- 1.64M parameters per deck net vs 0.32M. lr stays flat at 2e-4 (one change against small_control). 25,000 games/deck, no twin, in-run history checks off, checks every 5,000.",
+  "extends": "small_league.json",
+  "league_name": "small_bigA",
+  "total_games": 25000,
+  "create_training_league": false,
+  "history_checks": false,
+  "checks_cadence_pct": 20,
+  "trunk_hidden": [256, 256],
+  "encoder": {"d_model": 128, "n_layers": 4, "dim_feedforward": 512}
+}
