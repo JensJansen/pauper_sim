@@ -1,0 +1,10 @@
+{
+  "_note": "THROWAWAY run (2026-11-13): 5k games/deck of the small-league methodology on the post-encoder-overhaul code, only to produce new-encoder snapshots from which the policy_movement probe suite (data/probe_states/small_league) is re-recorded -- the old suite and reference_agents/ predate the encoder overhaul (token width 216 -> 364) and cannot be used. No twin, no history checks, no probe dir, not published. Delete checkpoints/small_probe_seed after recording.",
+  "extends": "small_league.json",
+  "league_name": "small_probe_seed",
+  "total_games": 5000,
+  "create_training_league": false,
+  "history_checks": false,
+  "probe_states_dir": null,
+  "checks_cadence_pct": 100
+}

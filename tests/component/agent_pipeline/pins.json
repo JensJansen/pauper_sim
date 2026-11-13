@@ -96,7 +96,7 @@
   ],
   "encoder.input_proj.weight": [
    64,
-   362
+   364
   ],
   "encoder.mine_pool.in_proj_bias": [
    192
@@ -187,7 +187,7 @@
   ],
   "prev_pointer_proj.weight": [
    32,
-   362
+   364
   ],
   "trunk_layers.0.bias": [
    128
@@ -204,7 +204,7 @@
    128
   ]
  },
- "deck_net_params": 362341,
+ "deck_net_params": 362533,
  "live_checkpoint_keys": [
   "net",
   "optimizer"
