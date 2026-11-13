@@ -1,5 +1,5 @@
 {
-  "_note": "Control replicate for the post-encoder-overhaul baseline (2026-11-13): IDENTICAL to small_baseline.json (50,000 games/deck, twin league, history checks + probe suite, overlap_collect, n_workers 10), unseeded, only the league name differs. Its head-to-head vs small_baseline at matched ages is the run-to-run noise floor every later arm is read against. Supersedes the 25k small_control.json arm config, whose checkpoints predate the encoder overhaul.",
+  "_note": "Control replicate for the post-encoder-overhaul baseline (2026-11-13): IDENTICAL to small_baseline.json (50,000 games/deck, twin league, history checks + probe suite, overlap_collect, n_workers 10), unseeded, only the league name differs. Its head-to-head vs small_baseline at matched ages is the run-to-run noise floor every later arm is read against. Supersedes the 25k small_control.json arm config, whose checkpoints predate the encoder overhaul. Twin: NOT rebuilt -- checkpoints/small_baseline-training (frozen at 10,008 games/deck) was copied to checkpoints/small_control50k-training, so baseline and control are measured against the same fixed twin on primary_vs_training_round_robin; the pipeline finds it already at its cap and skips training it. Training itself never uses the twin.",
   "extends": "small_baseline.json",
   "league_name": "small_control50k"
 }
