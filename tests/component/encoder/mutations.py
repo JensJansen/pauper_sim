@@ -105,8 +105,8 @@ MUTATIONS = [
      "previous pointer read from the CURRENT step's tokens"),
     ("rl/decision/agent.py", "chosen_vocab, chosen_row, _identity = dec.tokens[action_idx - dec.n_fixed]", "chosen_vocab, chosen_row, _identity = dec.tokens[0]",
      "rollout remembers the wrong token as the previous pointer pick"),
-    ("rl/decision/action_bridge.py", "if p is not None and p in state.battlefield and game.creature_attack_eligible(state, p):",
+    ("engine/src/drl_env/action_bridge.py", "if p is not None and p in state.battlefield and game.creature_attack_eligible(state, p):",
      "if p is not None and game.creature_attack_eligible(state, p):", "attack mask no longer limited to my own battlefield"),
-    ("rl/decision/action_bridge.py", "if p is not None and p in state.battlefield and game.creature_block_eligible(state, p):",
+    ("engine/src/drl_env/action_bridge.py", "if p is not None and p in state.battlefield and game.creature_block_eligible(state, p):",
      "if p is not None and game.creature_block_eligible(state, p):", "block mask no longer limited to my own battlefield"),
 ]

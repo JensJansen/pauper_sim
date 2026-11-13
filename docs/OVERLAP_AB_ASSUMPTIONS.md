@@ -51,7 +51,7 @@ detectably, the test can only bound harm, not show learning parity; the report w
    cause is still unconfirmed). Instead the harness retries a crashed arm from the pristine start copy, up to 3 times,
    adding 0/1/2 to the arm's seed so a deterministic crash is not replayed. The crashed partial L1 was deleted. If L1 (or
    S2) ends up with a bumped seed, that is stated in the results. The bug is rare (three production crashes over ~92k games/deck: 2026-08-27, ~08-31, and this one), so a bumped
-   seed is unlikely to matter for the comparison. Candidate causes are listed in `SAC_FIZZLE_HYPOTHESES.md` (not yet tested).
+   seed is unlikely to matter for the comparison. Candidate causes are listed in `engine/docs/SAC_FIZZLE_HYPOTHESES.md` (not yet tested).
 4. **S2 cut short at 3,960 games/deck (owner decision, option 3).** From about iteration 45 the S2 arm slowed from ~2.5 to
    8-15 min/iteration (GPU at 100% and 14.8 of 16.3 GB VRAM in use, ours the only compute process; cause not confirmed),
    projecting 20+ h more. The owner chose to stop it and compare at the shorter length. I stopped it at an iteration

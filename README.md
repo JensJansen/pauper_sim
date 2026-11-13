@@ -11,9 +11,9 @@ pool of historical opponents. No framework dependencies beyond PyTorch.
 
 | Piece | Where | What it is |
 |-------|-------|------------|
-| **Game engine** | `src/game/` | Zones, turn/phase loop, priority, the stack, mana, combat, 150+ card/token effects. No ML dependency. |
-| **Card catalog** | `src/game/catalog/` | Card definitions by color. Decks are decklists resolved against this shared catalog. |
-| **Action space** | `src/drl_env/` | Decklist + `EFFECT_REGISTRY` -> a flat action table with per-action legality, execute closures, and legal masks. Not a gym `Env`. |
+| **Game engine** | `engine/src/game/` (submodule) | Zones, turn/phase loop, priority, the stack, mana, combat, 150+ card/token effects. No ML dependency. |
+| **Card catalog** | `engine/src/game/catalog/` | Card definitions by color. Decks are decklists resolved against this shared catalog. |
+| **Action space** | `engine/src/drl_env/` | Decklist + `EFFECT_REGISTRY` -> a flat action table with per-action legality, execute closures, and legal masks. Not a gym `Env`. The engine is its own repo, mounted here as a submodule: see "The game engine". |
 | **DRL system** | `src/rl/` | Per-deck Set-Transformer + FiLM encoder, trunk/critic/pointer-network action heads, PPO self-play + league training loop. |
 | **Decks** | `data/*.txt` + `league_decks.json` | An 11-deck roster (see below). |
 | **Training pipeline** | `src/run_training_pipeline.py` | Trains a whole league end to end (encoder + policy together), running the full `validation/` check suite on a cadence. The primary way to train. |
@@ -77,37 +77,16 @@ src/
                             tick, prunes each league to its newest 10 sets, commits + pushes
                             the data to the replay repo, bumps this repo's submodule
                             pointer. See "Automatic publishing".
-  game/                    The engine (package). Zero ML deps.
-    cards.py                 EffectId / CardType / CardDef — the card data model.
-    state.py                 PlayerState + GameState: zones, turn/stack bookkeeping.
-    turn.py                  Phase/Speed enums; priority rounds; mulligan; the turn
-                             loop; game_coroutine + run_multiplayer_game.
-    mana.py                  Cast-then-pay mana (CR 601.2): plan_payment checks
-                             affordability; the agent makes every tap.
-    decklist.py              Parse data/*.txt decklists against CARD_DEFS.
-    registry.py              Union of every color catalog -> CARD_DEFS + EFFECT_REGISTRY.
-    catalog/                 Card definitions by color.
-    effects/                 Generic effect plumbing: casting, combat, stack +
-                             triggers, state_based (SBAs + cleanup), stats,
-                             tokens, win_check, madness_and_plot, undercity, shared.
-    resolution/              Multi-step decisions made one action at a time: _core
-                             (begin/complete state machine) + one handlers_<kind>
-                             module per category — mulligan, targeting, combat,
-                             casting, library, triggers — re-exported flat via
-                             resolution/__init__.py.
-
-  drl_env/                 Action-table / legal-mask machinery, split by category,
-                           re-exported flat via __init__.py:
-    _actions_common.py       Shared sentinel + hand-count helper.
-    _actions_cast.py         Play land / Cast (modal/X/Delve) / Activate / Forestcycle.
-    _actions_cast_altzone.py Casting from non-hand zones or alt costs: Flashback,
-                             Escape, Plot, Omen, Prototype.
-    _actions_combat.py       Attack / Assign Blocker / Done blocking / trample row.
-    _actions_resolution.py   Generic pending-resolution dispatch (Pass, by-name
-                             choices, permanent targeting, mana spend).
-    _actions_mana.py         Mana-ability/extra-cost/filter legal/execute pairs.
-    _actions_table.py        build_action_table + legal_action_mask.
-    _seat.py                 Per-seat helpers.
+  (engine/                 GIT SUBMODULE (github.com/JensJansen/pauper-sim-engine): the rules
+                           engine, installed with `pip install -e engine` (requirements.txt does it)
+                           so `import game` / `import drl_env` work from anywhere. Contains:
+                             src/game/      the engine (zero ML deps): cards, state, turn loop, mana,
+                                            catalog/, effects/, resolution/, scenario.py
+                             src/drl_env/   action-table / legal-mask machinery, including
+                                            action_bridge.py (fixed-table / pointer split).
+                             tests/ docs/   its own unit + component suites (the push gate there)
+                           See engine/README.md. Never edit it as part of a main-repo commit without
+                           committing inside the submodule first and bumping the pointer.)
 
   rl/                      The token/attention DRL system, grouped by dependency:
     model/                   Network/observation shape.
@@ -118,7 +97,7 @@ src/
                                pointer-net action head, trained end to end.
       mulligan.py              Per-deck pregame mulligan model + its REINFORCE trainer.
     decision/                 Turning an observation into a chosen action.
-      action_bridge.py         Maps the combined action space back to engine calls.
+      action_bridge.py         Re-export of engine drl_env.action_bridge (kept so rl imports are unchanged).
       agent.py                 SeatAgent: per-seat dispatch (pregame -> mulligan
                                model, everything else -> DeckNetwork).
     training/                 The rollout loop and PPO update math.
@@ -237,30 +216,21 @@ logs/                      Game event logs from --log runs (gitignored).
 **Run scripts from `src/`.** `run_training_pipeline.py`, `run_league.py`, and
 `speed_benchmarks/*` use relative paths like `../data`, `../checkpoints`, and
 `../training_configs`, and the `rl.*`/`validation.*` modules import each
-other and `game`/`drl_env` by name — both resolve when run from `src/`.
-`game/` is a proper importable package.
+other by name — resolved by running from `src/`; `game`/`drl_env` come from the installed engine
+submodule (`pip install -e engine`).
 
 ---
 
-## The game engine (`src/game/`)
+## The game engine (`engine/`, a git submodule)
 
-Self-contained, no ML dependency.
+The rules engine (`game`) and the legal-action table / mask layer (`drl_env`) live in their own repository,
+[`pauper-sim-engine`](https://github.com/JensJansen/pauper-sim-engine), mounted at `engine/`. Its README documents the
+turn structure, the stack, combat, cast-then-pay mana (CR 601.2) and the authorized deviations; its `CLAUDE.md` carries the
+rules-faithfulness mandate that governs every game-behavior change. Clone with `git clone --recursive` (or
+`git submodule update --init`) and `pip install -r requirements.txt` installs it in editable mode.
 
-- **Turn structure & priority.** Full phase sequence (untap, upkeep, draw,
-  main1, declare-attackers, declare-blockers, combat-damage, main2, end)
-  with real priority rounds.
-- **The stack & triggers.** Spells/abilities go on the stack and resolve;
-  triggers queue and get promoted to the stack.
-- **Combat.** Attackers/blockers, summoning sickness, per-permanent
-  identity, gang-blocking, menace, a first-strike sub-step, and removal
-  from combat (506.4); a blocked creature stays blocked even if every
-  blocker dies (509.1h).
-- **Mana — cast then pay (CR 601.2).** See below.
-- **Card mechanics.** Madness, plot, flashback, auras/bestow, scry/surveil,
-  fetch/search, initiative/Undercity, mulligans, token generation (Blood,
-  Robot, Warrior, Eldrazi Spawn, Food, Clue, Treasure, and more),
-  affinity/delve/escape cost reduction, state-based actions, decking out,
-  life-total win checks.
+What stays specific to this repo:
+
 - **Hidden information is respected.** Only public zones (battlefield/
   graveyard/stack/exile) plus the agent's own hand are ever tokenized.
   Opponent hand/library *size* is public knowledge in real Magic, so it's
@@ -275,40 +245,11 @@ Self-contained, no ML dependency.
   at a time, so the sequence carries the information even though no single
   frame does. The agent's previous action is fed in alongside the
   observation for the same reason.
-
-### Mana: cast then pay
-
-Real Magic announces a spell, settles modes/X/targets, determines total cost
-(601.2e), then activates mana abilities (601.2f) and pays (601.2g). Every
-affordability gate is `game.plan_payment(state, cost) is not None` — could
-the floating pool plus whatever's still tappable cover this? The agent makes
-every tap; the solver only decides whether a cost is payable.
-
-**Exact solver**, via the deficiency form of Hall's theorem: payable iff
-there are at least as many mana units as pips, and for every subset of
-colours demanded, at least that many units can produce one of them. At most
-six colours can be demanded, so the subset sweep is <=63 iterations.
-
-**Stranding invariant.** A payment can't be abandoned, so any action taken
-mid-payment that reduces available mana is gated on the payment surviving
-it. A dual-colour source counts as one unit until tapped, so tapping it for
-the wrong colour can strand a payment; filters and cost-paid mana sources
-(e.g. Saruli Caretaker) are handled the same way. `begin_pay_cost` asserts
-the invariant itself.
-
-Mana abilities are illegal for the whole of an in-flight cast before 601.2f
-(no player receives priority during 601.2).
-
-> **AUTHORIZED SIMPLIFICATION** (owner-approved 2026-08-17). Speculative
-> floating — a mana ability activated with no payment open — is restricted
-> to the active player's own main phase, instead of any priority window as
-> in real Magic. Low cost in practice: holding mana up just means leaving
-> lands untapped, and paying for an instant on the opponent's turn goes
-> through the payment window anyway.
-
-The engine tolerates a no-opponent (1-player) configuration for card-level
-unit tests, but the active surface, and everything the DRL system drives,
-is 2-player.
+- **The pointer half of the action space is observation-indexed.** The engine lists what a pointer can address
+  (`drl_env.action_bridge.pointer_identities`); `rl.model.features.build_token_set` is the policy's own token list, and
+  `tests/component/action_space/test_engine_contract.py` fails if the two ever disagree.
+- **Row order of the fixed action table is load-bearing** (the policy head has one logit per row);
+  `tests/component/action_space/test_action_table_order.py` pins it against the real league decks.
 
 ---
 
@@ -1038,7 +979,8 @@ other repo.
 ## Setup
 
 ```
-pip install -r requirements.txt
+git clone --recursive <repo>        # or, in an existing clone: git submodule update --init
+pip install -r requirements.txt      # includes `-e ./engine` (the rules engine submodule)
 ```
 
 `requirements.txt` pins a CUDA (cu128) PyTorch build plus `numpy`.
@@ -1046,7 +988,8 @@ pip install -r requirements.txt
 pip from silently swapping to a CPU-only build on a machine that has one,
 and is what `--device cuda` needs. The replay converter additionally needs
 `grpcio-tools`. The replay viewer (`src/webapp/`, a submodule) has its own
-dependency: `flask`.
+dependency: `flask`. After pulling a commit that bumps the `engine` pointer, run `git submodule update` so
+`engine/` matches (the editable install follows the checkout).
 
 ---
 
@@ -1055,7 +998,10 @@ dependency: `flask`.
 Three tiers, each a folder under `tests/`: **unit** (one card/function/rule; mirrors `src/`), **component** (a subsystem
 stress-tested against its contract over real games: today `encoder`, `action_space`, `training`, `validation`) and
 **integration** (components wired together, the pipeline scripts). `pyproject.toml` puts `src/` and `tests/` on the path,
-so everything runs from the repo root.
+so everything runs from the repo root. **The rules engine's own tests** (every card, the turn loop, mana, and the whole
+action-space suite against an independent oracle) live in the `engine/` submodule and run from there
+(`cd engine && pytest tests/unit`); this repo keeps only the tests about the policy stack and its contract with the
+engine (`tests/component/action_space/`: the row-order pin and the pointer-identity contract).
 
 ```
 pip install -r requirements.txt   # pytest included
@@ -1090,7 +1036,7 @@ raise where `zip` truncates today), `PLW0108` (`lambda: f()` -> `f` swaps
 call-time lookup for definition-time binding, breaking monkeypatching) and
 `PLW0603` (the per-process module-global caches are deliberate). `__init__.py`
 files may re-export and star-import their submodules. `src/webapp` is its own
-repo and is excluded.
+repo and is excluded, as is `engine/` (its own ruff config and hooks).
 
 A pre-commit hook (`.githooks/pre-commit`) runs the same `ruff check` and
 refuses the commit if it fails; `.githooks/pre-push` runs the unit tier and blocks the push on a failure. Git doesn't version hook config, so enable it

@@ -5,7 +5,7 @@ named for the subsystem they stress).
 
 | Tier | What it is | Where | Time (this machine) |
 |---|---|---|---|
-| **Unit** | One card, function or rule, with fabricated inputs. Deterministic. | `tests/unit/` — mirrors `src/` (`unit/game/catalog/…`, `unit/rl/model/…`) | **~2 min** (680 tests) |
+| **Unit** | One card, function or rule, with fabricated inputs. Deterministic. | `tests/unit/` — mirrors `src/` (`unit/rl/model/…`, `unit/rl/league/…`; the engine's `unit/game/…` live in the engine submodule) | **~2 min** (680 tests) |
 | **Component** | A subsystem tested against its *contract* over real games. Independent oracles, invariance checks, coverage gates, golden pins, planted bugs. | `tests/component/<name>/` | **~6 min total**; each component well under its 1-hour budget |
 | **Integration** | Components wired together: whole sessions, the pipeline scripts, rollout/update plumbing. | `tests/integration/` | ~3 min |
 
@@ -38,8 +38,15 @@ python tests/support/mutation_sweep.py encoder        # planted bugs for one com
 ## Shared infrastructure: `tests/support/`
 `paths` (repo, src, data — never compute them from `__file__`, files move between tiers), `fixtures` (the
 `cwd = src/` fixture many tests rely on), `corpus` (real self-play decisions recorded with an independent oracle),
-`scenario` (hand-built two-player positions), `synth` (synthetic token batches), `mutation_sweep` (the harness).
-Import with `from support import …`.
+`scenario` (the encoder half of hand-built positions; the board builders themselves are `game.scenario` in the engine),
+`synth` (synthetic token batches), `cache` (corpus cache keys: a hash of `src/` AND `engine/src/`, so an engine change
+invalidates the cache), `mutation_sweep` (the harness; a mutation path starting `engine/src/` plants the bug in the
+engine submodule). Import with `from support import …`.
+
+**The engine has its own suite.** Everything about the rules engine itself (cards, turn loop, mana, the legal-action
+mask against an independent oracle, the action-space searches) is tested in `engine/tests/` with engine-native agents and
+fabricated coverage decks; it never imports `rl`. Run it from `engine/` (`pytest tests/unit`, `pytest tests/component`).
+This repo's `main` pre-push gate covers this repo only.
 
 ## What a component test suite looks like
 Built to catch regressions in *methodology*, not just code. The encoder suite is the worked example; reuse its layers:
@@ -56,7 +63,8 @@ Built to catch regressions in *methodology*, not just code. The encoder suite is
 10. **Planted bugs** — prove the above would notice real mistakes.
 
 ## Components today
-`encoder` (all ten layers), `action_space` (table order pin, mask legality, pointer bridge), `training` (rollout/update
+`encoder` (all ten layers), `action_space` (this repo's half: the table-order pin against checkpoints and the
+policy/engine pointer-identity contract; the engine's mask-legality suite is in `engine/`), `training` (rollout/update
 equivalence), `validation` (the check modules end to end). Each has a README with its contract and known gaps.
-Candidates next, in rough order of silent-failure risk: action-space mask vs engine, PPO/GAE and rewards,
-league/opponent sampling, engine invariants over random self-play, policy network, replay engine.
+Candidates next, in rough order of silent-failure risk: PPO/GAE and rewards, league/opponent sampling, policy network,
+replay engine.

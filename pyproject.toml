@@ -3,6 +3,8 @@
 # so tests need src/ on sys.path the same way run_league.py and the
 # speed-benchmark scripts do -- pythonpath does that without a conftest.py.
 # tests/ is on the path too so every tier can `from support import ...`.
+# The rules engine (`game`, `drl_env`) is the engine/ submodule, installed with
+# `pip install -e engine` (requirements.txt does it); it is not on this path.
 pythonpath = ["src", "tests"]
 testpaths = ["tests"]
 # importlib: test files with the same basename may live in different tiers/components, and nothing needs sibling imports.
@@ -15,8 +17,8 @@ markers = [
 
 [tool.ruff]
 target-version = "py310"
-# src/webapp is its own repo (git submodule) with its own conventions.
-extend-exclude = ["src/webapp"]
+# src/webapp and engine/ are their own repos (git submodules) with their own conventions and ruff config.
+extend-exclude = ["src/webapp", "engine"]
 
 [tool.ruff.lint]
 # Bug-finding and dead-code rules only -- no formatting/style rules, so the
@@ -34,5 +36,3 @@ external = ["BLE001"]
 [tool.ruff.lint.per-file-ignores]
 # Package __init__s aggregate their submodules on purpose (re-exports, star imports).
 "__init__.py" = ["F401", "F403"]
-# Mirrors drl_env's own star-import surface (the private _actions_* names under test).
-"tests/component/action_space/test_action_table.py" = ["F403", "F405"]

@@ -3,6 +3,7 @@
 # requirements.txt` never silently swaps it back to a CPU-only build.
 --extra-index-url https://download.pytorch.org/whl/cu128
 torch==2.11.0+cu128
+-e ./engine  # the rules engine submodule (game, drl_env) -- run `git submodule update --init` first
 numpy
 pytest
 ruff  # linter -- config in pyproject.toml, see README "Lint"

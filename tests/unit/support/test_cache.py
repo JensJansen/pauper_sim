@@ -56,10 +56,21 @@ def test_the_key_is_stable_when_nothing_changes(tmp_path):
 
 
 def test_the_real_repo_key_covers_the_engine():
-    """The repo's own key must include a file from src/game, the exact gap this guards."""
+    """The repo's own key must include the engine submodule's code (it lives under engine/src/), the exact gap this guards."""
     import hashlib
 
     from support.paths import REPO
     files = {p.relative_to(REPO / "src").parts[0] for p in (REPO / "src").rglob("*.py") if "webapp" not in p.parts}
-    assert {"game", "drl_env", "rl"} <= files
+    assert "rl" in files
+    engine = {p.relative_to(REPO / "engine" / "src").parts[0] for p in (REPO / "engine" / "src").rglob("*.py")}
+    assert {"game", "drl_env"} <= engine
     assert len(source_hash()) == len(hashlib.sha256().hexdigest())
+
+
+def test_a_change_in_the_engine_submodule_changes_the_key(tmp_path):
+    repo = make_repo(tmp_path)
+    (repo / "engine" / "src" / "game").mkdir(parents=True)
+    (repo / "engine" / "src" / "game" / "rules.py").write_text("X = 1\n")
+    base = source_hash(repo)
+    (repo / "engine" / "src" / "game" / "rules.py").write_text("X = 2\n")
+    assert source_hash(repo) != base

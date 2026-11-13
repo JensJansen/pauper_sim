@@ -1,5 +1,13 @@
 # Magic: the Gathering engine + RL training harness
 
+## ENGINE SUBMODULE
+
+The rules engine (`game`, `drl_env`) lives in the `engine/` git submodule (github.com/JensJansen/pauper-sim-engine), with
+its own `CLAUDE.md` carrying the same two mandates below. Any game-behavior change is made **inside `engine/`** (commit
+there first, then commit the bumped pointer here); the mandates below apply to it exactly as written. The doc-parity rule
+covers both repos: a change to the engine's observable surface (action-table row order, `drl_env` names) must also update
+this repo's README and the `tests/component/action_space` pins in the same change.
+
 ## RULES FAITHFULNESS MANDATE (standing instruction — highest priority for game behavior)
 
 Every game-rules decision in this engine MUST be **totally faithful to the real

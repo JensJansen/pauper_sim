@@ -48,7 +48,7 @@ Wall clock: S 6.29 h, L1 4.78 h (-24.0%), matching the earlier 24.4% measurement
 - **Pre-registered noise clause not applied as written.** S2 is a shorter run, so S2 - S (-1.65) mixes seed noise with training length and is
   not a pure noise floor. It is no evidence against the verdict: the question was whether L1 falls clearly below S, and L1 - S is +0.10.
   A clean noise floor needs a full-length S2 (about 6 h on a healthy GPU) if more certainty is wanted.
-- One retry occurred: L1 first crashed at iteration 6 on a pre-existing sac-cost engine bug (`SAC_FIZZLE_HYPOTHESES.md`); the harness restarted it
+- One retry occurred: L1 first crashed at iteration 6 on a pre-existing sac-cost engine bug (`engine/docs/SAC_FIZZLE_HYPOTHESES.md`); the harness restarted it
   with the same seed 1001 (no seed bump was needed).
 
 ## Recommendation

@@ -10,6 +10,7 @@ reassigns an existing card's index."""
 import json
 
 import game
+from rl.decision import action_bridge
 from rl.decision.action_bridge import build_fixed_action_table
 from rl.model.features import CardVocab
 
@@ -18,13 +19,7 @@ from rl.model.features import CardVocab
 # def a roster never spawns just reserves a vocab index; a MISSING one is a
 # hard KeyError. INITIATIVE_MARKER_CARD is Undercity's venture pseudo-card
 # (rides the stack, appears in order_triggers).
-TOKEN_DEFS = (
-    game.BLOOD_TOKEN_CARD_DEF, game.ROBOT_TOKEN_CARD_DEF, game.WARRIOR_TOKEN_CARD_DEF,
-    game.ELDRAZI_SPAWN_TOKEN_CARD_DEF, game.FOOD_TOKEN_CARD_DEF, game.CLUE_TOKEN_CARD_DEF,
-    game.HUMAN_SOLDIER_TOKEN_CARD_DEF, game.TREASURE_TOKEN_CARD_DEF, game.BIRD_ILLUSION_TOKEN_CARD_DEF,
-    game.SAMURAI_TOKEN_CARD_DEF, game.MAP_TOKEN_CARD_DEF, game.SKELETON_TOKEN_CARD_DEF,
-    game.INITIATIVE_MARKER_CARD,
-)
+TOKEN_DEFS = action_bridge.TOKEN_DEFS  # defined by the engine (drl_env.action_bridge); re-exported for callers
 DECK_MANIFEST = "../data/league_decks.json"
 VOCAB_PATH = "../checkpoints/vocab.json"
 

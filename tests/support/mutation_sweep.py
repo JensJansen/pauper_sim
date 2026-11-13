@@ -1,4 +1,4 @@
-"""Test the tests. Plants ONE deliberate bug at a time in a scratch COPY of src/ (the real tree is never touched) and
+"""Test the tests. Plants ONE deliberate bug at a time in a scratch COPY of src/ and engine/src/ (the real tree is never touched) and
 runs a component's tests against it; a mutation that no test notices is a hole in that component's suite.
 
     python tests/support/mutation_sweep.py <component>             # every mutation
@@ -35,16 +35,18 @@ def run(module, mutation_idx=None):
     scratch = pathlib.Path(tempfile.mkdtemp(prefix="mut_"))
     src = scratch / "src"
     shutil.copytree(REPO / "src", src, ignore=shutil.ignore_patterns("__pycache__", "webapp", "*.pyc"))
+    engine_src = scratch / "engine_src"  # the engine submodule's code: a mutation path starting "engine/src/" plants a bug there
+    shutil.copytree(REPO / "engine" / "src", engine_src, ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
     desc = "baseline (no mutation)"
     if mutation_idx is not None:
         rel, old, new, desc = module.MUTATIONS[mutation_idx]
-        path = src / rel
+        path = engine_src / rel[len("engine/src/"):] if rel.startswith("engine/src/") else src / rel
         text = path.read_text(encoding="utf-8")
         assert text.count(old) == 1, f"mutation {mutation_idx}: target text found {text.count(old)}x in {rel}"
         path.write_text(text.replace(old, new), encoding="utf-8")
     # scratch src first (the code under mutation), then the real tests/ so `support` imports; the repo ini's own
     # pythonpath (the REAL src) is overridden to empty below
-    env = dict(os.environ, PYTHONDONTWRITEBYTECODE="1", PYTHONPATH=os.pathsep.join([str(src), str(REPO / "tests")]), **module.ENV)
+    env = dict(os.environ, PYTHONDONTWRITEBYTECODE="1", PYTHONPATH=os.pathsep.join([str(src), str(engine_src), str(REPO / "tests")]), **module.ENV)
     t = time.time()
     try:
         r = subprocess.run([sys.executable, "-m", "pytest", *module.TEST_PATHS, "-x", "-q", "-p", "no:cacheprovider",

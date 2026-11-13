@@ -2,3 +2,7 @@
 	path = src/webapp
 	url = https://github.com/JensJansen/pauper-sim-replay.git
 	branch = main
+[submodule "engine"]
+	path = engine
+	url = C:/dev/pauper-sim-engine
+	branch = bootstrap
