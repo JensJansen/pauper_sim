@@ -383,14 +383,15 @@ def _record_pool_outcomes(pool, name, outcomes):
             pool.record_outcome(name, ("snapshot", opp_name, snap_id), won)
 
 
-def _update_round(ctx, name, buffers_by_deck, batch_size, ent_coef):
+def _update_round(ctx, name, buffers_by_deck, batch_size, ent_coef, stats_out=None):
     """PPO-updates every train deck that received transitions this
     round: the training deck's own bucket, plus any live-opponent
     bucket in train_set (buffers_by_deck only ever holds
     live-opponent buckets; a frozen-snapshot opponent records
     nothing). Returns (policy_loss, value_loss, entropy, approx_kl,
     clip_fraction, epochs_run, explained_variance, adv_std, salvaged) --
-    the stats are `name`'s own update's, all zero if it didn't update."""
+    the stats are `name`'s own update's, all zero if it didn't update. `stats_out`, if a dict, receives the
+    update-wide `*_mean` fields from ppo_update for `name`'s own update (see there); left empty if it didn't update."""
     hp, live_nets, optimizers, device = ctx["hp"], ctx["live_nets"], ctx["optimizers"], ctx["device"]
     # Reset every round, explained_variance/adv_std included: with
     # train_deck=False (--train-mulligan-only) or an empty own bucket
@@ -411,7 +412,7 @@ def _update_round(ctx, name, buffers_by_deck, batch_size, ent_coef):
                     live_nets[name], optimizers[name], buf, device, batch_size=batch_size,
                     ent_coef=ent_coef, gamma=hp["gamma"], gae_lambda=hp["gae_lambda"],
                     target_kl=hp["target_kl"], n_epochs=hp["n_epochs"],
-                    adv_norm_floor=hp["adv_norm_floor"])
+                    adv_norm_floor=hp["adv_norm_floor"], stats_out=stats_out)
             else:
                 ppo_update(live_nets[deck_name], optimizers[deck_name], buf, device,
                            batch_size=batch_size, ent_coef=ent_coef, gamma=hp["gamma"],
@@ -679,8 +680,10 @@ def _run_session(n_iterations, games_per_iteration, snapshot_every, executor, n_
                 if train_mulligan and deck_name in train_set:
                     mull_by_deck_accum[deck_name].extend(tr)
             t_update0 = time.time()
+            update_means = {}
             (policy_loss, value_loss, entropy, approx_kl, clip_fraction, epochs_run,
-             explained_variance, adv_std, salvaged) = _update_round(ctx, name, buffers_by_deck, batch_size, ent_coef)
+             explained_variance, adv_std, salvaged) = _update_round(ctx, name, buffers_by_deck, batch_size, ent_coef,
+                                                                    stats_out=update_means)
             update_time_total += time.time() - t_update0
             buffer_size = len(buffers_by_deck.get(name, ()))
             print(f"  iter {iteration} [{name}]: games={played} buf={buffer_size} "
@@ -691,14 +694,15 @@ def _run_session(n_iterations, games_per_iteration, snapshot_every, executor, n_
             # ramp has saturated past the collected data (once batch_size >=
             # buffer_size, ppo_update runs full-batch steps). approx_kl/
             # clip_fraction/epochs_run give visibility into why entropy
-            # moves, not just that it did.
+            # moves, not just that it did. policy_loss .. clip_fraction above are the last minibatch's;
+            # update_means adds the update-wide `*_mean` fields beside them.
             _append_metric(league_dir, kind="ppo", session=session, iteration=iteration, deck=name,
                            cumulative_games=cumulative_games + games_so_far_this_session,
                            games=played, buffer_size=buffer_size, batch_size=batch_size, salvaged=salvaged,
                            ent_coef=ent_coef, policy_loss=policy_loss, value_loss=value_loss, entropy=entropy,
                            approx_kl=approx_kl, clip_fraction=clip_fraction, epochs_run=epochs_run,
                            explained_variance=explained_variance, adv_std=adv_std,
-                           target_kl=hp["target_kl"])
+                           target_kl=hp["target_kl"], **update_means)
 
         _flush_mulligan(ctx, mull_by_deck_accum, iteration, n_iterations,
                         cumulative_games + games_so_far_this_session)

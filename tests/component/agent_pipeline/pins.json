@@ -1,0 +1,360 @@
+{
+ "deck_net": {
+  "critic_head.bias": [
+   1
+  ],
+  "critic_head.weight": [
+   1,
+   128
+  ],
+  "encoder.embedding.weight": [
+   50,
+   64
+  ],
+  "encoder.encoder.layers.0.linear1.bias": [
+   128
+  ],
+  "encoder.encoder.layers.0.linear1.weight": [
+   128,
+   64
+  ],
+  "encoder.encoder.layers.0.linear2.bias": [
+   64
+  ],
+  "encoder.encoder.layers.0.linear2.weight": [
+   64,
+   128
+  ],
+  "encoder.encoder.layers.0.norm1.bias": [
+   64
+  ],
+  "encoder.encoder.layers.0.norm1.weight": [
+   64
+  ],
+  "encoder.encoder.layers.0.norm2.bias": [
+   64
+  ],
+  "encoder.encoder.layers.0.norm2.weight": [
+   64
+  ],
+  "encoder.encoder.layers.0.self_attn.in_proj_bias": [
+   192
+  ],
+  "encoder.encoder.layers.0.self_attn.in_proj_weight": [
+   192,
+   64
+  ],
+  "encoder.encoder.layers.0.self_attn.out_proj.bias": [
+   64
+  ],
+  "encoder.encoder.layers.0.self_attn.out_proj.weight": [
+   64,
+   64
+  ],
+  "encoder.encoder.layers.1.linear1.bias": [
+   128
+  ],
+  "encoder.encoder.layers.1.linear1.weight": [
+   128,
+   64
+  ],
+  "encoder.encoder.layers.1.linear2.bias": [
+   64
+  ],
+  "encoder.encoder.layers.1.linear2.weight": [
+   64,
+   128
+  ],
+  "encoder.encoder.layers.1.norm1.bias": [
+   64
+  ],
+  "encoder.encoder.layers.1.norm1.weight": [
+   64
+  ],
+  "encoder.encoder.layers.1.norm2.bias": [
+   64
+  ],
+  "encoder.encoder.layers.1.norm2.weight": [
+   64
+  ],
+  "encoder.encoder.layers.1.self_attn.in_proj_bias": [
+   192
+  ],
+  "encoder.encoder.layers.1.self_attn.in_proj_weight": [
+   192,
+   64
+  ],
+  "encoder.encoder.layers.1.self_attn.out_proj.bias": [
+   64
+  ],
+  "encoder.encoder.layers.1.self_attn.out_proj.weight": [
+   64,
+   64
+  ],
+  "encoder.input_proj.bias": [
+   64
+  ],
+  "encoder.input_proj.weight": [
+   64,
+   362
+  ],
+  "encoder.mine_pool.in_proj_bias": [
+   192
+  ],
+  "encoder.mine_pool.in_proj_weight": [
+   192,
+   64
+  ],
+  "encoder.mine_pool.out_proj.bias": [
+   64
+  ],
+  "encoder.mine_pool.out_proj.weight": [
+   64,
+   64
+  ],
+  "encoder.mine_query": [
+   1,
+   1,
+   64
+  ],
+  "encoder.theirs_pool.in_proj_bias": [
+   192
+  ],
+  "encoder.theirs_pool.in_proj_weight": [
+   192,
+   64
+  ],
+  "encoder.theirs_pool.out_proj.bias": [
+   64
+  ],
+  "encoder.theirs_pool.out_proj.weight": [
+   64,
+   64
+  ],
+  "encoder.theirs_query": [
+   1,
+   1,
+   64
+  ],
+  "film.net.0.bias": [
+   64
+  ],
+  "film.net.0.weight": [
+   64,
+   128
+  ],
+  "film.net.2.bias": [
+   512
+  ],
+  "film.net.2.weight": [
+   512,
+   64
+  ],
+  "gru.bias_hh_l0": [
+   384
+  ],
+  "gru.bias_ih_l0": [
+   384
+  ],
+  "gru.weight_hh_l0": [
+   384,
+   128
+  ],
+  "gru.weight_ih_l0": [
+   384,
+   176
+  ],
+  "non_targeting_head.bias": [
+   100
+  ],
+  "non_targeting_head.weight": [
+   100,
+   128
+  ],
+  "pointer_query.bias": [
+   64
+  ],
+  "pointer_query.weight": [
+   64,
+   128
+  ],
+  "prev_action_embed.weight": [
+   102,
+   16
+  ],
+  "prev_pointer_proj.bias": [
+   32
+  ],
+  "prev_pointer_proj.weight": [
+   32,
+   362
+  ],
+  "trunk_layers.0.bias": [
+   128
+  ],
+  "trunk_layers.0.weight": [
+   128,
+   198
+  ],
+  "trunk_layers.1.bias": [
+   128
+  ],
+  "trunk_layers.1.weight": [
+   128,
+   128
+  ]
+ },
+ "deck_net_params": 362341,
+ "live_checkpoint_keys": [
+  "net",
+  "optimizer"
+ ],
+ "metrics_fields": {
+  "mulligan": [
+   "deck",
+   "loss",
+   "n"
+  ],
+  "mulligan_audit": [
+   "by_land_count",
+   "decisions",
+   "deck",
+   "mulligan_rate",
+   "probe_hands"
+  ],
+  "policy_movement": [
+   "anchor_games",
+   "deck",
+   "js",
+   "top1"
+  ],
+  "policy_scale": [
+   "adjacent_js",
+   "deck",
+   "entropy",
+   "random_js"
+  ],
+  "ppo": [
+   "adv_std",
+   "approx_kl",
+   "batch_size",
+   "buffer_size",
+   "clip_fraction",
+   "deck",
+   "ent_coef",
+   "entropy",
+   "epochs_run",
+   "explained_variance",
+   "games",
+   "policy_loss",
+   "policy_loss_mean / value_loss_mean / entropy_mean / approx_kl_mean / clip_fraction_mean",
+   "salvaged",
+   "target_kl",
+   "value_loss"
+  ],
+  "primary_vs_primary_round_robin": [
+   "deck",
+   "games",
+   "win_rate",
+   "wins"
+  ],
+  "primary_vs_training_round_robin": [
+   "deck",
+   "games",
+   "mana_burnt_by_deck",
+   "win_rate",
+   "wins"
+  ],
+  "progress_indicator": [
+   "deck",
+   "games",
+   "label",
+   "lo / hi",
+   "policy_ratio",
+   "score"
+  ],
+  "session_start": [
+   "checkpoint_rate",
+   "games_per_iteration",
+   "horizon",
+   "lr / mulligan_lr / gamma / gae_lambda / target_kl / n_epochs / adv_norm_floor / ent_coef",
+   "n_iterations",
+   "n_workers",
+   "overlap_collect",
+   "pfsp",
+   "pfsp_power",
+   "reward_fn",
+   "roster",
+   "seq_batch_size_start / seq_batch_size_cap",
+   "session",
+   "snapshot_every",
+   "stratify_0land_pct",
+   "train_decks"
+  ],
+  "strength_field": [
+   "anchor_games",
+   "deck",
+   "games",
+   "score"
+  ],
+  "strength_history": [
+   "anchor_games",
+   "deck",
+   "games",
+   "score"
+  ],
+  "vs_history": [
+   "deck",
+   "games",
+   "label",
+   "live_wins",
+   "snapshot_id",
+   "win_rate"
+  ]
+ },
+ "mulligan_net": {
+  "bottom_query.bias": [
+   64
+  ],
+  "bottom_query.weight": [
+   64,
+   64
+  ],
+  "hand_repr_version": [],
+  "keep_head.bias": [
+   2
+  ],
+  "keep_head.weight": [
+   2,
+   64
+  ],
+  "trunk.0.bias": [
+   64
+  ],
+  "trunk.0.weight": [
+   64,
+   130
+  ],
+  "trunk.2.bias": [
+   64
+  ],
+  "trunk.2.weight": [
+   64,
+   64
+  ],
+  "value_head.bias": [
+   1
+  ],
+  "value_head.weight": [
+   1,
+   64
+  ]
+ },
+ "mulligan_net_params": 16899,
+ "snapshot_keys": [
+  "mulligan_hidden",
+  "mulligan_state_dict",
+  "state_dict",
+  "trunk_hidden"
+ ]
+}

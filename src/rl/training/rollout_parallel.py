@@ -165,9 +165,11 @@ def submit_league_rollout(training_deck_name, live_nets, reward_fn_name, league_
     collect_rollout_league call verbatim (checkpoint_rate/pfsp on to
     pool.sample_opponent; stratify_0land_pct on to collect_rollout)."""
     # .cpu(): workers are separate processes with no CUDA context, and they
-    # always play on CPU regardless of where training runs. A no-op when
-    # training is already on CPU.
-    all_state_dicts = {name: {k: v.cpu() for k, v in net.state_dict().items()}
+    # always play on CPU regardless of where training runs. .clone(): on a CPU
+    # run .cpu() returns the live tensor, and the executor pickles the task on a
+    # feeder thread after submit() returns, so with overlap_collect the pickle
+    # would see weights the concurrent PPO update has already moved.
+    all_state_dicts = {name: {k: v.detach().cpu().clone() for k, v in net.state_dict().items()}
                        for name, net in live_nets.items()}
 
     base = n_games // n_workers

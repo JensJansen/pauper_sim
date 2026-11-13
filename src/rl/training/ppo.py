@@ -26,7 +26,7 @@ def _compute_gae(rewards_, values_, dones_, gamma, gae_lambda):
 
 def ppo_update(net, optimizer, buf, device, n_epochs=4, batch_size=64, gamma=0.99, gae_lambda=0.95,
                 clip_range=0.2, ent_coef=0.01, vf_coef=0.5, max_grad_norm=0.5, target_kl=0.03,
-                adv_norm_floor=0.0):
+                adv_norm_floor=0.0, stats_out=None):
     # ent_coef default 0.01: without an entropy bonus the policy collapses
     # onto a narrow low-branching behavior (pass, shrink its own board). The
     # mulligan model has its own separate ENTROPY_COEF. League training
@@ -50,7 +50,16 @@ def ppo_update(net, optimizer, buf, device, n_epochs=4, batch_size=64, gamma=0.9
     1 - Var(ret - value) / Var(ret), measured before the update -- unlike
     raw value_loss (an unscaled MSE), it distinguishes a critic that has
     actually learned from one whose targets have simply collapsed toward a
-    constant. adv_std is the raw advantage spread before normalization."""
+    constant. adv_std is the raw advantage spread before normalization.
+
+    The first five returned numbers are the LAST minibatch's (of the last epoch run) -- cheap and long logged, but
+    noisy as a health reading. `stats_out`, if a dict, is also filled with `policy_loss_mean`, `value_loss_mean`,
+    `entropy_mean`, `approx_kl_mean`, `clip_fraction_mean`: the mean over every minibatch of every epoch run, each
+    minibatch weighted by its number of real (unpadded) steps.
+
+    Raises ValueError if any stored action is not legal in its own stored mask: that is a recording bug upstream (a
+    mask captured at the wrong moment, an index off at the fixed/pointer boundary), and training on it would be
+    training on actions the agent did not take."""
     values = np.array(buf.value, dtype=np.float32)
     rewards_ = np.array(buf.reward, dtype=np.float32)
     dones = np.array(buf.done, dtype=np.float32)
@@ -102,6 +111,16 @@ def ppo_update(net, optimizer, buf, device, n_epochs=4, batch_size=64, gamma=0.9
         mask_np[i, :n_fixed] = stored[:n_fixed]
         pointer_part = stored[n_fixed:]
         mask_np[i, n_fixed:n_fixed + len(pointer_part)] = pointer_part
+    act_np = np.array(buf.action, dtype=np.int64)
+    if total:
+        in_range = (act_np >= 0) & (act_np < mask_np.shape[1])
+        legal = in_range & mask_np[np.arange(total), np.where(in_range, act_np, 0)]
+        if not legal.all():
+            bad = int(np.flatnonzero(~legal)[0])
+            raise ValueError(
+                f"ppo_update: transition {bad} of {total} stored action {int(act_np[bad])} that its own stored mask "
+                f"does not allow ({int((~legal).sum())} such transition(s); mask width {mask_np.shape[1]}, "
+                f"n_fixed {n_fixed}) -- the rollout recorded an action/mask pair the agent could not have taken")
     mask_all = torch.as_tensor(mask_np, device=device)
     scalar_all = torch.as_tensor(np.array(buf.scalar), dtype=torch.float32, device=device)
     act_all = torch.as_tensor(np.array(buf.action), dtype=torch.int64, device=device)
@@ -110,6 +129,8 @@ def ppo_update(net, optimizer, buf, device, n_epochs=4, batch_size=64, gamma=0.9
     ret_all = torch.as_tensor(ret, dtype=torch.float32, device=device)
     zero = torch.zeros((), device=device)
     last_policy_loss = last_value_loss = last_entropy = last_approx_kl = last_clip_fraction = zero
+    sums = dict.fromkeys(("policy_loss", "value_loss", "entropy", "approx_kl", "clip_fraction"), zero)
+    steps_seen = zero  # real steps behind `sums`: every minibatch of every epoch run counts by its own size
     epochs_run = 0
     # Listed once (not re-walked per clip_grad_norm_ call); the encoder is a
     # registered child of net, so it's covered here too.
@@ -191,8 +212,9 @@ def ppo_update(net, optimizer, buf, device, n_epochs=4, batch_size=64, gamma=0.9
 
             with torch.no_grad():
                 # k3 estimator (Schulman): unbiased, lower-variance than the
-                # naive mean, and always >= 0. Diagnostic only (computed
-                # post-step), not a pre-step gate.
+                # naive mean, and always >= 0. Diagnostic only. `ratio` is from the
+                # forward pass BEFORE this minibatch's optimizer.step(), so this is
+                # how far the policy had moved going INTO the step, not after it.
                 approx_kl = (((ratio - 1) - torch.log(ratio)) * valid).sum() / n_valid
                 clip_fraction = (((ratio - 1.0).abs() > clip_range).float() * valid).sum() / n_valid
             # Kept as device tensors: a per-minibatch .item() forced a GPU sync
@@ -202,11 +224,18 @@ def ppo_update(net, optimizer, buf, device, n_epochs=4, batch_size=64, gamma=0.9
             epoch_kl_n += 1
             last_policy_loss, last_value_loss, last_entropy = policy_loss.detach(), value_loss.detach(), entropy.detach()
             last_approx_kl, last_clip_fraction = approx_kl, clip_fraction
+            for k, v in (("policy_loss", last_policy_loss), ("value_loss", last_value_loss), ("entropy", last_entropy),
+                         ("approx_kl", approx_kl), ("clip_fraction", clip_fraction)):
+                sums[k] = sums[k] + v.detach() * n_valid
+            steps_seen = steps_seen + n_valid
 
         # target_kl early stop, checked once per epoch (mean KL across that
         # epoch's minibatches). Only affects the NEXT epoch.
         if target_kl is not None and epoch_kl_n and float(epoch_kl_sum) / epoch_kl_n > target_kl:
             break
+    if stats_out is not None:
+        denom = max(float(steps_seen), 1.0)
+        stats_out.update({f"{k}_mean": float(v) / denom for k, v in sums.items()})
     last_policy_loss, last_value_loss, last_entropy, last_approx_kl, last_clip_fraction = (
         float(x) for x in (last_policy_loss, last_value_loss, last_entropy, last_approx_kl, last_clip_fraction))
     return (last_policy_loss, last_value_loss, last_entropy, last_approx_kl, last_clip_fraction,

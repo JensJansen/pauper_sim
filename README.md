@@ -646,11 +646,12 @@ entry per invocation (start and end games/deck, argv).
   - `batch_size`: episodes per minibatch
   - `salvaged`: transitions salvaged from other decks' games
   - `ent_coef`: entropy coefficient
-  - `policy_loss`
-  - `value_loss`
-  - `entropy`: mean policy entropy (nats)
-  - `approx_kl`: k3 estimate after the update
-  - `clip_fraction`: share of ratios clipped
+  - `policy_loss`: last minibatch of the last epoch
+  - `value_loss`: last minibatch
+  - `entropy`: policy entropy (nats), last minibatch
+  - `approx_kl`: k3 estimate, last minibatch (policy going into its step)
+  - `clip_fraction`: share of ratios clipped, last minibatch
+  - `policy_loss_mean / value_loss_mean / entropy_mean / approx_kl_mean / clip_fraction_mean`: the same five, averaged over every minibatch of every epoch run (weighted by real steps); added 2026-11-12, absent from older lines
   - `epochs_run`: epochs before target_kl stopped it
   - `explained_variance`: critic fit before the update
   - `adv_std`: raw advantage spread
@@ -996,7 +997,7 @@ dependency: `flask`. After pulling a commit that bumps the `engine` pointer, run
 ## Tests
 
 Three tiers, each a folder under `tests/`: **unit** (one card/function/rule; mirrors `src/`), **component** (a subsystem
-stress-tested against its contract over real games: today `encoder`, `action_space`, `training`, `validation`) and
+stress-tested against its contract over real games: today `encoder`, `action_space`, `training`, `agent_pipeline`, `validation`) and
 **integration** (components wired together, the pipeline scripts). `pyproject.toml` puts `src/` and `tests/` on the path,
 so everything runs from the repo root. **The rules engine's own tests** (every card, the turn loop, mana, and the whole
 action-space suite against an independent oracle) live in the `engine/` submodule and run from there
@@ -1011,6 +1012,7 @@ pytest tests/component             # every component (~6 min)
 pytest tests/integration           # ~3 min
 pytest tests                       # everything, ~12 min
 python tests/support/mutation_sweep.py encoder   # plant deliberate bugs, report any the suite misses
+python tests/support/mutation_sweep.py agent_pipeline   # same for the training/league/evaluation pipeline (58 planted bugs)
 ```
 
 Budgets: a single component under 1 hour, the whole suite under 12. There is no nightly tier. Policies (push gate, golden

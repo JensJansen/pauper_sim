@@ -9,5 +9,6 @@ encoder and a dropped previous-pointer input).
 
 **Cost.** ~30 seconds. **Planted bugs.** The previous-pointer and encoder mutations in `component/encoder/mutations.py` exercise it.
 
-**Gaps (next work).** GAE/returns/advantage normalisation against a plain reference implementation; PPO loss terms
-(clipping, value loss, entropy, KL early stop) on constructed batches; reward attribution; episode segmentation.
+**Gaps.** Closed 2026-11-12: GAE, advantage normalisation, the loss terms, reward attribution and episode segmentation are now
+tested in the [`agent_pipeline`](../agent_pipeline/README.md) component and its unit files; this one stays the
+rollout/update equivalence check.

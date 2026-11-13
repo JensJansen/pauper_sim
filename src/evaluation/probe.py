@@ -40,7 +40,8 @@ def record_probe_set(deck, agents_by_deck, decklists, deck_ctxs, n_games, seed, 
 
     agents_by_deck: {(deck_name, age_label): factory() -> a fresh SeatAgent} for every deck/age that may appear.
     Each game picks the probe deck's age, the opponent deck and its age, and the seat, from the seeded rng, so the
-    set is a pure function of (agents, seed)."""
+    set is a function of (agents, seed) and of torch's global RNG state: the agents sample their actions from it, which
+    `seed` does not touch, so seed torch first for a reproducible set."""
     import random
     from rl.decision.agent import SeatAgent
     from rl.rewards import flat_win_loss_reward

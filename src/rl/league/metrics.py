@@ -35,9 +35,14 @@ KINDS = {
         "writer": "league_runner._run_session (per deck per iteration)",
         "fields": {"deck": "deck", "games": "games collected", "buffer_size": "transitions in the update",
                    "batch_size": "episodes per minibatch", "salvaged": "transitions salvaged from other decks' games",
-                   "ent_coef": "entropy coefficient", "policy_loss": "", "value_loss": "",
-                   "entropy": "mean policy entropy (nats)", "approx_kl": "k3 estimate after the update",
-                   "clip_fraction": "share of ratios clipped", "epochs_run": "epochs before target_kl stopped it",
+                   "ent_coef": "entropy coefficient", "policy_loss": "last minibatch of the last epoch",
+                   "value_loss": "last minibatch", "entropy": "policy entropy (nats), last minibatch",
+                   "approx_kl": "k3 estimate, last minibatch (policy going into its step)",
+                   "clip_fraction": "share of ratios clipped, last minibatch",
+                   "policy_loss_mean / value_loss_mean / entropy_mean / approx_kl_mean / clip_fraction_mean":
+                       "the same five, averaged over every minibatch of every epoch run (weighted by real steps); "
+                       "added 2026-11-12, absent from older lines",
+                   "epochs_run": "epochs before target_kl stopped it",
                    "explained_variance": "critic fit before the update", "adv_std": "raw advantage spread",
                    "target_kl": "the early-stop threshold in force"},
     },
