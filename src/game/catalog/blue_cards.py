@@ -491,7 +491,7 @@ BLUE_EFFECT_REGISTRY = {
         "ltb_trigger": lambda state, permanent: sewer_cam_tap_or_untap(state, permanent.card_def),
         "ltb_targets": True,
         "activated_abilities": {
-            "draw": {"cost_key": "sac_ability_cost", "resolve": lambda state, permanent: sewer_cam_sac(state, permanent)},
+            "draw": {"cost_key": "sac_ability_cost", "taps": False, "resolve": lambda state, permanent: sewer_cam_sac(state, permanent)},
         },
         "pending_kinds": {"choose_any_target"},
     },

@@ -581,7 +581,7 @@ RED_EFFECT_REGISTRY = {
         "activated_abilities": {
             "sac": {
                 "cost_key": "sac_ability_cost",
-                "resolve": lambda state, permanent: activate_reckless_lackey_sac(state, permanent),
+                "taps": False, "resolve": lambda state, permanent: activate_reckless_lackey_sac(state, permanent),
             },
         },
     },
@@ -607,7 +607,7 @@ RED_EFFECT_REGISTRY = {
         "activated_abilities": {
             "sweep": {  # non-mana cost (sacrifice an artifact) -- legal/resolve path
                 "legal": lambda state, permanent: _controls_artifact(state),
-                "resolve": lambda state, permanent: krark_clan_shaman_activate(state, permanent),
+                "taps": False, "resolve": lambda state, permanent: krark_clan_shaman_activate(state, permanent),
             },
         },
         "pending_kinds": {"choose_permanent"},
@@ -617,7 +617,7 @@ RED_EFFECT_REGISTRY = {
         "activated_abilities": {
             "ping": {  # {1} + sacrifice -- paid inside the resolve, so legal/resolve path
                 "legal": lambda state, permanent: _makeshift_munitions_legal(state, permanent),
-                "resolve": lambda state, permanent: makeshift_munitions_activate(state, permanent),
+                "taps": False, "resolve": lambda state, permanent: makeshift_munitions_activate(state, permanent),
             },
         },
         "pending_kinds": {"choose_permanent", "choose_any_target"},
@@ -631,7 +631,7 @@ RED_EFFECT_REGISTRY = {
             "make_samurai": {
                 "cost_key": "sac_ability_cost",
                 "speed": Speed.SORCERY,  # "Activate only as a sorcery"
-                "resolve": lambda state, permanent: experimental_synthesizer_sac(state, permanent),
+                "taps": False, "resolve": lambda state, permanent: experimental_synthesizer_sac(state, permanent),
             },
         },
         "pending_kinds": {"impulse"},  # marks the deck impulse-capable
@@ -708,7 +708,7 @@ RED_EFFECT_REGISTRY = {
         "activated_abilities": {
             "sac": {
                 "cost_key": "sac_ability_cost",
-                "resolve": lambda state, permanent: activate_melded_moxite_sac(state, permanent),
+                "taps": False, "resolve": lambda state, permanent: activate_melded_moxite_sac(state, permanent),
             },
         },
         "pending_kinds": {"discard"},

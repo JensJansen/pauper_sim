@@ -24,6 +24,8 @@ legal(state)/execute(state) factory pairs build_action_table
 
 import game
 
+from ._actions_common import distinct_copies
+
 _mana_ability_options_cache = None  # (state, result) -- one legal_action_mask sweep, same lifecycle as this module's other sweep-scoped caches
 
 
@@ -74,11 +76,18 @@ def _mana_timing_legal(state):
     )
 
 
+def _tap_survives(state, source, color):
+    """Would tapping `source` for `color` leave an open payment finishable (the strand rule)? True when none is open."""
+    produced = [frozenset({symbol}) for symbol in game.mana_output(source, state, color)]
+    return game.payment_survives(
+        state, game.units_after(state, tapped=[source], produced=produced, own_ability_tap=source))
+
+
 def _mana_ability_legal(name, color):
-    """Legal iff a source named `name` can produce `color` right now
-    (game.mana_ability_options; color=None for fixed/tron/count sources),
-    the timing window allows it (_mana_timing_legal), and tapping it leaves
-    an open payment still finishable (game.payment_survives).
+    """Legal iff SOME permanent named `name` can produce `color` right now (game.mana_ability_options; color=None for
+    fixed/tron/count sources), the timing window allows it (_mana_timing_legal), and tapping that permanent leaves an
+    open payment still finishable (game.payment_survives). The player chooses which copy to tap, so any one passing is
+    enough -- see _mana_ability_execute for how the choice is made.
 
     No `_pending_gate` attribute, so legal_action_mask always calls this
     regardless of what is pending, which is what makes a mana ability
@@ -86,29 +95,20 @@ def _mana_ability_legal(name, color):
     def legal(state):
         if not _mana_timing_legal(state) or (name, color) not in _cached_mana_ability_options(state):
             return False
-        source = _cached_mana_source(state, name, color)
-        if source is None:
-            return False
-        produced = [frozenset({symbol}) for symbol in game.mana_output(source, state, color)]
-        return game.payment_survives(
-            state, game.units_after(state, tapped=[source], produced=produced, own_ability_tap=source))
+        return any(_tap_survives(state, p, color) for p in _cached_mana_sources(state, name, color))
     return legal
 
 
-def _find_mana_source(state, name, color):
-    """The available permanent named `name` that can produce `color` now
-    (`color` narrows to the flexible/granted source that can make it, e.g.
-    an Abundant Growth land). Every per-permanent gate (tapped -- with the
-    mana_no_tap exception, e.g. Wall of Roots; tap-lock; extra-cost
-    availability) is delegated to game.tappable_for_mana, the ONE place
-    those gates live -- this function used to re-implement them inline,
-    which had silently drifted out of sync with it (missing the
-    mana_no_tap exception fixed there 2026-08-23: mana_ability_options
-    correctly listed a tapped Wall of Roots as available, but THIS
-    function's own duplicate tapped-check still excluded it, so the
-    actual per-action legal-action mask stayed wrong even after that fix
-    -- a mid-payment strand, an all-False mask, a hard crash). Never
-    re-duplicate these gates here again."""
+def _find_mana_sources(state, name, color):
+    """Every available permanent named `name` that can produce `color` now (`color` narrows to the flexible/granted
+    source that can make it, e.g. an Abundant Growth land). Every per-permanent gate (tapped -- with the
+    mana_no_tap exception, e.g. Wall of Roots; tap-lock; extra-cost availability) is delegated to
+    game.tappable_for_mana, the ONE place those gates live -- this function used to re-implement them inline, which
+    had silently drifted out of sync with it (missing the mana_no_tap exception fixed there 2026-08-23: mana_ability_
+    options correctly listed a tapped Wall of Roots as available, but THIS function's own duplicate tapped-check still
+    excluded it, so the actual per-action legal-action mask stayed wrong even after that fix -- a mid-payment strand,
+    an all-False mask, a hard crash). Never re-duplicate these gates here again."""
+    out = []
     for p in state.battlefield:
         if p.card_def.name != name or not game.tappable_for_mana(state, p):
             continue
@@ -116,31 +116,42 @@ def _find_mana_source(state, name, color):
             game.mana_output(p, state, color)  # raises if this p can't produce `color`
         except ValueError:
             continue
-        return p
-    return None
+        out.append(p)
+    return out
 
 
-_mana_source_cache = None  # (state, {(name, color): Permanent or None}) -- one legal_action_mask sweep, same lifecycle as this module's other sweep-scoped caches
+def _find_mana_source(state, name, color):
+    """The first of _find_mana_sources, or None."""
+    sources = _find_mana_sources(state, name, color)
+    return sources[0] if sources else None
 
 
-def _cached_mana_source(state, name, color):
-    """Memoizes _find_mana_source per (name, color) for one legal_action_mask
-    sweep, since every row sharing a (name, color) pair would otherwise
-    re-scan state.battlefield from scratch."""
+_mana_source_cache = None  # (state, {(name, color): [Permanent]}) -- one legal_action_mask sweep, same lifecycle as this module's other sweep-scoped caches
+
+
+def _cached_mana_sources(state, name, color):
+    """Memoizes _find_mana_sources per (name, color) for one legal_action_mask sweep, since every row sharing a
+    (name, color) pair would otherwise re-scan state.battlefield from scratch."""
     global _mana_source_cache
     if _mana_source_cache is None or _mana_source_cache[0] is not state:
         _mana_source_cache = (state, {})
     cache = _mana_source_cache[1]
     key = (name, color)
     if key not in cache:
-        cache[key] = _find_mana_source(state, name, color)
+        cache[key] = _find_mana_sources(state, name, color)
     return cache[key]
 
 
 def _mana_ability_execute(name, color):
+    """Taps a permanent named `name` for `color`. Copies that would strand an open payment are never candidates. If the
+    remaining candidates are all interchangeable (same state, same attachments) the choice cannot matter and the first
+    is tapped; otherwise the player picks one (a choose_source mana sub-decision, answered by the pointer head)."""
     def execute(state):
-        p = _find_mana_source(state, name, color)
-        game.activate_mana_source(state, p, color)
+        candidates = [p for p in _find_mana_sources(state, name, color) if _tap_survives(state, p, color)]
+        if len(distinct_copies(state, candidates)) == 1:
+            game.activate_mana_source(state, candidates[0], color)
+        else:
+            game.begin_mana_source_choice(state, candidates, color)
     return execute
 
 

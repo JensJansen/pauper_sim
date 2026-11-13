@@ -370,3 +370,23 @@ def test_discount_departing_source_out_of_scope_kind_is_a_no_op():
 # Mana filters (Conduit Pylons / Barrels of Blasting Jelly) are owned by
 # the action layer (drl_env._filter_mana_*), not a mana primitive here --
 # their own test lives with that code, not in this module.
+
+
+def test_can_pay_resolves_an_either_or_unit_by_trying_each_alternative():
+    # a source that makes {B}{R} OR one mana of any color (e.g. Rakdos Carnarium carrying Abundant Growth)
+    either = mana.EitherOr(((frozenset("B"), frozenset("R")), (frozenset("WUBRG"),)))
+    assert mana.can_pay([either], {"B": 1, "R": 1})
+    assert mana.can_pay([either], {"U": 1})
+    assert mana.can_pay([either], {"generic": 2})
+    assert not mana.can_pay([either], {"B": 1, "U": 1})
+    assert not mana.can_pay([either], {"generic": 3})
+    assert mana.can_pay([either, frozenset("U")], {"B": 1, "U": 1})  # granted B + the plain U unit
+    assert mana.can_pay([either, either], {"U": 1, "G": 1})            # both used the granted way
+    assert not mana.can_pay([either, either], {"generic": 5})
+
+
+def test_an_either_or_unit_is_removed_from_a_unit_list_by_value():
+    either = mana.EitherOr(((frozenset("B"), frozenset("R")), (frozenset("WUBRG"),)))
+    units = [either, frozenset("G")]
+    units.remove(either)
+    assert units == [frozenset("G")]

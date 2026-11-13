@@ -805,7 +805,7 @@ GREEN_EFFECT_REGISTRY = {
         "activated_abilities": {
             "lifegain": {  # {T}: gain 1 life per Elf
                 "legal": lambda state, permanent: not permanent.tapped and not tap_summoning_locked(state, permanent),  # summoning-sickness gated (302.6)
-                "resolve": lambda state, permanent: wellwisher_activate(state, permanent),
+                "taps": True, "resolve": lambda state, permanent: wellwisher_activate(state, permanent),
             },
         },
     },
@@ -814,7 +814,7 @@ GREEN_EFFECT_REGISTRY = {
         "activated_abilities": {
             "pump": {  # {T}: target creature +X/+X (X = # Elves) until EOT
                 "legal": lambda state, permanent: not permanent.tapped and not tap_summoning_locked(state, permanent),  # summoning-sickness gated (302.6)
-                "resolve": lambda state, permanent: timberwatch_elf_activate(state, permanent),
+                "taps": True, "resolve": lambda state, permanent: timberwatch_elf_activate(state, permanent),
             },
         },
         "pending_kinds": {"choose_any_target"},
@@ -841,7 +841,7 @@ GREEN_EFFECT_REGISTRY = {
         "activated_abilities": {
             "sac": {
                 "cost_key": "sac_ability_cost",
-                "resolve": lambda state, permanent: activate_food_sac(state, permanent),
+                "taps": True, "resolve": lambda state, permanent: activate_food_sac(state, permanent),
             },
         },
     },
@@ -931,7 +931,7 @@ GREEN_EFFECT_REGISTRY = {
         "activated_abilities": {
             "untap": {
                 "legal": lambda state, permanent: quirion_ranger_untap_legal(state, permanent),
-                "resolve": lambda state, permanent: quirion_ranger_untap_resolve(state, permanent),
+                "taps": False, "resolve": lambda state, permanent: quirion_ranger_untap_resolve(state, permanent),
             },
         },
         # Forest choice is choose_permanent; the untap target (any creature,
@@ -1095,7 +1095,7 @@ GREEN_EFFECT_REGISTRY = {
         "activated_abilities": {
             "sac": {
                 "legal": lambda state, permanent: True,
-                "resolve": lambda state, permanent: activate_eldrazi_spawn_sac(state, permanent),
+                "taps": False, "resolve": lambda state, permanent: activate_eldrazi_spawn_sac(state, permanent),
             },
         },
     },

@@ -8,7 +8,7 @@ factory pair that build_action_table calls once per matching card."""
 import game
 
 from ._actions_cast_altzone import _with_chosen_copy
-from ._actions_common import _GATE_NO_PENDING, _hand_count_available
+from ._actions_common import _GATE_NO_PENDING, _hand_count_available, distinct_copies
 
 # Shared button-count caps for choose_cast_mode/choose_cast_x/
 # choose_delve_amount (sized to the current catalog's max: 5 modes, X=0..10,
@@ -404,28 +404,60 @@ def _choose_cast_x_execute(x):
     return execute
 
 
-def _activate_legal(name, cost_key, speed, extra_legal=None):
-    """extra_legal (optional): an additional state-only predicate beyond
-    "an untapped copy exists and its cost_key cost is payable" -- e.g. an
-    ability requiring a legal target (602.2b/601.2c)."""
+def _activation_copies(state, name, taps, ability_legal=None):
+    """The permanents named `name` that could pay for this activation right now: if the cost includes {T} the copy must
+    be untapped and not summoning-sick (302.6); `ability_legal(state, p)` is the card's own non-mana cost/precondition.
+    The player chooses WHICH eligible copy activates (602.2), so legality asks "is there any", not "is the first one"."""
+    out = []
+    for p in state.battlefield:
+        if p.card_def.name != name:
+            continue
+        if taps and (p.tapped or game.tap_summoning_locked(state, p)):
+            continue
+        if ability_legal is not None and not ability_legal(state, p):
+            continue
+        out.append(p)
+    return out
+
+
+def _with_chosen_copy_on_battlefield(state, copies, proceed):
+    """Run proceed(state, permanent). With several NON-interchangeable eligible copies the player picks one (a
+    choose_permanent pointer decision); otherwise the choice cannot matter and the first copy is used."""
+    choices = distinct_copies(state, copies)
+    if len(choices) == 1:
+        proceed(state, choices[0])
+        return
+    eligible = set(copies)
+
+    def _picked(state, chosen):
+        proceed(state, next(p for p in state.battlefield if (p.card_def.name, p.slot) == chosen))
+
+    game.begin_choose_permanent(state, lambda p: p in eligible, _picked)
+
+
+def _activate_legal(name, cost_key, speed, extra_legal=None, taps=True):
+    """extra_legal (optional): an additional state-only predicate beyond "an eligible copy exists and its cost_key cost
+    is payable" -- e.g. an ability requiring a legal target (602.2b/601.2c). `taps`: the ability's cost includes {T}
+    (the registry's "taps" key), so only an untapped, non-summoning-sick copy is eligible; an ability without {T}
+    (Clue, Reckless Lackey, Relic's draw, ...) works on a tapped copy."""
     def legal(state):
         if state.pending_resolution is not None:
             return False
         if not game.turn.speed_legal(state, speed):
             return False
-        p = next((p for p in state.battlefield if p.card_def.name == name and not p.tapped), None)
-        if p is None or game.plan_payment(state, p.card_def.extra[cost_key]) is None:
+        copies = _activation_copies(state, name, taps)
+        if not copies or game.plan_payment(state, copies[0].card_def.extra[cost_key]) is None:
             return False
         return extra_legal is None or extra_legal(state)
     legal._pending_gate = _GATE_NO_PENDING
     return legal
 
 
-def _activate_execute(name, cost_key, resolve):
+def _activate_execute(name, cost_key, resolve, taps=True):
     def execute(state):
-        p = next(p for p in state.battlefield if p.card_def.name == name and not p.tapped)
-        cost = p.card_def.extra[cost_key]
-        game.begin_pay_cost(state, cost, on_complete=lambda s: resolve(s, p))
+        def _proceed(state, p):
+            game.begin_pay_cost(state, p.card_def.extra[cost_key], on_complete=lambda s: resolve(s, p))
+        _with_chosen_copy_on_battlefield(state, _activation_copies(state, name, taps), _proceed)
     return execute
 
 
@@ -479,25 +511,23 @@ def _graveyard_ability_execute(name, cost_key, resolve):
     return execute
 
 
-def _activate_no_cost_legal(name, ability_legal, speed):
-    """Non-mana activated-ability cost (e.g. Quirion Ranger's Forest
-    bounce): no {T}-of-self assumption; ability_legal(state, permanent)
-    captures the whole cost precondition."""
+def _activate_no_cost_legal(name, ability_legal, speed, taps=False):
+    """Non-mana activated-ability cost (e.g. Quirion Ranger's Forest bounce): no {T}-of-self assumption unless `taps`;
+    ability_legal(state, permanent) captures the whole cost precondition, and is asked of EVERY copy."""
     def legal(state):
         if state.pending_resolution is not None:
             return False
         if not game.turn.speed_legal(state, speed):
             return False
-        p = next((p for p in state.battlefield if p.card_def.name == name), None)
-        return p is not None and ability_legal(state, p)
+        return bool(_activation_copies(state, name, taps, ability_legal))
     legal._pending_gate = _GATE_NO_PENDING
     return legal
 
 
-def _activate_no_cost_execute(name, resolve):
+def _activate_no_cost_execute(name, resolve, ability_legal=None, taps=False):
     def execute(state):
-        p = next(p for p in state.battlefield if p.card_def.name == name)
-        resolve(state, p)
+        _with_chosen_copy_on_battlefield(
+            state, _activation_copies(state, name, taps, ability_legal), lambda s, p: resolve(s, p))
     return execute
 
 

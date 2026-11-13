@@ -542,7 +542,7 @@ COLORLESS_EFFECT_REGISTRY = {
         "activated_abilities": {
             "surveil": {
                 "cost_key": "surveil_ability_cost",
-                "resolve": lambda state, permanent: activate_tocasia_dig_site_surveil(state, permanent),
+                "taps": True, "resolve": lambda state, permanent: activate_tocasia_dig_site_surveil(state, permanent),
             },
         },
         "pending_kinds": {"surveil"},
@@ -558,7 +558,7 @@ COLORLESS_EFFECT_REGISTRY = {
         "activated_abilities": {
             "activate": {
                 "cost_key": "ability_cost",
-                "resolve": lambda state, permanent: activate_expedition_map(state, permanent),
+                "taps": True, "resolve": lambda state, permanent: activate_expedition_map(state, permanent),
             },
         },
         "pending_kinds": {"search_fetch"},
@@ -569,7 +569,7 @@ COLORLESS_EFFECT_REGISTRY = {
         "activated_abilities": {
             "draw": {
                 "cost_key": "draw_ability_cost",
-                "resolve": lambda state, permanent: activate_bonders_ornament_draw(state, permanent),
+                "taps": True, "resolve": lambda state, permanent: activate_bonders_ornament_draw(state, permanent),
             },
         },
     },
@@ -579,7 +579,7 @@ COLORLESS_EFFECT_REGISTRY = {
         "activated_abilities": {
             "sac": {
                 "cost_key": "sac_ability_cost",
-                "resolve": lambda state, permanent: activate_candy_trail_sac(state, permanent),
+                "taps": True, "resolve": lambda state, permanent: activate_candy_trail_sac(state, permanent),
             },
         },
         "pending_kinds": {"scry"},
@@ -588,7 +588,7 @@ COLORLESS_EFFECT_REGISTRY = {
         "activated_abilities": {
             "sac": {
                 "cost_key": "sac_ability_cost",
-                "resolve": lambda state, permanent: activate_blood_sac(state, permanent),
+                "taps": True, "resolve": lambda state, permanent: activate_blood_sac(state, permanent),
             },
         },
     },
@@ -597,7 +597,7 @@ COLORLESS_EFFECT_REGISTRY = {
         "activated_abilities": {
             "sac": {
                 "cost_key": "sac_ability_cost",
-                "resolve": lambda state, permanent: activate_clue_sac(state, permanent),
+                "taps": False, "resolve": lambda state, permanent: activate_clue_sac(state, permanent),
             },
         },
     },
@@ -613,7 +613,7 @@ COLORLESS_EFFECT_REGISTRY = {
             "blast": {
                 "cost_key": "blast_ability_cost",
                 "extra_legal": lambda state: has_creature_target(state),
-                "resolve": lambda state, permanent: activate_barrels_of_blasting_jelly_burn(state, permanent),
+                "taps": True, "resolve": lambda state, permanent: activate_barrels_of_blasting_jelly_burn(state, permanent),
             },
         },
         "pending_kinds": {"choose_any_target"},
@@ -623,11 +623,11 @@ COLORLESS_EFFECT_REGISTRY = {
         "activated_abilities": {
             "draw": {
                 "cost_key": "draw_ability_cost",
-                "resolve": lambda state, permanent: activate_relic_of_progenitus_draw(state, permanent),
+                "taps": False, "resolve": lambda state, permanent: activate_relic_of_progenitus_draw(state, permanent),
             },
             "exile": {
                 "cost_key": "graveyard_exile_ability_cost",
-                "resolve": lambda state, permanent: activate_relic_of_progenitus_exile(state, permanent),
+                "taps": True, "resolve": lambda state, permanent: activate_relic_of_progenitus_exile(state, permanent),
             },
         },
         "pending_kinds": {"choose_target_player", "choose_graveyard_card"},
@@ -673,7 +673,7 @@ COLORLESS_EFFECT_REGISTRY = {
             "station": {
                 "speed": Speed.SORCERY,  # "Station only as a sorcery"
                 "legal": lambda state, permanent: _pinnacle_kill_ship_station_legal(state, permanent),
-                "resolve": lambda state, permanent: _pinnacle_kill_ship_station_resolve(state, permanent),
+                "taps": False, "resolve": lambda state, permanent: _pinnacle_kill_ship_station_resolve(state, permanent),
             },
         },
         # choose_permanent = Station's tap-a-creature cost; choose_any_target = the ETB's target.
@@ -706,7 +706,7 @@ COLORLESS_EFFECT_REGISTRY = {
     EffectId.CHROMATIC_STAR: {
         "cast": {"resolve": lambda state, card_def: cast_permanent_from_hand(state, card_def)},
         "activated_abilities": {
-            "sac": {"cost_key": "sac_ability_cost", "resolve": lambda state, permanent: chromatic_star_mana(state, permanent)},
+            "sac": {"cost_key": "sac_ability_cost", "taps": True, "resolve": lambda state, permanent: chromatic_star_mana(state, permanent)},
         },
         "ltb_trigger": lambda state, permanent: ichor_wellspring_draw(state),  # dies -> draw
         "pending_kinds": {"choose_mana_color"},  # "add one mana of any color" color choice
@@ -714,7 +714,7 @@ COLORLESS_EFFECT_REGISTRY = {
     EffectId.NIHIL_SPELLBOMB: {
         "cast": {"resolve": lambda state, card_def: cast_permanent_from_hand(state, card_def)},
         "activated_abilities": {
-            "sac": {"cost_key": "sac_ability_cost", "resolve": lambda state, permanent: nihil_spellbomb_sac(state, permanent)},
+            "sac": {"cost_key": "sac_ability_cost", "taps": True, "resolve": lambda state, permanent: nihil_spellbomb_sac(state, permanent)},
         },
         "ltb_trigger": lambda state, permanent: nihil_spellbomb_dies(state, permanent),  # dies -> may pay {B} draw
         "pending_kinds": {"choose_target_player", "pay_unless"},
@@ -723,7 +723,7 @@ COLORLESS_EFFECT_REGISTRY = {
         "cast": {"resolve": lambda state, card_def: cast_permanent_from_hand(state, card_def)},
         "etb_trigger": lambda state, permanent: lembas_etb(state),  # scry 1, then draw
         "activated_abilities": {
-            "sac": {"cost_key": "sac_ability_cost", "resolve": lambda state, permanent: lembas_sac(state, permanent)},
+            "sac": {"cost_key": "sac_ability_cost", "taps": True, "resolve": lambda state, permanent: lembas_sac(state, permanent)},
         },
         "ltb_trigger": lambda state, permanent: lembas_dies(state, permanent),  # dies -> shuffle into library
         "pending_kinds": {"scry"},
@@ -733,7 +733,7 @@ COLORLESS_EFFECT_REGISTRY = {
             "explore": {
                 "cost_key": "ability_cost",
                 "speed": Speed.SORCERY,  # "Activate only as a sorcery"
-                "resolve": lambda state, permanent: activate_map_sac(state, permanent),
+                "taps": True, "resolve": lambda state, permanent: activate_map_sac(state, permanent),
             },
         },
         "pending_kinds": {"choose_permanent", "surveil"},  # choose the exploring creature; surveil = explore's keep/bin
@@ -745,7 +745,7 @@ COLORLESS_EFFECT_REGISTRY = {
         "activated_abilities": {
             "fetch": {
                 "cost_key": "fetch_ability_cost",  # {} -- only {T} + sacrifice, both paid inside the resolve
-                "resolve": lambda state, permanent: activate_twisted_landscape_fetch(state, permanent),
+                "taps": True, "resolve": lambda state, permanent: activate_twisted_landscape_fetch(state, permanent),
             },
         },
         "cycle": {  # Cycling {B}{R}{G}: discard, draw a card -- the generic "Cycle {name}" action

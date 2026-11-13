@@ -504,18 +504,21 @@ def _activation_rows(distinct_names, registry, token_card_defs):
             # the card says "activate only as a sorcery" -- an explicit
             # "speed" key in the ability's spec is that opt-in override.
             speed = spec.get("speed", game.turn.Speed.INSTANT)
+            # "taps": the cost includes {T} of the permanent itself (declared per ability in the catalog; the test suite
+            # cross-checks it against what each resolve actually does).
+            taps = spec["taps"]
             if "cost_key" in spec:
                 rows.append((
                     f"Activate {name} ({ability_name})",
-                    _activate_legal(name, spec["cost_key"], speed, spec.get("extra_legal")),
-                    _activate_execute(name, spec["cost_key"], spec["resolve"]),
+                    _activate_legal(name, spec["cost_key"], speed, spec.get("extra_legal"), taps),
+                    _activate_execute(name, spec["cost_key"], spec["resolve"], taps),
                 ))
             else:
                 # Non-mana cost (e.g. Quirion Ranger: return a Forest to hand).
                 rows.append((
                     f"Activate {name} ({ability_name})",
-                    _activate_no_cost_legal(name, spec["legal"], speed),
-                    _activate_no_cost_execute(name, spec["resolve"]),
+                    _activate_no_cost_legal(name, spec["legal"], speed, taps),
+                    _activate_no_cost_execute(name, spec["resolve"], spec["legal"], taps),
                 ))
     return rows
 
@@ -1002,17 +1005,21 @@ def legal_action_mask(state, actions):
     every other action illegal while a gate-free mana ability's own
     multi-step choice is open. No individual `_X_legal` closure checks it
     itself except `_mana_subdecision_color_legal`, which is unsafe to call
-    at all when no subdecision is open. Three cases, cheapest first:
-      1. This deck's table has no mana_subdecision-gated row (most decks) --
-         every closure is safe to call unconditionally.
-      2. The table has such a row, but none is open right now -- everything
-         else still safe to call directly; only the (few, known-by-index)
-         subdecision rows are forced False without being called.
-      3. A subdecision is genuinely open -- exclusive priority, suppress
-         everything except the matching-stage subdecision closures, mirroring
-         how activating a mana ability is atomic in real Magic. Can't just be
-         another pending_resolution kind since that's a single slot, not a
-         stack, and a second pending would clobber whatever's already open.
+    at all when no subdecision is open. Three cases, most specific first:
+      1. A subdecision is genuinely open (ANY deck can open one: Saruli and
+         the mana filters, and the choose_source stage of any "Tap X" that
+         has several non-interchangeable copies) -- exclusive priority,
+         suppress everything except the matching-stage subdecision closures
+         (the choose_color buttons; choose_source and choose_target are
+         pointer stages with no fixed row), mirroring how activating a mana
+         ability is atomic in real Magic. Can't just be another
+         pending_resolution kind since that's a single slot, not a stack, and
+         a second pending would clobber whatever's already open.
+      2. None is open and this deck's table has no mana_subdecision-gated
+         row (most decks) -- every closure is safe to call unconditionally.
+      3. None is open but the table has such rows -- everything else still
+         safe to call directly; only the (few, known-by-index) subdecision
+         rows are forced False without being called.
 
     Resets _actions_mana's own sweep-scoped caches and game.mana's cache
     before and after the sweep, so none can leak past this call's scope into
@@ -1030,18 +1037,18 @@ def legal_action_mask(state, actions):
     mana_sub = state.active_mana_subdecision
     sub_rows = _mana_subdecision_rows(actions)
     try:
-        if not sub_rows:
-            mask = [legal_fn(state) for _name, legal_fn, _execute in actions]
-        elif mana_sub is None:
-            sub_indices = {idx for idx, _gate in sub_rows}
-            mask = [False if idx in sub_indices else legal_fn(state)
-                    for idx, (_name, legal_fn, _execute) in enumerate(actions)]
-        else:
+        if mana_sub is not None:
             mana_sub_stage = mana_sub["stage"]
             mask = [False] * len(actions)
             for idx, gate in sub_rows:
                 if gate == mana_sub_stage:
                     mask[idx] = actions[idx][1](state)
+        elif not sub_rows:
+            mask = [legal_fn(state) for _name, legal_fn, _execute in actions]
+        else:
+            sub_indices = {idx for idx, _gate in sub_rows}
+            mask = [False if idx in sub_indices else legal_fn(state)
+                    for idx, (_name, legal_fn, _execute) in enumerate(actions)]
         _validate_choose_name_coverage(state, actions)
         return np.asarray(mask, dtype=bool)
     finally:

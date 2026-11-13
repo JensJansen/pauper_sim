@@ -425,8 +425,10 @@ class GameState:
 
         # None, or a dict describing an in-progress GATE-FREE mana ability's
         # own multi-step choice -- Saruli Caretaker's "tap another
-        # creature, then choose a color", or a mana filter's "pay the
-        # activation cost, then choose the output color".
+        # creature, then choose a color", a mana filter's "pay the
+        # activation cost, then choose the output color", or the
+        # choose_source stage of ANY "Tap X" with several non-interchangeable
+        # same-named permanents ("which Forest?", rule 605.3).
         #
         # Deliberately a SEPARATE field from pending_resolution: a
         # gate-free mana ability (605.1a/605.3b -- legal in any priority

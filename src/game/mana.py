@@ -17,11 +17,15 @@ finished:
   2. every action taken while a payment is open is legal only if the payment
      is still completable afterwards (drl_env's own gates call back into
      can_pay for this).
+# AUTHORIZED SIMPLIFICATION: (2) is a deviation from real Magic, which lets a
+# player tap a source for the wrong color and rewinds the illegal payment (732)
+# -- approved by the repo owner 2026-11-12 (recorded as accepted; it is what makes
+# "no undo" safe). tests/component/action_space/ treats it as authorized.
 
 References registry.EFFECT_REGISTRY only inside function bodies -- the
 lazy-lookup convention every submodule here uses to stay import-order-safe."""
 
-from itertools import combinations
+from itertools import combinations, product
 
 from . import registry
 from .cards import CardType, EffectId
@@ -71,18 +75,20 @@ _enchanting_cache = None  # (state, {id(permanent): [auras enchanting it]}) -- s
 
 
 def _enchanting(state, permanent):
-    """Every Aura on state.battlefield currently enchanting `permanent`.
-    Cached per state object, like drl_env's own sweep caches: safe only
+    """Every Aura on EITHER player's battlefield currently enchanting `permanent`: an Aura can enchant the other
+    player's land (Utopia Sprawl / Abundant Growth may target either side), and the land's controller still gets
+    what it grants (Utopia Sprawl: "its controller adds an additional mana"). Cached per state object, like drl_env's own sweep caches: safe only
     because a legal_action_mask sweep never mutates state mid-sweep, and
     only because reset_mana_cache runs before AND after each sweep -- never
     trust this to outlive one sweep on its own."""
     global _enchanting_cache
     if _enchanting_cache is None or _enchanting_cache[0] is not state:
         by_target = {}
-        for aura in state.battlefield:
-            target = aura.flags.get("enchanting")
-            if target is not None:
-                by_target.setdefault(id(target), []).append(aura)
+        for player in state.players:
+            for aura in player.battlefield:
+                target = aura.flags.get("enchanting")
+                if target is not None:
+                    by_target.setdefault(id(target), []).append(aura)
         _enchanting_cache = (state, by_target)
     return _enchanting_cache[1].get(id(permanent), ())
 
@@ -440,11 +446,24 @@ def pool_can_pay(pool, cost):
     return can_pay(_pool_units(pool), cost)
 
 
+class EitherOr(tuple):
+    """A supply unit with two ways to be used: `alternatives` is a tuple of alternatives, each a tuple of ordinary units.
+    Equal by value (it is a tuple), so units_after can remove it from a unit list like any other unit."""
+
+    @property
+    def alternatives(self):
+        return tuple(self)
+
+
 def source_mana_units(state, permanent, exclude=()):
     """The mana units `permanent` could still contribute, or () if it can't
     be tapped for mana right now. A "unit" is one mana symbol, as the
     frozenset of colors it could be -- singleton for a determined output,
-    wider for a color CHOICE.
+    wider for a color CHOICE. The one exception is an EitherOr: a source that
+    makes SEVERAL symbols and also carries an Aura-granted ability (Rakdos
+    Carnarium + Abundant Growth) can be tapped for its own symbols OR for the
+    granted one mana, which no flat list of single-symbol units can say; can_pay
+    resolves it exactly, trying each way.
 
     exclude: forwarded to mana_output -- see its own docstring.
 
@@ -484,10 +503,11 @@ def source_mana_units(state, permanent, exclude=()):
         symbols = full[:len(full) - len(bonus)] if bonus else full
         if granted and len(symbols) == 1:
             native = [set(symbols) | granted]  # one symbol either way -- still exact
+        elif granted:
+            # A grant on a source that makes 0 or 2+ symbols: either its own symbols or the one granted mana (the bonus
+            # rides along with either). Expressed as an EitherOr so supply is neither overstated nor understated.
+            return [EitherOr((tuple(frozenset({s}) for s in symbols), (frozenset(granted),)))] + bonus
         else:
-            # No grant, or a grant on a MULTI-symbol source: an either/or a flat
-            # unit list can't express, so the grant is dropped to avoid
-            # OVERSTATING supply (which would strand a payment).
             native = [{s} for s in symbols]
     return [frozenset(colors) for colors in native] + bonus
 
@@ -536,7 +556,21 @@ def can_pay(units, cost):
 
     Over-production is free: every unit counts as available with no "should
     I tap it" decision folded in -- that stays the agent's own choice.
+
+    An EitherOr unit (a multi-symbol source with a granted ability) is resolved by trying each of its alternatives and
+    asking the two conditions above of the resulting flat list: exact, and exponential only in the number of such
+    sources (one or two at most).
     Pure (no mutation)."""
+    choices = [u for u in units if isinstance(u, EitherOr)]
+    if choices:
+        plain = [u for u in units if not isinstance(u, EitherOr)]
+        return any(
+            _can_pay_flat(plain + [unit for alt in combo for unit in alt], cost)
+            for combo in product(*(c.alternatives for c in choices)))
+    return _can_pay_flat(units, cost)
+
+
+def _can_pay_flat(units, cost):
     need = {color: cost.get(color, 0) for color in POOL_COLORS if cost.get(color, 0) > 0}
     if len(units) < sum(need.values()) + cost.get("generic", 0):
         return False

@@ -23,7 +23,7 @@ which chair you sit in), and (4) carry every fact a player needs to decide — i
 
 Equivalence of rollout and update, which depends on the encoder, lives in `tests/component/training/`.
 
-**Cost.** ~3 minutes (corpus build ~100 s, cached under `tests/.cache/` keyed by a hash of the code it depends on).
+**Cost.** ~3 minutes (corpus build ~100 s, cached under `tests/.cache/`). The cache key hashes ALL of `src/` (except the web app), the decklists and the corpus builder (`support/cache.py`), so any change that could alter a recorded decision rebuilds it; a stale cache would let the oracle keep agreeing with old code.
 Knobs: `ENCODER_CORPUS_GAMES`, `ENCODER_CORPUS_DECKS`, `ENCODER_CORPUS_NOCACHE`; probes: `ENCODER_PROBE_SEED/EPOCHS/ABLATE`.
 
 **Planted bugs.** `mutations.py` — 48 of them. `python tests/support/mutation_sweep.py encoder` (~40 minutes; `--baseline`

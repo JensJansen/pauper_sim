@@ -7,7 +7,8 @@ runs a component's tests against it; a mutation that no test notices is a hole i
 
 A component opts in by providing tests/component/<component>/mutations.py with COMPONENT, TEST_PATHS (ordered fast
 first), ENV (extra environment for the run) and MUTATIONS (see tests/component/encoder/mutations.py). The suite stops at
-the first failure, so a caught mutation costs seconds and only an uncaught one runs everything."""
+the first failure, so a caught mutation costs seconds and only an uncaught one runs everything. A run that exceeds the
+component's TIMEOUT (default 1500 s) counts as caught: a mutation that makes the code hang is noticed by the hang."""
 import importlib.util
 import os
 import pathlib
@@ -45,8 +46,15 @@ def run(module, mutation_idx=None):
     # pythonpath (the REAL src) is overridden to empty below
     env = dict(os.environ, PYTHONDONTWRITEBYTECODE="1", PYTHONPATH=os.pathsep.join([str(src), str(REPO / "tests")]), **module.ENV)
     t = time.time()
-    r = subprocess.run([sys.executable, "-m", "pytest", *module.TEST_PATHS, "-x", "-q", "-p", "no:cacheprovider",
-                        "-o", "pythonpath="], check=False, cwd=REPO, env=env, capture_output=True, text=True)
+    try:
+        r = subprocess.run([sys.executable, "-m", "pytest", *module.TEST_PATHS, "-x", "-q", "-p", "no:cacheprovider",
+                            "-o", "pythonpath="], check=False, cwd=REPO, env=env, capture_output=True, text=True,
+                           timeout=getattr(module, "TIMEOUT", 1500))
+    except subprocess.TimeoutExpired:
+        # A planted bug that makes the code loop or explode (a creature declared as an attacker forever) is noticed by the
+        # suite hanging; real turns have no iteration cap, so a hang IS the symptom. Counted as caught, and said so.
+        shutil.rmtree(scratch, ignore_errors=True)
+        return 1, desc, "TIMEOUT (the mutated code hangs or blows up the search)", round(time.time() - t), []
     out = (r.stdout + r.stderr).splitlines()
     # a test FAILED, or the mutated code made a test/fixture ERROR at run time (exit 1 either way). A collection/import
     # problem is exit code 2 and is rejected below.

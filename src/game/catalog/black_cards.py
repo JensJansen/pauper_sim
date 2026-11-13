@@ -497,7 +497,7 @@ BLACK_EFFECT_REGISTRY = {
         "cast": {"resolve": lambda state, card_def: cast_permanent_from_hand(state, card_def)},
         "etb_trigger": lambda state, permanent: create_token(state, BLOOD_TOKEN_CARD_DEF),
         "activated_abilities": {
-            "return": {"cost_key": "sac_ability_cost", "resolve": lambda state, permanent: blood_fountain_return(state, permanent)},
+            "return": {"cost_key": "sac_ability_cost", "taps": True, "resolve": lambda state, permanent: blood_fountain_return(state, permanent)},
         },
         "pending_kinds": {"choose_graveyard_card"},
     },

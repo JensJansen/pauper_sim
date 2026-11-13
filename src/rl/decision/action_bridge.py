@@ -16,6 +16,9 @@ to the game engine. Two halves:
 import game
 import drl_env
 
+# Stages of a mana_subdecision answered by the pointer head (the third, choose_color, is a row of fixed buttons).
+_POINTER_MANA_STAGES = ("choose_target", "choose_source")
+
 _TARGETING_PREFIXES = ("Choose target: ", "Attack: ", "Assign Blocker: ", "Choose opponent's: ")
 
 # Pending kinds whose pointer targets are matched by object identity (id()),
@@ -68,7 +71,13 @@ def pointer_legal_mask(state, identities_row):
     mana_sub = state.active_mana_subdecision
     if mana_sub is not None:
         mask = [False] * len(identities_row)
-        if mana_sub["stage"] == "choose_target":
+        if mana_sub["stage"] == "choose_source":
+            # Which permanent of the named source to tap: the candidates the opening action computed (already
+            # filtered so none strands an open payment).
+            for i, p in enumerate(identities_row):
+                if p is not None and any(p is c for c in mana_sub["candidates"]):
+                    mask[i] = True
+        elif mana_sub["stage"] == "choose_target":
             # Excludes any tap that would leave the payment unpayable.
             from drl_env._actions_mana import mana_extra_choose_target_safe
             source, predicate = mana_sub["source"], mana_sub["target_predicate"]
@@ -167,7 +176,7 @@ def any_pointer_legal(state):
     it's not relevant."""
     mana_sub = state.active_mana_subdecision
     if mana_sub is not None:
-        return mana_sub["stage"] == "choose_target"
+        return mana_sub["stage"] in _POINTER_MANA_STAGES
     pending = state.pending_resolution
     if pending is None:
         return state.phase is game.turn.Phase.DECLARE_ATTACKERS and state.active_idx == state.turn_player_idx
@@ -184,7 +193,7 @@ def pointer_kind(state):
     label)."""
     mana_sub = state.active_mana_subdecision
     if mana_sub is not None:
-        return "mana_subdecision" if mana_sub["stage"] == "choose_target" else None
+        return "mana_subdecision" if mana_sub["stage"] in _POINTER_MANA_STAGES else None
     pending = state.pending_resolution
     if pending is None:
         if state.phase is game.turn.Phase.DECLARE_ATTACKERS and state.active_idx == state.turn_player_idx:
@@ -205,6 +214,8 @@ def execute_pointer_choice(state, chosen):
     stack-entry dict); otherwise the live Permanent, addressed by
     (name, slot)."""
     mana_sub = state.active_mana_subdecision
+    if mana_sub is not None and mana_sub["stage"] == "choose_source":
+        return game.execute_mana_source_choice(state, chosen)  # which permanent of the named source to tap
     if mana_sub is not None and mana_sub["stage"] == "choose_target":
         # `chosen` is the Permanent to tap, passed through directly (no
         # shared (name, slot) execute closure exists for this case).

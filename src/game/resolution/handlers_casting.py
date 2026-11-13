@@ -185,6 +185,28 @@ def begin_mana_subdecision(state, source, target_predicate):
     state.log_event("mana_subdecision_begin", source=(source.card_def.name, source.slot))
 
 
+def begin_mana_source_choice(state, candidates, color_choice):
+    """Opens the "which permanent do you tap?" stage of a mana ability: the player chose "Tap <name> [for <color>]" and
+    several NON-interchangeable permanents of that name could pay it (e.g. a Forest carrying Utopia Sprawl and a plain
+    one), so the choice is real (rule 605.3: the player chooses which permanent's ability to activate). Like Saruli's
+    target stage it lives in mana_subdecision, not pending_resolution (a single slot that may already hold an open
+    payment), and claims exclusive priority; the pointer head picks among `candidates`."""
+    state.mana_subdecision = {
+        "stage": "choose_source", "candidates": list(candidates), "color": color_choice, "owner": state.active_idx,
+    }
+    state.log_event("mana_subdecision_begin", source=(candidates[0].card_def.name, None))
+
+
+def execute_mana_source_choice(state, source):
+    """Taps the chosen permanent for the color picked earlier and closes the stage."""
+    from ..mana import activate_mana_source  # call-time import -- mana imports resolution
+
+    sub = state.mana_subdecision
+    state.mana_subdecision = None
+    state.log_event("mana_subdecision_source", source=(source.card_def.name, source.slot))
+    activate_mana_source(state, source, sub["color"])
+
+
 def execute_mana_subdecision_target(state, target):
     """Records the chosen tap target, then opens the shared choose_color
     stage with Saruli's completion bound: tap the target, then produce mana
