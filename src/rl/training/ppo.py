@@ -57,6 +57,8 @@ def ppo_update(net, optimizer, buf, device, n_epochs=4, batch_size=64, gamma=0.9
     `entropy_mean`, `approx_kl_mean`, `clip_fraction_mean`: the mean over every minibatch of every epoch run, each
     minibatch weighted by its number of real (unpadded) steps.
 
+    On CUDA the allocator's cache is released before returning (see the comment at the end of this function).
+
     Raises ValueError if any stored action is not legal in its own stored mask: that is a recording bug upstream (a
     mask captured at the wrong moment, an index off at the fixed/pointer boundary), and training on it would be
     training on actions the agent did not take."""
@@ -238,5 +240,12 @@ def ppo_update(net, optimizer, buf, device, n_epochs=4, batch_size=64, gamma=0.9
         stats_out.update({f"{k}_mean": float(v) / denom for k, v in sums.items()})
     last_policy_loss, last_value_loss, last_entropy, last_approx_kl, last_clip_fraction = (
         float(x) for x in (last_policy_loss, last_value_loss, last_entropy, last_approx_kl, last_clip_fraction))
+    if torch.device(device).type == "cuda":
+        # Hand the allocator's cache back after every update. Every minibatch has a different shape, so the cache
+        # fills with odd-sized blocks (measured: 14 GB reserved on a 16 GB card, ~40 MB actually allocated). The
+        # Windows driver does not fail an allocation that no longer fits: it silently spills into system RAM, which
+        # PyTorch never sees as an out-of-memory, so it never frees the cache, and every update then runs over PCIe
+        # (iterations went from ~17 s to ~140-250 s, for hours). Costs a re-allocation per update (~tens of ms).
+        torch.cuda.empty_cache()
     return (last_policy_loss, last_value_loss, last_entropy, last_approx_kl, last_clip_fraction,
             epochs_run, explained_variance, adv_std)

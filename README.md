@@ -454,6 +454,9 @@ run-config `"ppo"` object; an unknown key is a hard error.
 
 `lr` defaults to `2e-4`. `--device cuda` (or `"device"` in the run config;
 falls back to CPU) moves the PPO update — and only the update — to GPU.
+Each update ends by releasing PyTorch's CUDA cache (`torch.cuda.empty_cache()`): minibatch shapes vary, so the
+cache otherwise fills a 16 GB card with unused blocks, and on Windows the driver then spills into system RAM instead
+of reporting out-of-memory, slowing every iteration ~10x until the process restarts.
 Collection stays on CPU across `n_workers` processes. Checkpoints are
 always written as CPU tensors, so a league can move between CPU/GPU
 between sessions with no conversion.

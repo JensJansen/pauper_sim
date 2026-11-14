@@ -180,6 +180,26 @@ def test_stats_out_is_filled_only_when_asked_and_does_not_change_the_return_valu
     assert set(stats) == {f"{k}_mean" for k in ("policy_loss", "value_loss", "entropy", "approx_kl", "clip_fraction")}
 
 
+def test_releasing_the_cuda_cache_does_not_run_on_cpu(monkeypatch):
+    # ppo_update frees the CUDA allocator cache at the end (Windows driver spills VRAM instead of OOM-ing); on CPU it
+    # must not touch CUDA at all.
+    calls = []
+    monkeypatch.setattr(torch.cuda, "empty_cache", lambda: calls.append(1))
+    net, buf, *_ = _batch(n=6, seed=2)
+    ppo_update(net, sgd(net), buf, "cpu", n_epochs=1, batch_size=6, target_kl=None)
+    assert calls == []
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="needs a CUDA device")
+def test_ppo_update_leaves_no_cached_vram_behind_on_cuda():
+    net, buf, *_ = _batch(n=2000, seed=2)
+    net = net.to("cuda")
+    ppo_update(net, sgd(net), buf, "cuda", n_epochs=2, batch_size=2000, target_kl=None)
+    # Measured on this batch: ~33 MB reserved-but-unused with the release, ~110 MB without it. The update's
+    # activations must not be left sitting in the allocator's cache.
+    assert torch.cuda.memory_reserved() - torch.cuda.memory_allocated() < 64 * 2**20
+
+
 # ---- gradient clipping and the KL early stop ------------------------------------------------------------------------------
 
 def _step_norm(max_grad_norm):
