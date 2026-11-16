@@ -651,7 +651,7 @@ entry per invocation (start and end games/deck, argv).
   - `pfsp_power`: PFSP exponent
   - `stratify_0land_pct`: forced 0-land hand rate
   - `overlap_collect`: collect/update overlapped
-  - `lr / mulligan_lr / gamma / gae_lambda / target_kl / n_epochs / adv_norm_floor / ent_coef`: PPO hyper-parameters in force (the record also carries `max_token_rows`; the pinned schema in `rl/league/metrics.py` will list it once its pin is regenerated with sign-off)
+  - `lr / mulligan_lr / gamma / gae_lambda / target_kl / n_epochs / adv_norm_floor / ent_coef / max_token_rows`: PPO hyper-parameters in force
   - `seq_batch_size_start / seq_batch_size_cap`: minibatch ramp
 - `ppo` -- league_runner._run_session (per deck per iteration)
   - `deck`: deck

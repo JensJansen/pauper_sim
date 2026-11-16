@@ -27,7 +27,7 @@ KINDS = {
                    "checkpoint_rate": "share of games against a frozen snapshot", "pfsp": "PFSP opponent sampling",
                    "n_workers": "collection workers", "horizon": "turn horizon", "pfsp_power": "PFSP exponent",
                    "stratify_0land_pct": "forced 0-land hand rate", "overlap_collect": "collect/update overlapped",
-                   "lr / mulligan_lr / gamma / gae_lambda / target_kl / n_epochs / adv_norm_floor / ent_coef":
+                   "lr / mulligan_lr / gamma / gae_lambda / target_kl / n_epochs / adv_norm_floor / ent_coef / max_token_rows":
                        "PPO hyper-parameters in force",
                    "seq_batch_size_start / seq_batch_size_cap": "minibatch ramp"},
     },

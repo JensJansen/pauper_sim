@@ -277,7 +277,7 @@
    "checkpoint_rate",
    "games_per_iteration",
    "horizon",
-   "lr / mulligan_lr / gamma / gae_lambda / target_kl / n_epochs / adv_norm_floor / ent_coef",
+   "lr / mulligan_lr / gamma / gae_lambda / target_kl / n_epochs / adv_norm_floor / ent_coef / max_token_rows",
    "n_iterations",
    "n_workers",
    "overlap_collect",
