@@ -92,7 +92,7 @@ class LeaguePool:
         per deck). Called by league_runner._run_session at the same cadence
         as its other checkpoints, not every game -- without this, PFSP
         weighting would reset to its cold-start prior every session instead
-        of accumulating across a run. Also mirrors all decks' tallies, combined, to the web app's /stats
+        of accumulating across a run. Also mirrors all decks' tallies, combined, to the web app (the stats page's Training tab)
         (webapp_publish.mirror.mirror_opponent_stats)."""
         mirrored = {}
         for name in self.deck_names:

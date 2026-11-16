@@ -15,7 +15,7 @@ checks/primary_vs_primary_round_robin_<N>games.json write_league_json
 already produces is directly openable in the webapp's replay viewer -- no
 separate file. See write_league_json's own docstring on why that embedded
 "games" key is excluded from the small, git-committed webapp mirror
-(/stats never reads it, and a full round robin's games can be hundreds of
+(the stats page never reads it, and a full round robin's games can be hundreds of
 MB) while staying in the real, local checkpoints/ copy untouched.
 """
 import time

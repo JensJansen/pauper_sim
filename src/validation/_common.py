@@ -94,11 +94,11 @@ def _strip_games_for_mirror(payload):
     docstring) wants that exact file, unmodified, openable in the webapp's
     replay viewer. But write_league_json/write_deck_json also mirror
     everything they write into the webapp submodule's small, git-committed
-    logs/validation/ for /stats (webapp_mirror.mirror_json) -- and a full
+    logs/validation/ for the stats page (webapp_mirror.mirror_json) -- and a full
     round robin's embedded games can be hundreds of MB, which must never
-    land in a public git repo. /stats never reads a "games" key anyway (it
+    land in a public git repo. The stats page never reads a "games" key anyway (it
     only ever uses check/decks/pairings/deck_totals/etc.), so dropping it
-    from the MIRRORED copy costs /stats nothing while keeping that copy
+    from the MIRRORED copy costs the stats page nothing while keeping that copy
     small; the full payload, games included, still goes to the real,
     local-only checkpoints/ file untouched."""
     if "games" not in payload:

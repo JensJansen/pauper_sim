@@ -8,8 +8,7 @@ webapp's replay viewer -- not for tracked win-rate metrics, so unlike every
 other check it writes NOTHING under checkpoints/ and appends no
 metrics.jsonl line. Its only output is a full event log written straight
 into the webapp submodule's own logs/replays/<league>/ (browsable there
-automatically, no "Open new file" needed -- see webapp/README.md, "Browse
-server logs"), via the same _write_event_log run_league.py --log/--eval
+automatically in the replay viewer's file tree -- see webapp/README.md, "Game Replay"), via the same _write_event_log run_league.py --log/--eval
 already use. webapp_sync keeps only each league's newest 10 of these and
 commits/pushes them (see webapp_publish/sync.py). A no-op entirely when the webapp submodule isn't checked out
 (webapp_mirror.webapp_ready()) -- there'd be nowhere to put the file.

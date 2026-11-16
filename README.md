@@ -19,7 +19,7 @@ pool of historical opponents. No framework dependencies beyond PyTorch.
 | **Training pipeline** | `src/run_training_pipeline.py` | Trains a whole league end to end (encoder + policy together), running the full `validation/` check suite on a cadence. The primary way to train. |
 | **Training driver** | `src/run_league.py` | One training session; `--matchup`/one-off debug runs. |
 | **Validation checks** | `src/validation/` | Mid-run quality/stats checks (round robins, mulligan quality, vs. history), run by `run_training_pipeline.py`. |
-| **Replay viewer** | `src/webapp/` | Local Flask app that steps through a logged game's board state one event at a time, plus a publicly-hostable subset. |
+| **Web app** | `src/webapp/` | React app (replay viewer, validation stats, methodology) plus the small Flask API behind it, with a publicly-hostable entrypoint. |
 
 **Roster** (`data/league_decks.json`): `mono_red_madness`, `rakdos_madness`,
 `spy_combo`, `boggles`, `monster_tron`, `dmir_terror`, `elves`,
@@ -197,11 +197,11 @@ src/
                            different collection configs.
   webapp/                  GIT SUBMODULE (github.com/JensJansen/pauper-sim-replay)
                            — `git submodule update --init` after a plain clone.
-                           app.py (routes) + replay_engine.py (event-log-to-
-                           board-state reducer) + static/replay.html (no build
-                           step). app_public.py is a separate deploy-only
-                           entrypoint with the same routes. See its own section
-                           below.
+                           frontend/ (the React app, built with npm) + app.py
+                           (API routes) + replay_engine.py (event-log-to-
+                           board-state reducer). app_public.py is a separate
+                           deploy-only entrypoint with the same routes. See its
+                           own section below.
 
 data/                      Decklists (*.txt) + league_decks.json roster, probe_states/ (fixed
                            mid-game decision suites for the policy-movement check).
@@ -529,7 +529,7 @@ Seven checks today (the last three are the *history checks*, described after the
   alongside the aggregate win/loss summary, so that exact file opens
   directly in the webapp's replay viewer — see "Replay viewer" below.
   `write_league_json` strips that key before mirroring into the webapp
-  submodule's small, git-committed copy (`/stats` never reads it, and a
+  submodule's small, git-committed copy (the stats page never reads it, and a
   full round robin's games can be hundreds of MB).
 - **`primary_vs_training_round_robin`** — the FULL cross product against an
   independently-trained **training league** -- every primary deck vs every
@@ -561,8 +561,7 @@ Seven checks today (the last three are the *history checks*, described after the
   `metrics.jsonl` line -- its only output is a full event log dropped
   straight into the webapp submodule's own `logs/replays/<league>/`
   (`round_robin_review_<N>games.json`), so it shows up in the
-  replay viewer's "Browse server logs" list automatically, no "Open new
-  file" needed. Only each league's newest 10 are kept (see "Automatic
+  replay viewer's file tree automatically. Only each league's newest 10 are kept (see "Automatic
   publishing"). A clean no-op (skipped, not fatal) when `src/webapp` isn't a
   checked-out submodule.
 
@@ -613,7 +612,7 @@ One league directory is one run: its weights, `metrics.jsonl`, `checks/` and
 `manifest.json` travel together, so archiving or discarding a run is one
 operation. `run_training_pipeline.py` writes the manifest at the start of every
 invocation and closes it at the end (a failure to write it never stops training;
-it is mirrored to the web app like `progress.json`; the PFSP tallies in each deck's `opponent_stats.json` are mirrored the same way, combined into one file, and shown on the `/stats` Opponents tab). It records the resolved
+it is mirrored to the web app like `progress.json`; the PFSP tallies in each deck's `opponent_stats.json` are mirrored the same way, combined into one file, and shown on the stats page's Training tab under "What did it train against?"). It records the resolved
 `config` and the network architecture (`model`: trunk widths, encoder size,
 parameter count, a hash of the module structure, vocabulary and action-table
 sizes), each with a `*_history` of what a later session replaced -- so a model
@@ -834,12 +833,12 @@ JSON file (wired only through `--matchup` mode) — the replay viewer's input.
 
 ---
 
-## Replay viewer (`src/webapp/`)
+## Web app (`src/webapp/`)
 
-Local Flask app that steps through a logged game's board state one event
-at a time, from the same event-log JSON `--log` writes. Training runs
-launch via `run_league.py` directly — this app has no training-launch
-surface.
+A React app and the small Flask API behind it: a replay viewer that steps through a logged game's board state one
+event at a time (from the same event-log JSON `--log` writes), a validation-stats dashboard for what training
+exports, and the training-methodology explainer. Training runs launch via `run_league.py` directly — this app has no
+training-launch surface.
 
 **A git submodule**, not a tracked directory —
 [github.com/JensJansen/pauper-sim-replay](https://github.com/JensJansen/pauper-sim-replay).
@@ -849,7 +848,8 @@ viewer change is a commit in *that* repo, then a second commit here
 bumping the pinned submodule SHA.
 
 ```
-cd src/webapp
+cd src/webapp/frontend && npm ci && npm run build   # once, and after frontend changes
+cd ..
 python app.py          # http://127.0.0.1:5000 -- localhost only, no auth
 ```
 
@@ -910,38 +910,28 @@ game viewing).
   into one board-state snapshot per event (name-based zone identity, DFC
   face reverts, aura-orphan handling, same-phase-recast identity) — no
   intermediate replay format.
-- A hamburger drawer overlays the board (open-a-file, browse-server-logs,
-  game list) without disturbing scrub position. Neither way of opening a
-  log ever sends the whole file to the server: a log from **Browse server logs**
-  is read server-side (`GET /api/replay/runs/<name>/games[/<i>]`), and a file
-  picked from disk is parsed once in the browser, which sends only the light game
-  list and then just the one clicked game. A replay is ~30 MB, one game ~200 KB.
-- **Browse server logs** lists every `*.json` under the submodule's own
-  `logs/replays/` (`GET /api/replay/runs`, grouped by league -- `main-league` first
-  -- and newest game count first, since a git checkout makes file times meaningless) -- a sibling
-  `logs/validation/` holds unrelated validation metrics for `/stats` and is
-  never scanned here; `app_public.py` has the same routes against its own
-  `logs/replays/`. Games are labeled from `deck_a`/`deck_b` fields; older
-  logs fall back to a file-level label. **Open new file** isn't limited to
-  this list, though: `primary_vs_primary_round_robin`'s own output file
-  (`checkpoints/<league>/checks/primary_vs_primary_round_robin_<N>games.json`
-  here in the parent repo) embeds a `"games"` key directly, so it opens here
-  too, unmodified -- see "Validation checks" above.
+- A hamburger drawer holds an expanding league → replay file → game tree over the board; any number of nodes can be
+  open and the tree keeps its state while the drawer closes. A log is never sent whole: the file list is
+  `GET /api/replay/runs`, a file's game list comes from its index, and one game is read server-side
+  (`GET /api/replay/runs/<name>/games[/<i>]`). A replay is ~30 MB, one game ~200 KB. The list covers every `*.json`
+  under the submodule's own `logs/replays/` (grouped by league and newest game count first, since a git checkout
+  makes file times meaningless) -- a sibling `logs/validation/` holds unrelated validation metrics for the stats page
+  and is never scanned here; `app_public.py` has the same routes against its own `logs/replays/`. Games are labeled
+  from `deck_a`/`deck_b` fields; older logs fall back to a file-level label. There is no local-file upload: a check
+  output such as `primary_vs_primary_round_robin`'s own file (which embeds a `"games"` key, see "Validation checks"
+  above) can be copied into `logs/replays/` to browse it.
 - Both hands and the stack are always fully visible — this is post-hoc
   review, not live play.
 - Card art is hotlinked from Scryfall by name (no local cache).
-- Cockatrice-style layout: zones stack vertically per player with a
-  right-hand rail (library/graveyard/exile/mana pool), mirrored around the
-  middle. Graveyard/exile collapse to a hover pile; library shows a count.
-  Tapped permanents render rotated 90°. Auras nest under the permanent they
-  enchant.
-- The stack column is split per player (one shared LIFO stack underneath;
-  the split is purely a viewer grouping).
-- Far-right panel shows the deciding player's top-5 candidate actions by
-  post-mask probability, chosen one highlighted, value estimate below. Opt-
-  in instrumentation (`decision_weights` event), logged only when
-  `state.event_log is not None` and the decision has >1 legal option — no
-  extra inference call.
+- Layout: both players' hands in their own box, three battlefield rows each (creatures, other permanents, lands)
+  mirrored around the middle, a stats panel per player (life, hand/library counts, mana pool, graveyard and exile
+  piles that open into a hover flyout). Tapped permanents render rotated 90°; auras and equipment tuck behind the
+  permanent they attach to. Every card enlarges on hover.
+- One shared stack (top first), each entry tinted by its controller's seat color, sits in the center strip.
+- The center strip also shows the deciding player's candidate actions by post-mask probability (chosen one marked,
+  value estimate beside it); it is dimmed and labelled when the current event isn't a decision, and flags a pick
+  that wasn't the policy's most likely option. Opt-in instrumentation (`decision_weights` event), logged only when
+  `state.event_log is not None` and the decision has >1 legal option — no extra inference call.
 - Every mulligan-round draw/reject/bottom-pick is its own step, not netted
   into one summary (owner directive).
 - **Library count is a simplified approximation** (owner-authorized):
@@ -964,21 +954,19 @@ game viewing).
   (owner directive, 2026-08-19): they fire for any >1-option decision
   regardless of whether the choice was pass, so a merely-considered-and-
   declined action no longer defeats the empty-phase collapse above.
-- A persistent Turn/Phase/active-player line above the scrubber
-  distinguishes whose turn it structurally is from who currently holds
-  priority (they diverge on a response or block).
+- A one-row bar shows the turn, whose turn it is, and clickable phase pills (each jumps to that phase in the current
+  turn) next to the step/phase/turn arrows, a scrubber and an event-number box.
 - Deferred, not in scope: live re-inference against an arbitrary checkpoint.
 
 ### Public hosting (`app_public.py`)
 
-Deploy-only entrypoint with the same routes as `app.py`, including the
-server-side log browser, scoped to files already committed to the public
+Deploy-only entrypoint with the same routes as `app.py` (the frontend and the API), scoped to files already committed to the public
 repo's own `logs/replays/` (deliberately not gitignored there). `replay_engine.py`
 has no imports beyond the stdlib.
 
 Hosting is driven from the
 [pauper-sim-replay](https://github.com/JensJansen/pauper-sim-replay) repo
-directly — its own `render.yaml` deploys `app_public.py` as a Render
+directly — its own `render.yaml` builds the frontend and deploys `app_public.py` as a Render
 free-tier service off `requirements-public.txt` (`flask` + `gunicorn`),
 independent of this repo's CUDA-pinned `requirements.txt`. A push here
 bumps the pinned submodule commit; Render only redeploys on a push to the
@@ -997,8 +985,8 @@ pip install -r requirements.txt      # includes `-e ./engine` (the rules engine 
 **Training defaults to CPU and needs no GPU** — the pinned wheel just keeps
 pip from silently swapping to a CPU-only build on a machine that has one,
 and is what `--device cuda` needs. The replay converter additionally needs
-`grpcio-tools`. The replay viewer (`src/webapp/`, a submodule) has its own
-dependency: `flask`. After pulling a commit that bumps the `engine` pointer, run `git submodule update` so
+`grpcio-tools`. The web app (`src/webapp/`, a submodule) has its own
+dependencies: `flask` (Python) and Node/npm for the frontend build. After pulling a commit that bumps the `engine` pointer, run `git submodule update` so
 `engine/` matches (the editable install follows the checkout).
 
 ---
