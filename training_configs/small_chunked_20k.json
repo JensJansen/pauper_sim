@@ -1,0 +1,9 @@
+{
+  "_note": "Validation of the chunked PPO update (branch exp/chunked-ppo-update; rl.training.ppo max_token_rows): the small_baseline methodology (4-deck league, overlap_collect, n_workers 6, unseeded, same schedules) trained FROM SCRATCH to 20,000 games/deck with max_token_rows 40000, to be read head-to-head against small_baseline / small_control50k at matched ages (snapshot ids 101-103, ~19.6k-20.0k games/deck), with control-vs-baseline at the same ids as the noise floor. Launched through run_league.py (--n-iterations 833), NOT run_training_pipeline.py, so there is no validation tick and nothing is published to the replay repo; no twin, no in-run history checks (the run is read offline with analysis/eval/compare_arms.py).",
+  "extends": "small_baseline.json",
+  "league_name": "small_chunked20k",
+  "total_games": 20000,
+  "ppo": {
+    "max_token_rows": 40000
+  }
+}

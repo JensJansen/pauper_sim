@@ -445,12 +445,24 @@ is due there. Needs `n_workers > 1`.
 overridable via the run-config's `games_per_iteration`.
 
 PPO knobs (`lr`, `mulligan_lr`, `gamma`, `gae_lambda`, `target_kl`,
-`n_epochs`, `adv_norm_floor`, `ent_coef`) come from
+`n_epochs`, `adv_norm_floor`, `ent_coef`, `max_token_rows`) come from
 `rl.league.league_runner.PPO_DEFAULTS`, overridable per league via a
 run-config `"ppo"` object; an unknown key is a hard error.
 
 `ent_coef` defaults to `None` (`rl.training.train.ent_coef_schedule`'s
 0.02 -> 0.005 anneal); a float pins it constant instead.
+
+`max_token_rows` defaults to `None`: each PPO minibatch (16 whole episodes by late
+training) is replayed in one forward/backward pass, padded to its longest episode, so
+peak GPU memory grows with 16 x that episode (a 700-step episode alone reaches ~10 GB
+on the default net, and the larger nets do not fit at all). A number (e.g. `40000`)
+splits each minibatch's episodes, longest first, into chunks of at most that many
+token-rows (episodes x longest episode x widest board), accumulates their gradients
+and steps once per minibatch. It is the same update up to floating-point rounding (each
+chunk's loss is divided by the whole minibatch's real-step count; episodes never
+interact), with peak memory bounded by the budget and about half the padded compute.
+Only an episode that alone exceeds the budget is replayed over it, since the recurrent
+layer needs it whole.
 
 `lr` defaults to `2e-4`. `--device cuda` (or `"device"` in the run config;
 falls back to CPU) moves the PPO update — and only the update — to GPU.
@@ -639,7 +651,7 @@ entry per invocation (start and end games/deck, argv).
   - `pfsp_power`: PFSP exponent
   - `stratify_0land_pct`: forced 0-land hand rate
   - `overlap_collect`: collect/update overlapped
-  - `lr / mulligan_lr / gamma / gae_lambda / target_kl / n_epochs / adv_norm_floor / ent_coef`: PPO hyper-parameters in force
+  - `lr / mulligan_lr / gamma / gae_lambda / target_kl / n_epochs / adv_norm_floor / ent_coef`: PPO hyper-parameters in force (the record also carries `max_token_rows`; the pinned schema in `rl/league/metrics.py` will list it once its pin is regenerated with sign-off)
   - `seq_batch_size_start / seq_batch_size_cap`: minibatch ramp
 - `ppo` -- league_runner._run_session (per deck per iteration)
   - `deck`: deck

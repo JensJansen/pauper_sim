@@ -69,6 +69,12 @@ PPO_DEFAULTS = {
     # Entropy bonus. None uses ent_coef_schedule's 0.02 -> 0.005 anneal; a
     # float pins it constant for the whole run instead.
     "ent_coef": None,
+    # Cap on the padded size of one PPO forward/backward pass, in token-rows (episodes x longest episode x widest board; see
+    # rl.training.ppo._pack_episodes). None replays each minibatch in a single pass (the original behaviour). A number
+    # splits a minibatch's episodes into chunks under it and accumulates their gradients: the same update up to
+    # floating-point rounding, with peak GPU memory bounded by the budget (~40,000 keeps the default net under ~1 GB and a
+    # 1.7M-parameter net under ~2.5 GB) and much less padded compute.
+    "max_token_rows": None,
 }
 
 
@@ -412,12 +418,13 @@ def _update_round(ctx, name, buffers_by_deck, batch_size, ent_coef, stats_out=No
                     live_nets[name], optimizers[name], buf, device, batch_size=batch_size,
                     ent_coef=ent_coef, gamma=hp["gamma"], gae_lambda=hp["gae_lambda"],
                     target_kl=hp["target_kl"], n_epochs=hp["n_epochs"],
-                    adv_norm_floor=hp["adv_norm_floor"], stats_out=stats_out)
+                    adv_norm_floor=hp["adv_norm_floor"], stats_out=stats_out, max_token_rows=hp["max_token_rows"])
             else:
                 ppo_update(live_nets[deck_name], optimizers[deck_name], buf, device,
                            batch_size=batch_size, ent_coef=ent_coef, gamma=hp["gamma"],
                            gae_lambda=hp["gae_lambda"], target_kl=hp["target_kl"],
-                           n_epochs=hp["n_epochs"], adv_norm_floor=hp["adv_norm_floor"])
+                           n_epochs=hp["n_epochs"], adv_norm_floor=hp["adv_norm_floor"],
+                           max_token_rows=hp["max_token_rows"])
                 salvaged += len(buf)
     return (policy_loss, value_loss, entropy, approx_kl, clip_fraction, epochs_run,
             explained_variance, adv_std, salvaged)
