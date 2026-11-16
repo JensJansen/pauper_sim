@@ -2,6 +2,8 @@
   "_note": "Arm 1 of the post-encoder-overhaul methodology screen (2026-11-14): IDENTICAL to small_baseline.json / small_control_50k.json (50,000 games/deck, shared twin, history checks + probe suite, overlap_collect, n_workers 10, unseeded) except PPO's discounting: gamma 1.0 and gae_lambda 0.97 (baseline 0.99 / 0.95, a 0.9405 per-step advantage decay that leaves a decision 100 steps before the end ~0.2% of the terminal signal; 0.97 leaves ~4.8%). Twin: checkpoints/small_baseline-training copied to checkpoints/small_gamma1-training, as for the control, so all three runs are measured against the same fixed twin. Read against small_baseline and small_control50k at matched ages.",
   "extends": "small_baseline.json",
   "league_name": "small_gamma1",
+  "total_games": 50000,
+  "checks_cadence_pct": 10,
   "ppo": {
     "gamma": 1.0,
     "gae_lambda": 0.97
