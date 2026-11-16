@@ -1,7 +1,7 @@
 {
-  "_note": "Control run for the 2026-11 methodology experiments (lr decay / batch size / gamma-lambda / net size / shared network): the 4-deck small league under the CURRENT methodology, from scratch, to 50,000 games/deck (past the entropy/batch schedule horizon of 50k). Everything else is inherited from small_league.json (overlap_collect, training-league twin, history checks + probe suite). total_games can be raised later; the pipeline resumes. n_workers 10 (vs 6 inherited): speed-only, set 2026-11-13 after the twin finished -- the 6-worker run left ~25% of 12 threads idle; it does not change what is learned.",
+  "_note": "Control run for the 2026-11 methodology experiments (lr decay / batch size / gamma-lambda / net size / shared network): the 4-deck small league under the CURRENT methodology, from scratch, to 50,000 games/deck (past the entropy/batch schedule horizon of 50k). Everything else is inherited from small_league.json (overlap_collect, training-league twin, history checks + probe suite). total_games can be raised later; the pipeline resumes. n_workers 6 (the same as small_league.json; set explicitly): the owner's standing core budget -- 6 cores for training, the rest of the machine left usable (reinstated 2026-11-16). The 2026-11-13..15 runs (baseline main phase, control, gamma, lr-decay arms) ran with n_workers 10 instead; that is speed-only and does not change what is learned.",
   "extends": "small_league.json",
   "league_name": "small_baseline",
   "total_games": 50000,
-  "n_workers": 10
+  "n_workers": 6
 }
