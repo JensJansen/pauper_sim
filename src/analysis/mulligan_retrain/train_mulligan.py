@@ -194,7 +194,7 @@ def _train_mulligan(main_net, main_decklist, main_bucket, deck_ctx, pairing_fact
 def _play_eval_arm(agent, main_decklist, pairing_factory, n_games, seed, horizon, game_logs=None):
     """n_games split evenly across both seats for on-the-play fairness.
     record=False, greedy=True throughout. Returns (wins, decided) for
-    agent's side; a horizon timeout (state.winner is None) counts toward
+    agent's side; a horizon timeout or draw (state.winner is None) counts toward
     neither."""
     half = n_games // 2
     tally = {"wins": 0, "decided": 0}

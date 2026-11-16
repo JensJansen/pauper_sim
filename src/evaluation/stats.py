@@ -7,7 +7,7 @@ Z95 = 1.959964
 
 @dataclass(frozen=True)
 class Tally:
-    """Games from one side's point of view. A game nobody won (horizon timeout) is `ties` and scores 0.5."""
+    """Games from one side's point of view. A game nobody won (horizon timeout or draw) is `ties` and scores 0.5."""
     wins: int = 0
     ties: int = 0
     games: int = 0
@@ -30,7 +30,7 @@ def tally(results, side="a"):
 
 def wilson_interval(t, z=Z95):
     """Wilson score interval for t.score. Treats the score as a binomial proportion, which is exact without ties
-    and a close approximation with them (ties are rare: they need a horizon timeout)."""
+    and a close approximation with them (ties are rare: they need a horizon timeout or a draw)."""
     n = t.games
     if not n:
         return (float("nan"), float("nan"))

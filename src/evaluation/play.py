@@ -27,7 +27,7 @@ class MatchupResult:
     games: int
     a_wins: int
     b_wins: int
-    no_winner: int  # horizon timeouts
+    no_winner: int  # horizon timeouts and draws
     logs: object = None  # play_matchups(collect_logs=True): one sanitized engine event log per game, in game order
 
 

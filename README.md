@@ -491,7 +491,7 @@ their own much coarser cadence. See **Validation checks**. (`vs_history`, a
 `strength_history`'s ladder; its old `kind: "vs_history"` lines stay readable
 in archived `metrics.jsonl` files and in `analysis/eval/report_metrics.py`.)
 
-Every game also gets one `game_over` event (`winner`, `turn_won`) appended
+Every game also gets one `game_over` event (`winner`, `turn_won`, `drawn`) appended
 to its own `event_log`.
 
 `python analysis/eval/report_metrics.py <league_dir> [--window N]` prints a
@@ -782,7 +782,7 @@ JSON file (wired only through `--matchup` mode) — the replay viewer's input.
 ### Rewards & win condition
 
 - **`deploy_reward_v6`** (`rl/rewards.py`): flat **+1.0 win, -1.0 loss or
-  no-winner timeout** (`flat_win_loss_reward`), plus a dense mana-burn
+  no-winner timeout or draw** (`flat_win_loss_reward`), plus a dense mana-burn
   penalty applied to the **winner only**. No efficiency scaling, no
   cleanup-discard penalty — hoarded cards stay visible in game state, so
   the win/loss signal attributes their cost on its own given enough
@@ -824,7 +824,13 @@ JSON file (wired only through `--matchup` mode) — the replay viewer's input.
   exactly — only the win-vs-loss ordering matters, so a sloppy win scoring
   negative is fine.
 - **Win condition**: the engine's real one — life total hitting 0, or
-  decking out. No separate termination heuristic.
+  decking out. No separate termination heuristic. The game ends as soon as the effect
+  that took a life total to 0 has finished (no further decision is asked of either
+  player, no further stack item resolves — an owner-authorized simplification of the
+  real state-based-action timing); if one effect takes both players to 0 it is a
+  **draw** (`winner` None, `drawn` True), which downstream is a no-winner game like a
+  horizon timeout: reward -1 for each seat, excluded from PFSP outcomes, counted
+  as a tie (0.5) in win-rate tallies.
 
 ---
 

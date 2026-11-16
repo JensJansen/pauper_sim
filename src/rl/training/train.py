@@ -358,14 +358,14 @@ def collect_rollout(pairing, n_games, horizon, rng, device="cpu", record=True, g
             # call signature (analysis.mulligan_retrain.train_mulligan.py's
             # two other on_game_end implementers must keep working as-is).
             state.mulligan_stratified = stratify is not None
-            # The engine's own win-check sets state.winner/state.turn_won
+            # The engine's own win-check sets state.winner/state.turn_won/state.is_draw
             # with no log_event of its own -- log it here (the same choke
             # point every other state change uses) so a consumer of
             # game_logs never has to reconstruct the outcome by replaying
             # deltas. mana_burnt_total*/single_pip are whole-game cumulative
             # diagnostics, seat-indexed.
             state.log_event(
-                "game_over", winner=state.winner, turn_won=state.turn_won,
+                "game_over", winner=state.winner, turn_won=state.turn_won, drawn=state.is_draw,
                 mana_burnt_total=[p.mana_burnt_total for p in state.players],
                 mana_burnt_total_single_pip=[p.mana_burnt_total_single_pip for p in state.players],
             )
@@ -442,7 +442,7 @@ def collect_rollout_league(training_deck_name, live_nets, mulligan_nets, deck_ct
                                     choice_sink=choice_sink, pfsp=pfsp)
 
     def on_game_end(state):
-        if state.winner is None:  # horizon timeout, nobody won -- exclude, don't count as a loss
+        if state.winner is None:  # horizon timeout or a draw, nobody won -- exclude, don't count as a loss
             return
         opp_name = choice_sink["opponent_deck_name"]
         snapshot_path = choice_sink["snapshot_path"]

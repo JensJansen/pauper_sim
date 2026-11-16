@@ -23,7 +23,7 @@ def _hill(x, c, p):
 
 def flat_win_loss_reward():
     """Terminal reward: +1.0 for a win, -1.0 for a loss or a no-winner
-    horizon timeout, 0.0 until done. Scored per seat
+    horizon timeout or draw, 0.0 until done. Scored per seat
     (state.winner == state.active_idx). No efficiency/sloppiness terms --
     every win scores the same, every loss scores the same. Shaping layers
     on top via with_dense_mana_burn_penalty, applied only on the win band
